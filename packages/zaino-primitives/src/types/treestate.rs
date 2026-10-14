@@ -1,12 +1,13 @@
 //! Commitment trees as of a block
 
-use super::{BlockHash, BlockTime, Height};
+use super::{BlockHash, BlockTime};
+use zcash_protocol::consensus::BlockHeight;
 
 /// Every pool always present
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Treestate {
     pub block_hash: BlockHash,
-    pub height: Height,
+    pub height: BlockHeight,
     pub time: BlockTime,
     pub sapling: CommitmentTreeBytes,
     pub orchard: CommitmentTreeBytes,

@@ -12,7 +12,8 @@ use std::{
 
 use bytes::Bytes;
 use imbl::{OrdMap, Vector};
-use zaino_primitives::types::{BlockRef, Height};
+use zaino_primitives::types::BlockRef;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::port::{
     table_slot, BlockChanges, CommittedView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
@@ -28,7 +29,7 @@ pub struct Overlay {
     schema: Schema,
     deltas: Vector<Arc<Delta>>,
     sequences: Vec<Vector<Bytes>>,
-    maps: Vec<OrdMap<Bytes, (Height, Entry)>>,
+    maps: Vec<OrdMap<Bytes, (BlockHeight, Entry)>>,
 }
 
 /// `BlockChanges`' share: `(sequence, records)` per sequence it grew (sparse), keys it inserted or
@@ -140,7 +141,7 @@ impl Overlay {
     }
 
     /// `table`'s entries above durable (each with the block that wrote it), in key order
-    pub(crate) fn rows(&self, table: MapId) -> &OrdMap<Bytes, (Height, Entry)> {
+    pub(crate) fn rows(&self, table: MapId) -> &OrdMap<Bytes, (BlockHeight, Entry)> {
         table_slot(&self.maps, table)
     }
 }
@@ -160,7 +161,7 @@ pub trait Uncommitted: Clone {
     fn schema(&self) -> &Schema;
 
     /// Lowest block held (`None` = empty)
-    fn first(&self) -> Option<Height>;
+    fn first(&self) -> Option<BlockHeight>;
 
     fn tip(&self) -> Option<BlockRef>;
 
@@ -199,7 +200,7 @@ impl Uncommitted for Overlay {
         &self.schema
     }
 
-    fn first(&self) -> Option<Height> {
+    fn first(&self) -> Option<BlockHeight> {
         self.deltas.front().map(|delta| delta.tip.height)
     }
 
@@ -235,7 +236,7 @@ impl<A: Uncommitted> Uncommitted for &A {
         (**self).schema()
     }
 
-    fn first(&self) -> Option<Height> {
+    fn first(&self) -> Option<BlockHeight> {
         (**self).first()
     }
 

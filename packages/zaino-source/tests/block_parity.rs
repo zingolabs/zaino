@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tonic::{Request, Response, Status};
 
-use zaino_primitives::types::{BlockHash, Height};
+use zaino_primitives::types::BlockHash;
 use zaino_proto::proto::zebra_indexer::indexer_server::{Indexer, IndexerServer};
 use zaino_proto::proto::zebra_indexer::{
     BlockAndHash, BlockHashAndHeight, BlockRangeRequest, BlockRequest, Empty, MempoolChangeMessage,
@@ -24,6 +24,7 @@ use zaino_source::{
     ChainDataSource, FailureMode, GetAtHeightError, LinkLimits, QueryError, Timeouts,
     ZcashGrpcClient, ZcashLegacyRpcClient,
 };
+use zcash_protocol::consensus::BlockHeight;
 
 struct Expected {
     height: u32,
@@ -262,7 +263,7 @@ impl Indexer for FakeIndexer {
 /// Each fixture through `client` = the explorer's facts; by height = by hash
 async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
     for expected in FIXTURES {
-        let height = Height::try_from(expected.height).expect("fixture height");
+        let height = BlockHeight::from(expected.height);
         let hash: BlockHash = expected.hash.parse().expect("display hex");
         let block = client
             .get_block_by_hash(hash)
@@ -352,7 +353,7 @@ async fn both_clients_decode_every_block_to_the_explorers_facts() {
     assert_explorer_parity(&legacy_client, "legacy").await;
     assert_explorer_parity(&grpc, "grpc").await;
 
-    let h = |height: u32| Height::try_from(height).expect("height");
+    let h = BlockHeight::from;
     indexer.ranges.lock().expect("ranges").clear();
     let blocks = grpc.get_blocks_by_height(&[h(10), h(11), h(12), h(419_200)]).await;
     let heights: Vec<_> =

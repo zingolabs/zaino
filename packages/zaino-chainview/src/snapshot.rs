@@ -276,9 +276,8 @@ impl ChainViewSnapshot {
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
     ) -> Self {
-        use zaino_primitives::types::{
-            BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height,
-        };
+        use zaino_primitives::types::{BlockchainInfo, ConsensusBranchId, ConsensusBranchIds};
+        use zcash_protocol::consensus::H0;
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
@@ -290,7 +289,7 @@ impl ChainViewSnapshot {
                 blocks: best.height,
                 estimated_height: best.height,
                 best_block_hash: best.hash,
-                sapling_activation: Height::GENESIS,
+                sapling_activation: H0,
                 upgrades: Vec::new(),
                 consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
             };
@@ -315,8 +314,7 @@ impl ChainViewSnapshot {
         if let Some(meta) = self.endpoints.get_mut(at) {
             meta.health = health;
             if let Some(info) = meta.info.as_mut() {
-                info.estimated_height =
-                    info.blocks.checked_add(behind).expect("estimate below u32::MAX");
+                info.estimated_height = info.blocks + behind;
             }
         }
         self.alarms = crate::telemetry::alarms(&self.endpoints, self.alarms.finality_paused());
@@ -334,7 +332,7 @@ impl ChainViewSnapshot {
         assert!(self.held_by.contains(id), "{at}: not a holder");
         let meta = self.endpoints.get_mut(at).expect("a holder = a configured endpoint");
         let info = meta.info.as_mut().expect("a holder answered");
-        info.blocks = best.height.checked_add(by).expect("claim below u32::MAX");
+        info.blocks = best.height + by;
         info.estimated_height = info.blocks;
         info.best_block_hash = BlockHash::from([0xA0; 32]);
         meta.held = read.then_some(best);

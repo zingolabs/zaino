@@ -8,7 +8,7 @@ use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
 use zaino_persistence::{CommittedView, IndexKind, OverlayView};
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
@@ -162,7 +162,7 @@ where
 ///   any block (lightwalletd: the first `getblock` fails)
 fn open_range<V: CommittedView>(
     blocks: Blocks<V>,
-    through: Height,
+    through: BlockHeight,
     request: &service::BlockRange,
     pools: Pools,
 ) -> Result<Walk<V>, Status> {
@@ -185,7 +185,7 @@ fn open_range<V: CommittedView>(
     if start > through {
         return Err(past(start));
     }
-    let ends = if end > through { past(through.next()) } else { Status::ok("") };
+    let ends = if end > through { past(through + 1) } else { Status::ok("") };
     let cursor = RangeCursor::new(blocks, start, end, through, pools).map_err(to_status)?;
 
     Ok(Walk { cursor, ends })
@@ -584,7 +584,7 @@ mod tests {
         let cases = [
             (None, at(1), "range%20has%20no%20start".to_owned()),
             (at(1), None, "range%20has%20no%20end".to_owned()),
-            (at(1), at(1 << 31), above_ceiling("end", 1 << 31)),
+            (at(1), at(1 << 32), above_ceiling("end", 1 << 32)),
             (at(u64::MAX), at(1), above_ceiling("start", u64::MAX)),
         ];
         let mut answered = Vec::new();

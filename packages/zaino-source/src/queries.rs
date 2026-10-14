@@ -7,8 +7,9 @@
 use std::future::Future;
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, Height, NodeRelease, PeerInfo, TransactionLocation,
+    Block, BlockHash, BlockchainInfo, NodeRelease, PeerInfo, TransactionLocation,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
@@ -30,7 +31,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     /// - any height absent = `HeightNotFound` for it (batch = all or nothing)
     fn get_blocks_by_height(
         &self,
-        heights: &[Height],
+        heights: &[BlockHeight],
     ) -> impl Future<Output = Result<Vec<Block>, QueryError<GetAtHeightError>>> + Send;
 
     /// `getblockheader <height> false` per height, batched: ancestry + raw headers, no bodies
@@ -38,7 +39,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     /// - one item per height, `heights` order
     fn get_block_links(
         &self,
-        heights: &[Height],
+        heights: &[BlockHeight],
     ) -> impl Future<Output = Result<BlockLinks, NonDomainError>> + Send;
 
     /// Poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
@@ -48,7 +49,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     fn get_poll_reading(
         &self,
         metadata: bool,
-        holds: &[Height],
+        holds: &[BlockHeight],
     ) -> impl Future<Output = Result<PollReading, NonDomainError>> + Send;
 
     /// `getrawtransaction <txid> 0` per listed mempool transaction, batched by `encoded_len`
@@ -86,7 +87,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetAtHeightError {
     #[error("no block at height {0}")]
-    HeightNotFound(Height),
+    HeightNotFound(BlockHeight),
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]

@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 /// Cheap clone, one tally per follower
 #[derive(Debug, Clone, Default)]
@@ -20,8 +20,8 @@ struct Tally {
 
 impl SyncProgress {
     /// Last block handed (sent on the final stream)
-    pub fn handed(&self) -> Option<Height> {
-        Height::try_from(self.0.handed.load(Ordering::Relaxed).checked_sub(1)?).ok()
+    pub fn handed(&self) -> Option<BlockHeight> {
+        BlockHeight::try_from(self.0.handed.load(Ordering::Relaxed).checked_sub(1)?).ok()
     }
 
     /// Blocks handed since boot
@@ -29,7 +29,7 @@ impl SyncProgress {
         self.0.blocks.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn hand(&self, height: Height) {
+    pub(crate) fn hand(&self, height: BlockHeight) {
         self.0.handed.store(u64::from(u32::from(height)) + 1, Ordering::Relaxed);
         self.0.blocks.fetch_add(1, Ordering::Relaxed);
     }
@@ -38,7 +38,7 @@ impl SyncProgress {
 #[cfg(any(test, feature = "testing"))]
 impl SyncProgress {
     /// No follower behind it: `handed` = `at`, one block counted per hand
-    pub fn fixed(at: Option<Height>) -> Self {
+    pub fn fixed(at: Option<BlockHeight>) -> Self {
         let progress = Self::default();
         if let Some(at) = at {
             progress.hand(at);
@@ -55,7 +55,7 @@ mod tests {
     fn handed_is_the_last_height_and_blocks_count_every_hand() {
         let progress = SyncProgress::default();
         assert_eq!((progress.handed(), progress.blocks()), (None, 0));
-        let at = |h: u32| Height::try_from(h).expect("h");
+        let at = BlockHeight::from;
         for h in [0, 1, 2] {
             progress.hand(at(h));
         }

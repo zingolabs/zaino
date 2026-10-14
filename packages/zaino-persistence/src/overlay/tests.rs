@@ -16,7 +16,7 @@ const OTHER: Schema =
 
 /// Height `n`, hash `[n; 32]`
 fn block_ref(n: u8) -> BlockRef {
-    let height = Height::try_from(u32::from(n)).expect("small height");
+    let height = BlockHeight::from(u32::from(n));
     BlockRef { hash: BlockHash::from([n; 32]), height }
 }
 
@@ -71,7 +71,7 @@ impl View for Durable {
 }
 
 #[test]
-#[should_panic(expected = "apply at height 1, not above the last applied Some(Height(1))")]
+#[should_panic(expected = "apply at height 1, not above the last applied Some(BlockHeight(1))")]
 fn with_a_block_not_above_the_layer_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
     layer.with(&block(1));

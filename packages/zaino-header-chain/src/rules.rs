@@ -10,9 +10,8 @@ use std::cmp::{max, min};
 use std::num::NonZeroU64;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
-use zaino_primitives::types::{
-    CompactDifficulty, Height, Target, REGTEST_SOLUTION, STANDARD_SOLUTION,
-};
+use zaino_primitives::types::{CompactDifficulty, Target, REGTEST_SOLUTION, STANDARD_SOLUTION};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
@@ -81,7 +80,7 @@ impl Rejected {
 pub fn validate(
     params: &Params,
     header: &Header,
-    height: Height,
+    height: BlockHeight,
     ancestors: &[Ancestor],
     now_unix: i64,
 ) -> Result<(), Rejected> {
@@ -126,7 +125,7 @@ pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
 pub(crate) fn in_context(
     params: &Params,
     header: &Header,
-    height: Height,
+    height: BlockHeight,
     context: &[Ancestor],
     now_unix: i64,
 ) -> Result<(), Rejected> {
@@ -171,7 +170,7 @@ pub(crate) fn equihash_valid(header: &Header) -> Result<(), Rejected> {
 /// the limit; else [`threshold`] over the window for `height`
 pub(crate) fn expected_bits(
     params: &Params,
-    height: Height,
+    height: BlockHeight,
     time: u32,
     parent_time: u32,
     context: &[Ancestor],
@@ -206,7 +205,7 @@ pub(crate) fn expected_bits(
 
 /// `CalculateNextWorkRequired(mean, timespan, height)`: the timespan damped by 4, clamped to
 /// −16 % / +32 % of the window's, then mean / window timespan × bounded, at most the limit
-pub(crate) fn threshold(params: &Params, mean: Target, timespan: i64, height: Height) -> u32 {
+pub(crate) fn threshold(params: &Params, mean: Target, timespan: i64, height: BlockHeight) -> u32 {
     let window = params.spacing(height) * params.averaging_window(height) as i64;
     // integer division truncates toward zero, as C++ `int64_t /`
     let damped = window + (timespan - window) / DAMPING_FACTOR;
@@ -223,8 +222,8 @@ pub(crate) fn threshold(params: &Params, mean: Target, timespan: i64, height: He
 mod tests {
     use super::*;
 
-    fn height(h: u32) -> Height {
-        Height::try_from(h).expect("in range")
+    fn height(h: u32) -> BlockHeight {
+        BlockHeight::from(h)
     }
 
     /// zcashd `src/test/pow_tests.cpp` `CalculateNextWorkRequired` vectors (mean bits, timespan

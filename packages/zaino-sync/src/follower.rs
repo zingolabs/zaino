@@ -19,9 +19,10 @@ use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::IndexKind;
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::{emit, fetch, fetch_at, IndexerDataSink, Step, Subscription, SyncProgress};
 
@@ -31,9 +32,9 @@ pub enum FollowError {
         "{index} committed {expected} at {height:?}, the trusted validator's chain has {got} \
          (resync required)"
     )]
-    Diverged { index: &'static str, height: Height, expected: BlockHash, got: BlockHash },
+    Diverged { index: &'static str, height: BlockHeight, expected: BlockHash, got: BlockHash },
     #[error("block {height:?} does not extend the block sent before it (validator history moved)")]
-    Unlinked { height: Height },
+    Unlinked { height: BlockHeight },
     #[error("header sync stopped publishing the verified chain")]
     ChainGone,
 }
@@ -103,8 +104,8 @@ async fn follow<S: ChainDataSource>(
     durable: Vec<(IndexKind, Option<BlockRef>)>,
     progress: &SyncProgress,
 ) -> Result<(), FollowError> {
-    let next = |tip: &Option<BlockRef>| tip.map_or(Height::GENESIS, |tip| tip.height.next());
-    let mut wanted = durable.iter().map(|(_, tip)| next(tip)).min().unwrap_or(Height::GENESIS);
+    let next = |tip: &Option<BlockRef>| tip.map_or(H0, |tip| tip.height + 1);
+    let mut wanted = durable.iter().map(|(_, tip)| next(tip)).min().unwrap_or(H0);
     let mut last_sent: Option<BlockHash> = None;
     let mut fetching = FuturesOrdered::new();
     let requests = lookahead.get().div_ceil(BLOCKS_PER_REQUEST);
@@ -118,7 +119,7 @@ async fn follow<S: ChainDataSource>(
             let fetched = match held {
                 Some(record) => {
                     let at = BlockRef { hash: record.hash, height: wanted };
-                    wanted = wanted.next();
+                    wanted = wanted + 1;
                     let one = fetch(balancer.clone(), at, record, Urgency::Bulk);
                     tokio::spawn(async move { vec![one.await] })
                 }
@@ -126,7 +127,7 @@ async fn follow<S: ChainDataSource>(
                     let mut heights = Vec::with_capacity(BLOCKS_PER_REQUEST);
                     while heights.len() < BLOCKS_PER_REQUEST && Some(wanted) <= final_height {
                         heights.push(wanted);
-                        wanted = wanted.next();
+                        wanted = wanted + 1;
                     }
                     tokio::spawn(fetch_at(balancer.clone(), heights.into(), Urgency::Bulk))
                 }
@@ -169,7 +170,7 @@ fn link(
 ) -> Result<(), FollowError> {
     let (height, parent) = (block.header().height, block.header().prev_hash);
     for (kind, tip) in durable {
-        let Some(tip) = tip.filter(|tip| tip.height.next() == height) else { continue };
+        let Some(tip) = tip.filter(|tip| tip.height + 1 == height) else { continue };
         if parent != tip.hash {
             let (index, height, expected) = (kind.name(), tip.height, tip.hash);
             return Err(FollowError::Diverged { index, height, expected, got: parent });

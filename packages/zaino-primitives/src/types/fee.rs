@@ -2,7 +2,8 @@
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 
-use super::{Block, BlockHash, Height, Transaction};
+use super::{Block, BlockHash, Transaction};
+use zcash_protocol::consensus::BlockHeight;
 
 /// Left in the transparent value pool for the miner (protocol.pdf §3.4)
 ///
@@ -63,7 +64,7 @@ impl Transaction {
 /// - `hash` = which branch (a consumer pairing it with a block drops a stale one after a reorg)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockFees {
-    pub height: Height,
+    pub height: BlockHeight,
     pub hash: BlockHash,
     pub fees: Vec<Fee>,
 }

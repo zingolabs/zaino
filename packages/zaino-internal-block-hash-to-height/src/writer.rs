@@ -78,8 +78,9 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_primitives::types::{BlockHash, Height};
+    use zaino_primitives::types::BlockHash;
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
+    use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -113,7 +114,7 @@ mod tests {
         let reader = BlockHashReader::new(store.staged());
         let located: Vec<_> =
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
-        let expected: Vec<_> = (0..3u32).map(|n| Some(Height::try_from(n).expect("h"))).collect();
+        let expected: Vec<_> = (0..3u32).map(|n| Some(BlockHeight::from(n))).collect();
         assert_eq!(located, expected);
         assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
     }
@@ -147,7 +148,7 @@ mod tests {
         let reader = BlockHashReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).committed());
         let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
         let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
-        let heights = (0..=4u32).map(|n| Some(Height::try_from(n).expect("h")));
+        let heights = (0..=4u32).map(|n| Some(BlockHeight::from(n)));
         assert_eq!(located, heights.chain([None]).collect::<Vec<_>>());
     }
 
@@ -160,7 +161,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
         let blocks = chain.blocks(tip);
-        let located = |view: DiskView, blocks: &[Arc<Block>]| -> Vec<Option<Height>> {
+        let located = |view: DiskView, blocks: &[Arc<Block>]| -> Vec<Option<BlockHeight>> {
             let reader = BlockHashReader::new(view);
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect()
         };
@@ -180,7 +181,7 @@ mod tests {
             let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
-            let expected: Vec<_> = (0..count as u32).map(|n| Height::try_from(n).ok()).collect();
+            let expected: Vec<_> = (0..count as u32).map(|n| Some(BlockHeight::from(n))).collect();
             let expected = [expected, vec![None]].concat();
             assert_eq!(
                 located(store.committed(), &blocks[..=count]),
@@ -192,7 +193,7 @@ mod tests {
             writer.send(step(&blocks[count])).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let next = located(handle.view(), &blocks[count..=count]);
-            assert_eq!(next, [Height::try_from(count as u32).ok()], "{label}: commits continue");
+            assert_eq!(next, [Some(BlockHeight::from(count as u32))], "{label}: commits continue");
         }
     }
 }

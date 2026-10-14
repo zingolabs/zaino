@@ -16,12 +16,13 @@ use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{
-    Block, Height, NoteCommitment, PerPool, ShieldedPool, Transaction, TreeRoot, TreeSizes,
+    Block, NoteCommitment, PerPool, ShieldedPool, Transaction, TreeRoot, TreeSizes,
 };
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
 use zcash_primitives::merkle_tree::HashSer;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     heights::{self, TreeStateHeight},
@@ -103,7 +104,7 @@ pub enum FoldError {
     Inconsistent { size: u64 },
 
     #[error("block {height} carries an uncommittable note commitment")]
-    Commitment { height: Height },
+    Commitment { height: BlockHeight },
 }
 
 /// `block` onto `parent` (= a run of one)
@@ -151,7 +152,7 @@ pub(crate) fn fold_run<V: SequenceRead>(
 struct PoolRun<H> {
     frontier: Frontier<H, MERKLE_DEPTH>,
     leaves: Vec<H>,
-    ends: Vec<(Height, usize)>,
+    ends: Vec<(BlockHeight, usize)>,
 }
 
 /// One pool's nodes retained + subtrees completed by one block
@@ -351,7 +352,7 @@ mod tests {
             subtree_level in 1u8..5,
         ) {
             let total: usize = blocks.iter().sum();
-            let height = |n: usize| Height::try_from(u32::try_from(n).expect("n")).expect("h");
+            let height = |n: usize| BlockHeight::from(u32::try_from(n).expect("n"));
             let library = |size: u64| {
                 let mut frontier = Frontier::<Mix, MERKLE_DEPTH>::empty();
                 (0..size).all(|n| frontier.append(leaf(n))).then_some(frontier)

@@ -11,9 +11,10 @@ use zaino_nfs::{At, Indexed};
 use zaino_persistence::{CommittedView, IndexKind, OverlayView};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
-    BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
+    BlockHash, CommitmentTreeBytes, ShieldedPool, SubtreeRoot, Treestate,
 };
 use zaino_proto::proto::service;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
@@ -25,7 +26,7 @@ use crate::wire::{self, streamed_response, unary_response};
 ///
 /// - keyed on the `Indexed` publish, not the global snapshot (that one moves per chain-view fold)
 pub(crate) struct Memos<V> {
-    states: Memo<V, Height, Result<Bytes, Status>>,
+    states: Memo<V, BlockHeight, Result<Bytes, Status>>,
     roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
@@ -51,7 +52,7 @@ impl<V: CommittedView> Answering<V> {
         self.indexed.served()
     }
 
-    fn through(&self) -> Height {
+    fn through(&self) -> BlockHeight {
         self.served().answers_through(IndexKind::TreeState)
     }
 
@@ -81,7 +82,7 @@ impl<V: CommittedView> Answering<V> {
     ///   so Sapling activation − 1 too: ZA#1422)
     fn state_at(
         &self,
-        at: Height,
+        at: BlockHeight,
     ) -> impl FnOnce(&TreeStateReader<OverlayView<V>>) -> Result<Bytes, Status> + Send + 'static
     {
         let (through, params) = (self.through(), self.served().params());
@@ -293,7 +294,7 @@ mod tests {
                 root: [seed; 32].into(),
                 completing: BlockRef {
                     hash: [seed; 32].into(),
-                    height: (u32::from(seed) * 10).try_into().expect("height"),
+                    height: (u32::from(seed) * 10).into(),
                 },
             })
             .collect();

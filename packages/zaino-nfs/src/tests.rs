@@ -25,11 +25,12 @@ use zaino_persistence::{
     SequenceRead, Store, View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
-use zaino_primitives::types::{Block, BlockFees, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockFees, BlockHash};
 use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
 use zaino_sync::{FeeSink, FinalFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_transparent::bundle::OutPoint;
 
 use super::*;
@@ -287,7 +288,7 @@ impl Pipeline {
         Self { indexed, handles, progress, cancel, follower, nfs, writers }
     }
 
-    fn durable(&self) -> Vec<Option<Height>> {
+    fn durable(&self) -> Vec<Option<BlockHeight>> {
         self.handles.iter().map(|(_, handle)| handle.tip().map(|tip| tip.height)).collect()
     }
 
@@ -306,7 +307,7 @@ impl Pipeline {
     async fn settle(
         &mut self,
         best: BlockRef,
-        final_height: Option<Height>,
+        final_height: Option<BlockHeight>,
         mut each: impl FnMut(&Indexed<DiskView>),
         check: &mut impl FnMut(&Indexed<DiskView>, &str),
         context: &str,
@@ -510,7 +511,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
 
     let five = [&four[..3], &[IndexKind::TreeState], &four[3..]].concat();
     let mut pipeline = Pipeline::start(&engine, &five, &verified_rx, &balancer, params);
-    let mut served = Height::GENESIS;
+    let mut served = H0;
     for at in 9..=16 {
         let context = format!("run 1 A{at}");
         let (best, final_height) = add(&trunk[at..=at]);

@@ -13,8 +13,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use zaino_header_chain::{Record, VerifiedChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef};
 use zaino_sync::Checked;
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::graph::{Graph, Node};
 
@@ -26,9 +27,9 @@ pub(crate) struct NfsCore<F> {
     chain: Option<Arc<VerifiedChain>>,
     durable: Vec<Option<BlockRef>>,
     graph: Graph<F>,
-    ready: BTreeMap<Height, Arc<Block>>,
+    ready: BTreeMap<BlockHeight, Arc<Block>>,
     folding: HashMap<BlockHash, (Arc<Block>, Indexes)>,
-    wanted: BTreeMap<Height, BlockHash>,
+    wanted: BTreeMap<BlockHeight, BlockHash>,
     shown: Option<Shown>,
 }
 
@@ -89,7 +90,7 @@ pub(crate) struct SnapshotTip<F> {
     pub(crate) graph: Graph<F>,
 }
 
-fn height(tip: Option<BlockRef>) -> Option<Height> {
+fn height(tip: Option<BlockRef>) -> Option<BlockHeight> {
     tip.map(|tip| tip.height)
 }
 
@@ -148,8 +149,8 @@ impl<F> NfsCore<F> {
         self.durable.iter().copied().min_by_key(|tip| height(*tip)).flatten()
     }
 
-    fn next_root(&self) -> Height {
-        self.root().map_or(Height::GENESIS, |root| root.height.next())
+    fn next_root(&self) -> BlockHeight {
+        self.root().map_or(H0, |root| root.height + 1)
     }
 
     /// Root within `window` of best + its next header held (else the final path alone: bulk sync,
@@ -208,7 +209,7 @@ impl<F> NfsCore<F> {
             return;
         }
         let top = self.graph.best_top(chain, self.root());
-        let at_height = top.map_or(self.next_root(), |top| top.at.height.next());
+        let at_height = top.map_or(self.next_root(), |top| top.at.height + 1);
         let Some(hash) = chain.hash_at(at_height) else { return };
         let Some(block) = self.ready.remove(&at_height) else { return };
         let below = |index: &usize| height(self.durable[*index]) < Some(at_height);
@@ -252,7 +253,8 @@ impl<F> NfsCore<F> {
         if !self.active(chain) {
             return;
         }
-        let heights = self.next_root().up_to(chain.best().height).map(|height| BlockRef {
+        let heights = u32::from(self.next_root())..=u32::from(chain.best().height);
+        let heights = heights.map(BlockHeight::from).map(|height| BlockRef {
             hash: chain.hash_at(height).expect("at or below the best tip"),
             height,
         });

@@ -17,12 +17,13 @@ use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{
     Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;
 
@@ -130,7 +131,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
-    let progress = SyncProgress::fixed(Some(Height::try_from(5u32).expect("h")));
+    let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
     let member = |at: usize, health, failures, latency| MemberRow {
         id: MemberId::Trusted(ValidatorId::new(at).expect("small")),
         health,

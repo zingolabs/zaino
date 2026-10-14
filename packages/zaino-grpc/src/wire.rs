@@ -6,17 +6,17 @@ use std::fmt;
 use http::{HeaderMap, HeaderValue, Response};
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::Pools;
-use zaino_primitives::types::Height;
 use zaino_proto::frame::{frame_into, split_frame, FRAME_HEADER};
+use zcash_protocol::consensus::BlockHeight;
 
 /// No answer from this snapshot: retry (`UNAVAILABLE`, the reason as its message)
 pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
     Status::unavailable(why.to_string())
 }
 
-/// Client height → [`Height`] (past the protocol ceiling = the client's error, never a service's)
-pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
-    Height::try_from(raw).map_err(|_| {
+/// Client height → [`BlockHeight`] (past the protocol ceiling = the client's error, never a service's)
+pub(super) fn height(raw: u64, field: &str) -> Result<BlockHeight, Status> {
+    BlockHeight::try_from(raw).map_err(|_| {
         Status::invalid_argument(format!("{field} {raw} is above the protocol height ceiling"))
     })
 }
@@ -28,10 +28,10 @@ pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
 ///   a time; a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::CommittedView>(
     at: &zaino_nfs::At<V>,
-    through: Height,
+    through: BlockHeight,
     raw: &[u8],
     method: &str,
-) -> Result<(Height, [u8; 32]), Status> {
+) -> Result<(BlockHeight, [u8; 32]), Status> {
     let hash: [u8; 32] =
         raw.try_into().map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
     let locator = at.views().block_hash().ok_or_else(|| {
@@ -72,7 +72,10 @@ pub(super) fn pools(raw: &[i32]) -> Result<Pools, Status> {
 }
 
 /// `(start, end)`, both inclusive, refused when reversed (services take ordered ranges)
-pub(super) fn ordered(start: Height, end: Height) -> Result<(Height, Height), Status> {
+pub(super) fn ordered(
+    start: BlockHeight,
+    end: BlockHeight,
+) -> Result<(BlockHeight, BlockHeight), Status> {
     match start <= end {
         true => Ok((start, end)),
         false => Err(Status::invalid_argument(format!("range start {start} is above end {end}"))),

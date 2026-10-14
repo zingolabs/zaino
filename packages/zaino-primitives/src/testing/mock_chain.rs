@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
+use zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, H0};
 use zcash_protocol::TxId;
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
@@ -22,7 +22,7 @@ use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
     Block, BlockFees, BlockHash, BlockRef, BlockchainInfo, CompactDifficulty, ConsensusBranchIds,
-    DecodedHeader, EquihashSolution, Fee, Height, MerkleRoot, Transaction, UpgradeSchedule,
+    DecodedHeader, EquihashSolution, Fee, MerkleRoot, Transaction, UpgradeSchedule,
 };
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
@@ -103,14 +103,14 @@ impl MockChain {
     }
 
     /// Best chain at `height`
-    pub fn at(&self, height: Height) -> BlockRef {
+    pub fn at(&self, height: BlockHeight) -> BlockRef {
         let tip = self.tip();
         assert!(height <= tip.height, "{height} above the best tip {}", tip.height);
         self.ancestor(tip, height)
     }
 
     /// `tip`'s path at `height` (≤ `tip.height`)
-    pub fn ancestor(&self, tip: BlockRef, height: Height) -> BlockRef {
+    pub fn ancestor(&self, tip: BlockRef, height: BlockHeight) -> BlockRef {
         assert!(height <= tip.height, "{height} above the tip {}", tip.height);
         let mut at = tip;
         while at.height > height {
@@ -149,7 +149,7 @@ impl MockChain {
     }
 
     /// `branch(at(at))`
-    pub fn fork(&mut self, at: Height) -> Branch<'_> {
+    pub fn fork(&mut self, at: BlockHeight) -> Branch<'_> {
         let parent = self.at(at);
         self.branch(parent)
     }
@@ -196,7 +196,7 @@ impl MockChain {
             upgrades: upgrades.info(tip.height),
             consensus: ConsensusBranchIds {
                 chain_tip: upgrades.branch_at(tip.height),
-                next_block: upgrades.branch_at(tip.height.next()),
+                next_block: upgrades.branch_at(tip.height + 1),
             },
         }
     }
@@ -207,7 +207,7 @@ impl MockChain {
 
     /// Unspent outputs, txids, nullifiers and pool values on genesis ..= `tip`
     pub fn ledger(&self, tip: BlockRef) -> Ledger {
-        let mut ledger = Ledger::empty(self.schedule.upgrades, Height::GENESIS);
+        let mut ledger = Ledger::empty(self.schedule.upgrades, H0);
         for block in self.blocks(tip) {
             for tx in block.transactions() {
                 ledger.apply(tx, None).expect("a held block passed M3–M7 when mined");
@@ -282,7 +282,7 @@ impl MockChain {
 
     /// Child of `parent` (`None` = genesis) holding `spec`, checked (M1–M7), then held
     fn insert(&mut self, parent: Option<BlockRef>, spec: BlockBuilder, outweigh: bool) -> BlockRef {
-        let height = parent.map_or(Height::GENESIS, |parent| parent.height.next());
+        let height = parent.map_or(H0, |parent| parent.height + 1);
         let time = self.time(parent, height, spec.time);
         let bits = self.bits(parent, spec.bits, outweigh);
         let mut ledger = match (parent, spec.reads_history()) {
@@ -400,7 +400,7 @@ impl MockChain {
     }
 
     /// M2: stated or parent + target spacing, after the parent's median time past
-    fn time(&self, parent: Option<BlockRef>, height: Height, stated: Option<u32>) -> u32 {
+    fn time(&self, parent: Option<BlockRef>, height: BlockHeight, stated: Option<u32>) -> u32 {
         let Some(parent) = parent else { return stated.unwrap_or(GENESIS_TIME) };
         let parent_time = self.block(parent.hash).header().time;
         let time = stated.unwrap_or(parent_time + self.schedule.upgrades.spacing(height));

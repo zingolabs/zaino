@@ -6,8 +6,9 @@ use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
 use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, UpgradeSchedule};
+use zaino_primitives::types::{BlockHash, BlockRef, UpgradeSchedule};
 use zaino_traffic::Health;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::feed::{Feed, MempoolTail};
 
@@ -32,8 +33,8 @@ pub struct ForkView {
 /// What `GetLightdInfo` renders (`Snapshot::lightd`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lightd {
-    pub served: Height,
-    pub best: Height,
+    pub served: BlockHeight,
+    pub best: BlockHeight,
     pub schedule: UpgradeSchedule,
 }
 
@@ -186,12 +187,12 @@ impl<V> Snapshot<V> {
     }
 
     /// Best's height, or above it the clock estimate of a validator still catching up
-    pub fn sync_target(&self) -> Option<Height> {
+    pub fn sync_target(&self) -> Option<BlockHeight> {
         let best = self.tips.best.map(|best| best.height);
         let catching_up =
             self.view.endpoints().iter().filter(|meta| meta.health == Health::CatchingUp);
         let estimates =
-            catching_up.filter_map(|meta| meta.tip()?.height.checked_add(meta.stale_blocks()?));
+            catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()
     }
 

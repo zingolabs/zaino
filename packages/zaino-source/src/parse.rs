@@ -6,12 +6,12 @@
 //!   "garbled" are different facts)
 
 use zaino_primitives::types::{
-    BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
-    HeightOverflow, NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, ParseHashError,
-    PeerInfo, TransactionLocation,
+    BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, ParseHashError, PeerInfo,
+    TransactionLocation,
 };
 
-use zcash_protocol::consensus::BranchId;
+use zcash_protocol::consensus::{BlockHeight, BranchId};
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 use zcash_protocol::TxId;
 
@@ -29,8 +29,6 @@ pub(crate) enum ParseError {
     UnexpectedType { expected: &'static str, got: String },
     #[error("value {0} overflows target type")]
     Overflow(u64),
-    #[error("invalid height: {0}")]
-    Height(#[from] HeightOverflow),
     #[error("missing field `{0}`")]
     MissingField(&'static str),
     #[error("unknown network upgrade status `{0}`")]
@@ -86,8 +84,9 @@ fn as_array(value: &serde_json::Value) -> Result<&Vec<serde_json::Value>, ParseE
     value.as_array().ok_or_else(|| ParseError::unexpected("array", value))
 }
 
-fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
-    Ok(Height::try_from(as_u64(value)?)?)
+fn as_height(value: &serde_json::Value) -> Result<BlockHeight, ParseError> {
+    let height = as_u64(value)?;
+    BlockHeight::try_from(height).map_err(|_| ParseError::Overflow(height))
 }
 
 fn hex(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
@@ -359,7 +358,7 @@ mod tests {
         let mut reversed_bytes = [0u8; 32];
         const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
-        let height = |h: u32| Height::try_from(h).expect("h");
+        let height = BlockHeight::from;
         let nu5 = ConsensusBranchId::new(0xc2d6_d0b4);
 
         let expected = BlockchainInfo {
@@ -406,7 +405,7 @@ mod tests {
         let mined = location(json!({ "hex": "00", "height": 12345 })).expect("mined");
         let side = location(json!({ "hex": "00", "height": -1 })).expect("side chain");
         let mempool = location(json!({ "hex": "00" })).expect("mempool");
-        let height = Height::try_from(12345u32).expect("h");
+        let height = BlockHeight::from(12345);
         assert_eq!((mined, side, mempool), (BestChain(height), NonBestChain, Mempool));
         assert!(location(json!({ "hex": "00", "height": -7 })).is_err());
     }
@@ -424,7 +423,7 @@ mod tests {
         };
         let mainnet = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
         let halts = EndOfService::At {
-            height: Height::try_from(3_564_960u32).expect("in range"),
+            height: BlockHeight::from(3_564_960),
             estimated_unix: 1_790_000_000,
         };
         assert_eq!(release(Some(mainnet)).expect("mainnet"), halts);

@@ -13,7 +13,6 @@ mod ephemeral_key;
 mod equihash_solution;
 mod fee;
 mod header_bytes;
-mod height;
 mod merkle_root;
 mod network_upgrade;
 mod node_release;
@@ -45,7 +44,6 @@ pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
 pub use fee::{BlockFees, Fee, FeeError};
 pub use header_bytes::{HeaderBytes, HeaderError, REGTEST_SOLUTION, STANDARD_SOLUTION};
-pub use height::{Height, HeightOverflow};
 pub use merkle_root::MerkleRoot;
 pub use network_upgrade::{
     ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,

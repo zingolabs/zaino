@@ -4,7 +4,7 @@
 
 use zcash_protocol::consensus::{BranchId, NetworkUpgrade};
 
-use super::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 /// Protocol identity of a network upgrade (fixed by consensus: the stable key, unlike a name)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -54,7 +54,7 @@ pub enum NetworkUpgradeStatus {
 pub struct NetworkUpgradeInfo {
     pub branch_id: ConsensusBranchId,
     pub name: String,
-    pub activation_height: Height,
+    pub activation_height: BlockHeight,
     pub status: NetworkUpgradeStatus,
 }
 

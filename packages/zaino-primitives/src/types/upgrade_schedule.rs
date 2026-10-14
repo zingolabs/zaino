@@ -4,7 +4,8 @@ use zcash_protocol::consensus::{
     BranchId, MainNetwork, NetworkType, NetworkUpgrade, Parameters, TestNetwork,
 };
 
-use super::{BlockchainInfo, ConsensusBranchId, Height};
+use super::{BlockchainInfo, ConsensusBranchId};
+use zcash_protocol::consensus::BlockHeight;
 
 const PRE_BLOSSOM_SPACING: u32 = 150;
 const POST_BLOSSOM_SPACING: u32 = 75;
@@ -30,7 +31,7 @@ pub(crate) const ORDER: [NetworkUpgrade; 11] = [
 ///
 /// - Mainnet/testnet: compiled in (`zcash_protocol`'s tables, as zebrad's); regtest: its validator's
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UpgradeSchedule(pub(crate) [Option<Height>; ORDER.len()]);
+pub struct UpgradeSchedule(pub(crate) [Option<BlockHeight>; ORDER.len()]);
 
 impl UpgradeSchedule {
     /// `None` = regtest (heights set per chain: [`reported`](Self::reported) by its validator)
@@ -51,27 +52,27 @@ impl UpgradeSchedule {
         }))
     }
 
-    pub fn activation(&self, upgrade: NetworkUpgrade) -> Option<Height> {
+    pub fn activation(&self, upgrade: NetworkUpgrade) -> Option<BlockHeight> {
         self.0[slot(upgrade)]
     }
 
-    pub fn active(&self, upgrade: NetworkUpgrade, at: Height) -> bool {
+    pub fn active(&self, upgrade: NetworkUpgrade, at: BlockHeight) -> bool {
         self.activation(upgrade).is_some_and(|from| from <= at)
     }
 
     /// Branch in force at `at`
-    pub fn branch_at(&self, at: Height) -> ConsensusBranchId {
+    pub fn branch_at(&self, at: BlockHeight) -> ConsensusBranchId {
         let latest = ORDER.iter().rev().find(|upgrade| self.active(**upgrade, at));
         ConsensusBranchId::from(latest.map_or(BranchId::Sprout, |upgrade| upgrade.branch_id()))
     }
 
     /// First upgrade scheduled above `at`
-    pub fn next_after(&self, at: Height) -> Option<(NetworkUpgrade, Height)> {
+    pub fn next_after(&self, at: BlockHeight) -> Option<(NetworkUpgrade, BlockHeight)> {
         self.scheduled().filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
     }
 
     /// `PoWTargetSpacing(at)`, seconds
-    pub fn spacing(&self, at: Height) -> u32 {
+    pub fn spacing(&self, at: BlockHeight) -> u32 {
         match (self.active(NetworkUpgrade::Nu7, at), self.active(NetworkUpgrade::Blossom, at)) {
             (true, _) => POST_NU7_SPACING,
             (false, true) => POST_BLOSSOM_SPACING,
@@ -80,15 +81,12 @@ impl UpgradeSchedule {
     }
 
     /// Each scheduled upgrade + its height, protocol order
-    pub(crate) fn scheduled(&self) -> impl Iterator<Item = (NetworkUpgrade, Height)> + '_ {
+    pub(crate) fn scheduled(&self) -> impl Iterator<Item = (NetworkUpgrade, BlockHeight)> + '_ {
         ORDER.iter().zip(self.0).filter_map(|(upgrade, at)| Some((*upgrade, at?)))
     }
 
     fn of(params: &impl Parameters) -> Self {
-        Self(ORDER.map(|upgrade| {
-            let at = params.activation_height(upgrade)?;
-            Some(Height::try_from(u32::from(at)).expect("compiled heights below the protocol max"))
-        }))
+        Self(ORDER.map(|upgrade| params.activation_height(upgrade)))
     }
 }
 

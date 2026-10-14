@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{
-    BlockHash, BlockRef, HeaderError, Height, ReorgDepth, UpgradeSchedule,
-};
+use zaino_primitives::types::{BlockHash, BlockRef, HeaderError, ReorgDepth, UpgradeSchedule};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkUpgrade;
 
 use crate::params::AVERAGING_WINDOW;
@@ -28,8 +27,8 @@ fn headers(range: &[u8]) -> Vec<Header> {
     range.chunks_exact(HEADER_LEN).map(|raw| decode_header(raw).expect("captured header")).collect()
 }
 
-fn height(h: u32) -> Height {
-    Height::try_from(h).expect("in range")
+fn height(h: u32) -> BlockHeight {
+    BlockHeight::from(h)
 }
 
 /// Ancestors of `headers[at]`, newest first (all the range holds, up to `CONTEXT`)
@@ -293,7 +292,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     assert_eq!(refused, Err(Rejected::Difficulty { bits, expected }), "17-block nBits after NU7");
     let accepted = in_context(&testnet, &claiming(expected, next), nu7, &ancestors, 2_000_000_000);
     assert!(accepted.is_ok(), "{accepted:?}");
-    let gap = |params: &Params, at: Height, gap: u32| {
+    let gap = |params: &Params, at: BlockHeight, gap: u32| {
         let time = ancestors[0].time + gap;
         expected_bits(params, at, time, ancestors[0].time, &ancestors) == Some(0x2007_ffff)
     };

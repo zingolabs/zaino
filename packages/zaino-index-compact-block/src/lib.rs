@@ -1,7 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
 use zaino_persistence::{SequenceTable, Tables, Width};
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 mod build;
 mod project;
@@ -32,6 +32,6 @@ pub(crate) const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::
 pub(crate) const HASH: usize = 32;
 
 /// `BLOCKS` position of `height`
-pub(crate) fn position(height: Height) -> u64 {
+pub(crate) fn position(height: BlockHeight) -> u64 {
     u64::from(u32::from(height))
 }

@@ -8,13 +8,14 @@ use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
     Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
-    ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
-    HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData,
-    SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData, TransparentOutput,
+    ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, NoteCommitment,
+    Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData,
+    Transaction, TransparentData, TransparentOutput,
 };
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
-use zcash_protocol::{consensus::BranchId, value::ZatBalance, TxId};
+use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::{value::ZatBalance, TxId};
 
 use crate::{FailureMode, NonDomainError, QueryError};
 
@@ -33,8 +34,6 @@ pub enum DecodeError {
     NoCoinbase,
     #[error("coinbase carries no BIP 34 height")]
     NoCoinbaseHeight,
-    #[error("height: {0}")]
-    Height(#[from] HeightOverflow),
     #[error("negative header version {0}")]
     NegativeVersion(i32),
     #[error("sprout JoinSplit values sum past the money supply")]
@@ -77,7 +76,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prepared {
     pub txid: TxId,
-    pub expiry_height: Option<Height>,
+    pub expiry_height: Option<BlockHeight>,
     pub branch: Option<ConsensusBranchId>,
 }
 
@@ -91,7 +90,7 @@ pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
     }
     Ok(Prepared {
         txid: tx.txid(),
-        expiry_height: (expiry != 0).then(|| Height::try_from(expiry)).transpose()?,
+        expiry_height: (expiry != 0).then(|| BlockHeight::from(expiry)),
         branch: embeds_branch.then(|| ConsensusBranchId::from(tx.consensus_branch_id())),
     })
 }
@@ -153,7 +152,7 @@ fn block_header(
 fn block_height(
     raw: &HeaderBytes<'_>,
     coinbase: &CompressedTransaction,
-) -> Result<Height, DecodeError> {
+) -> Result<BlockHeight, DecodeError> {
     let height = if raw.prev_hash() == BlockHash::ZERO {
         0
     } else {
@@ -163,7 +162,7 @@ fn block_height(
             .and_then(|input| bip34_height(&input.script_sig().0 .0))
             .ok_or(DecodeError::NoCoinbaseHeight)?
     };
-    Ok(Height::try_from(height)?)
+    Ok(BlockHeight::from(height))
 }
 
 /// BIP 34 height push: `OP_1`..`OP_16`, or 1–4 little-endian bytes (minimal `CScriptNum`)

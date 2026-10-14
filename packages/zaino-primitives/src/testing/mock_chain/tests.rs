@@ -56,7 +56,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
         assert_eq!(sha256d(&chain.header_bytes(header.hash)), <[u8; 32]>::from(header.hash));
         assert_eq!(
             (header.prev_hash, header.height),
-            (parent.header().hash, parent.header().height.next())
+            (parent.header().hash, parent.header().height + 1)
         );
         assert_eq!(header.time, parent.header().time + 75);
         assert_eq!(Some(header.merkle_root), MerkleRoot::of_txids(&txids));
@@ -82,7 +82,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     let info = scheduled.blockchain_info(scheduled.at(h(4)));
     assert_eq!((info.blocks, info.best_block_hash), (h(4), scheduled.at(h(4)).hash));
     assert_eq!((info.estimated_height, info.sapling_activation), (h(4), h(1)));
-    let statuses: Vec<(String, Height, NetworkUpgradeStatus)> = info
+    let statuses: Vec<(String, BlockHeight, NetworkUpgradeStatus)> = info
         .upgrades
         .iter()
         .map(|upgrade| (upgrade.name.clone(), upgrade.activation_height, upgrade.status))

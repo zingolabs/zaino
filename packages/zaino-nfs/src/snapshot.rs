@@ -15,8 +15,9 @@ use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, UpgradeSchedule};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, UpgradeSchedule};
 use zaino_sync::PerIndex;
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::fold::Folded;
@@ -64,7 +65,7 @@ pub struct At<V> {
 impl<V: View> At<V> {
     /// Highest height `kind` answers: its durable tip when past a best block (final), else the
     /// block (side branch: durable data past it = best chain, not this branch)
-    pub fn answers_through(&self, kind: IndexKind) -> Height {
+    pub fn answers_through(&self, kind: IndexKind) -> BlockHeight {
         let durable = self.views.durable.get(kind).and_then(View::tip).map(|tip| tip.height);
         match self.branch {
             Branch::Best => {
@@ -196,7 +197,7 @@ impl<V: View> Views<V> {
     pub(crate) fn at(
         durable: &PerIndex<V>,
         layers: &PerIndex<Overlay>,
-        height: Option<Height>,
+        height: Option<BlockHeight>,
     ) -> Self {
         let mut chosen = PerIndex::default();
         for (kind, view) in durable.iter() {

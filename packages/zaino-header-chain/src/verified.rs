@@ -6,7 +6,8 @@
 
 use std::cmp::Reverse;
 
-use zaino_primitives::types::{BlockHash, BlockRef, Height};
+use zaino_primitives::types::{BlockHash, BlockRef};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::chain::{BestTip, Node, Record};
 
@@ -17,7 +18,7 @@ use crate::chain::{BestTip, Node, Record};
 pub struct VerifiedChain {
     best: BestTip,
     above: imbl::Vector<Record>,
-    finals: imbl::Vector<(Height, Record)>,
+    finals: imbl::Vector<(BlockHeight, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
     leaves: imbl::HashSet<BlockHash>,
 }
@@ -37,7 +38,7 @@ impl VerifiedChain {
     pub(crate) fn new(
         best: BestTip,
         above: imbl::Vector<Record>,
-        finals: imbl::Vector<(Height, Record)>,
+        finals: imbl::Vector<(BlockHeight, Record)>,
         nodes: imbl::HashMap<BlockHash, Node>,
         leaves: imbl::HashSet<BlockHash>,
     ) -> Self {
@@ -57,8 +58,8 @@ impl VerifiedChain {
         leaves.sort_by_key(|leaf| (Reverse(leaf.record.cumulative_work), leaf.received));
         let fork = |leaf: &Node| {
             let lowest = *self.off_best(leaf.record.hash).last().expect("a side leaf is off best");
-            let height =
-                lowest.height.checked_sub(1).expect("a side node sits above the final tip");
+            let below = u32::from(lowest.height).checked_sub(1);
+            let height = BlockHeight::from(below.expect("a side node sits above the final tip"));
             let from = BlockRef { hash: lowest.parent, height };
             Fork { from, tip: leaf.at(), cumulative_work: leaf.record.cumulative_work }
         };
@@ -110,12 +111,12 @@ impl VerifiedChain {
     }
 
     /// Best-chain hash at `height` (`None` = above the best tip, or final below the headers kept)
-    pub fn hash_at(&self, height: Height) -> Option<BlockHash> {
+    pub fn hash_at(&self, height: BlockHeight) -> Option<BlockHash> {
         self.header_at(height).map(|record| record.hash)
     }
 
     /// Best-chain header at `height`: hash, merkle root, time
-    pub fn header_at(&self, height: Height) -> Option<Record> {
+    pub fn header_at(&self, height: BlockHeight) -> Option<Record> {
         if height > self.best.block.height {
             return None;
         }
@@ -135,7 +136,7 @@ impl VerifiedChain {
         let mut step = 1;
         let mut locator = Vec::new();
         loop {
-            let height = Height::try_from(at).expect("between the floor and the best tip");
+            let height = BlockHeight::from(at);
             locator.push(self.hash_at(height).expect("every height up to the best is held"));
             if at == floor {
                 return locator;

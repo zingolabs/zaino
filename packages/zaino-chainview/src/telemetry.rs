@@ -194,8 +194,9 @@ pub(crate) fn submitted(ended: &Ended, attempts: usize) {
 #[cfg(test)]
 mod tests {
     use zaino_primitives::types::{
-        BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, PeerInfo,
+        BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, PeerInfo,
     };
+    use zcash_protocol::consensus::H0;
 
     use zaino_primitives::testing::h;
 
@@ -235,7 +236,7 @@ mod tests {
                         blocks: h(*tip),
                         estimated_height: h(*estimated),
                         best_block_hash: BlockHash::ZERO,
-                        sapling_activation: Height::GENESIS,
+                        sapling_activation: H0,
                         upgrades: Vec::new(),
                         consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
                     });

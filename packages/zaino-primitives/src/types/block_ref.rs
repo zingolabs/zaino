@@ -1,6 +1,7 @@
 //! Block named by both hash and height
 
-use crate::types::{BlockHash, Height};
+use crate::types::BlockHash;
+use zcash_protocol::consensus::BlockHeight;
 
 /// Which block a value was computed against (a range answered, the tip a mempool set was read at)
 ///
@@ -8,5 +9,5 @@ use crate::types::{BlockHash, Height};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockRef {
     pub hash: BlockHash,
-    pub height: Height,
+    pub height: BlockHeight,
 }

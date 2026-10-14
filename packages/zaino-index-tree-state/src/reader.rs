@@ -7,9 +7,10 @@ use incrementalmerkletree::{
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{OverlayView, SequenceRead, SequenceTable, View};
 use zaino_primitives::types::{
-    BlockRef, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
+    BlockRef, CommitmentTreeBytes, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
 };
 use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     heights::{self, TreeStateHeight},
@@ -41,7 +42,7 @@ impl<V: View> TreeStateReader<V> {
     }
 
     /// Last height held, inclusive (`None` = nothing held)
-    pub(crate) fn tip(&self) -> Option<Height> {
+    pub(crate) fn tip(&self) -> Option<BlockHeight> {
         self.view.tip().map(|tip| tip.height)
     }
 }
@@ -50,7 +51,7 @@ impl<V: View> TreeStateReader<V> {
 impl<V: View> TreeStateReader<OverlayView<V>> {
     /// `at` in the layer above the committed files: among the ~1000 heights every synced wallet
     /// asks about (bounded: a per-snapshot memo keyed on these stays small)
-    pub fn is_non_finalized(&self, at: Height) -> bool {
+    pub fn is_non_finalized(&self, at: BlockHeight) -> bool {
         let committed = self.view.durable().tip().map(|tip| tip.height);
         Some(at) <= self.tip() && Some(at) > committed
     }
@@ -65,7 +66,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
     /// - reads mmapped nodes: run off async workers
     ///
     /// [`PoolActivations`]: crate::PoolActivations
-    pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
+    pub fn treestate(&self, at: BlockHeight) -> Result<Treestate, ServeError> {
         let record = self.height_record(at).ok_or(ServeError::NotFound { height: at })?;
         let inconsistent = ServeError::Inconsistent { height: at };
         let tree = |pool| self.pool_tree(pool, record.sizes).ok_or(inconsistent.clone());
@@ -157,7 +158,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
     }
 
     /// `None` above the tip
-    fn height_record(&self, at: Height) -> Option<TreeStateHeight> {
+    fn height_record(&self, at: BlockHeight) -> Option<TreeStateHeight> {
         let bytes = self.view.sequence(HEIGHTS).record(u64::from(at))?;
         Some(heights::decode(bytes[..].try_into().expect("RECORD bytes")))
     }

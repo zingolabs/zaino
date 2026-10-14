@@ -17,9 +17,10 @@ use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
 use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{ChainView, EndpointSet};
 
@@ -176,7 +177,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                 let node = node % n;
                 let tip = sim.nodes[node].tip;
                 let kept = u32::from(tip.height).saturating_sub(drop);
-                let base = sim.chain.ancestor(tip, Height::try_from(kept).expect("small"));
+                let base = sim.chain.ancestor(tip, BlockHeight::from(kept));
                 sim.mine(node, base, mine);
             }
             Move::Reachable { node, reachable } => {
@@ -205,7 +206,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                     };
                     // header sync's part: what was read, verified (most work wins, tie = first)
                     if let Some(read) = seen[index].as_ref().filter(|seen| seen.reporting) {
-                        let height = Height::try_from(read.chain.len() as u32 - 1).expect("small");
+                        let height = BlockHeight::from(read.chain.len() as u32 - 1);
                         let tip = BlockRef { hash: *read.chain.last().expect("genesis"), height };
                         let _side_or_known = insert(&mut headers, &sim.chain.blocks(tip));
                     }
@@ -229,7 +230,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                 assert_eq!(gated, !held.is_empty(), "{context}: mempool iff a holder");
                 for (index, seen) in seen.iter().enumerate() {
                     let theirs = seen.as_ref().filter(|seen| !seen.down).and_then(|seen| {
-                        let height = Height::try_from(seen.chain.len() as u32 - 1).expect("small");
+                        let height = BlockHeight::from(seen.chain.len() as u32 - 1);
                         Some(BlockRef { hash: *seen.chain.last()?, height })
                     });
                     assert_eq!(

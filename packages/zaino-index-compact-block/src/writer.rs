@@ -115,7 +115,7 @@ mod tests {
     use prost::Message as _;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
     use zaino_primitives::testing::{h, p2pkh, MockChain};
-    use zaino_primitives::types::{Height, TreeSize, TreeSizes};
+    use zaino_primitives::types::{TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
     use zaino_sync::testing::{
@@ -123,7 +123,7 @@ mod tests {
         QUEUE,
     };
     use zaino_sync::FeeSink;
-    use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::consensus::{NetworkType, H0};
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
@@ -387,7 +387,7 @@ mod tests {
                 records.extend_from_slice(&stored);
             }
             if let Some(last) = sent.checked_sub(1) {
-                let (window, reach) = reader.range(Height::GENESIS, h(last as u32), usize::MAX);
+                let (window, reach) = reader.range(H0, h(last as u32), usize::MAX);
                 assert_eq!(reach, h(last as u32), "{case}");
                 assert_eq!(window.concat(), records[..window.concat().len()], "{case}: in order");
             }

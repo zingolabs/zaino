@@ -8,9 +8,10 @@ use std::sync::Arc;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, ReorgDepth};
 use zaino_source::testing::Lie;
 use zaino_sync::check_block;
+use zcash_protocol::consensus::BlockHeight;
 
 use super::{Indexes, Input, NfsCore, Output};
 use crate::graph::Node;
@@ -49,7 +50,7 @@ impl World {
         Arc::clone(self.builder.block(hash))
     }
 
-    fn node(&self, hash: BlockHash) -> Node<Height> {
+    fn node(&self, hash: BlockHash) -> Node<BlockHeight> {
         let at = self.at(hash);
         let parent = self.builder.block(hash).header().prev_hash;
         Node { at, parent, block: self.block(hash), folded: Arc::new(at.height) }
@@ -67,12 +68,12 @@ impl World {
     }
 
     /// Both indexes durable at `durable`
-    fn durable(&self, durable: [BlockHash; 2]) -> Input<Height> {
+    fn durable(&self, durable: [BlockHash; 2]) -> Input<BlockHeight> {
         Input::Durable(durable.iter().map(|hash| Some(self.at(*hash))).collect())
     }
 
     /// `input`, then every fetch and fold answered honestly (payload = height) unless held
-    fn drive(&self, core: &mut NfsCore<Height>, input: Input<Height>, hold: Hold) {
+    fn drive(&self, core: &mut NfsCore<BlockHeight>, input: Input<BlockHeight>, hold: Hold) {
         for output in core.step(input) {
             let input = match output {
                 Output::Fetch { at, record } if Some(at.hash) != hold.fetch => {
@@ -90,7 +91,7 @@ impl World {
 
     /// - Window 10; durable A1 / A1; best S6, then A9 (final 4); durable A3 / A2 (root A2)
     /// - nodes A3..=A6 + side S5, S6 (fork A4 = final); A7 folding, A8 ready, A9 asked
-    fn valid(&self) -> NfsCore<Height> {
+    fn valid(&self) -> NfsCore<BlockHeight> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
         let mut core = NfsCore::new(4, 2, 10);
@@ -120,7 +121,7 @@ fn the_unplanted_core_passes_every_check_in_its_planted_state() {
     valid.check();
     let nodes: BTreeSet<BlockHash> = valid.graph.nodes().map(|node| node.at.hash).collect();
     let expected = BTreeSet::from([a[3], a[4], a[5], a[6], s[0], s[1]]);
-    let ready: Vec<Height> = valid.ready.keys().copied().collect();
+    let ready: Vec<BlockHeight> = valid.ready.keys().copied().collect();
     let folding: Vec<BlockHash> = valid.folding.keys().copied().collect();
     let shown = valid.shown.as_ref().map(|shown| shown.tip);
     assert_eq!(
@@ -286,13 +287,13 @@ fn check_catches_a_folded_block_folding_again() {
 #[test]
 #[should_panic(expected = "at least one block in flight")]
 fn a_core_with_no_block_in_flight_panics() {
-    NfsCore::<Height>::new(0, 1, 10);
+    NfsCore::<BlockHeight>::new(0, 1, 10);
 }
 
 #[test]
 #[should_panic(expected = "1 to 32 indexes")]
 fn a_core_with_no_index_panics() {
-    NfsCore::<Height>::new(1, 0, 10);
+    NfsCore::<BlockHeight>::new(1, 0, 10);
 }
 
 #[test]

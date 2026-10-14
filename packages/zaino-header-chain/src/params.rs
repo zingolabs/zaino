@@ -1,6 +1,7 @@
 //! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
 
-use zaino_primitives::types::{BlockHash, CompactDifficulty, Height, Target, UpgradeSchedule};
+use zaino_primitives::types::{BlockHash, CompactDifficulty, Target, UpgradeSchedule};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
 
 /// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
@@ -12,8 +13,8 @@ pub struct Params {
     pub(crate) pow_limit: Target,
     pub(crate) pow: bool,
     pub(crate) difficulty: Difficulty,
-    pub(crate) min_difficulty_from: Option<Height>,
-    pub(crate) max_time_from: Option<Height>,
+    pub(crate) min_difficulty_from: Option<BlockHeight>,
+    pub(crate) max_time_from: Option<BlockHeight>,
 }
 
 /// Source of a header's nBits: the adjustment, the limit (zebra regtest), any (model tests)
@@ -101,17 +102,17 @@ impl Params {
         Self { difficulty: Difficulty::Any, ..self }
     }
 
-    fn nu7_active(&self, at: Height) -> bool {
+    fn nu7_active(&self, at: BlockHeight) -> bool {
         self.schedule.active(NetworkUpgrade::Nu7, at)
     }
 
     /// `PoWTargetSpacing(height)`, seconds
-    pub(crate) fn spacing(&self, at: Height) -> i64 {
+    pub(crate) fn spacing(&self, at: BlockHeight) -> i64 {
         i64::from(self.schedule.spacing(at))
     }
 
     /// `PoWAveragingWindow(height)` (ZIP 218: every use in §7.7.3 takes the checked height's)
-    pub(crate) fn averaging_window(&self, at: Height) -> usize {
+    pub(crate) fn averaging_window(&self, at: BlockHeight) -> usize {
         match self.nu7_active(at) {
             true => POST_NU7_AVERAGING_WINDOW,
             false => AVERAGING_WINDOW,
@@ -119,7 +120,7 @@ impl Params {
     }
 
     /// Gap after which a testnet block may drop to the minimum difficulty (`None` = never)
-    pub(crate) fn min_difficulty_gap(&self, at: Height) -> Option<i64> {
+    pub(crate) fn min_difficulty_gap(&self, at: BlockHeight) -> Option<i64> {
         let from = self.min_difficulty_from?;
         let multiplier = match self.nu7_active(at) {
             true => POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER,
@@ -128,7 +129,7 @@ impl Params {
         (at >= from).then(|| self.spacing(at) * multiplier)
     }
 
-    pub(crate) fn max_time_enforced(&self, at: Height) -> bool {
+    pub(crate) fn max_time_enforced(&self, at: BlockHeight) -> bool {
         self.max_time_from.is_some_and(|from| at >= from)
     }
 
@@ -150,8 +151,8 @@ fn compiled(network: NetworkType) -> UpgradeSchedule {
     UpgradeSchedule::compiled(network).expect("mainnet + testnet compiled in")
 }
 
-fn height(height: u32) -> Height {
-    Height::try_from(height).expect("activation height in range")
+fn height(height: u32) -> BlockHeight {
+    BlockHeight::from(height)
 }
 
 fn display(hex: &str) -> BlockHash {

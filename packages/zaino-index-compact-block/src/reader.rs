@@ -5,7 +5,8 @@
 
 use bytes::Bytes;
 use zaino_persistence::{SequenceRead, View};
-use zaino_primitives::types::{Height, TreeSizes};
+use zaino_primitives::types::TreeSizes;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{position, project::record_sizes, BLOCKS};
 
@@ -27,7 +28,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     }
 
     /// Framed, wire-ready, every pool
-    pub fn block(&self, at: Height) -> Option<Bytes> {
+    pub fn block(&self, at: BlockHeight) -> Option<Bytes> {
         self.view.sequence(BLOCKS).record(position(at))
     }
 
@@ -36,10 +37,15 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     ///
     /// - <= [`WINDOW_RECORDS`] read, cut to `budget` bytes: work per call bounded, not by the range
     /// - always >= 1 record (a caller looping on the reach makes progress)
-    pub(crate) fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height) {
+    pub(crate) fn range(
+        &self,
+        first: BlockHeight,
+        last: BlockHeight,
+        budget: usize,
+    ) -> (Vec<Bytes>, BlockHeight) {
         let descending = first > last;
         let far = match descending {
-            false => first.checked_add(WINDOW_RECORDS - 1).map_or(last, |far| far.min(last)),
+            false => (first + (WINDOW_RECORDS - 1)).min(last),
             true => first.saturating_sub(WINDOW_RECORDS - 1).max(last),
         };
         let (low, high) = (first.min(far), first.max(far));
@@ -57,10 +63,10 @@ impl<V: SequenceRead> CompactBlockReader<V> {
         records.truncate(kept);
         let walked = u32::try_from(kept - 1).expect("kept <= WINDOW_RECORDS");
         let reached = match descending {
-            false => first.checked_add(walked),
-            true => first.checked_sub(walked),
+            false => first + walked,
+            true => first - walked,
         };
-        (records, reached.expect("reach within first..=last"))
+        (records, reached)
     }
 
     /// Cumulative tree sizes after the tip (its record's `chainMetadata`; nothing held = zero)

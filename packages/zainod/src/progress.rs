@@ -259,10 +259,11 @@ mod tests {
     /// us-west-1 restart (durable = final = anchor 3,515,519, best 1,003 above) = the window
     #[test]
     fn the_phase_is_final_blocks_then_the_non_finalized_window_then_nothing() {
-        use zaino_primitives::types::{BlockHash, Height};
+        use zaino_primitives::types::BlockHash;
+        use zcash_protocol::consensus::BlockHeight;
         let at = |height: u32| BlockRef {
             hash: BlockHash::from([0; 32]),
-            height: Height::try_from(height).expect("in range"),
+            height: BlockHeight::from(height),
         };
         let tips = |final_tip: u32, served: u32, best: u32, synced: bool| Tips {
             best: Some(at(best)),

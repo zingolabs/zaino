@@ -6,7 +6,7 @@
 //!
 //! ```
 //! use std::{num::NonZeroUsize, sync::Arc};
-//! use zaino_primitives::types::Height;
+//! use zcash_protocol::consensus::BlockHeight;
 //! use zaino_sync::{IndexerDataSink, Step, Weight};
 //!
 //! struct Blob;
@@ -21,7 +21,7 @@
 //! let mut first = sink.subscribe("first", budget);
 //! let mut second = sink.subscribe("second", budget);
 //!
-//! let height = Height::try_from(7u32).expect("below the height cap");
+//! let height = BlockHeight::from(7);
 //! sink.send(Step::Apply { height, data: Arc::new(Blob) }).await;
 //! sink.shutdown();
 //!
@@ -36,7 +36,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 /// Bytes an item holds in memory, heap included: the unit a subscriber's queue budget counts
 pub trait Weight {
@@ -49,8 +49,8 @@ pub trait Weight {
 /// - `Shutdown` last: commit what is held, stop
 #[derive(Debug)]
 pub enum Step<T> {
-    Apply { height: Height, data: Arc<T> },
-    Finalized { height: Height, data: Arc<T> },
+    Apply { height: BlockHeight, data: Arc<T> },
+    Finalized { height: BlockHeight, data: Arc<T> },
     Shutdown,
 }
 
@@ -87,7 +87,7 @@ pub(crate) struct Queued<T> {
 ///
 /// - `finalized` = its last block = `Step::Finalized` (the chain's final tip)
 pub struct Run<T> {
-    pub blocks: Vec<(Height, Arc<T>)>,
+    pub blocks: Vec<(BlockHeight, Arc<T>)>,
     pub finalized: bool,
 }
 
@@ -259,7 +259,7 @@ mod tests {
         Step::Apply { height: h(height), data: Arc::new(Blob(weight)) }
     }
 
-    fn popped(step: Step<Blob>) -> Height {
+    fn popped(step: Step<Blob>) -> BlockHeight {
         match step {
             Step::Apply { height, .. } => height,
             Step::Finalized { .. } | Step::Shutdown => panic!("expected an apply"),

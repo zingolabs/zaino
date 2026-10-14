@@ -35,9 +35,10 @@ use tracing::{debug, info, warn};
 use zaino_header_chain::{
     decode_header, Header, HeaderChain, Inserted, Params, Rejected, VerifiedChain,
 };
-use zaino_primitives::types::{BlockRef, Height};
+use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, ValidatorId};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::fold::ChainViewCore;
 use crate::netgroup::Netgroup;
@@ -78,7 +79,7 @@ struct Peers {
 /// - `forked` = a claim whose chain leaves ours below the final tip (skipped while it stands)
 #[derive(Debug, Clone, Copy, Default)]
 struct Member {
-    next: Option<Height>,
+    next: Option<BlockHeight>,
     forked: Option<BlockRef>,
     retry_at: Option<Instant>,
 }
@@ -94,8 +95,8 @@ impl Member {
 /// - `Extend` = `member`'s heights `from..=to`, toward its `claim`
 #[derive(Debug, Clone, Copy)]
 enum Run {
-    Anchor { member: ValidatorId, at: Height },
-    Extend { member: ValidatorId, from: Height, to: Height, claim: BlockRef },
+    Anchor { member: ValidatorId, at: BlockHeight },
+    Extend { member: ValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
 }
 
 impl<S: ChainDataSource> HeaderSync<S> {
@@ -162,7 +163,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     fn vouch(&mut self, view: &ChainViewSnapshot) {
         let verified = self.verified.borrow().clone();
         let Some(verified) = verified else { return };
-        let floor = verified.final_tip().height.next();
+        let floor = verified.final_tip().height + 1;
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
         let answering = view.endpoints().iter().filter(|meta| meta.answering());
         let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.held));
@@ -177,7 +178,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let verified = self.verified.borrow().clone();
         let chain = &self.chain;
         let ceiling = chain.ceiling(HEADER_BATCH);
-        let floor = chain.final_tip().map_or(Height::GENESIS, |tip| tip.height.next());
+        let floor = chain.final_tip().map_or(H0, |tip| tip.height + 1);
         let mut retry: Option<Instant> = None;
         for (at, meta) in view.endpoints().iter().enumerate() {
             let (Some(claim), Some(member), true) =
@@ -201,11 +202,11 @@ impl<S: ChainDataSource> HeaderSync<S> {
             if chain.final_tip().is_none() || anchor > ceiling {
                 return Ok(Run::Anchor { member: id, at: anchor });
             }
-            let above_best = verified.as_ref().map_or(Height::GENESIS, |v| v.best().height.next());
+            let above_best = verified.as_ref().map_or(H0, |v| v.best().height + 1);
             let next = member.next.filter(|next| *next <= claim.height);
             let from = next.unwrap_or(above_best.min(claim.height)).max(floor);
             let to = claim.height.min(ceiling);
-            let to = from.checked_add(HEADER_BATCH - 1).map_or(to, |last| last.min(to));
+            let to = (from + (HEADER_BATCH - 1)).min(to);
             if from <= to {
                 return Ok(Run::Extend { member: id, from, to, claim });
             }
@@ -228,7 +229,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     async fn headers(
         &self,
         member: ValidatorId,
-        heights: Vec<Height>,
+        heights: Vec<BlockHeight>,
     ) -> Result<Vec<Header>, Member> {
         let address = self.core.current().endpoints()[member.get()].address.clone();
         let answered = match self.balancer.headers(HeaderAsk::Pinned { member, heights }).await {
@@ -257,7 +258,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     }
 
     /// `member`'s header at `at` = the final tip, everything held before dropped
-    async fn anchored(&mut self, member: ValidatorId, at: Height) -> Member {
+    async fn anchored(&mut self, member: ValidatorId, at: BlockHeight) -> Member {
         let header = match self.headers(member, vec![at]).await {
             Ok(mut headers) => headers.remove(0),
             Err(after) => return after,
@@ -272,11 +273,14 @@ impl<S: ChainDataSource> HeaderSync<S> {
     async fn extended(
         &mut self,
         member: ValidatorId,
-        from: Height,
-        to: Height,
+        from: BlockHeight,
+        to: BlockHeight,
         claim: BlockRef,
     ) -> Member {
-        let headers = match self.headers(member, from.up_to(to).collect()).await {
+        let headers = match self
+            .headers(member, (u32::from(from)..=u32::from(to)).map(BlockHeight::from).collect())
+            .await
+        {
             Ok(headers) => headers,
             Err(after) => return after,
         };
@@ -289,12 +293,12 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let verified = self.verified.borrow().clone();
         let holds = |at: BlockRef| verified.as_ref().is_some_and(|v| v.holds(at));
         let on_best = verified.as_ref().is_some_and(|v| v.hash_at(to) == Some(top.hash));
-        let floor = verified.as_ref().map_or(Height::GENESIS, |v| v.final_tip().height.next());
+        let floor = verified.as_ref().map_or(H0, |v| v.final_tip().height + 1);
         match refused {
             // its whole chain read, its claim still not held (an evicted side branch)
             None if to == claim.height && !holds(claim) => Member::stalled(),
             // off our best: its branch continued from there
-            None => Member { next: (!on_best).then(|| to.next()), ..Member::default() },
+            None => Member { next: (!on_best).then(|| to + 1), ..Member::default() },
             // its chain leaves ours below `from`: from the final tip, then given up on this claim
             Some(Rejected::Orphan | Rejected::BelowFinal) => match from <= floor {
                 true => Member { forked: Some(claim), ..Member::default() },
@@ -408,7 +412,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
 
     /// Netgroups of live peers whose latest announced block is on our best chain at or above
     /// `from` (its chain holds `from`)
-    fn netgroups_carrying(&self, view: &ChainViewSnapshot, from: Height) -> usize {
+    fn netgroups_carrying(&self, view: &ChainViewSnapshot, from: BlockHeight) -> usize {
         let carrying = view.peers_carrying.iter().filter(|(_, announced)| {
             self.chain.best_height_of(**announced).is_some_and(|height| height >= from)
         });

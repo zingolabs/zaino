@@ -7,13 +7,14 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{Fee, Height, Nullifier, ShieldedPool, Transaction, UpgradeSchedule};
+use crate::types::{Fee, Nullifier, ShieldedPool, Transaction, UpgradeSchedule};
+use zcash_protocol::consensus::BlockHeight;
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
 #[derive(Debug, Clone)]
 pub struct Ledger {
     upgrades: UpgradeSchedule,
-    next: Height,
+    next: BlockHeight,
     unspent: HashMap<OutPoint, Zatoshis>,
     txids: HashSet<TxId>,
     nullifiers: HashSet<(ShieldedPool, Nullifier)>,
@@ -58,7 +59,7 @@ pub enum Refused {
 
 impl Ledger {
     /// Nothing mined; the next block at `next`
-    pub(super) fn empty(upgrades: UpgradeSchedule, next: Height) -> Self {
+    pub(super) fn empty(upgrades: UpgradeSchedule, next: BlockHeight) -> Self {
         Self {
             upgrades,
             next,
@@ -99,7 +100,7 @@ impl Ledger {
 
     /// Next block one higher (a mined block's transactions all applied)
     pub(super) fn advance(&mut self) {
-        self.next = self.next.next();
+        self.next = self.next + 1;
     }
 
     /// M3 (distinct txids), M4 (coinbase spends nothing), M6 (spends, conservation, fee), M7

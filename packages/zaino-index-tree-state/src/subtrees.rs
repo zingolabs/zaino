@@ -3,7 +3,8 @@
 //! - slot = subtree index → a `start_index` resume = a seek, not a scan
 
 use zaino_persistence::SequenceRead;
-use zaino_primitives::types::{Height, ShieldedPool, TreeRoot};
+use zaino_primitives::types::{ShieldedPool, TreeRoot};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::subtree_table;
 
@@ -13,7 +14,7 @@ pub(crate) const ENTRY: usize = 36;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SubtreeEntry {
     pub(crate) root: TreeRoot,
-    pub(crate) end_height: Height,
+    pub(crate) end_height: BlockHeight,
 }
 
 /// root ‖ end_height (u32 little-endian)
@@ -28,7 +29,7 @@ pub(crate) fn decode(bytes: &[u8; ENTRY]) -> SubtreeEntry {
     let height = u32::from_le_bytes(*bytes[32..].first_chunk::<4>().expect("ENTRY = 32 + 4"));
     SubtreeEntry {
         root: TreeRoot::from(*bytes.first_chunk::<32>().expect("ENTRY > 32")),
-        end_height: Height::try_from(height).expect("a committed entry holds a protocol height"),
+        end_height: BlockHeight::from(height),
     }
 }
 
@@ -51,7 +52,7 @@ mod tests {
     fn subtree_entry_golden_bytes_round_trip() {
         let entry = SubtreeEntry {
             root: TreeRoot::from([0x5a; 32]),
-            end_height: Height::try_from(0x0012_3456u32).expect("in range"),
+            end_height: BlockHeight::from(0x0012_3456),
         };
 
         let mut expected = [0u8; ENTRY];

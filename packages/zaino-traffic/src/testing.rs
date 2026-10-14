@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use zaino_primitives::testing::{encode_header, MockChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef};
 use zaino_source::{FailureMode, NonDomainError};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::PeerTransport;
 
@@ -36,7 +37,7 @@ impl MockPeerSet {
     const HEADERS: usize = 160;
 
     /// Its path held through `height` from now on (the network moving on, or not yet there)
-    pub fn hold(&self, height: Height) {
+    pub fn hold(&self, height: BlockHeight) {
         let at = u32::from(height) as usize;
         assert!(at < self.path.len(), "hold {height}: above the peer set's path");
         *self.held.lock().expect("MockPeerSet mutex poisoned") = at;

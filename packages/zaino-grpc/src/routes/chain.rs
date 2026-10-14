@@ -213,7 +213,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use zaino_primitives::types::{Height, UpgradeSchedule};
+    use zaino_primitives::types::UpgradeSchedule;
+    use zcash_protocol::consensus::BlockHeight;
 
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
@@ -278,7 +279,7 @@ mod tests {
     /// unscheduled), the best as the estimate, the chain + version from the daemon
     #[test]
     fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
-        let at = |h: u32| Height::try_from(h).expect("in range");
+        let at = BlockHeight::from;
         let schedule = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
         let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
         let rendered = |served: u32| {

@@ -23,6 +23,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
 use zaino_source::ChainDataSource;
 use zaino_sync::{compute, fetch, Checked, Human, IndexHandle, PerIndex};
 use zaino_traffic::{TrafficBalancer, Urgency};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::core::{Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::fold::{fold_block, Folded};
@@ -185,7 +186,8 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
                 let covered = self.kinds(covers);
                 let empty = PerIndex::default();
                 let layers = parent.as_deref().map_or(&empty, |folded| &folded.layers);
-                let parent = Views::at(&self.committed, layers, at.height.checked_sub(1));
+                let below = u32::from(at.height).checked_sub(1);
+                let parent = Views::at(&self.committed, layers, below.map(BlockHeight::from));
                 work.spawn(async move {
                     let folded = compute(move || fold_block(&parent, &block, &covered)).await?;
                     Ok(Input::Folded { at, covers, folded: Arc::new(folded) })

@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, Height, NodeRelease,
-    PeerInfo, Transaction, TransactionLocation,
+    Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, NodeRelease, PeerInfo,
+    Transaction, TransactionLocation,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::TxId;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
@@ -101,7 +102,7 @@ pub struct MockValidator {
 struct State {
     followed: Followed,
     reorg_after_poll: Option<Followed>,
-    estimate: Option<Height>,
+    estimate: Option<BlockHeight>,
     mempool: Vec<Unmined>,
     listing: Result<(), GetMempoolListingError>,
     relay: Result<(), SendRawTransactionError>,
@@ -172,7 +173,7 @@ impl MockValidator {
     }
 
     /// `estimatedheight` from now on (default: its tip)
-    pub fn estimate(&self, height: Height) {
+    pub fn estimate(&self, height: BlockHeight) {
         self.state().estimate = Some(height);
     }
 
@@ -197,7 +198,7 @@ impl MockValidator {
     /// Followed header at `height` edited, hash recomputed (a header the builder refuses to mine)
     ///
     /// - blocks above keep their `prev_hash`: served as is, unlinked
-    pub fn tamper(&self, height: Height, edit: impl FnOnce(&mut DecodedHeader)) {
+    pub fn tamper(&self, height: BlockHeight, edit: impl FnOnce(&mut DecodedHeader)) {
         let mut state = self.state();
         let at = state.followed.best.get_mut(u32::from(height) as usize);
         let block = at.unwrap_or_else(|| panic!("tamper at {height}: above the followed tip"));
@@ -324,7 +325,7 @@ impl State {
         self.mempool.iter().find(|unmined| unmined.tx.txid == txid)
     }
 
-    fn best_at(&self, height: Height) -> Option<&Arc<Block>> {
+    fn best_at(&self, height: BlockHeight) -> Option<&Arc<Block>> {
         self.followed.best.get(u32::from(height) as usize)
     }
 
@@ -374,7 +375,7 @@ impl Lie {
             Lie::Mutated => Block::new(header, [txs, &txs[txs.len() - 1..]].concat()),
             Lie::WrongHeight => {
                 let mut labelled = header;
-                labelled.height = labelled.height.next();
+                labelled.height = labelled.height + 1;
                 Block::new(labelled, txs.to_vec())
             }
         }
@@ -396,11 +397,11 @@ impl ChainDataSource for MockValidator {
 
     async fn get_blocks_by_height(
         &self,
-        heights: &[Height],
+        heights: &[BlockHeight],
     ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
         self.enter(Port::Block, |calls| calls.blocks += heights.len()).await?;
         let state = self.state();
-        let answer = |height: &Height| {
+        let answer = |height: &BlockHeight| {
             let block = state.best_at(*height);
             let absent = || QueryError::Domain(GetAtHeightError::HeightNotFound(*height));
             Ok(state.answer(block.ok_or_else(absent)?))
@@ -408,10 +409,10 @@ impl ChainDataSource for MockValidator {
         heights.iter().map(answer).collect()
     }
 
-    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
+    async fn get_block_links(&self, heights: &[BlockHeight]) -> Result<BlockLinks, NonDomainError> {
         self.enter(Port::Links, |calls| calls.links += heights.len()).await?;
         let state = self.state();
-        let link = |height: &Height| {
+        let link = |height: &BlockHeight| {
             let block = state.best_at(*height).ok_or(GetAtHeightError::HeightNotFound(*height))?;
             Ok(BlockLink { header: encode_header(block.header()) })
         };
@@ -421,7 +422,7 @@ impl ChainDataSource for MockValidator {
     async fn get_poll_reading(
         &self,
         metadata: bool,
-        holds: &[Height],
+        holds: &[BlockHeight],
     ) -> Result<PollReading, NonDomainError> {
         self.enter(Port::Poll, |calls| calls.polls += 1).await?;
         let mut state = self.state();

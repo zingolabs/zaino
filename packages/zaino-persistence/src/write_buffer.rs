@@ -9,7 +9,8 @@ use std::hash::BuildHasher;
 
 use bytes::Bytes;
 use hashbrown::{DefaultHashBuilder, HashTable};
-use zaino_primitives::types::{BlockRef, Height};
+use zaino_primitives::types::BlockRef;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     overlay::{Entry, OverlayView, Uncommitted},
@@ -27,7 +28,7 @@ pub type StagedView<'a, V> = OverlayView<V, &'a WriteBuffer>;
 #[derive(Debug, Clone)]
 pub struct WriteBuffer {
     schema: Schema,
-    first: Option<Height>,
+    first: Option<BlockHeight>,
     tip: Option<BlockRef>,
     sequences: Vec<Items>,
     maps: Vec<MapRows>,
@@ -191,7 +192,7 @@ impl Uncommitted for WriteBuffer {
         &self.schema
     }
 
-    fn first(&self) -> Option<Height> {
+    fn first(&self) -> Option<BlockHeight> {
         self.first
     }
 

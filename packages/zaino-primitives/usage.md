@@ -31,7 +31,7 @@ values never belong here.
 use zaino_primitives::network::{chain_name, network_name};
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::sha256d;
-use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Treestate};
+use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
@@ -43,7 +43,7 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Treestate};
   (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool:
   `Transaction::fee(spent)`, `spent` = Σ its prevouts' values; `FeeError::Negative`
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
-  `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Height`,
+  `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `ShieldedPool`, `MerkleRoot`,
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
@@ -80,14 +80,12 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Treestate};
 ## Invariants live in constructors
 
 ```rust
-let h = Height::try_from(800_000u32)?;                // ≤ 2^31 - 1 (also from u64)
-let z = Zatoshis::new(21_000_000)?;                   // ≤ money supply
 let c = CompactCiphertext::prefix_of(&note);          // the 52-byte head of a note ciphertext
 let (header, rest) = HeaderBytes::split(&raw)?;       // one consensus header + what follows
 ```
 
-- `Height` converts from `u32` and `u64` (`HeightOverflow` names the rejected
-  value); `checked_add` / `checked_sub` are checked, never wrapping.
+- Heights are librustzcash's `BlockHeight` (`H0` = genesis; `+` / `-` saturate,
+  so a step that may cross genesis goes through `u32::checked_sub`).
 - `Transaction` stores no index: position is list order, and transaction 0 is
   the coinbase.
 - `TreeSize` is `u32`-backed (`TryFrom<u64>` refuses a full depth-32 tree,

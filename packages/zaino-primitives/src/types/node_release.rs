@@ -1,6 +1,6 @@
 //! `getinfo` + `getdeprecationinfo`: which release a validator runs, and when it halts
 
-use super::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 /// `build` e.g. `v6.4.2`; `user_agent` = p2p, e.g. `/Zebra:6.4.2/`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub struct NodeRelease {
 ///   `getdeprecationinfo`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndOfService {
-    At { height: Height, estimated_unix: i64 },
+    At { height: BlockHeight, estimated_unix: i64 },
     NotEnforced,
     Unknown,
 }

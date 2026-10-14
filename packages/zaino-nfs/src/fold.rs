@@ -102,7 +102,8 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
     use zaino_primitives::testing::{h, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockFees, Fee, Height, TreeSize, TreeSizes};
+    use zaino_primitives::types::{BlockFees, Fee, TreeSize, TreeSizes};
+    use zcash_protocol::consensus::H0;
     use zcash_protocol::value::Zatoshis;
     use zcash_transparent::bundle::OutPoint;
 
@@ -177,8 +178,7 @@ mod tests {
             let located = views
                 .block_hash()
                 .map(|reader| [chain.genesis().hash, one.hash].map(|hash| reader.height_of(&hash)));
-            let expected =
-                enabled.contains(&BlockHash).then_some([Some(Height::GENESIS), Some(h1)]);
+            let expected = enabled.contains(&BlockHash).then_some([Some(H0), Some(h1)]);
             assert_eq!(located, expected, "{enabled:?}: block-hash through both layers");
             assert_eq!(
                 views.transparent_address().is_some(),

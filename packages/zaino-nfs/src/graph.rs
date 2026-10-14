@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::snapshot::Branch;
 
@@ -75,12 +76,12 @@ impl<F> Graph<F> {
         &self,
         root: Option<BlockRef>,
         parent: BlockHash,
-        height: Height,
+        height: BlockHeight,
     ) -> bool {
-        let node = self.nodes.get(&parent).is_some_and(|node| node.at.height.next() == height);
+        let node = self.nodes.get(&parent).is_some_and(|node| node.at.height + 1 == height);
         let root = match root {
-            Some(root) => root.hash == parent && root.height.next() == height,
-            None => height == Height::GENESIS,
+            Some(root) => root.hash == parent && root.height + 1 == height,
+            None => height == H0,
         };
         node || root
     }
@@ -91,8 +92,9 @@ impl<F> Graph<F> {
         chain: &VerifiedChain,
         root: Option<BlockRef>,
     ) -> Option<&Arc<Node<F>>> {
-        let from = root.map_or(Height::GENESIS, |root| root.height.next());
-        let run = from.up_to(chain.best().height).map(|height| chain.hash_at(height));
+        let from = root.map_or(0, |root| u32::from(root.height) + 1);
+        let heights = (from..=u32::from(chain.best().height)).map(BlockHeight::from);
+        let run = heights.map(|height| chain.hash_at(height));
         run.map_while(|hash| self.nodes.get(&hash?)).last()
     }
 
@@ -126,7 +128,8 @@ impl<F> Graph<F> {
         while let Some(parent) = self.nodes.get(&lowest.parent).filter(|p| !chain.on_best(p.at)) {
             lowest = parent;
         }
-        let height = lowest.at.height.checked_sub(1).expect("a side node sits above the root");
+        let below = u32::from(lowest.at.height).checked_sub(1);
+        let height = BlockHeight::from(below.expect("a side node sits above the root"));
         Branch::Side { from: BlockRef { hash: lowest.parent, height } }
     }
 

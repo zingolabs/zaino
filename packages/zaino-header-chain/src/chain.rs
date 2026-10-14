@@ -22,7 +22,8 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use zaino_primitives::types::{BlockHash, BlockRef, Height, MerkleRoot, ReorgDepth};
+use zaino_primitives::types::{BlockHash, BlockRef, MerkleRoot, ReorgDepth};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::header::Header;
 use crate::params::Params;
@@ -73,7 +74,7 @@ pub enum Inserted {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node {
     pub(crate) record: Record,
-    pub(crate) height: Height,
+    pub(crate) height: BlockHeight,
     pub(crate) parent: BlockHash,
     pub(crate) received: u64,
     children: u32,
@@ -93,12 +94,12 @@ impl Node {
 /// - every collection `imbl` (O(1) into each [`VerifiedChain`])
 pub struct HeaderChain {
     depth: ReorgDepth,
-    finals: imbl::Vector<(Height, Record)>,
+    finals: imbl::Vector<(BlockHeight, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
     leaves: imbl::HashSet<BlockHash>,
     best_path: imbl::Vector<Record>,
     received: u64,
-    last_vouched: Option<(Height, u128)>,
+    last_vouched: Option<(BlockHeight, u128)>,
 }
 
 impl HeaderChain {
@@ -117,7 +118,7 @@ impl HeaderChain {
 
     /// `header` at `height`, from a trusted validator, = the final tip; everything held before
     /// dropped (a start, or a jump to a validator far ahead)
-    pub fn anchor(&mut self, header: &Header, height: Height) {
+    pub fn anchor(&mut self, header: &Header, height: BlockHeight) {
         let record = Record {
             hash: header.hash(),
             merkle_root: header.merkle_root(),
@@ -137,7 +138,7 @@ impl HeaderChain {
         match self.best_path.last() {
             Some(record) => {
                 let above = u32::try_from(self.best_path.len() - 1).expect("heights fit u32");
-                let height = self.base().checked_add(above).expect("a held height");
+                let height = self.base() + above;
                 let block = BlockRef { hash: record.hash, height };
                 Some(BestTip { block, cumulative_work: record.cumulative_work })
             }
@@ -181,7 +182,7 @@ impl HeaderChain {
     }
 
     /// Height `header` takes on its parent (`None` = parent not held at or above the final tip)
-    pub fn height_of(&self, header: &Header) -> Option<Height> {
+    pub fn height_of(&self, header: &Header) -> Option<BlockHeight> {
         self.parent(header.prev_hash()).ok().map(|(height, _)| height)
     }
 
@@ -265,16 +266,17 @@ impl HeaderChain {
 
     /// Highest height a fetch may reach: `depth` + `run` above the final tip (bounds the tree
     /// whatever finality does)
-    pub fn ceiling(&self, run: u32) -> Height {
+    pub fn ceiling(&self, run: u32) -> BlockHeight {
         let above = self.depth.get().saturating_add(run).saturating_sub(1);
-        self.base().checked_add(above).expect("no chain nears the protocol's maximum height")
+        self.base() + above
     }
 
     /// Best-chain block final moves to next: min(highest vouched, best − depth), above the
     /// final tip
     pub fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
-        let boundary = best.block.height.checked_sub(self.depth.get())?.min(self.vouched()?);
+        let below = u32::from(best.block.height).checked_sub(self.depth.get())?;
+        let boundary = BlockHeight::from(below).min(self.vouched()?);
         let hash = self.best_path.get(self.offset(boundary)?)?.hash;
         Some(BlockRef { hash, height: boundary })
     }
@@ -286,7 +288,8 @@ impl HeaderChain {
     /// - the driver's half: peers in enough netgroups carry a block at or above it
     pub fn peer_finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
-        let boundary = best.block.height.checked_sub(self.depth.get())?;
+        let boundary =
+            BlockHeight::from(u32::from(best.block.height).checked_sub(self.depth.get())?);
         let hash = self.best_path.get(self.offset(boundary)?)?.hash;
         let (_, reference) = self.last_vouched?;
         let collapsed =
@@ -295,7 +298,7 @@ impl HeaderChain {
     }
 
     /// Height of `hash` on the best branch above the final tip (`None` = not there)
-    pub fn best_height_of(&self, hash: BlockHash) -> Option<Height> {
+    pub fn best_height_of(&self, hash: BlockHash) -> Option<BlockHeight> {
         let node = self.nodes.get(&hash)?;
         self.on_best(node.at()).then_some(node.height)
     }
@@ -324,8 +327,11 @@ impl HeaderChain {
         assert!(deep >= self.depth.get(), "H2: the final boundary stays `depth` below the best");
 
         let count = self.offset(through.height).expect("on the best branch") + 1;
-        let newly: Vec<(Height, Record)> =
-            self.base().up_to(through.height).zip(self.best_path.iter().copied()).collect();
+        let newly: Vec<(BlockHeight, Record)> = (u32::from(self.base())
+            ..=u32::from(through.height))
+            .map(BlockHeight::from)
+            .zip(self.best_path.iter().copied())
+            .collect();
         let side: Vec<BlockHash> =
             self.leaves.iter().copied().filter(|leaf| *leaf != best.block.hash).collect();
         for leaf in side {
@@ -357,7 +363,7 @@ impl HeaderChain {
         let kept = self.finals_kept();
         assert!(self.finals.len() <= kept, "H2: at most max(2 · depth, CONTEXT) finals kept");
         let mut pairs = self.finals.iter().zip(self.finals.iter().skip(1));
-        let contiguous = pairs.all(|((below, _), (above, _))| below.next() == *above);
+        let contiguous = pairs.all(|((below, _), (above, _))| *below + 1 == *above);
         assert!(contiguous, "H2: finals one height apart");
         let base = self.base();
         let mut children: HashMap<BlockHash, u32> = HashMap::new();
@@ -365,11 +371,7 @@ impl HeaderChain {
             assert_eq!(node.record.hash, *hash, "tree: node keyed by its own hash");
             let parent_work = match (self.nodes.get(&node.parent), final_tip) {
                 (Some(parent), _) => {
-                    assert_eq!(
-                        parent.height.next(),
-                        node.height,
-                        "H2: one height above its parent"
-                    );
+                    assert_eq!(parent.height + 1, node.height, "H2: one height above its parent");
                     parent.record.cumulative_work
                 }
                 (None, Some(tip)) => {
@@ -395,8 +397,8 @@ impl HeaderChain {
         let mut parent = final_tip.map_or(BlockHash::ZERO, |tip| tip.hash);
         for (at, record) in self.best_path.iter().enumerate() {
             let node = self.nodes.get(&record.hash);
-            let height = base.checked_add(at as u32);
-            let path = node.is_some_and(|n| n.parent == parent && Some(n.height) == height);
+            let height = base + at as u32;
+            let path = node.is_some_and(|n| n.parent == parent && n.height == height);
             assert!(path, "H5: best_path at {height:?} = a held chain from the final tip");
             assert_eq!(node.map(|n| n.record), Some(*record), "H5: best_path record = its node");
             parent = record.hash;
@@ -416,12 +418,12 @@ impl HeaderChain {
     }
 
     /// First height above the final tip
-    fn base(&self) -> Height {
-        self.final_tip().map_or(Height::GENESIS, |tip| tip.height.next())
+    fn base(&self) -> BlockHeight {
+        self.final_tip().map_or(H0, |tip| tip.height + 1)
     }
 
     /// `best_path` index of `height` (`None` = at or below the final tip)
-    fn offset(&self, height: Height) -> Option<usize> {
+    fn offset(&self, height: BlockHeight) -> Option<usize> {
         let above = u32::from(height).checked_sub(u32::from(self.base()))?;
         Some(above as usize)
     }
@@ -433,10 +435,10 @@ impl HeaderChain {
     }
 
     /// Highest vouched best-branch height, else the final tip (final ⇒ vouched: H6)
-    fn vouched(&self) -> Option<Height> {
+    fn vouched(&self) -> Option<BlockHeight> {
         let top = self.best_path.iter().rposition(|record| self.nodes[&record.hash].vouched);
         match top {
-            Some(at) => self.base().checked_add(u32::try_from(at).expect("heights fit u32")),
+            Some(at) => Some(self.base() + u32::try_from(at).expect("heights fit u32")),
             None => self.final_tip().map(|tip| tip.height),
         }
     }
@@ -454,7 +456,7 @@ impl HeaderChain {
     }
 
     /// `tip` (just inserted, most work) becomes best: `best_path` re-pointed at its branch
-    fn adopt(&mut self, tip: BlockHash, height: Height) {
+    fn adopt(&mut self, tip: BlockHash, height: BlockHeight) {
         let mut branch = Vec::new();
         let (mut at, mut height) = (tip, height);
         let keep = loop {
@@ -465,8 +467,8 @@ impl HeaderChain {
             let node = self.nodes[&at];
             branch.push(node.record);
             at = node.parent;
-            match height.checked_sub(1) {
-                Some(below) => height = below,
+            match u32::from(height).checked_sub(1) {
+                Some(below) => height = BlockHeight::from(below),
                 None => break 0,
             }
         };
@@ -506,7 +508,7 @@ impl HeaderChain {
 
     /// Off-best nodes from `leaf` down, and whether its branch leaves the best one below `final`
     /// (a node already gone = an earlier walk pruned the same branch)
-    fn off_best(&self, leaf: BlockHash, final_height: Height) -> (Vec<BlockHash>, bool) {
+    fn off_best(&self, leaf: BlockHash, final_height: BlockHeight) -> (Vec<BlockHash>, bool) {
         let mut walked = Vec::new();
         let mut at = leaf;
         loop {
@@ -532,11 +534,11 @@ impl HeaderChain {
     }
 
     /// A child of `prev` = (its height, the work up to `prev`): a tree node or the final tip
-    fn parent(&self, prev: BlockHash) -> Result<(Height, u128), Rejected> {
+    fn parent(&self, prev: BlockHash) -> Result<(BlockHeight, u128), Rejected> {
         if let Some(parent) = self.nodes.get(&prev) {
-            Ok((parent.height.next(), parent.record.cumulative_work))
+            Ok((parent.height + 1, parent.record.cumulative_work))
         } else if let Some((height, record)) = self.finals.back().filter(|(_, r)| r.hash == prev) {
-            Ok((height.next(), record.cumulative_work))
+            Ok((*height + 1, record.cumulative_work))
         } else if self.is_final(prev) {
             Err(Rejected::BelowFinal)
         } else {

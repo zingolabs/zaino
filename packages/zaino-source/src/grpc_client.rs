@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 
 use tonic::transport::Channel;
 use tonic::{Code, Status};
-use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockHash};
 use zaino_proto::proto::zebra_indexer::indexer_client::IndexerClient;
 use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::TxId;
 
 use crate::indexer::{indexer_endpoint, IndexerTls};
@@ -91,7 +92,7 @@ impl ZcashGrpcClient {
     /// `run` = consecutive ascending heights, one `GetBlockRange`, each block decoded into `blocks`
     async fn block_range(
         &self,
-        run: &[Height],
+        run: &[BlockHeight],
         blocks: &mut Vec<Block>,
     ) -> Result<(), QueryError<GetAtHeightError>> {
         let (Some(first), Some(last)) = (run.first(), run.last()) else { return Ok(()) };
@@ -167,7 +168,7 @@ fn failed(status: Status) -> NonDomainError {
 }
 
 /// `heights` cut where one is not the previous + 1 (each run = one `GetBlockRange`)
-fn consecutive_runs(heights: &[Height]) -> impl Iterator<Item = &[Height]> {
+fn consecutive_runs(heights: &[BlockHeight]) -> impl Iterator<Item = &[BlockHeight]> {
     heights.chunk_by(|a, b| u32::from(*a).checked_add(1) == Some(u32::from(*b)))
 }
 
@@ -198,7 +199,7 @@ impl ChainDataSource for ZcashGrpcClient {
 
     async fn get_blocks_by_height(
         &self,
-        heights: &[Height],
+        heights: &[BlockHeight],
     ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
         let mut blocks = Vec::with_capacity(heights.len());
         for run in consecutive_runs(heights) {
@@ -207,14 +208,14 @@ impl ChainDataSource for ZcashGrpcClient {
         Ok(blocks)
     }
 
-    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
+    async fn get_block_links(&self, heights: &[BlockHeight]) -> Result<BlockLinks, NonDomainError> {
         self.rpc.get_block_links(heights).await
     }
 
     async fn get_poll_reading(
         &self,
         metadata: bool,
-        holds: &[Height],
+        holds: &[BlockHeight],
     ) -> Result<PollReading, NonDomainError> {
         self.rpc.get_poll_reading(metadata, holds).await
     }

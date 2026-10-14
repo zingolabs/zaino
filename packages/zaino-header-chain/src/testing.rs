@@ -4,7 +4,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::testing::{encode_header, MockChain, Work};
-use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::{decode_header, HeaderChain, Params, Rejected, VerifiedChain};
 
@@ -16,7 +17,7 @@ pub trait HeaderViews {
     /// Genesis ..= `tip`, final at genesis
     fn verified(&self, tip: BlockRef) -> VerifiedChain;
     /// Genesis ..= `tip`, final through `final_at` (< `tip`)
-    fn verified_final(&self, tip: BlockRef, final_at: Height) -> VerifiedChain;
+    fn verified_final(&self, tip: BlockRef, final_at: BlockHeight) -> VerifiedChain;
 }
 
 impl HeaderViews for MockChain {
@@ -32,7 +33,7 @@ impl HeaderViews for MockChain {
     fn header_chain(&self, depth: ReorgDepth) -> HeaderChain {
         let mut chain = HeaderChain::new(depth);
         let genesis = decode_header(&self.header_bytes(self.genesis().hash));
-        chain.anchor(&genesis.expect("MockChain headers decode"), Height::GENESIS);
+        chain.anchor(&genesis.expect("MockChain headers decode"), H0);
         chain
     }
 
@@ -42,7 +43,7 @@ impl HeaderViews for MockChain {
         chain.verified().expect("anchored")
     }
 
-    fn verified_final(&self, tip: BlockRef, final_at: Height) -> VerifiedChain {
+    fn verified_final(&self, tip: BlockRef, final_at: BlockHeight) -> VerifiedChain {
         let deep = u32::from(tip.height).checked_sub(u32::from(final_at)).and_then(NonZeroU32::new);
         let mut chain = self.header_chain(ReorgDepth::new(deep.expect("final_at below tip")));
         insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");

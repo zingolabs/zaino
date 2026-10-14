@@ -7,7 +7,7 @@
 
 use bytes::Bytes;
 use zaino_persistence::{OverlayView, SequenceRead, View};
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     project::{project, record_hash},
@@ -23,19 +23,19 @@ const WINDOW_BYTES: usize = 1 << 20;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("block {height} is not in the index")]
-    NotFound { height: Height },
+    NotFound { height: BlockHeight },
 
     #[error("block hash is not in the index")]
     HashNotFound,
 
     #[error("stored record at height {height} is malformed")]
-    Malformed { height: Height },
+    Malformed { height: BlockHeight },
 }
 
 impl<V: SequenceRead> CompactBlockReader<V> {
     /// `GetBlock` by hash, `height` located by the block-hash index: the record there only if it
     /// is `hash`'s (the locator and this index may hold different blocks there)
-    pub fn block_at(&self, height: Height, hash: &[u8; HASH]) -> Result<Bytes, ServeError> {
+    pub fn block_at(&self, height: BlockHeight, hash: &[u8; HASH]) -> Result<Bytes, ServeError> {
         let record = self.block(height).ok_or(ServeError::HashNotFound)?;
         match record_hash(&record) {
             Some(held) if held == *hash => Ok(record),
@@ -48,12 +48,12 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 /// Snapshot's seam: its layer above the committed records
 impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
-    fn committed(&self) -> Option<Height> {
+    fn committed(&self) -> Option<BlockHeight> {
         self.view().durable().tip().map(|tip| tip.height)
     }
 
     /// In the layer above the committed records: RAM, no page touched (`None` = ask `block`)
-    pub fn resident_block(&self, height: Height) -> Option<Bytes> {
+    pub fn resident_block(&self, height: BlockHeight) -> Option<Bytes> {
         (Some(height) > self.committed()).then(|| self.block(height)).flatten()
     }
 }
@@ -68,8 +68,8 @@ pub struct RangeCursor<V> {
     budget: usize,
     pools: Pools,
     descending: bool,
-    next: Option<Height>,
-    last: Height,
+    next: Option<BlockHeight>,
+    last: BlockHeight,
 }
 
 impl<V: View> std::fmt::Debug for RangeCursor<V> {
@@ -93,9 +93,9 @@ impl<V: SequenceRead> RangeCursor<V> {
     /// - no read here (the first file window = the cursor's first blocking step)
     pub fn new(
         reader: CompactBlockReader<OverlayView<V>>,
-        start: Height,
-        end: Height,
-        tip: Height,
+        start: BlockHeight,
+        end: BlockHeight,
+        tip: BlockHeight,
         pools: Pools,
     ) -> Result<Self, ServeError> {
         Self::with_budget(reader, start, end, tip, pools, WINDOW_BYTES)
@@ -104,9 +104,9 @@ impl<V: SequenceRead> RangeCursor<V> {
     /// [`new`](Self::new) with an explicit window size (a test forces a refill)
     pub(crate) fn with_budget(
         reader: CompactBlockReader<OverlayView<V>>,
-        start: Height,
-        end: Height,
-        tip: Height,
+        start: BlockHeight,
+        end: BlockHeight,
+        tip: BlockHeight,
         pools: Pools,
         budget: usize,
     ) -> Result<Self, ServeError> {
@@ -152,11 +152,11 @@ impl<V: SequenceRead> RangeCursor<V> {
     }
 
     /// `next` = one past `reached` in walk order (`None` once `last` is served)
-    fn step_past(&mut self, reached: Height) {
+    fn step_past(&mut self, reached: BlockHeight) {
         self.next = match (reached == self.last, self.descending) {
             (true, _) => None,
-            (false, false) => Some(reached.next()),
-            (false, true) => reached.checked_sub(1),
+            (false, false) => Some(reached + 1),
+            (false, true) => u32::from(reached).checked_sub(1).map(BlockHeight::from),
         };
     }
 }

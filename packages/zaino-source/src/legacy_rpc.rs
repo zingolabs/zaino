@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockHash};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::TxId;
 
 use crate::rpc::{
@@ -180,9 +181,9 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
 
     async fn get_blocks_by_height(
         &self,
-        heights: &[Height],
+        heights: &[BlockHeight],
     ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
-        let call = |height: &Height| Call {
+        let call = |height: &BlockHeight| Call {
             method: "getblock",
             params: vec![u32::from(*height).to_string().into(), 0.into()],
         };
@@ -197,7 +198,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     }
 
     /// Raw form (verbose = two extra state reads per header on zebrad)
-    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
+    async fn get_block_links(&self, heights: &[BlockHeight]) -> Result<BlockLinks, NonDomainError> {
         let mut links = Vec::with_capacity(heights.len());
         for batch in heights.chunks(LINK_BATCH_CALLS) {
             let calls = batch
@@ -220,7 +221,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     async fn get_poll_reading(
         &self,
         metadata: bool,
-        holds: &[Height],
+        holds: &[BlockHeight],
     ) -> Result<PollReading, NonDomainError> {
         let call = |method, params| Call { method, params };
         let mut calls =
@@ -399,7 +400,7 @@ mod tests {
     /// - Every other code + every transport failure = failure (outage never reads as empty chain)
     #[test]
     fn only_not_found_codes_are_absent_answers() {
-        let absent = || GetAtHeightError::HeightNotFound(Height::try_from(42u32).expect("h"));
+        let absent = || GetAtHeightError::HeightNotFound(BlockHeight::from(42));
         let classifiers: [(&str, &[i64]); 2] =
             [("not found", &NOT_FOUND_CODES), ("above the tip", &ABOVE_TIP_CODES)];
         for (case, codes) in classifiers {

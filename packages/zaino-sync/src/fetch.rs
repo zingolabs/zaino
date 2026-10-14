@@ -9,9 +9,10 @@
 use std::sync::Arc;
 
 use zaino_header_chain::Record;
-use zaino_primitives::types::{Block, BlockHash, BlockRef, BodyMismatch, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, BodyMismatch};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
+use zcash_protocol::consensus::BlockHeight;
 
 /// Block that passed [`check_block`] or [`check_block_at`] (no other constructor)
 #[derive(Debug, Clone)]
@@ -32,7 +33,7 @@ pub enum Misanswer {
     #[error("served block {got}")]
     WrongBlock { got: BlockHash },
     #[error("served a block whose coinbase says height {got:?}")]
-    WrongHeight { got: Height },
+    WrongHeight { got: BlockHeight },
     #[error("served {0}")]
     Body(#[from] BodyMismatch),
 }
@@ -41,7 +42,11 @@ pub enum Misanswer {
 ///
 /// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
-pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Checked, Misanswer> {
+pub fn check_block(
+    block: Block,
+    height: BlockHeight,
+    record: &Record,
+) -> Result<Checked, Misanswer> {
     let header = block.header();
     if header.hash != record.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
@@ -52,7 +57,7 @@ pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Chec
 
 /// `block` = the one at `height` (a trusted member's by-height answer: its body trusted, not
 /// re-hashed; the batch is paired with `heights` by position, so the coinbase height is checked)
-fn check_block_at(block: Block, height: Height) -> Result<Checked, Misanswer> {
+fn check_block_at(block: Block, height: BlockHeight) -> Result<Checked, Misanswer> {
     let labelled = block.header().height;
     if labelled != height {
         return Err(Misanswer::WrongHeight { got: labelled });
@@ -80,7 +85,7 @@ pub async fn fetch<S: ChainDataSource>(
 /// (`heights` order; drop = abandon)
 pub(crate) async fn fetch_at<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
-    heights: Arc<[Height]>,
+    heights: Arc<[BlockHeight]>,
     urgency: Urgency,
 ) -> Vec<Checked> {
     loop {
@@ -122,7 +127,7 @@ mod tests {
         let block = |hash: BlockHash| Block::clone(chain.block(hash));
         let with_txs = |txs: Vec<Transaction>| Block::new(block(two.hash).header().clone(), txs);
         let mut header = block(two.hash).header().clone();
-        header.height = Height::try_from(9u32).expect("h");
+        header.height = BlockHeight::from(9);
         let lying = Block::new(header, block(two.hash).transactions().to_vec());
         let txs = block(two.hash).transactions().to_vec();
         let added = [txs.clone(), vec![txs[0].clone()]].concat();
@@ -133,7 +138,7 @@ mod tests {
         let passed = check_block_at(block(two.hash), h2).expect("its own header's body");
         assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
         let (side_at, two_at) = (BlockRef { hash: side.hash, height: h2 }, two);
-        let wrong_height = Misanswer::WrongHeight { got: Height::try_from(9u32).expect("h") };
+        let wrong_height = Misanswer::WrongHeight { got: BlockHeight::from(9) };
         let merkle_root = Misanswer::Body(BodyMismatch::MerkleRoot);
         let mutated = Misanswer::Body(BodyMismatch::Mutated);
         #[rustfmt::skip]

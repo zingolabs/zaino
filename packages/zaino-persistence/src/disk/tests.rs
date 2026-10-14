@@ -10,7 +10,8 @@ use std::{
 };
 
 use proptest::{prelude::*, strategy::Union};
-use zaino_primitives::types::{BlockHash, Height};
+use zaino_primitives::types::BlockHash;
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 
 use super::*;
@@ -98,7 +99,7 @@ fn block_ref(n: usize) -> BlockRef {
 
 /// [`block_ref`] on branch `salt` (0 = the first branch)
 fn salted_ref(n: usize, salt: u8) -> BlockRef {
-    let height = Height::try_from(n as u32 - 1).expect("small height");
+    let height = BlockHeight::from(n as u32 - 1);
     let mut hash = [n as u8; 32];
     hash[0] ^= salt;
     BlockRef { hash: BlockHash::from(hash), height }
@@ -806,7 +807,7 @@ fn changes_for_another_schema_panic() {
 }
 
 #[test]
-#[should_panic(expected = "apply at height 0, not above the last applied Some(Height(0))")]
+#[should_panic(expected = "apply at height 0, not above the last applied Some(BlockHeight(0))")]
 fn apply_at_a_height_not_above_the_last_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     store.apply(store.changes(block_ref(1)));

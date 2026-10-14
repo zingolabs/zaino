@@ -5,8 +5,9 @@
 //!   carried by the peer quorum, never second-guessed here
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
-use zaino_primitives::types::{ConsensusBranchId, Fee, FeeError, Height, UpgradeSchedule};
+use zaino_primitives::types::{ConsensusBranchId, Fee, FeeError, UpgradeSchedule};
 use zaino_source::{decode_transaction, prepare_transaction, Prepared};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
@@ -14,13 +15,13 @@ use zcash_transparent::bundle::OutPoint;
 /// What a transaction must be valid in: the block above the verified best
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NextBlock {
-    pub(crate) height: Height,
+    pub(crate) height: BlockHeight,
     pub(crate) branch: ConsensusBranchId,
 }
 
 impl NextBlock {
-    pub(crate) fn above(best: Height, schedule: &UpgradeSchedule) -> Self {
-        let height = best.next();
+    pub(crate) fn above(best: BlockHeight, schedule: &UpgradeSchedule) -> Self {
+        let height = best + 1;
         Self { height, branch: schedule.branch_at(height) }
     }
 }

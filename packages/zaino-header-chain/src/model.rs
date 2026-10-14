@@ -27,7 +27,8 @@ use std::num::NonZeroU32;
 use proptest::prelude::*;
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, UpgradeSchedule};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, UpgradeSchedule};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{header_work, Rejected, CONTEXT};
@@ -90,7 +91,7 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
 #[derive(Debug, Clone, Copy)]
 struct Alive {
     record: Record,
-    height: Height,
+    height: BlockHeight,
     parent: BlockHash,
     received: u64,
 }
@@ -105,7 +106,7 @@ struct Model {
     vouched: HashSet<BlockHash>,
     finals: Vec<Record>,
     received: u64,
-    last_vouched: (Height, u128),
+    last_vouched: (BlockHeight, u128),
 }
 
 impl Model {
@@ -161,12 +162,12 @@ impl Model {
     }
 
     /// Height + work of `prev`'s child, or the linkage rejection
-    fn parent(&self, prev: BlockHash) -> Result<(Height, u128), Rejected> {
+    fn parent(&self, prev: BlockHash) -> Result<(BlockHeight, u128), Rejected> {
         if let Some(alive) = self.alive.get(&prev) {
-            return Ok((alive.height.next(), alive.record.cumulative_work));
+            return Ok((alive.height + 1, alive.record.cumulative_work));
         }
         if let Some(tip) = self.final_tip().filter(|tip| tip.hash == prev) {
-            return Ok((tip.height.next(), self.finals.last().expect("tip").cumulative_work));
+            return Ok((tip.height + 1, self.finals.last().expect("tip").cumulative_work));
         }
         match self.tail().iter().any(|record| record.hash == prev) {
             true => Err(Rejected::BelowFinal),
@@ -300,7 +301,7 @@ impl Model {
     }
 
     /// Highest best-path height some vouched header descends from, else the final tip's
-    fn vouched_height(&self) -> Option<Height> {
+    fn vouched_height(&self) -> Option<BlockHeight> {
         let mut covered = HashSet::new();
         for vouched in &self.vouched {
             let mut at = *vouched;
@@ -315,13 +316,14 @@ impl Model {
     }
 
     /// Highest height `HeaderSync` fetches
-    fn ceiling(&self) -> Height {
+    fn ceiling(&self) -> BlockHeight {
         height(self.finals.len() as u32 + DEPTH + RUN - 1)
     }
 
     fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
-        let boundary = best.block.height.checked_sub(DEPTH)?.min(self.vouched_height()?);
+        let below = BlockHeight::from(u32::from(best.block.height).checked_sub(DEPTH)?);
+        let boundary = below.min(self.vouched_height()?);
         (u32::from(boundary) >= self.finals.len() as u32).then(|| BlockRef {
             hash: self.best_path()[u32::from(boundary) as usize].hash,
             height: boundary,
@@ -404,8 +406,8 @@ impl Model {
     }
 }
 
-fn height(h: u32) -> Height {
-    Height::try_from(h).expect("in range")
+fn height(h: u32) -> BlockHeight {
+    BlockHeight::from(h)
 }
 
 /// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
@@ -472,7 +474,7 @@ fn run(moves: Vec<Move>) {
     let genesis = builder.genesis();
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut chain = HeaderChain::new(depth);
-    chain.anchor(&genesis, Height::GENESIS);
+    chain.anchor(&genesis, H0);
     let anchor = Record {
         hash: genesis.hash(),
         merkle_root: genesis.merkle_root(),
@@ -487,7 +489,7 @@ fn run(moves: Vec<Move>) {
         vouched: HashSet::new(),
         finals: vec![anchor],
         received: 0,
-        last_vouched: (Height::GENESIS, header_work(genesis.bits()).expect("regtest limit")),
+        last_vouched: (H0, header_work(genesis.bits()).expect("regtest limit")),
     };
     // (published chain, the model's path then, the lowest height it answered by height, forks)
     let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
@@ -547,7 +549,7 @@ fn run(moves: Vec<Move>) {
                     // liveness: final = min(vouched, best − depth), no further input
                     assert_eq!(chain.finalizable(), None, "{context}: final caught up");
                     let best = chain.best().expect("anchored").block;
-                    let deep = best.height.checked_sub(DEPTH);
+                    let deep = u32::from(best.height).checked_sub(DEPTH).map(BlockHeight::from);
                     let final_height = chain.final_tip().map(|tip| tip.height);
                     let caught = best != last || final_height >= deep;
                     assert!(caught, "{context}: a run ending at the best = final at best − depth");
@@ -646,7 +648,8 @@ fn run(moves: Vec<Move>) {
         for header in &model.mined {
             let hash = header.hash();
             let at = BlockRef { hash, height: builder.templates[&hash].height };
-            for at in at.height.checked_sub(1).into_iter().chain([at.height, at.height.next()]) {
+            let below = u32::from(at.height).checked_sub(1).map(BlockHeight::from);
+            for at in below.into_iter().chain([at.height, at.height + 1]) {
                 let at = BlockRef { hash, height: at };
                 assert_eq!(verified.holds(at), model.holds(at, &path), "{context}: holds {at:?}");
             }

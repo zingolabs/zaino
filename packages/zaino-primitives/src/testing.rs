@@ -12,11 +12,12 @@ pub use build::{p2pkh, BlockBuilder, TxBuilder};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 
-use crate::types::{BlockHash, DecodedHeader, EquihashSolution, Height};
+use crate::types::{BlockHash, DecodedHeader, EquihashSolution};
+use zcash_protocol::consensus::BlockHeight;
 
-/// `Height` from a literal (`chain.fork(h(9))`)
-pub fn h(height: u32) -> Height {
-    Height::try_from(height).expect("a test height below 2^31")
+/// `BlockHeight` from a literal (`chain.fork(h(9))`)
+pub fn h(height: u32) -> BlockHeight {
+    BlockHeight::from(height)
 }
 
 /// zcashd regtest `powLimit` as nBits (the only nBits regtest accepts)

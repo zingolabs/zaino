@@ -11,7 +11,8 @@ use tokio::task::{JoinError, JoinHandle};
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskStore, LsmConfig, PersistenceEngine, Schema, View,
 };
-use zaino_primitives::types::{Block, Height};
+use zaino_primitives::types::Block;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{IndexHandle, IndexerDataSink, Step, Subscription};
 
@@ -68,7 +69,7 @@ impl<V: View> Writer<V> {
     }
 
     /// Until the durable tip = `tip` (`None` = nothing committed)
-    pub async fn durable_at(&mut self, tip: impl Into<Option<Height>>) {
+    pub async fn durable_at(&mut self, tip: impl Into<Option<BlockHeight>>) {
         let tip = tip.into();
         while self.handle.tip().map(|held| held.height) != tip {
             assert!(self.handle.changed().await, "writer alive until its durable tip = {tip:?}");
@@ -137,7 +138,7 @@ impl<'a> FinalStream<'a> {
     }
 
     /// Last height sent (the durable tip once its move committed)
-    pub fn tip(&self) -> Option<Height> {
+    pub fn tip(&self) -> Option<BlockHeight> {
         let last = self.sent.checked_sub(1)?;
         Some(self.blocks[last].header().height)
     }

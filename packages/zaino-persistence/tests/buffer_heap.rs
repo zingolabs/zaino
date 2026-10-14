@@ -14,8 +14,8 @@ use zaino_persistence::{
     fs::RealFs, BlockChanges, DiskEngine, IndexKind, MapTable, PersistenceEngine, Schema,
     SequenceTable, Store, Tables, Width,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, Height};
-use zcash_protocol::consensus::NetworkType;
+use zaino_primitives::types::{BlockHash, BlockRef};
+use zcash_protocol::consensus::{NetworkType, H0};
 
 /// Live heap: usable size + glibc's 8 B chunk header per allocation
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -91,14 +91,14 @@ fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
             .open(dir.path(), &SCHEMA, NonZeroUsize::MAX)
             .expect("open");
         let before = LIVE.load(Ordering::Relaxed);
-        let mut height = Height::GENESIS;
+        let mut height = H0;
         for first in (0..ROWS).step_by(per_block as usize) {
             let mut changes = store.changes(BlockRef { height, hash: BlockHash::from([0; 32]) });
             for n in first..first + per_block {
                 fill(&mut changes, n);
             }
             store.apply(changes);
-            height = height.next();
+            height = height + 1;
         }
         let heap = LIVE.load(Ordering::Relaxed) - before;
         let accounted = store.buffered_bytes();

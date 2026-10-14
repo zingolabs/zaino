@@ -16,12 +16,13 @@ use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockHash};
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
     QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::TxId;
 
 use crate::class::Class;
@@ -69,7 +70,7 @@ pub enum Urgency {
 /// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, the peer set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
-    Pinned { member: ValidatorId, heights: Vec<Height> },
+    Pinned { member: ValidatorId, heights: Vec<BlockHeight> },
     Peers { locator: Vec<BlockHash>, stop: Option<BlockHash> },
 }
 
@@ -107,7 +108,7 @@ impl Peers {
 pub struct Observation {
     pub member: ValidatorId,
     pub at: Instant,
-    pub asked: Option<Height>,
+    pub asked: Option<BlockHeight>,
     pub polled: Result<PollReading, NonDomainError>,
     pub streaming: bool,
     pub health: Health,
@@ -129,10 +130,10 @@ pub struct TrafficDriver<S> {
 }
 
 /// The caller's best height, read as each poll starts
-type PollBest = Box<dyn Fn() -> Option<Height> + Send + Sync>;
+type PollBest = Box<dyn Fn() -> Option<BlockHeight> + Send + Sync>;
 
 /// One finished poll: its order, the height asked, the reading
-type Polled = (PollOrder, Option<Height>, Result<PollReading, NonDomainError>);
+type Polled = (PollOrder, Option<BlockHeight>, Result<PollReading, NonDomainError>);
 
 struct Shared<S> {
     state: Mutex<State>,
@@ -199,7 +200,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// hash only); pending until one serves them all; drop = abandon
     pub async fn blocks_at(
         &self,
-        heights: Arc<[Height]>,
+        heights: Arc<[BlockHeight]>,
         urgency: Urgency,
     ) -> Answered<Vec<Block>> {
         let shared = Arc::clone(&self.shared);
@@ -333,7 +334,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// Where each poll asks `getblockhash`: `best()` as the poll starts (`None` = not asked)
     ///
     /// - never wakes a poll (an answer at a moved best = one stale fact, re-asked next poll)
-    pub fn poll_best(&self, best: impl Fn() -> Option<Height> + Send + Sync + 'static) {
+    pub fn poll_best(&self, best: impl Fn() -> Option<BlockHeight> + Send + Sync + 'static) {
         *self.shared.best.lock().expect("poll best mutex poisoned") = Box::new(best);
     }
 

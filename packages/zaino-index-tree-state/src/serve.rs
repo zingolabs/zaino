@@ -3,7 +3,8 @@
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
-use zaino_primitives::types::{Height, ShieldedPool, UpgradeSchedule};
+use zaino_primitives::types::{ShieldedPool, UpgradeSchedule};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkUpgrade;
 
 /// Height each pool's tree begins (`None` = unscheduled)
@@ -11,9 +12,9 @@ use zcash_protocol::consensus::NetworkUpgrade;
 /// - zebra's `z_gettreestate` omits a pool below its upgrade, lightwalletd then answers `""`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolActivations {
-    pub sapling: Height,
-    pub orchard: Option<Height>,
-    pub ironwood: Option<Height>,
+    pub sapling: BlockHeight,
+    pub orchard: Option<BlockHeight>,
+    pub ironwood: Option<BlockHeight>,
 }
 
 impl PoolActivations {
@@ -29,7 +30,7 @@ impl PoolActivations {
     }
 
     /// `pool` has a tree at `at`
-    pub fn active(&self, pool: ShieldedPool, at: Height) -> bool {
+    pub fn active(&self, pool: ShieldedPool, at: BlockHeight) -> bool {
         let from = match pool {
             ShieldedPool::Sapling => Some(self.sapling),
             ShieldedPool::Orchard => self.orchard,
@@ -45,10 +46,10 @@ impl PoolActivations {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("no tree state at height {height}")]
-    NotFound { height: Height },
+    NotFound { height: BlockHeight },
 
     #[error("stored tree state at height {height} is inconsistent")]
-    Inconsistent { height: Height },
+    Inconsistent { height: BlockHeight },
 }
 
 #[cfg(test)]

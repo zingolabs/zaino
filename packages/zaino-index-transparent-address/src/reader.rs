@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::{MapRead, View};
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     key::{
@@ -19,7 +19,7 @@ use crate::{
 #[derive(Clone)]
 pub struct TransparentAddressReader<V> {
     view: V,
-    tip: Option<Height>,
+    tip: Option<BlockHeight>,
     max_rows: NonZeroUsize,
 }
 
@@ -38,7 +38,7 @@ impl<V: View> TransparentAddressReader<V> {
     }
 
     /// Rows above `tip` unseen (a view ahead of the snapshot it serves)
-    pub fn as_of(mut self, tip: Height) -> Self {
+    pub fn as_of(mut self, tip: BlockHeight) -> Self {
         self.tip = self.tip.min(Some(tip));
         self
     }
@@ -68,7 +68,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
         limit: usize,
     ) -> Option<Vec<ReceiveRow>> {
         // key-range end, exclusive: the height after the tip
-        let end = u32::from(self.tip.map_or(Height::GENESIS, Height::next));
+        let end = self.tip.map_or(0, |tip| u32::from(tip) + 1);
         // start past the tip: nothing held
         if start >= end {
             return Some(Vec::new());

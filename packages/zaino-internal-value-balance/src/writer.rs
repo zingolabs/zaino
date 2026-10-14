@@ -11,11 +11,12 @@ use std::{
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
-use zaino_primitives::types::{Block, BlockFees, FeeError, Height, OutputIndex};
+use zaino_primitives::types::{Block, BlockFees, FeeError, OutputIndex};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
@@ -100,19 +101,19 @@ pub enum FoldError {
     #[error(
         "block {height} tx {txid}: spends {spent}:{vout}, not an unspent output of this index"
     )]
-    MissingPrevout { height: Height, txid: TxId, spent: TxId, vout: OutputIndex },
+    MissingPrevout { height: BlockHeight, txid: TxId, spent: TxId, vout: OutputIndex },
 
     #[error("block {height} tx {txid}: value sums past the money supply")]
-    ValueOverflow { height: Height, txid: TxId },
+    ValueOverflow { height: BlockHeight, txid: TxId },
 
     #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
-    NegativeFee { height: Height, txid: TxId },
+    NegativeFee { height: BlockHeight, txid: TxId },
 
     #[error("block {height}: held, but no fees record")]
-    StoredFeesMissing { height: Height },
+    StoredFeesMissing { height: BlockHeight },
 
     #[error("block {height}: fees record malformed or not one fee per transaction")]
-    StoredFeesUnreadable { height: Height },
+    StoredFeesUnreadable { height: BlockHeight },
 }
 
 /// `block` onto `parent`: its rows (outputs it leaves unspent in, prevouts it spends out), its

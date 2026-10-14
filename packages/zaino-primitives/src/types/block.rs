@@ -3,8 +3,9 @@
 use super::transaction::Transaction;
 use super::{
     BlockCommitments, BlockHash, BlockRef, BlockTime, CompactDifficulty, EquihashNonce,
-    EquihashSolution, Height, MerkleRoot,
+    EquihashSolution, MerkleRoot,
 };
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 /// Every consensus field + the hash (SHA-256d of the header bytes) and height naming the block
 /// (carried whole: the hash commits to all of them)
@@ -13,7 +14,7 @@ pub struct DecodedHeader {
     pub hash: BlockHash,
     pub version: u32,
     pub prev_hash: BlockHash,
-    pub height: Height,
+    pub height: BlockHeight,
     pub time: BlockTime,
     pub merkle_root: MerkleRoot,
     pub block_commitments: BlockCommitments,
@@ -26,8 +27,8 @@ impl DecodedHeader {
     /// Next above `parent`: one height up, `prev_hash` = its hash (`None` = nothing below: genesis)
     pub fn extends(&self, parent: Option<BlockRef>) -> bool {
         match parent {
-            None => self.height == Height::GENESIS,
-            Some(parent) => parent.height.next() == self.height && parent.hash == self.prev_hash,
+            None => self.height == H0,
+            Some(parent) => parent.height + 1 == self.height && parent.hash == self.prev_hash,
         }
     }
 }

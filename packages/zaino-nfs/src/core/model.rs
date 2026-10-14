@@ -22,8 +22,9 @@ use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::testing::{encode_header, h, MockChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, ReorgDepth};
 use zaino_sync::{check_block, Checked};
+use zcash_protocol::consensus::{BlockHeight, H0};
 
 use super::{Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::snapshot::Branch;
@@ -97,7 +98,7 @@ proptest! {
 /// Toy fold payload: height + running digest of every hash on the path
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Toy {
-    height: Height,
+    height: BlockHeight,
     digest: u64,
 }
 
@@ -108,7 +109,7 @@ type Toys = Vec<Option<Toy>>;
 fn fold(parent: Option<Toy>, block: &Block) -> Toy {
     let header = block.header();
     if let Some(parent) = parent {
-        assert_eq!(parent.height.next(), header.height, "toy fold on its parent");
+        assert_eq!(parent.height + 1, header.height, "toy fold on its parent");
     }
     let seed = parent.map_or(0xcbf2_9ce4_8422_2325, |parent| parent.digest);
     let bytes = <[u8; 32]>::from(header.hash);
@@ -173,7 +174,7 @@ impl Sim {
         }
         let block = Arc::clone(self.builder.block(hash));
         let header = block.header();
-        let parent = (header.height != Height::GENESIS).then(|| self.oracle(header.prev_hash));
+        let parent = (header.height != H0).then(|| self.oracle(header.prev_hash));
         let toy = fold(parent, &block);
         self.oracle.insert(hash, toy);
         toy
@@ -314,8 +315,7 @@ impl Sim {
         context: &str,
     ) {
         assert!(self.active(), "{context}: N5 Fold {at:?} outside the window");
-        let expected =
-            (at.height != Height::GENESIS).then(|| self.oracle(block.header().prev_hash));
+        let expected = (at.height != H0).then(|| self.oracle(block.header().prev_hash));
         let mut toys: Toys = vec![None; self.writers.len()];
         for index in 0..self.writers.len() {
             let durable = self.told[index];
@@ -327,7 +327,8 @@ impl Sim {
             let parent = match parent.as_ref().and_then(|parent| parent[index]) {
                 Some(parent) => Some(parent),
                 None => {
-                    let at_parent = durable.map(|tip| tip.height) == at.height.checked_sub(1);
+                    let at_parent = durable.map(|tip| tip.height)
+                        == u32::from(at.height).checked_sub(1).map(BlockHeight::from);
                     assert!(at_parent, "{context}: N2 Fold {at:?} index {index} on {durable:?}");
                     expected
                 }

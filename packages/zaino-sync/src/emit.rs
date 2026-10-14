@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use zaino_primitives::types::{Block, Height, Transaction};
+use zaino_primitives::types::{Block, Transaction};
+use zcash_protocol::consensus::BlockHeight;
 
 mod names {
     pub(super) const FETCH_BLOCKS_TOTAL: &str = "zaino.fetch.blocks_total";
@@ -82,7 +83,11 @@ pub(crate) fn applied_block(index: &'static str, rows: usize) {
 }
 
 /// `index`'s store: applied through `applied`, durable through `durable` (`None` = nothing yet)
-pub(crate) fn index_tips(index: &'static str, applied: Option<Height>, durable: Option<Height>) {
+pub(crate) fn index_tips(
+    index: &'static str,
+    applied: Option<BlockHeight>,
+    durable: Option<BlockHeight>,
+) {
     if let Some(applied) = applied {
         let height = f64::from(u32::from(applied));
         metrics::gauge!(names::INDEX_APPLIED_HEIGHT, "index" => index).set(height);

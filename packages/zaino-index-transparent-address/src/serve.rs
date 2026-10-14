@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zaino_primitives::types::Height;
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
@@ -36,20 +36,15 @@ pub const DEFAULT_MAX_ADDRESS_ROWS: NonZeroUsize =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressUtxo {
     pub outpoint: OutPoint,
-    pub height: Height,
+    pub height: BlockHeight,
     pub value: Zatoshis,
 }
 
 /// Transaction paying the queried address or spending from it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TransactionRef {
-    pub(crate) height: Height,
+    pub(crate) height: BlockHeight,
     pub txid: TxId,
-}
-
-/// Stored height → [`Height`] (rows = sealed, checksummed `fold` output, written from a `Height`)
-fn stored(height: u32) -> Height {
-    Height::try_from(height).expect("transparent-address rows: height written from a Height")
 }
 
 impl<V: MapRead> TransparentAddressReader<V> {
@@ -62,7 +57,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
     pub fn utxos_of(
         &self,
         addresses: &[TransparentAddress],
-        start: Height,
+        start: BlockHeight,
     ) -> Result<Vec<Vec<AddressUtxo>>, ServeError> {
         let keys: Vec<AddressKey> = addresses.iter().map(AddressKey::from).collect();
         let unspent = self
@@ -74,7 +69,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
                 rows.into_iter()
                     .map(|row| AddressUtxo {
                         outpoint: OutPoint::new(row.key.txid.into(), row.key.vout),
-                        height: stored(row.key.height),
+                        height: BlockHeight::from(row.key.height),
                         value: row.value,
                     })
                     .collect()
@@ -111,8 +106,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
     pub fn transactions(
         &self,
         address: &TransparentAddress,
-        start: Height,
-        end: Height,
+        start: BlockHeight,
+        end: BlockHeight,
     ) -> Result<Vec<TransactionRef>, ServeError> {
         assert!(start <= end, "range {start}..={end} reversed (ordered at the router)");
         let (start, end) = (u32::from(start), u32::from(end));
@@ -124,14 +119,16 @@ impl<V: MapRead> TransparentAddressReader<V> {
         let mut found = Vec::new();
         for (row, spend) in received.iter().zip(self.spends_of(&keys)) {
             if (start..=end).contains(&row.key.height) {
-                found.push(TransactionRef { height: stored(row.key.height), txid: row.key.txid });
+                let height = BlockHeight::from(row.key.height);
+                found.push(TransactionRef { height, txid: row.key.txid });
             }
 
             let Some(spend) = spend else {
                 continue;
             };
             if (start..=end).contains(&spend.height) {
-                found.push(TransactionRef { height: stored(spend.height), txid: spend.spender });
+                let height = BlockHeight::from(spend.height);
+                found.push(TransactionRef { height, txid: spend.spender });
             }
         }
 

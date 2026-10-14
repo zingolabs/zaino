@@ -15,12 +15,13 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo};
+use zaino_primitives::types::{BlockHash, BlockRef, NodeRelease, PeerInfo};
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, ValidatorId};
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::TxId;
 
 use crate::config::CATCHING_UP_WARN_INTERVAL;
@@ -205,7 +206,7 @@ impl<S: ChainDataSource> Member<'_, S> {
     /// Its best-chain block at the `asked` height (above its tip or the item failed = no fact)
     fn held(
         &self,
-        asked: Option<Height>,
+        asked: Option<BlockHeight>,
         held: &[Result<BlockHash, QueryError<GetAtHeightError>>],
     ) -> Option<BlockRef> {
         match (asked?, held.first()?) {
