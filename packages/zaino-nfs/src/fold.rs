@@ -3,7 +3,7 @@
 //! - The one place indexes meet: a new index = one line here
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};
-use zaino_primitives::types::{Block, TreeSizeOutOfRange};
+use zaino_primitives::types::Block;
 use zaino_sync::PerIndex;
 
 use crate::snapshot::Views;
@@ -27,8 +27,6 @@ pub(crate) struct Folded {
 pub enum FoldError {
     #[error("value_balance: {0}")]
     ValueBalance(#[from] zaino_internal_value_balance::FoldError),
-    #[error("compact_block: {0}")]
-    CompactBlock(#[from] TreeSizeOutOfRange),
     #[error("tree_state: {0}")]
     TreeState(#[from] zaino_index_tree_state::FoldError),
 }
@@ -67,7 +65,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     if let Some(fees) = fees.filter(|_| covered(IndexKind::CompactBlock)) {
         let reader = present(IndexKind::CompactBlock, parent.compact_block());
         let mut out = open(IndexKind::CompactBlock);
-        zaino_index_compact_block::fold(&reader, block, &fees, &mut out)?;
+        zaino_index_compact_block::fold(&reader, block, &fees, &mut out);
         push(IndexKind::CompactBlock, out);
     }
     if covered(IndexKind::BlockHash) {

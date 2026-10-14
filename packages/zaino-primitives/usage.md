@@ -81,7 +81,8 @@ let (header, rest) = HeaderBytes::split(&raw)?;       // one consensus header + 
   the coinbase.
 - `TreeSize` is `u32`-backed (`TryFrom<u64>` refuses a full depth-32 tree,
   `TreeSizeOutOfRange`); `TreeSizes::advance(&block)` = the cumulative sizes
-  after a block (one commitment per Sapling output, Orchard or Ironwood action).
+  after a block (one commitment per Sapling output, Orchard or Ironwood action; panics past
+  2^32 leaves, which consensus never builds).
 - `HeaderBytes::split` checks the layout (fixed fields present, solution 1344
   or regtest's 36 bytes behind a minimal compactsize; `HeaderError` names each
   fault) and reads every field from the bytes; its `hash()` is SHA-256d of

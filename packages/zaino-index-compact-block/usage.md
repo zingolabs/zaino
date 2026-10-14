@@ -36,7 +36,7 @@ blocks.idx    end offset per record (record h = end(h − 1)..end(h))
 ```rust,ignore
 let parent = CompactBlockReader::new(view);  // any V: SequenceRead
 let mut out = store.changes(block.at());     // or the parent layer's `changes`
-fold(&parent, &block, &fees, &mut out)?;     // Result<(), TreeSizeOutOfRange>
+fold(&parent, &block, &fees, &mut out);
 ```
 
 `fold` appends the block's one record, built by
@@ -53,7 +53,6 @@ fold(&parent, &block, &fees, &mut out)?;     // Result<(), TreeSizeOutOfRange>
 - `parent` must hold exactly the block's parent as its tip (genesis: an empty
   view), and `out` must be opened for `block`. Anything else panics, because a
   fold onto the wrong parent would mis-size every later record.
-- `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
 
 ## Building
 
@@ -80,7 +79,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: value-balance's FeeSink subscri
 - At the tip the NFS folds value-balance first and hands its fees straight to
   this `fold` (`zaino-nfs::fold_block`).
 - Fallible only at boot (`StoreError` from `open`). `run` panics on a failed
-  commit, a tree past `u32`, out-of-step fees, or a fee stream that ends early
+  commit, a commitment tree past 2^32 leaves, out-of-step fees, or a fee stream that ends early
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 
 ## Serving

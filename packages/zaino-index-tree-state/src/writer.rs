@@ -242,7 +242,7 @@ fn split<V: SequenceRead>(
     let mut ends = POOLS.map(|pool| (pool, ends_of(pool)));
     for (at, (block, out)) in blocks.iter().zip(out).enumerate() {
         let header = block.header();
-        sizes = sizes.advance(block).expect("pool size within u32 (consensus caps it)");
+        sizes = sizes.advance(block);
         let record = TreeStateHeight { hash: header.hash, time: header.time, sizes };
         out.sequence(HEIGHTS).append(&heights::encode(&record));
         for (pool, (levels, subtrees_end)) in &mut ends {

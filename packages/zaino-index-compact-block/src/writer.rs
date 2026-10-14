@@ -9,7 +9,7 @@ use std::{
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
-use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
+use zaino_primitives::types::{Block, BlockFees};
 use zaino_sync::{
     apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Step,
     Subscription,
@@ -57,8 +57,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
                         let parent = CompactBlockReader::new(store.staged());
-                        let folded = fold(&parent, block, fees, &mut changes);
-                        folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"));
+                        fold(&parent, block, fees, &mut changes);
                         write += apply(&mut store, changes);
                     }
                 }
@@ -95,17 +94,15 @@ async fn next_fees(fees: &mut Subscription<BlockFees>, block: &Block) -> Arc<Blo
 ///
 /// - sizes after it = parent tip record's `chainMetadata` + what it commits ([`Block`] carries
 ///   none; `z_gettreestate` = one round trip per block, unaffordable in a full sync)
-/// - `Err` = a tree past `u32` (#549)
 pub fn fold<V: SequenceRead>(
     parent: &CompactBlockReader<V>,
     block: &Block,
     fees: &BlockFees,
     out: &mut BlockChanges,
-) -> Result<(), TreeSizeOutOfRange> {
+) {
     assert_next(out, parent.view().tip(), block);
-    let sizes = parent.tip_sizes().advance(block)?;
+    let sizes = parent.tip_sizes().advance(block);
     out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
-    Ok(())
 }
 
 #[cfg(test)]
@@ -172,7 +169,8 @@ mod tests {
         let folded = |store: &DiskStore, block: &Block| {
             let mut changes = store.changes(block.at());
             let parent = CompactBlockReader::new(store.staged());
-            fold(&parent, block, &fees(block), &mut changes).map(|()| changes)
+            fold(&parent, block, &fees(block), &mut changes);
+            changes
         };
         let mut through_three = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (at, after) in [
@@ -182,24 +180,13 @@ mod tests {
             (three, sizes(5, 6, 5)),
         ] {
             let block = chain.block(at.hash);
-            let changes = folded(&through_three, block).expect("far below u32");
+            let changes = folded(&through_three, block);
             let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
             let expected = encode_compact_block(block, &fees(block), &after);
             assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
             through_three.apply(changes);
             assert_eq!(CompactBlockReader::new(through_three.staged()).tip_sizes(), after);
         }
-
-        // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
-        let mut seeded = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-        seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
-        let mut changes = SCHEMA.changes(one);
-        let near_full = sizes(u32::MAX - 1, 0, 0);
-        let block = chain.block(one.hash);
-        changes.sequence(BLOCKS).append(&encode_compact_block(block, &fees(block), &near_full));
-        seeded.apply(changes);
-        let overflow = folded(&seeded, chain.block(two.hash)).err();
-        assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
     }
 
     /// Writer as zainod runs it: the final stream + value-balance's fee stream, one fee per step

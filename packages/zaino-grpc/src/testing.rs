@@ -58,8 +58,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
             IndexKind::CompactBlock => {
                 let parent = zaino_index_compact_block::CompactBlockReader::new(parent);
                 let fees = chain.fees(block.header().hash);
-                zaino_index_compact_block::fold(&parent, &block, &fees, &mut out)
-                    .expect("small tree sizes");
+                zaino_index_compact_block::fold(&parent, &block, &fees, &mut out);
             }
             IndexKind::TreeState => {
                 let parent = zaino_index_tree_state::TreeStateReader::new(parent);

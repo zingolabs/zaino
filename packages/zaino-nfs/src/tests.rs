@@ -78,7 +78,7 @@ fn own_fold(
         }
         IndexKind::CompactBlock => {
             let parent = CompactBlockReader::new(parent);
-            zaino_index_compact_block::fold(&parent, block, fees, out).expect("sizes in range");
+            zaino_index_compact_block::fold(&parent, block, fees, out);
         }
         IndexKind::BlockHash => {
             let parent = BlockHashReader::new(parent);

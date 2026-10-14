@@ -1,6 +1,6 @@
 //! One value per shielded pool
 
-use super::{Block, TreeSize, TreeSizeOutOfRange};
+use super::{Block, TreeSize};
 use zcash_protocol::ShieldedPool;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -36,18 +36,23 @@ impl TreeSizes {
     /// Sizes after `block`, given these before it
     ///
     /// - Orchard/Ironwood action = spend + output, exactly one note commitment → counts once
-    pub fn advance(self, block: &Block) -> Result<Self, TreeSizeOutOfRange> {
+    /// - panics past 2^32 leaves: a depth-32 tree holds no more (consensus never builds it)
+    pub fn advance(self, block: &Block) -> Self {
         let mut added = PerPool::<u64>::default();
         for tx in block.transactions() {
             added.sapling += tx.sapling.outputs.len() as u64;
             added.orchard += tx.orchard.actions.len() as u64;
             added.ironwood += tx.ironwood.actions.len() as u64;
         }
-        Ok(Self {
-            sapling: self.sapling.checked_add(added.sapling)?,
-            orchard: self.orchard.checked_add(added.orchard)?,
-            ironwood: self.ironwood.checked_add(added.ironwood)?,
-        })
+        let add = |size: TreeSize, count: u64, pool: &'static str| {
+            let full = |_| panic!("{pool} commitment tree past 2^32 leaves: consensus caps it");
+            size.checked_add(count).unwrap_or_else(full)
+        };
+        Self {
+            sapling: add(self.sapling, added.sapling, "sapling"),
+            orchard: add(self.orchard, added.orchard, "orchard"),
+            ironwood: add(self.ironwood, added.ironwood, "ironwood"),
+        }
     }
 }
 
@@ -56,9 +61,9 @@ mod tests {
     use super::*;
     use crate::testing::MockChain;
 
-    /// Per-pool commitment counts added onto the prior sizes; past `u32` = an error, not a wrap
+    /// Per-pool commitment counts added onto the prior sizes
     #[test]
-    fn advance_adds_each_pools_commitments_and_refuses_the_u32_ceiling() {
+    fn advance_adds_each_pools_commitments() {
         let mut chain = MockChain::regtest();
         let mined = chain.mine(|b| {
             b.tx(|t| t.sapling_output(1).sapling_output(2).orchard_action([4; 32], 5)).tx(|t| {
@@ -72,9 +77,15 @@ mod tests {
 
         let prior = PerPool { sapling: 10, orchard: 20, ironwood: 30 }.map(TreeSize::from);
         let expected = PerPool { sapling: 13, orchard: 21, ironwood: 33 }.map(TreeSize::from);
-        assert_eq!(prior.advance(block), Ok(expected));
+        assert_eq!(prior.advance(block), expected);
+    }
 
+    #[test]
+    #[should_panic(expected = "sapling commitment tree past 2^32 leaves")]
+    fn a_tree_past_2_32_leaves_panics() {
+        let mut chain = MockChain::regtest();
+        let mined = chain.mine(|b| b.tx(|t| t.sapling_output(1)));
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
-        assert!(full.advance(block).is_err(), "sapling past u32::MAX");
+        full.advance(chain.block(mined.hash));
     }
 }

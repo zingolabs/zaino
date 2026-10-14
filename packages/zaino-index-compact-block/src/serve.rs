@@ -218,7 +218,7 @@ mod tests {
             let mut changes = store.changes(block.at());
             let parent = CompactBlockReader::new(store.staged());
             let fees = chain.fees(block.header().hash);
-            fold(&parent, block, &fees, &mut changes).expect("small tree sizes");
+            fold(&parent, block, &fees, &mut changes);
             store.apply(changes);
         }
         store
@@ -244,7 +244,7 @@ mod tests {
                 CompactBlockReader::new(OverlayView::new(store.committed(), layer.clone()));
             let mut changes = store.schema().changes(block.at());
             let fees = chain.fees(block.header().hash);
-            fold(&parent, block, &fees, &mut changes).expect("small tree sizes");
+            fold(&parent, block, &fees, &mut changes);
             layer = layer.with(&changes);
         }
         CompactBlockReader::new(OverlayView::new(store.committed(), layer))
