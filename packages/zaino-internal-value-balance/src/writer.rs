@@ -278,13 +278,13 @@ mod tests {
             ([[tag; 32].as_slice(), &[0, 0, 0, vout]].concat(), value)
         };
         let golden = [
-            row(0x11, 0, [0, 0, 0, 0, 0, 0, 0xc3, 0x50]),
-            row(0x21, 0, [0, 0, 0, 0, 0, 0, 0xea, 0x60]),
-            row(0x22, 0, [0, 0, 0, 0, 0, 0, 0x75, 0x30]),
+            row(0x11, 0, [0x50, 0xc3, 0, 0, 0, 0, 0, 0]),
+            row(0x21, 0, [0x60, 0xea, 0, 0, 0, 0, 0, 0]),
+            row(0x22, 0, [0x30, 0x75, 0, 0, 0, 0, 0, 0]),
         ];
         let golden: Vec<(&[u8], &[u8])> =
             golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
-        assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value BE, block order");
+        assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value LE, block order");
         let removed = |changes: &BlockChanges| -> Vec<Vec<u8>> {
             changes.removes(OUTPUTS).map(<[u8]>::to_vec).collect()
         };

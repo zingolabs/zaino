@@ -72,6 +72,9 @@ failure — never `impl From` / `impl TryFrom`, which hide both behind `.into()`
   wire → domain conversion returns an error enum naming each rejection.
 - A golden-bytes / round-trip test sits next to each layout and each wire
   conversion, not in a distant test module.
+- Byte order (as zebra's state): a **locator** (height, transaction / output / subtree
+  index) is big-endian everywhere, key or value; a **quantity** (amount, size, count, time)
+  is little-endian, as the protocol encodes it; hashes and protocol structures as serialized.
 
 Error `From` impls used with `?`, and conversions between two domain types,
 are outside this rule.

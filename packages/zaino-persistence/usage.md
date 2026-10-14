@@ -46,7 +46,8 @@ view.map(SPENT).range(&start, &end, limit);            // [start, end); None = m
 An index owns only its `FORMAT`, its `TABLES` and its record layouts (named `encode` / `decode`
 functions beside a golden-bytes test). The engine sees bytes. The details that bite:
 
-- **Map keys compare as bytes**, so encode numbers big-endian. Keys must lead with at least 8
+- **Map keys compare as bytes**, so a number in a key is big-endian (the root `CLAUDE.md` byte
+  order rule: locators big-endian, quantities little-endian). Keys must lead with at least 8
   uniformly distributed bytes (a hash, a txid): the segment filter shards on them.
 - **`scope`** is the number of leading key bytes every range read shares (an address, say). The
   filter covers that prefix, so a range scan only visits segments that may hold it. Scope 0 means

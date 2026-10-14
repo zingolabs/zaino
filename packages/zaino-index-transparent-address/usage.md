@@ -9,8 +9,8 @@ alias `GetTaddressTxids`).
 Two maps in one [`zaino_persistence`](../zaino-persistence/usage.md) store:
 
 ```text
-receives   addr(21) ‖ height u32 ‖ txid(32) ‖ vout u32   ->  value_zat u64        scope = addr
-spent      txid(32) ‖ vout u32                           ->  height u32 ‖ spending txid(32)
+receives   addr(21) ‖ height u32 BE ‖ txid(32) ‖ vout u32 BE   ->  value_zat u64 LE        scope = addr
+spent      txid(32) ‖ vout u32 BE                              ->  height u32 BE ‖ spending txid(32)
 ```
 
 Each block contributes one `receives` row per transparent output and one
@@ -40,7 +40,8 @@ state, no deletes, and a reorg never touches disk.
 
 ### Keys
 
-- Keys are big-endian, so byte order is key order and a range is a byte range.
+- Locators (heights, vouts) are big-endian, so byte order is key order and a range is a byte
+  range.
 - An address is keyed by its 21-byte `[hash160][kind]` tag itself, not by an
   interned id. Interning would add a dictionary to keep in step and an
   indirection on every read. It pays off only for addresses with several rows,

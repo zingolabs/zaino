@@ -18,16 +18,16 @@ pub(crate) struct SubtreeEntry {
     pub(crate) end_height: BlockHeight,
 }
 
-/// root ‖ end_height (u32 little-endian)
+/// root ‖ end_height (u32 big-endian: a locator)
 pub(crate) fn encode(entry: &SubtreeEntry) -> [u8; ENTRY] {
     let mut bytes = [0u8; ENTRY];
     bytes[..32].copy_from_slice(&entry.root.0);
-    bytes[32..].copy_from_slice(&u32::from(entry.end_height).to_le_bytes());
+    bytes[32..].copy_from_slice(&u32::from(entry.end_height).to_be_bytes());
     bytes
 }
 
 pub(crate) fn decode(bytes: &[u8; ENTRY]) -> SubtreeEntry {
-    let height = u32::from_le_bytes(*bytes[32..].first_chunk::<4>().expect("ENTRY = 32 + 4"));
+    let height = u32::from_be_bytes(*bytes[32..].first_chunk::<4>().expect("ENTRY = 32 + 4"));
     SubtreeEntry {
         root: TreeRoot(*bytes.first_chunk::<32>().expect("ENTRY > 32")),
         end_height: BlockHeight::from(height),
@@ -56,7 +56,7 @@ mod tests {
 
         let mut expected = [0u8; ENTRY];
         expected[..32].copy_from_slice(&[0x5a; 32]);
-        expected[32..].copy_from_slice(&[0x56, 0x34, 0x12, 0x00]);
+        expected[32..].copy_from_slice(&[0x00, 0x12, 0x34, 0x56]);
 
         assert_eq!(encode(&entry), expected);
         assert_eq!(decode(&expected), entry);

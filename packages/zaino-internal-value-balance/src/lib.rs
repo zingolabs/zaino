@@ -38,11 +38,11 @@ fn encode_outpoint(outpoint: &OutPoint) -> [u8; OUTPOINT] {
 }
 
 fn encode_value(value: Zatoshis) -> [u8; VALUE] {
-    value.into_u64().to_be_bytes()
+    value.into_u64().to_le_bytes()
 }
 
 fn decode_value(bytes: &[u8; VALUE]) -> Result<Zatoshis, BalanceError> {
-    Zatoshis::from_u64(u64::from_be_bytes(*bytes))
+    Zatoshis::from_u64(u64::from_le_bytes(*bytes))
 }
 
 /// `fees` record: per fee, a tag byte then a value
@@ -87,7 +87,7 @@ fn decode_fees(record: &[u8]) -> Option<Vec<Fee>> {
 mod tests {
     use super::*;
 
-    /// `outputs` row as inserted: key = `encode_outpoint`, value BE; out-of-supply refused
+    /// `outputs` row as inserted: key = `encode_outpoint`, value LE; out-of-supply refused
     #[test]
     fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
         let key = OutPoint::new([0xab; 32], 0x0102_0304);
@@ -97,28 +97,28 @@ mod tests {
         let golden = [
             vec![0xab; 32],
             vec![0x01, 0x02, 0x03, 0x04],
-            vec![0, 0, 0, 0, 0x05, 0x06, 0x07, 0x08],
+            vec![0x08, 0x07, 0x06, 0x05, 0, 0, 0, 0],
         ]
         .concat();
         assert_eq!(row, golden);
-        assert_eq!(decode_value(&[0, 0, 0, 0, 0x05, 0x06, 0x07, 0x08]), Ok(value));
-        assert!(decode_value(&u64::MAX.to_be_bytes()).is_err(), "value past supply");
+        assert_eq!(decode_value(&[0x08, 0x07, 0x06, 0x05, 0, 0, 0, 0]), Ok(value));
+        assert!(decode_value(&u64::MAX.to_le_bytes()).is_err(), "value past supply");
     }
 
-    /// `fees` record = tag ‖ value BE per fee; round-trips; anything else refused
+    /// `fees` record = tag ‖ value LE per fee; round-trips; anything else refused
     #[test]
     fn a_fees_record_is_its_golden_bytes_and_a_malformed_one_is_refused() {
         let fees = [Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(0x0102).expect("in supply"))];
-        let golden = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0x01, 0x02]].concat();
+        let golden = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0x02, 0x01, 0, 0, 0, 0, 0, 0]].concat();
         assert_eq!(encode_fees(&fees), golden);
         assert_eq!(decode_fees(&golden), Some(fees.to_vec()));
         assert_eq!(decode_fees(&[]), Some(Vec::new()), "no transactions");
 
-        let past_supply = [&[1][..], &u64::MAX.to_be_bytes()].concat();
+        let past_supply = [&[1][..], &u64::MAX.to_le_bytes()].concat();
         for (malformed, record) in [
             ("short", &golden[..17]),
             ("unknown tag", &[2, 0, 0, 0, 0, 0, 0, 0, 0][..]),
-            ("coinbase with a value", &[0, 0, 0, 0, 0, 0, 0, 0, 1][..]),
+            ("coinbase with a value", &[0, 1, 0, 0, 0, 0, 0, 0, 0][..]),
             ("past supply", &past_supply[..]),
         ] {
             assert_eq!(decode_fees(record), None, "{malformed}");

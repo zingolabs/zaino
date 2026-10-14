@@ -112,7 +112,7 @@ pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
 }
 
 pub(crate) fn encode_receive(row: &ReceiveRow) -> ([u8; RECEIVE_KEY], [u8; RECEIVE_VALUE]) {
-    (encode_receive_key(&row.key), row.value.into_u64().to_be_bytes())
+    (encode_receive_key(&row.key), row.value.into_u64().to_le_bytes())
 }
 
 /// Panics on an unknown kind tag or a value above the money supply (rows = sealed, checksummed
@@ -132,7 +132,7 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
             txid: TxId::from_bytes(txid),
             vout: u32::from_be_bytes(field(at + 4 + TXID)),
         },
-        value: Zatoshis::from_u64(u64::from_be_bytes(*value))
+        value: Zatoshis::from_u64(u64::from_le_bytes(*value))
             .expect("receives: value within the money supply (from encode_receive)"),
     }
 }
@@ -175,7 +175,7 @@ mod tests {
             txid: TxId::from_bytes([0x22; TXID]),
             vout: 0,
         };
-        decode_receive(&encode_receive_key(&receive), &u64::MAX.to_be_bytes());
+        decode_receive(&encode_receive_key(&receive), &u64::MAX.to_le_bytes());
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         };
         let mut key = encode_receive_key(&receive);
         key[HASH160] = 0x03;
-        decode_receive(&key, &5u64.to_be_bytes());
+        decode_receive(&key, &5u64.to_le_bytes());
     }
 
     /// `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
@@ -216,7 +216,7 @@ mod tests {
             let (low_bytes, high_bytes) = (encode_receive_key(&low), encode_receive_key(&high));
             assert!(low_bytes < high_bytes, "encoding != Ord: {low:?} vs {high:?}");
             let row = ReceiveRow { key: low, value: zat(5) };
-            assert_eq!(decode_receive(&low_bytes, &5u64.to_be_bytes()), row);
+            assert_eq!(decode_receive(&low_bytes, &5u64.to_le_bytes()), row);
         }
 
         let receive = ReceiveRow {
@@ -233,7 +233,7 @@ mod tests {
                 .concat();
         let (key, value) = encode_receive(&receive);
         assert_eq!(key.as_slice(), golden_key, "hash ‖ kind ‖ height ‖ txid ‖ vout, big-endian");
-        assert_eq!(value, [0, 0, 0, 0, 0, 0x12, 0xd6, 0x87], "zats big-endian");
+        assert_eq!(value, [0x87, 0xd6, 0x12, 0, 0, 0, 0, 0], "zats little-endian (a quantity)");
         assert_eq!(decode_receive(&key, &value), receive);
 
         let spent_key = [&[0x22; TXID][..], &[0x01, 0x02, 0x03, 0x04]].concat();

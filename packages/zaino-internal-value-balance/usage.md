@@ -13,11 +13,11 @@ the UTXO set on the [persistence port](../zaino-persistence/usage.md) (zainod:
 `DiskEngine`):
 
 ```text
-outputs   OutPoint::encode() = txid(32) ‖ vout u32   ->  value_zat u64      unspent only, point lookups
-fees      record h = block h's fees: per tx, tag u8 (0 coinbase, 1 paid) ‖ value_zat u64
+outputs   txid(32) ‖ vout u32 BE   ->  value_zat u64 LE      unspent only, point lookups
+fees      record h = block h's fees: per tx, tag u8 (0 coinbase, 1 paid) ‖ value_zat u64 LE
 ```
 
-Keys and values are big-endian. `outputs` declares `deletes()`: a block inserts
+`outputs` declares `deletes()`: a block inserts
 the outputs it leaves unspent and removes the prevouts it spends, and an output
 created and spent in one block writes neither row
 ([zaino-persistence: Deletes](../zaino-persistence/usage.md#deletes)). Since a spent prevout is
