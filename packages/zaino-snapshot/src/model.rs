@@ -267,10 +267,12 @@ fn run(moves: Vec<(Input, bool)>) {
         let context = format!("step {step} {input:?}");
         model.apply(input);
         if *publish {
+            let prev = handle.load();
             core.publish(model.indexed(), model.view());
             let expected = model.publish();
             seq += 1;
             let snap = handle.load();
+            crate::compose::check(&prev, &snap, DEPTH);
             assert_eq!((snap.seq(), snap.tips()), (seq, expected), "{context}: G2-G4 tips");
             assert_eq!(snap.standing(EPOCH), standing_of(&expected), "{context}: standing");
         }

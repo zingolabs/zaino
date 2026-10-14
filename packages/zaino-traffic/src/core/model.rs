@@ -89,7 +89,7 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// - `check()` + T7 after every step (T1–T6, T10), the oracle after every send
+    /// - `check()` + T7 after every step (T1, T2, T4, T5, T10), the oracle (T3, T6) after every send
     /// - Quiescence: T9, liars benched, T10 gaps
     #[test]
     fn every_ask_an_honest_member_may_serve_is_served_and_no_send_breaks_the_rules(
@@ -367,6 +367,7 @@ impl World {
         for output in self.core.step(input, now) {
             self.handle(output);
         }
+        self.core.check();
         self.rounds_over();
         self.conserving();
         for (ticket, asked) in std::mem::take(&mut self.lies) {

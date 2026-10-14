@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use crate::class::{Class, Lane, LANES};
-use crate::member::{Health, Limits, Member, MemberId, Synced, ValidatorId, MIN_POLL_SPACING};
+use crate::class::{Class, Lane};
+use crate::member::{Health, Limits, Member, MemberId, Synced, ValidatorId};
 
 /// Block ask's round over → next round after this
 const RETRY: Duration = Duration::from_secs(1);
@@ -111,7 +111,6 @@ pub(crate) struct PollOrder {
 pub(crate) struct TrafficCore {
     members: BTreeMap<MemberId, Member>,
     asks: BTreeMap<AskId, Ask>,
-    stamp: u64,
     now: Instant,
     wake: Option<Instant>,
 }
@@ -126,17 +125,15 @@ struct Ask {
     retry_at: Option<Instant>,
 }
 
-/// `top` = best tier with room when picked (T6)
 #[derive(Debug, Clone, Copy)]
 struct Sent {
     member: MemberId,
     at: Instant,
-    top: u16,
 }
 
 enum Next {
     Wait(Option<Instant>),
-    Send { member: MemberId, top: u16 },
+    Send(MemberId),
     RoundOver,
 }
 
@@ -151,7 +148,7 @@ impl TrafficCore {
         });
         let peers = peers.map(|in_flight| (MemberId::Peers, Member::peers(in_flight)));
         let members = trusted.chain(peers).collect();
-        Self { members, asks: BTreeMap::new(), stamp: 0, now, wake: None }
+        Self { members, asks: BTreeMap::new(), now, wake: None }
     }
 
     /// Next instant a `Tick` acts (hedge, round retry, poll due)
@@ -176,10 +173,9 @@ impl TrafficCore {
             }
             // the peer set never benched: one peer's lie would starve every honest one
             Input::Report(ticket) => {
-                let stamp = self.next_stamp();
                 if let MemberId::Trusted(_) = ticket.member {
                     let member = self.members.get_mut(&ticket.member);
-                    member.expect("a configured validator").bench(now, stamp);
+                    member.expect("a configured validator").bench(now);
                 }
             }
             Input::Polled { member, read } => self.polled(member, read),
@@ -195,20 +191,10 @@ impl TrafficCore {
             Input::Tick => {}
         }
         self.dispatch(&mut out);
-        // invariant pass: tests + `testing` builds only (never changes a result)
-        if cfg!(any(test, feature = "testing")) {
-            self.check();
-        }
         out
     }
 
-    fn next_stamp(&mut self) -> u64 {
-        self.stamp += 1;
-        self.stamp
-    }
-
     fn reply(&mut self, ticket: Ticket, reply: Reply, out: &mut Vec<Output>) {
-        let stamp = self.next_stamp();
         let ask = self.asks.get_mut(&ticket.ask);
         let sent = ask.and_then(|ask| {
             let sent = ask.sends.iter().position(|sent| sent.member == ticket.member)?;
@@ -218,7 +204,7 @@ impl TrafficCore {
         let member = self.members.get_mut(&ticket.member).expect("a send's member");
         member.in_flight[ticket.class.lane().index()] -= 1;
         member.latency = self.now.saturating_duration_since(sent.at);
-        member.outcome(reply != Reply::NonDomain, stamp);
+        member.outcome(reply != Reply::NonDomain);
         if reply == Reply::Value {
             self.close(ticket.ask);
             out.push(Output::Answered(ticket));
@@ -235,7 +221,6 @@ impl TrafficCore {
     }
 
     fn polled(&mut self, id: ValidatorId, read: Option<Synced>) {
-        let stamp = self.next_stamp();
         let member = self.members.get_mut(&MemberId::Trusted(id));
         let member = member.filter(|m| m.poller.as_ref().is_some_and(|p| p.in_flight));
         let member = member.expect("a poll result for a poll in flight");
@@ -243,7 +228,7 @@ impl TrafficCore {
         poller.finished(read.is_some());
         let started = poller.last.expect("a poll in flight started");
         member.latency = self.now.saturating_duration_since(started);
-        member.outcome(read.is_some(), stamp);
+        member.outcome(read.is_some());
         member.synced = read.or(member.synced);
     }
 
@@ -289,7 +274,7 @@ impl TrafficCore {
         }
         match self.next(id) {
             Next::Wait(at) => at.into_iter().for_each(|at| earliest(&mut self.wake, at)),
-            Next::Send { member, top } => self.send(id, member, top, out),
+            Next::Send(member) => self.send(id, member, out),
             Next::RoundOver => {
                 let ask = self.asks.get_mut(&id).expect("dispatch walks open asks");
                 if ask.class.retries_rounds() {
@@ -333,17 +318,16 @@ impl TrafficCore {
                 .copied(),
             _ => None,
         };
-        Next::Send { member: preferred.unwrap_or(least), top }
+        Next::Send(preferred.unwrap_or(least))
     }
 
-    fn send(&mut self, id: AskId, member: MemberId, top: u16, out: &mut Vec<Output>) {
-        let (now, stamp) = (self.now, self.next_stamp());
+    fn send(&mut self, id: AskId, member: MemberId, out: &mut Vec<Output>) {
+        let now = self.now;
         let ask = self.asks.get_mut(&id).expect("dispatch walks open asks");
         let to = self.members.get_mut(&member).expect("picked among members");
         to.in_flight[ask.class.lane().index()] += 1;
-        to.last_sent = Some(stamp);
         ask.tried.insert(member);
-        ask.sends.push(Sent { member, at: now, top });
+        ask.sends.push(Sent { member, at: now });
         out.push(Output::Send(Ticket { ask: id, member, class: ask.class }));
     }
 
@@ -378,7 +362,11 @@ impl TrafficCore {
     }
 
     /// T1–T6, T10 (T7–T9 = the model's)
+    #[cfg(test)]
     pub(crate) fn check(&self) {
+        use crate::class::LANES;
+        use crate::member::MIN_POLL_SPACING;
+
         for (id, member) in &self.members {
             assert!(
                 member.permits.holds(&member.in_flight),
@@ -390,15 +378,6 @@ impl TrafficCore {
                     ask.sends.iter().filter(|s| s.member == *id).count() as u32;
             }
             assert_eq!(member.in_flight, counted, "T4: in flight = open asks' sends");
-            let benched = member.bench.filter(|_| member.benched(self.now));
-            assert!(
-                benched.is_none_or(|bench| member.last_sent < Some(bench.stamp)),
-                "T3: no send to a benched member"
-            );
-            assert!(
-                member.down_since.is_none_or(|down| member.last_sent < Some(down)),
-                "T3: no send to a down member"
-            );
             if let Some(poller) = &member.poller {
                 let spaced = poller.previous.zip(poller.last);
                 assert!(
@@ -414,7 +393,7 @@ impl TrafficCore {
         for ask in self.asks.values() {
             let mut asked = BTreeSet::new();
             for sent in &ask.sends {
-                let member = self.members.get(&sent.member).expect("a send's member");
+                assert!(self.members.contains_key(&sent.member), "a send's member");
                 let kind = matches!(sent.member, MemberId::Trusted(_)) || ask.class.peers();
                 assert!(
                     kind && ask.route.admits(sent.member),
@@ -424,7 +403,6 @@ impl TrafficCore {
                     asked.insert(sent.member) && ask.tried.contains(&sent.member),
                     "T5: a round asks each member once"
                 );
-                assert_eq!(member.tier, sent.top, "T6: a send goes to the best tier with room");
             }
         }
     }

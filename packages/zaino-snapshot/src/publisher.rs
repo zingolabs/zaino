@@ -19,7 +19,7 @@ use zaino_chainview::{ChainViewSnapshot, ChainViewSubscriber};
 use zaino_nfs::{Indexed, Published};
 use zaino_primitives::types::ReorgDepth;
 
-use crate::compose::{check, compose};
+use crate::compose::compose;
 use crate::feed::{nonfinalized_txids, Feed};
 use crate::report::transitions;
 use crate::snapshot::Snapshot;
@@ -81,7 +81,7 @@ impl<V> Core<V> {
         let wake = watch::Sender::new(());
         let tips = compose(false, indexed.as_deref(), &view, depth);
         let mined = nonfinalized_txids(indexed.as_deref());
-        let feed = Feed::open(tips.served, view.arrivals(None), mined, wake.subscribe());
+        let feed = Feed::open(view.arrivals(None), mined, wake.subscribe());
         let first = Snapshot { seq: 0, tips, indexed, view, feed };
         let current = Arc::new(ArcSwap::from_pointee(first));
         Self { depth, current, changed: watch::Sender::new(()), wake }
@@ -99,7 +99,7 @@ impl<V> Core<V> {
         let feed = match moved {
             true => {
                 let mined = nonfinalized_txids(indexed.as_deref());
-                Feed::open(tips.served, view.arrivals(None), mined, self.wake.subscribe())
+                Feed::open(view.arrivals(None), mined, self.wake.subscribe())
             }
             false => {
                 view.arrivals(Some(&prev.view))
@@ -116,10 +116,6 @@ impl<V> Core<V> {
         self.changed.send_replace(());
         self.wake.send_replace(());
         transitions(&prev, &next);
-        // invariant pass: tests + `testing` builds only (never changes a result)
-        if cfg!(any(test, feature = "testing")) {
-            check(&prev, &next, self.depth);
-        }
     }
 }
 

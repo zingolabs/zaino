@@ -19,7 +19,7 @@ use bytes::Bytes;
 use tokio::sync::watch;
 use zaino_chainview::MempoolEntry;
 use zaino_nfs::Indexed;
-use zaino_primitives::types::BlockRef;
+
 use zcash_protocol::TxId;
 
 /// Txids of the nonfinalized blocks the served tip extends (finalized: no live listing holds them)
@@ -58,18 +58,16 @@ struct Log {
     sent: HashSet<TxId>,
 }
 
-/// One snapshot's epoch: `key` = the served tip it opened at
+/// One snapshot's epoch (opened at the served tip)
 #[derive(Debug, Clone)]
 pub(crate) struct Feed {
-    key: Option<BlockRef>,
     epoch: Arc<Epoch>,
     wake: watch::Receiver<()>,
 }
 
 impl Feed {
-    /// `mined` = [`nonfinalized_txids`] at `key`: dropped from `mempool` and from every append
+    /// `mined` = [`nonfinalized_txids`] at the served tip: dropped from `mempool` and every append
     pub(crate) fn open(
-        key: Option<BlockRef>,
         mempool: Vec<MempoolEntry>,
         mined: HashSet<TxId>,
         wake: watch::Receiver<()>,
@@ -79,11 +77,7 @@ impl Feed {
         let sent = opening.iter().map(|entry| entry.txid).collect();
         let log = RwLock::new(Log { sent, ..Log::default() });
         let epoch = Epoch { opening, opening_rendered: OnceLock::new(), mined, log };
-        Self { key, epoch: Arc::new(epoch), wake }
-    }
-
-    pub(crate) fn key(&self) -> Option<BlockRef> {
-        self.key
+        Self { epoch: Arc::new(epoch), wake }
     }
 
     /// Appended unless sealed, mined under the key, or already carried
@@ -96,6 +90,7 @@ impl Feed {
     }
 
     /// Opening or appended
+    #[cfg(test)]
     pub(crate) fn carries(&self, txid: &TxId) -> bool {
         self.epoch.log.read().expect("feed log lock poisoned").sent.contains(txid)
     }
@@ -104,10 +99,12 @@ impl Feed {
         self.epoch.log.write().expect("feed log lock poisoned").sealed = true;
     }
 
+    #[cfg(test)]
     pub(crate) fn sealed(&self) -> bool {
         self.epoch.log.read().expect("feed log lock poisoned").sealed
     }
 
+    #[cfg(test)]
     pub(crate) fn same_epoch(&self, other: &Feed) -> bool {
         Arc::ptr_eq(&self.epoch, &other.epoch)
     }

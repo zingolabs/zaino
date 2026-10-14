@@ -108,6 +108,7 @@ impl Permits {
     }
 
     /// T1: Σ in flight ≤ max, reserves never borrowed
+    #[cfg(test)]
     pub(crate) fn holds(&self, in_flight: &PerLane<u32>) -> bool {
         self.claimed(in_flight) <= self.max
     }

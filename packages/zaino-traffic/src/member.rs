@@ -96,18 +96,17 @@ const BENCH: Duration = Duration::from_secs(60);
 const BENCH_MAX: Duration = Duration::from_secs(3600);
 const PEER_TIER: u16 = u8::MAX as u16 + 1;
 
-/// `last_sent` / `down_since` / `Bench::stamp` = core event order (T3); `latency` = last reply's
+/// `latency` = last reply's
 #[derive(Debug, Clone)]
 pub(crate) struct Member {
     pub(crate) tier: u16,
     pub(crate) synced: Option<Synced>,
     pub(crate) failures: u32,
-    pub(crate) down_since: Option<u64>,
+    pub(crate) down: bool,
     pub(crate) bench: Option<Bench>,
     pub(crate) latency: Duration,
     pub(crate) in_flight: PerLane<u32>,
     pub(crate) permits: Permits,
-    pub(crate) last_sent: Option<u64>,
     pub(crate) poller: Option<Poller>,
 }
 
@@ -115,7 +114,6 @@ pub(crate) struct Member {
 pub(crate) struct Bench {
     pub(crate) until: Instant,
     pub(crate) times: u32,
-    pub(crate) stamp: u64,
 }
 
 impl Member {
@@ -137,19 +135,18 @@ impl Member {
             tier,
             synced: None,
             failures: 0,
-            down_since: None,
+            down: false,
             bench: None,
             latency: Duration::ZERO,
             in_flight: [0; LANES],
             permits,
-            last_sent: None,
             poller: None,
         }
     }
 
     pub(crate) fn health(&self) -> Health {
         match (self.failures, self.synced) {
-            _ if self.down_since.is_some() => Health::Down,
+            _ if self.down => Health::Down,
             (failures, _) if failures > 0 => Health::Degraded,
             (_, None) => Health::Pending,
             (_, Some(Synced::Live)) => Health::Live,
@@ -162,22 +159,22 @@ impl Member {
     }
 
     /// 60 s × 2^(times − 1), ≤ 1 h
-    pub(crate) fn bench(&mut self, now: Instant, stamp: u64) {
+    pub(crate) fn bench(&mut self, now: Instant) {
         let times = self.bench.map_or(1, |bench| bench.times + 1);
         let span = BENCH.saturating_mul(1 << (times - 1).min(6)).min(BENCH_MAX);
-        self.bench = Some(Bench { until: now + span, times, stamp });
+        self.bench = Some(Bench { until: now + span, times });
     }
 
     /// Passive (any reply) or active (poll) check
     ///
     /// - `Down` only with a poller (its probe = the way back up; the peer set has none)
-    pub(crate) fn outcome(&mut self, answered: bool, stamp: u64) {
+    pub(crate) fn outcome(&mut self, answered: bool) {
         match answered {
-            true => (self.failures, self.down_since) = (0, None),
+            true => (self.failures, self.down) = (0, false),
             false => {
                 self.failures += 1;
                 if self.failures == DOWN_AFTER && self.poller.is_some() {
-                    self.down_since = Some(stamp);
+                    self.down = true;
                 }
             }
         }

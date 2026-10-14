@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::{Ask, AskId, Input, Reply, Route, Ticket, TrafficCore};
 use crate::class::{Class, Lane, Permits};
-use crate::member::{Bench, Limits, Member, MemberId, Synced, ValidatorId};
+use crate::member::{Limits, Member, MemberId, Synced, ValidatorId};
 
 fn trusted(index: usize) -> MemberId {
     MemberId::Trusted(ValidatorId::new(index).expect("small"))
@@ -77,23 +77,6 @@ fn check_catches_a_send_to_a_member_gone() {
 }
 
 #[test]
-#[should_panic(expected = "T3: no send to a benched member")]
-fn check_catches_a_send_to_a_benched_member() {
-    let mut core = valid(Instant::now());
-    let until = core.now + Duration::from_secs(60);
-    member(&mut core, 0).bench = Some(Bench { until, times: 1, stamp: 0 });
-    core.check();
-}
-
-#[test]
-#[should_panic(expected = "T3: no send to a down member")]
-fn check_catches_a_send_to_a_down_member() {
-    let mut core = valid(Instant::now());
-    member(&mut core, 0).down_since = Some(0);
-    core.check();
-}
-
-#[test]
 #[should_panic(expected = "T10: polls of one member at least 200 ms apart")]
 fn check_catches_polls_closer_than_the_floor() {
     let mut core = valid(Instant::now());
@@ -125,14 +108,6 @@ fn check_catches_a_send_outside_its_route() {
 fn check_catches_a_round_asking_a_member_twice() {
     let mut core = valid(Instant::now());
     ask(&mut core, 0).tried.clear();
-    core.check();
-}
-
-#[test]
-#[should_panic(expected = "T6: a send goes to the best tier with room")]
-fn check_catches_a_send_past_the_best_tier_with_room() {
-    let mut core = valid(Instant::now());
-    ask(&mut core, 0).sends[0].top = 1;
     core.check();
 }
 

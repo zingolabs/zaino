@@ -273,6 +273,7 @@ impl<F> NfsCore<F> {
     }
 
     /// N1–N4 and the fetch bookkeeping; panics naming the invariant broken
+    #[cfg(test)]
     pub(crate) fn check(&self) {
         let Some(chain) = &self.chain else {
             let empty = self.graph.is_empty() && self.ready.is_empty() && self.folding.is_empty();

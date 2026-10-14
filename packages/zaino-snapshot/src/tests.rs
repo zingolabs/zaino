@@ -396,8 +396,8 @@ fn copy(s: &Snapshot<DiskView>) -> Snapshot<DiskView> {
     }
 }
 
-fn fresh(key: BlockRef) -> Feed {
-    Feed::open(Some(key), Vec::new(), HashSet::new(), watch::Sender::new(()).subscribe())
+fn fresh() -> Feed {
+    Feed::open(Vec::new(), HashSet::new(), watch::Sender::new(()).subscribe())
 }
 
 #[test]
@@ -473,17 +473,10 @@ fn check_catches_synced_falling_behind_its_window() {
 }
 
 #[test]
-#[should_panic(expected = "G5: epoch key")]
-fn check_catches_an_epoch_keyed_off_the_served_tip() {
-    let d = Drill::new();
-    check(&d.prev, &Snapshot { feed: fresh(d.a[3].at()), ..copy(&d.next) }, DEPTH);
-}
-
-#[test]
 #[should_panic(expected = "G5: epoch rotates iff")]
 fn check_catches_an_epoch_rotating_without_a_move() {
     let d = Drill::new();
-    let again = Snapshot { seq: 2, feed: fresh(d.a[6].at()), ..copy(&d.next) };
+    let again = Snapshot { seq: 2, feed: fresh(), ..copy(&d.next) };
     check(&d.next, &again, DEPTH);
 }
 
@@ -491,14 +484,14 @@ fn check_catches_an_epoch_rotating_without_a_move() {
 #[should_panic(expected = "G5: the old epoch sealed iff rotated")]
 fn check_catches_an_old_epoch_left_open() {
     let d = Drill::new();
-    check(&Snapshot { feed: fresh(d.a[3].at()), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
+    check(&Snapshot { feed: fresh(), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
 }
 
 #[test]
 #[should_panic(expected = "G5: the stored epoch open")]
 fn check_catches_a_sealed_stored_epoch() {
     let d = Drill::new();
-    let feed = fresh(d.a[6].at());
+    let feed = fresh();
     feed.seal();
     check(&d.prev, &Snapshot { feed, ..copy(&d.next) }, DEPTH);
 }
@@ -512,7 +505,7 @@ fn check_catches_an_epoch_carrying_a_tx_its_served_tip_mined() {
         Indexed::fixed_above(Arc::clone(&d.chain), d.a[5].at(), &d.a[6..], d.params, none);
     let stale = view(&d.chain, &[(d.mined, Bytes::from_static(&[0x66]))]);
     let wake = watch::Sender::new(()).subscribe();
-    let feed = Feed::open(Some(d.a[6].at()), stale.arrivals(None), HashSet::new(), wake);
+    let feed = Feed::open(stale.arrivals(None), HashSet::new(), wake);
     let planted = Snapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&d.next) };
     check(&d.prev, &planted, DEPTH);
 }

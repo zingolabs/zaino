@@ -119,14 +119,14 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 | G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
 | G3 | `best`, `final_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |
-| G5 | epoch key = `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
+| G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
 | G8 | every NFS node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check` |
 | G9 | `/statusz`, `/readyz`, gauges = f(one snapshot, counters, owners' live tables) | types; golden `Report` |
 | G10 | an epoch carries no txid of a block in `served_nonfinalized()` | `compose::check`; model |
 
-`compose::check(prev, next, depth)` runs after every publish in debug builds.
+`compose::check(prev, next, depth)` is test-only: the model calls it after every publish.
 
 - `model.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails

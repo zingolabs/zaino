@@ -1,13 +1,10 @@
 //! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6, G10
 
+use crate::snapshot::Tips;
 use zaino_chainview::ChainViewSnapshot;
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::Indexed;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
-use zaino_traffic::Health;
-
-use crate::feed::nonfinalized_txids;
-use crate::snapshot::{Snapshot, Tips};
 
 /// Pure (no I/O, no clock); `was_synced` = the last publish's (hysteresis)
 pub(crate) fn compose<V>(
@@ -51,7 +48,10 @@ fn synced(
 /// G2–G6 between two consecutive publishes; panics naming the invariant broken
 ///
 /// - after `next`'s store and `prev`'s seal (the publisher's order)
-pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth) {
+#[cfg(test)]
+pub(crate) fn check<V>(prev: &crate::Snapshot<V>, next: &crate::Snapshot<V>, depth: ReorgDepth) {
+    use crate::feed::nonfinalized_txids;
+
     assert_eq!(next.seq, prev.seq + 1, "G2: seq + 1 per publish");
     let tips = next.tips;
     let chain = next.view.chain();
@@ -74,7 +74,6 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
     }
 
     let moved = tips.served != prev.tips.served;
-    assert_eq!(next.feed.key(), tips.served, "G5: epoch key = the served tip");
     let rotated = !next.feed.same_epoch(&prev.feed);
     assert_eq!(rotated, moved, "G5: epoch rotates iff the served tip moved");
     assert_eq!(prev.feed.sealed(), moved, "G5: the old epoch sealed iff rotated");
@@ -91,7 +90,10 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
 
 /// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the
 /// peers' listings spanning a quorum's netgroups
-pub(crate) fn mempool_read<V>(snap: &Snapshot<V>) -> bool {
+#[cfg(test)]
+pub(crate) fn mempool_read<V>(snap: &crate::Snapshot<V>) -> bool {
+    use zaino_traffic::Health;
+
     let endpoints = snap.view().endpoints();
     let live = |at: usize| endpoints.get(at).is_some_and(|meta| meta.health == Health::Live);
     snap.tips().held_by.positions().any(live) || snap.view().peers_quorate()

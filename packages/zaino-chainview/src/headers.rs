@@ -385,10 +385,6 @@ impl<S: ChainDataSource> HeaderSync<S> {
     /// Finality against the current view, then publish
     fn after_inserts(&mut self) {
         self.finalize(&self.core.current());
-        // invariant pass: tests + `testing` builds only (never changes a result)
-        if cfg!(any(test, feature = "testing")) {
-            self.chain.check();
-        }
         self.publish();
     }
 

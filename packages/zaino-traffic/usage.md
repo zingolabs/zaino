@@ -123,7 +123,7 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 
 ## Invariants
 
-`TrafficCore::check()` runs after every step in tests and debug builds; the model holds the rest.
+`TrafficCore::check()` (T1, T2, T4, T5, T10) is test-only: the model calls it after every step; its oracle checks T3 and T6 on every send.
 
 | ID | Invariant |
 | --- | --- |

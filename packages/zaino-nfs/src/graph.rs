@@ -54,6 +54,7 @@ impl<F> Graph<F> {
         self.nodes.contains_key(hash)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -135,6 +136,7 @@ impl<F> Graph<F> {
     }
 
     /// N1, N2, G8; panics naming the invariant broken
+    #[cfg(test)]
     pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>) {
         for node in self.nodes.values() {
             let header = node.block.header();

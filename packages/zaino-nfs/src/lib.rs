@@ -122,10 +122,6 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
                 for output in core.step(input) {
                     self.execute(output, &mut work, &mut fetches);
                 }
-                // invariant pass: tests + `testing` builds only (never changes a result)
-                if cfg!(any(test, feature = "testing")) {
-                    core.check();
-                }
             }
             tokio::select! {
                 changed = self.chain.changed() => {
