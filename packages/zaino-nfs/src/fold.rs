@@ -2,11 +2,6 @@
 //!
 //! - The one place indexes meet: a new index = one line here
 
-use zaino_index_compact_block as compact_block;
-use zaino_index_transparent_address as transparent_address;
-use zaino_index_tree_state as tree_state;
-use zaino_internal_block_hash_to_height as block_hash;
-use zaino_internal_value_balance as value_balance;
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
 use zaino_sync::PerIndex;
@@ -31,11 +26,11 @@ pub(crate) struct Folded {
 #[derive(Debug, thiserror::Error)]
 pub enum FoldError {
     #[error("value_balance: {0}")]
-    ValueBalance(#[from] value_balance::FoldError),
+    ValueBalance(#[from] zaino_internal_value_balance::FoldError),
     #[error("compact_block: {0}")]
     CompactBlock(#[from] TreeSizeOutOfRange),
     #[error("tree_state: {0}")]
-    TreeState(#[from] tree_state::FoldError),
+    TreeState(#[from] zaino_index_tree_state::FoldError),
 }
 
 /// `block` folded by each index in `covers`: each into a delta its parent layer opens, each layer =
@@ -62,7 +57,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
         fees = Some(match covered(IndexKind::ValueBalance) {
             true => {
                 let mut out = open(IndexKind::ValueBalance);
-                let fees = value_balance::fold(&reader, block, &mut out)?;
+                let fees = zaino_internal_value_balance::fold(&reader, block, &mut out)?;
                 push(IndexKind::ValueBalance, out);
                 fees
             }
@@ -72,25 +67,25 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     if let Some(fees) = fees.filter(|_| covered(IndexKind::CompactBlock)) {
         let reader = present(IndexKind::CompactBlock, parent.compact_block());
         let mut out = open(IndexKind::CompactBlock);
-        compact_block::fold(&reader, block, &fees, &mut out)?;
+        zaino_index_compact_block::fold(&reader, block, &fees, &mut out)?;
         push(IndexKind::CompactBlock, out);
     }
     if covered(IndexKind::BlockHash) {
         let reader = present(IndexKind::BlockHash, parent.block_hash());
         let mut out = open(IndexKind::BlockHash);
-        block_hash::fold(&reader, block, &mut out);
+        zaino_internal_block_hash_to_height::fold(&reader, block, &mut out);
         push(IndexKind::BlockHash, out);
     }
     if covered(IndexKind::TreeState) {
         let reader = present(IndexKind::TreeState, parent.tree_state());
         let mut out = open(IndexKind::TreeState);
-        tree_state::fold(&reader, block, &mut out)?;
+        zaino_index_tree_state::fold(&reader, block, &mut out)?;
         push(IndexKind::TreeState, out);
     }
     if covered(IndexKind::TransparentAddress) {
         let reader = present(IndexKind::TransparentAddress, parent.transparent_address());
         let mut out = open(IndexKind::TransparentAddress);
-        transparent_address::fold(&reader, block, &mut out);
+        zaino_index_transparent_address::fold(&reader, block, &mut out);
         push(IndexKind::TransparentAddress, out);
     }
     Ok(Folded { layers })
@@ -144,7 +139,7 @@ mod tests {
             orchard: TreeSize::from(1),
             ironwood: TreeSize::from(0),
         };
-        let record = compact_block::encode_compact_block(block, &fees, &sizes);
+        let record = zaino_index_compact_block::encode_compact_block(block, &fees, &sizes);
 
         use IndexKind::*;
         let all = INDEXES;

@@ -28,16 +28,18 @@ pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
 /// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
 /// (compact-block's fees = the builder's: value-balance's fold derives the same, in its tests)
 pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (IndexKind, DiskView) {
-    use zaino_index_compact_block as compact_block;
-    use zaino_index_transparent_address as transparent_address;
-    use zaino_index_tree_state as tree_state;
-    use zaino_internal_block_hash_to_height as block_hash;
-
     let (format, tables) = match kind {
-        IndexKind::CompactBlock => (compact_block::FORMAT, compact_block::TABLES),
-        IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
-        IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
-        IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
+        IndexKind::CompactBlock => {
+            (zaino_index_compact_block::FORMAT, zaino_index_compact_block::TABLES)
+        }
+        IndexKind::TreeState => (zaino_index_tree_state::FORMAT, zaino_index_tree_state::TABLES),
+        IndexKind::TransparentAddress => {
+            (zaino_index_transparent_address::FORMAT, zaino_index_transparent_address::TABLES)
+        }
+        IndexKind::BlockHash => (
+            zaino_internal_block_hash_to_height::FORMAT,
+            zaino_internal_block_hash_to_height::TABLES,
+        ),
         IndexKind::ValueBalance => panic!("not a served index"),
     };
     let schema = Schema::new(kind, format, chain.schedule().network, tables);
@@ -52,20 +54,23 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         let mut out = index.changes(block.at());
         match kind {
             IndexKind::CompactBlock => {
-                let parent = compact_block::CompactBlockReader::new(parent);
+                let parent = zaino_index_compact_block::CompactBlockReader::new(parent);
                 let fees = chain.fees(block.header().hash);
-                compact_block::fold(&parent, &block, &fees, &mut out).expect("small tree sizes");
+                zaino_index_compact_block::fold(&parent, &block, &fees, &mut out)
+                    .expect("small tree sizes");
             }
             IndexKind::TreeState => {
-                let parent = tree_state::TreeStateReader::new(parent);
-                tree_state::fold(&parent, &block, &mut out).expect("canonical commitments");
+                let parent = zaino_index_tree_state::TreeStateReader::new(parent);
+                zaino_index_tree_state::fold(&parent, &block, &mut out)
+                    .expect("canonical commitments");
             }
             IndexKind::TransparentAddress => {
-                let parent = transparent_address::TransparentAddressReader::new(parent);
-                transparent_address::fold(&parent, &block, &mut out);
+                let parent = zaino_index_transparent_address::TransparentAddressReader::new(parent);
+                zaino_index_transparent_address::fold(&parent, &block, &mut out);
             }
             IndexKind::BlockHash => {
-                block_hash::fold(&block_hash::BlockHashReader::new(parent), &block, &mut out);
+                let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
+                zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
             }
             IndexKind::ValueBalance => unreachable!("refused above"),
         }

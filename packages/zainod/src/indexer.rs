@@ -274,16 +274,31 @@ fn open_indexes<S: ChainDataSource>(
         })?;
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
-        use BlockHashIndexWriter as W;
-        indexes.open(IndexKind::BlockHash, &bh, W::new, W::handle, W::run)?;
+        indexes.open(
+            IndexKind::BlockHash,
+            &bh,
+            BlockHashIndexWriter::new,
+            BlockHashIndexWriter::handle,
+            BlockHashIndexWriter::run,
+        )?;
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
-        use TreeStateIndexWriter as W;
-        indexes.open(IndexKind::TreeState, &ts, W::new, W::handle, W::run)?;
+        indexes.open(
+            IndexKind::TreeState,
+            &ts,
+            TreeStateIndexWriter::new,
+            TreeStateIndexWriter::handle,
+            TreeStateIndexWriter::run,
+        )?;
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
-        use TransparentAddressIndexWriter as W;
-        indexes.open(IndexKind::TransparentAddress, &ta, W::new, W::handle, W::run)?;
+        indexes.open(
+            IndexKind::TransparentAddress,
+            &ta,
+            TransparentAddressIndexWriter::new,
+            TransparentAddressIndexWriter::handle,
+            TransparentAddressIndexWriter::run,
+        )?;
     }
     Ok(indexes)
 }

@@ -33,7 +33,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use dir::file_name;
 pub(crate) use dir::files;
-pub(crate) use emit::{describe_metrics, names as metric_names};
+pub(crate) use emit::{describe_metrics, metric_names};
 pub(crate) use log::SegmentLog;
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
 pub(crate) use reader::Snapshot;

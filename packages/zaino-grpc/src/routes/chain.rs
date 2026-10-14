@@ -12,7 +12,7 @@ use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{TransactionId, TransactionLocation, Zatoshis};
-use zaino_proto::proto::service::{self as proto, LightdInfo, RawTransaction};
+use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_snapshot::{Lightd, Snapshot};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
@@ -33,7 +33,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let request: proto::GetMempoolTxRequest = decode_request(body).await?;
+    let request: service::GetMempoolTxRequest = decode_request(body).await?;
     let pools = wire::pools(&request.pool_types)?;
 
     let mempool = snap.mempool().map_err(wire::unavailable)?;
@@ -64,7 +64,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let raw: proto::RawTransaction =
+    let raw: service::RawTransaction =
         wire::decode_request_within(body, wire::request_limit::TRANSACTION).await?;
     send_reply(view.submit(raw.data.to_vec()).await).map(|reply| unary_response(frame(&reply)))
 }
@@ -74,10 +74,14 @@ where
 /// - accepted: `sendrawtransaction`'s raw JSON result = quoted display-order txid (lightwalletd
 ///   relays it untouched)
 /// - rejected: gRPC OK, the validator's code + message verbatim (zingolib substring-matches it)
-fn send_reply(outcome: Result<TransactionId, SubmitError>) -> Result<proto::SendResponse, Status> {
+fn send_reply(
+    outcome: Result<TransactionId, SubmitError>,
+) -> Result<service::SendResponse, Status> {
     match outcome {
-        Ok(txid) => Ok(proto::SendResponse { error_code: 0, error_message: format!("\"{txid}\"") }),
-        Err(SubmitError::Rejected(rejection)) => Ok(proto::SendResponse {
+        Ok(txid) => {
+            Ok(service::SendResponse { error_code: 0, error_message: format!("\"{txid}\"") })
+        }
+        Err(SubmitError::Rejected(rejection)) => Ok(service::SendResponse {
             error_code: rejection.code(),
             error_message: rejection.message().to_owned(),
         }),
@@ -88,8 +92,8 @@ fn send_reply(outcome: Result<TransactionId, SubmitError>) -> Result<proto::Send
 }
 
 /// Unmined by construction; the wire spells that `height: 0`
-fn unmined(entry: &MempoolEntry) -> proto::RawTransaction {
-    proto::RawTransaction { data: entry.raw.clone(), height: 0 }
+fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
+    service::RawTransaction { data: entry.raw.clone(), height: 0 }
 }
 
 /// `GetMempoolStream`: the servable mempool as one chunk, then each arrival, closed once the
@@ -130,7 +134,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let filter: proto::TxFilter = decode_request(body).await?;
+    let filter: service::TxFilter = decode_request(body).await?;
     let txid: [u8; 32] = filter
         .hash
         .as_slice()
@@ -369,7 +373,7 @@ mod tests {
     async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
         use http_body_util::BodyExt as _;
         use tower::Service as _;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         const SUBSCRIBERS: usize = 1_000;
         // (bytes, height 0 = unmined) per seed, in the view's (txid) order
@@ -417,7 +421,7 @@ mod tests {
         rounds("10 served", || snapshots.load().tips().served == Some(tip_10)).await;
 
         let decoded = |chunk: bytes::Bytes| {
-            let records = decode_frames::<proto::RawTransaction>(&chunk);
+            let records = decode_frames::<service::RawTransaction>(&chunk);
             let records = records.into_iter().map(|record| (record.data.to_vec(), record.height));
             records.collect::<Vec<_>>()
         };
@@ -501,7 +505,7 @@ mod tests {
         use zaino_primitives::testing::{p2pkh, TxBuilder};
         use zaino_primitives::types::{ShieldedPool, Transaction};
         use zaino_proto::proto::compact_formats::CompactTx;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         let block: Vec<(Transaction, Vec<u8>)> =
             zaino_source::testing::fixtures::transactions(2_000_000)
@@ -561,7 +565,7 @@ mod tests {
         let three = || snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
         rounds("three servable", three).await;
 
-        let mut ask = async |request: proto::GetMempoolTxRequest| {
+        let mut ask = async |request: service::GetMempoolTxRequest| {
             let request = framed_request(Method::GetMempoolTx, request.encode_to_vec().into());
             let body = router.call(request).await.expect("router answers").into_body();
             let chunk = body.collect().await.expect("ok").to_bytes();
@@ -581,7 +585,8 @@ mod tests {
             );
             (txid(tx).to_vec(), slot, parts)
         };
-        let all = proto::GetMempoolTxRequest { pool_types: vec![1, 2, 3, 4], ..Default::default() };
+        let all =
+            service::GetMempoolTxRequest { pool_types: vec![1, 2, 3, 4], ..Default::default() };
         let every_pool: Vec<_> =
             (0u64..).zip(&chosen).map(|(slot, (tx, _))| row(slot, tx, true, true, true)).collect();
         assert_eq!(ask(all.clone()).await, every_pool, "every pool, slots 0..3, view order");
@@ -597,7 +602,7 @@ mod tests {
         assert!(cached(&reader), "every projection rendered by the first request");
 
         let middle = txid(&chosen[1].0);
-        let without_middle = proto::GetMempoolTxRequest {
+        let without_middle = service::GetMempoolTxRequest {
             exclude_txid_suffixes: vec![middle[28..].to_vec()],
             pool_types: vec![1, 2, 3, 4],
         };
@@ -605,7 +610,7 @@ mod tests {
         let expected = vec![row(0, first, true, true, true), row(1, last, true, true, true)];
         assert_eq!(ask(without_middle).await, expected, "no gap at the excluded");
 
-        let orchard = proto::GetMempoolTxRequest { pool_types: vec![3], ..Default::default() };
+        let orchard = service::GetMempoolTxRequest { pool_types: vec![3], ..Default::default() };
         let with_actions: Vec<_> = (0u64..)
             .zip(&chosen)
             .filter(|(_, (tx, _))| !tx.orchard.actions.is_empty())

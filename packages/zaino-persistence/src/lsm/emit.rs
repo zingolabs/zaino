@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use super::{log::Landed, writer::Merged, SegmentMeta};
 
-pub(crate) mod names {
+pub(crate) mod metric_names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
     pub(super) const MERGING: &str = "zaino.lsm.merging";
     pub(super) const STALL_AT: &str = "zaino.lsm.stall_at";
@@ -28,38 +28,41 @@ pub(crate) fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
     describe_gauge!(
-        names::SEGMENTS,
+        metric_names::SEGMENTS,
         "Committed segments a read searches, by set and size tier (⌊log_fanout rows⌋)"
     );
     describe_gauge!(
-        names::MERGING,
+        metric_names::MERGING,
         "1 = a background merge of this size tier is running, by set and tier"
     );
     describe_gauge!(
-        names::STALL_AT,
+        metric_names::STALL_AT,
         "Segments a merging tier may list before a commit waits on its merge, by set"
     );
-    describe_counter!(names::BATCH_ROWS_TOTAL, "Rows written as new segments by commits, by set");
     describe_counter!(
-        names::MERGE_ROWS_TOTAL,
+        metric_names::BATCH_ROWS_TOTAL,
+        "Rows written as new segments by commits, by set"
+    );
+    describe_counter!(
+        metric_names::MERGE_ROWS_TOTAL,
         "Rows rewritten by finished background merges, by set"
     );
     describe_counter!(
-        names::MERGE_BYTES_TOTAL,
+        metric_names::MERGE_BYTES_TOTAL,
         Unit::Bytes,
         "Segment bytes written by finished background merges, by set"
     );
     describe_counter!(
-        names::MERGE_CANCELLED_TOTAL,
+        metric_names::MERGE_CANCELLED_TOTAL,
         "Key value + tombstone pairs dropped by finished background merges, by set"
     );
     describe_histogram!(
-        names::MERGE_DURATION_SECONDS,
+        metric_names::MERGE_DURATION_SECONDS,
         Unit::Seconds,
         "One background merge, read through sealed and linked, by set and input tier"
     );
     describe_histogram!(
-        names::STALL_DURATION_SECONDS,
+        metric_names::STALL_DURATION_SECONDS,
         Unit::Seconds,
         "Commit time spent waiting on a merge that fell two windows behind, by set"
     );
@@ -71,8 +74,8 @@ pub(crate) fn describe_metrics() {
 pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
         let labels = [("set", set.to_owned()), ("tier", tier.to_string())];
-        metrics::gauge!(names::SEGMENTS, &labels).set(segments as f64);
-        metrics::gauge!(names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
+        metrics::gauge!(metric_names::SEGMENTS, &labels).set(segments as f64);
+        metrics::gauge!(metric_names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
     }
 }
 
@@ -81,38 +84,40 @@ pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
 /// - merge histogram registered at tier 0 (first tier to merge)
 pub(super) fn opened(set: &str, stall_at: usize) {
     let set = set.to_owned();
-    metrics::gauge!(names::STALL_AT, "set" => set.clone()).set(stall_at as f64);
+    metrics::gauge!(metric_names::STALL_AT, "set" => set.clone()).set(stall_at as f64);
     for counter in [
-        names::BATCH_ROWS_TOTAL,
-        names::MERGE_ROWS_TOTAL,
-        names::MERGE_BYTES_TOTAL,
-        names::MERGE_CANCELLED_TOTAL,
+        metric_names::BATCH_ROWS_TOTAL,
+        metric_names::MERGE_ROWS_TOTAL,
+        metric_names::MERGE_BYTES_TOTAL,
+        metric_names::MERGE_CANCELLED_TOTAL,
     ] {
         metrics::counter!(counter, "set" => set.clone()).increment(0);
     }
-    let _ = metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set.clone(), "tier" => "0");
-    let _ = metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set);
+    let _ = metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, "set" => set.clone(), "tier" => "0");
+    let _ = metrics::histogram!(metric_names::STALL_DURATION_SECONDS, "set" => set);
 }
 
 pub(super) fn batched(set: &str, segment: &SegmentMeta) {
-    metrics::counter!(names::BATCH_ROWS_TOTAL, "set" => set.to_owned()).increment(segment.records);
+    metrics::counter!(metric_names::BATCH_ROWS_TOTAL, "set" => set.to_owned())
+        .increment(segment.records);
 }
 
 /// `tier` = the inputs' tier (output lands one above)
 pub(super) fn merged(set: &str, tier: u32, merged: &Merged, took: Duration) {
     let set = set.to_owned();
     let (rows, bytes) = merged.output.map_or((0, 0), |output| (output.records, output.sealed.len));
-    metrics::counter!(names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(rows);
-    metrics::counter!(names::MERGE_BYTES_TOTAL, "set" => set.clone()).increment(bytes);
-    metrics::counter!(names::MERGE_CANCELLED_TOTAL, "set" => set.clone())
+    metrics::counter!(metric_names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(rows);
+    metrics::counter!(metric_names::MERGE_BYTES_TOTAL, "set" => set.clone()).increment(bytes);
+    metrics::counter!(metric_names::MERGE_CANCELLED_TOTAL, "set" => set.clone())
         .increment(merged.cancelled);
-    metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
+    metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
         .record(took);
 }
 
 /// `tiers` = merging tiers the commit joined (each `stall_at` segments deep)
 pub(super) fn stalled(set: &str, tiers: &[u32], waited: Duration) {
-    metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set.to_owned()).record(waited);
+    metrics::histogram!(metric_names::STALL_DURATION_SECONDS, "set" => set.to_owned())
+        .record(waited);
     warn!(set, tiers = ?tiers, waited = %Elapsed(waited), "Commit waited on compaction");
 }
 

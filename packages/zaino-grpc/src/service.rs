@@ -426,7 +426,7 @@ mod tests {
         use zaino_chainview::EndpointSet;
         use zaino_proto::frame::FRAME_HEADER;
         use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
         use Method::*;
 
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -454,14 +454,15 @@ mod tests {
                 (code, body.to_bytes(), trailers)
             }
         };
-        let at = |height| proto::BlockId { height, hash: Vec::new() };
+        let at = |height| service::BlockId { height, hash: Vec::new() };
 
         let (_, latest, _) = call(GetLatestBlock, Vec::new()).await;
-        let latest = proto::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
+        let latest = service::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
         let tip_hash = <[u8; 32]>::from(two.hash).to_vec();
         assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the snapshot's tip");
 
-        let range = proto::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
+        let range =
+            service::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
         let (_, streamed, trailers) = call(GetBlockRange, range.encode_to_vec()).await;
         let past = HeaderValue::from_static("11");
         assert_eq!(trailers.get("grpc-status"), Some(&past), "to the index tip, then OUT_OF_RANGE");
@@ -475,7 +476,7 @@ mod tests {
         assert_eq!(served, expected, "through the compact-block index's durable, not the snapshot");
 
         let (_, state, _) = call(GetLatestTreeState, Vec::new()).await;
-        let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
+        let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
         let mut display = tip_hash;
         display.reverse();
         assert_eq!(
@@ -487,7 +488,7 @@ mod tests {
         let mut three_display = <[u8; 32]>::from(three).to_vec();
         three_display.reverse();
         let (code, state, _) = call(GetTreeState, at(3).encode_to_vec()).await;
-        let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
+        let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
         let answered = (code, state.height, state.hash);
         let ok = Some(tonic::Code::Ok);
         assert_eq!(answered, (ok, 3, const_hex::encode(three_display)), "3 durable, past the tip");
@@ -502,12 +503,12 @@ mod tests {
         }
 
         let (_, info, _) = call(GetLightdInfo, Vec::new()).await;
-        let info = proto::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
+        let info = service::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
         let lightd = (info.block_height, info.estimated_height, info.consensus_branch_id.as_str());
         assert_eq!(lightd, (2, 2, "37a5165b"), "served height, best, the schedule's branch at 2");
 
         let every = vec![1, 2, 3, 4];
-        let request = proto::GetMempoolTxRequest { pool_types: every, ..Default::default() };
+        let request = service::GetMempoolTxRequest { pool_types: every, ..Default::default() };
         let (_, listed, trailers) = call(GetMempoolTx, request.encode_to_vec()).await;
         let listed: Vec<_> = decode_frames::<compact_formats::CompactTx>(&listed)
             .into_iter()
@@ -517,8 +518,8 @@ mod tests {
         assert_eq!(listed, [ours], "held: our relay, compacted");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let (_, streamed, trailers) = call(GetMempoolStream, Vec::new()).await;
-        let opened = decode_frames::<proto::RawTransaction>(&streamed);
-        let unmined = proto::RawTransaction { data: raw.into(), height: 0 };
+        let opened = decode_frames::<service::RawTransaction>(&streamed);
+        let unmined = service::RawTransaction { data: raw.into(), height: 0 };
         assert_eq!(opened, [unmined], "our relay, unmined, then the end");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
     }
@@ -529,7 +530,7 @@ mod tests {
     async fn every_index_answers_its_own_methods() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
         use Method::*;
 
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -539,30 +540,30 @@ mod tests {
         let mut router = dispatch(Routes { snapshots: snapshot(&chain, tip, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
-        let range = proto::BlockRange {
-            start: Some(proto::BlockId { height: 0, hash: Vec::new() }),
-            end: Some(proto::BlockId { height: 1, hash: Vec::new() }),
+        let range = service::BlockRange {
+            start: Some(service::BlockId { height: 0, hash: Vec::new() }),
+            end: Some(service::BlockId { height: 1, hash: Vec::new() }),
             pool_types: Vec::new(),
         };
-        let utxos = proto::GetAddressUtxosArg {
+        let utxos = service::GetAddressUtxosArg {
             addresses: vec![address.clone()],
             start_height: 0,
             max_entries: 0,
         };
         let every = [
-            (GetLatestBlock, proto::ChainSpec::default().encode_to_vec()),
-            (GetBlock, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
+            (GetLatestBlock, service::ChainSpec::default().encode_to_vec()),
+            (GetBlock, service::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
             (GetBlockRange, range.encode_to_vec()),
             (GetBlockRangeNullifiers, range.encode_to_vec()),
             // 1 = Sapling's activation (below it: no tree state)
-            (GetTreeState, proto::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
+            (GetTreeState, service::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
             (GetLatestTreeState, Vec::new()),
             (GetAddressUtxos, utxos.encode_to_vec()),
             (
                 GetTaddressBalance,
-                proto::AddressList { addresses: vec![address.clone()] }.encode_to_vec(),
+                service::AddressList { addresses: vec![address.clone()] }.encode_to_vec(),
             ),
-            (GetTaddressBalanceStream, proto::Address { address }.encode_to_vec()),
+            (GetTaddressBalanceStream, service::Address { address }.encode_to_vec()),
         ];
         for (method, message) in every {
             let response =
@@ -572,9 +573,9 @@ mod tests {
             assert_eq!(status, Some(&HeaderValue::from_static("0")), "{method:?}");
         }
 
-        let roots = proto::GetSubtreeRootsArg {
+        let roots = service::GetSubtreeRootsArg {
             start_index: 0,
-            shielded_protocol: proto::ShieldedProtocol::Orchard as i32,
+            shielded_protocol: service::ShieldedProtocol::Orchard as i32,
             max_entries: 0,
         };
         let response = router

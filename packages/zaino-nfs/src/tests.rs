@@ -41,18 +41,21 @@ type Tables = Vec<Vec<Vec<u8>>>;
 
 /// `kind`'s store schema, as zainod opens it
 pub(crate) fn schema(kind: IndexKind) -> Schema {
-    use zaino_index_compact_block as compact_block;
-    use zaino_index_transparent_address as transparent_address;
-    use zaino_index_tree_state as tree_state;
-    use zaino_internal_block_hash_to_height as block_hash;
-    use zaino_internal_value_balance as value_balance;
-
     let (format, tables) = match kind {
-        IndexKind::ValueBalance => (value_balance::FORMAT, value_balance::TABLES),
-        IndexKind::CompactBlock => (compact_block::FORMAT, compact_block::TABLES),
-        IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
-        IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
-        IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
+        IndexKind::ValueBalance => {
+            (zaino_internal_value_balance::FORMAT, zaino_internal_value_balance::TABLES)
+        }
+        IndexKind::CompactBlock => {
+            (zaino_index_compact_block::FORMAT, zaino_index_compact_block::TABLES)
+        }
+        IndexKind::BlockHash => (
+            zaino_internal_block_hash_to_height::FORMAT,
+            zaino_internal_block_hash_to_height::TABLES,
+        ),
+        IndexKind::TreeState => (zaino_index_tree_state::FORMAT, zaino_index_tree_state::TABLES),
+        IndexKind::TransparentAddress => {
+            (zaino_index_transparent_address::FORMAT, zaino_index_transparent_address::TABLES)
+        }
     };
     Schema::new(kind, format, NETWORK, tables)
 }

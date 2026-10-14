@@ -12,7 +12,6 @@ use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
-use zaino_internal_block_hash_to_height as block_hash;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
@@ -105,15 +104,16 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let schema = Schema::new(
         IndexKind::BlockHash,
-        block_hash::FORMAT,
+        zaino_internal_block_hash_to_height::FORMAT,
         NetworkType::Regtest,
-        block_hash::TABLES,
+        zaino_internal_block_hash_to_height::TABLES,
     );
     let mut store =
         engine.open(Path::new("block_hash"), &schema, NonZeroUsize::MAX).expect("fresh store");
     for block in &a {
         let mut out = store.changes(block.at());
-        block_hash::fold(&block_hash::BlockHashReader::new(store.staged()), block, &mut out);
+        let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(store.staged());
+        zaino_internal_block_hash_to_height::fold(&parent, block, &mut out);
         store.apply(out);
     }
     store.commit().expect("SimFs commit");

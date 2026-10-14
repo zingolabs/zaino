@@ -431,7 +431,7 @@ mod tests {
 
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{p2pkh, MockChain};
-    use zaino_proto::proto::service as proto;
+    use zaino_proto::proto::service;
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 
     use super::GrpcService;
@@ -479,7 +479,7 @@ mod tests {
             .expect("connects");
         let mut wallet = CompactTxStreamerClient::new(channel);
 
-        let request = proto::GetAddressUtxosArg {
+        let request = service::GetAddressUtxosArg {
             addresses: vec![ALICE.to_owned()],
             start_height: 0,
             max_entries: 0,
@@ -492,8 +492,8 @@ mod tests {
         }
         assert_eq!(heights, (0..u64::from(COUNT)).collect::<Vec<_>>(), "every UTXO, in order");
 
-        let at = |height| Some(proto::BlockId { height, hash: Vec::new() });
-        let range = proto::BlockRange { start: at(0), end: at(9_999), pool_types: Vec::new() };
+        let at = |height| Some(service::BlockId { height, hash: Vec::new() });
+        let range = service::BlockRange { start: at(0), end: at(9_999), pool_types: Vec::new() };
         let mut range = wallet.get_block_range(range).await.expect("opens").into_inner();
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut heights = Vec::new();
@@ -547,7 +547,7 @@ mod tests {
                 .expect("request");
             client.send_request(request, false)
         };
-        let alice = proto::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
+        let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();
         zaino_proto::frame::frame_into(&mut framed, |out| alice.encode_raw(out));
         let second = Duration::from_secs(1);

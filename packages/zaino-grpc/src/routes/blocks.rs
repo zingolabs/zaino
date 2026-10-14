@@ -13,9 +13,9 @@ use zaino_primitives::types::Height;
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
 use crate::wire::{self, trailers, unary_response};
-use zaino_proto::proto::service as proto;
+use zaino_proto::proto::service;
 
-pub(crate) use deprecated_nullifiers::range as range_nullifiers;
+pub(crate) use deprecated_nullifiers::range_nullifiers;
 
 /// One snapshot's compact-block records
 type Blocks<V> = CompactBlockReader<OverlayView<V>>;
@@ -87,7 +87,7 @@ fn range_response<V: CommittedView>(
 pub(crate) fn latest<V>(at: &At<V>) -> Response<Body> {
     let tip = at.tip();
     let hash = <[u8; 32]>::from(tip.hash).to_vec();
-    unary_response(wire::frame(&proto::BlockId { height: tip.height.into(), hash }))
+    unary_response(wire::frame(&service::BlockId { height: tip.height.into(), hash }))
 }
 
 /// `GetBlock`: one whole block, every pool
@@ -118,7 +118,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let id: proto::BlockId = wire::decode_request(body).await?;
+    let id: service::BlockId = wire::decode_request(body).await?;
 
     // Hash wins when given (names one block across a reorg; a height doesn't)
     if !id.hash.is_empty() {
@@ -151,7 +151,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let request: proto::BlockRange = wire::decode_request(body).await?;
+    let request: service::BlockRange = wire::decode_request(body).await?;
 
     let through = at.answers_through(IndexKind::CompactBlock);
     let walk = open_range(blocks, through, &request, wire::pools(&request.pool_types)?)?;
@@ -163,7 +163,7 @@ where
 fn open_range<V: CommittedView>(
     blocks: Blocks<V>,
     through: Height,
-    request: &proto::BlockRange,
+    request: &service::BlockRange,
     pools: Pools,
 ) -> Result<Walk<V>, Status> {
     let start = request
@@ -205,7 +205,7 @@ mod deprecated_nullifiers {
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::frame_into;
     use zaino_proto::proto::compact_formats;
-    use zaino_proto::proto::service as proto;
+    use zaino_proto::proto::service;
 
     use super::{open_range, range_response, Compact};
     use crate::limits::ReadLanes;
@@ -213,7 +213,7 @@ mod deprecated_nullifiers {
 
     /// Proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]`
     /// alone = empty = shielded default, not "no pools")
-    pub(crate) async fn range<V, B>(
+    pub(crate) async fn range_nullifiers<V, B>(
         (at, blocks): Compact<'_, V>,
         body: B,
         reads: ReadLanes,
@@ -223,8 +223,8 @@ mod deprecated_nullifiers {
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
-        let mut request: proto::BlockRange = wire::decode_request(body).await?;
-        request.pool_types.retain(|pool| *pool != proto::PoolType::Transparent as i32);
+        let mut request: service::BlockRange = wire::decode_request(body).await?;
+        request.pool_types.retain(|pool| *pool != service::PoolType::Transparent as i32);
 
         let through = at.answers_through(IndexKind::CompactBlock);
         let walk = open_range(blocks, through, &request, pools(&request.pool_types)?)?;
@@ -292,7 +292,7 @@ mod tests {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         // compact index over 0..=2; locator over 0, 1, then a sibling at 2
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -312,7 +312,10 @@ mod tests {
             ..routes()
         });
         let request = |hash: Vec<u8>, height: u64| {
-            framed_request(Method::GetBlock, proto::BlockId { height, hash }.encode_to_vec().into())
+            framed_request(
+                Method::GetBlock,
+                service::BlockId { height, hash }.encode_to_vec().into(),
+            )
         };
         let code = |response: &Response<Body>| {
             Status::from_header_map(response.headers())
@@ -350,7 +353,7 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         let mut chain = MockChain::regtest().network(MAINNET);
         let tip = chain.mine_empty(5);
@@ -368,9 +371,9 @@ mod tests {
             (range, (7, 9), (vec![], "11", Some(past(7)))),
         ];
         for (method, (start, end), expected) in cases {
-            let range = proto::BlockRange {
-                start: Some(proto::BlockId { height: start, hash: Vec::new() }),
-                end: Some(proto::BlockId { height: end, hash: Vec::new() }),
+            let range = service::BlockRange {
+                start: Some(service::BlockId { height: start, hash: Vec::new() }),
+                end: Some(service::BlockId { height: end, hash: Vec::new() }),
                 pool_types: Vec::new(),
             };
             let request = framed_request(method, range.encode_to_vec().into());
@@ -399,7 +402,7 @@ mod tests {
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh};
         use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -423,7 +426,7 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
 
-        let id = proto::BlockId { height: 3, hash: Vec::new() };
+        let id = service::BlockId { height: 3, hash: Vec::new() };
         let response = router
             .call(framed_request(Method::GetBlock, id.encode_to_vec().into()))
             .await
@@ -439,9 +442,9 @@ mod tests {
         assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
 
         // one data frame per file window (<= 1 MiB), records still framed one by one
-        let range = proto::BlockRange {
-            start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
-            end: Some(proto::BlockId { height: 4, hash: Vec::new() }),
+        let range = service::BlockRange {
+            start: Some(service::BlockId { height: 1, hash: Vec::new() }),
+            end: Some(service::BlockId { height: 4, hash: Vec::new() }),
             pool_types: Vec::new(),
         };
         let response = router
@@ -464,10 +467,10 @@ mod tests {
         let shielded_only = vec![(1, 1, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0)];
         assert_eq!(shapes, shielded_only, "(height, txs, transparent ins): coinbase pruned");
 
-        let range = proto::BlockRange {
-            start: Some(proto::BlockId { height: 2, hash: Vec::new() }),
-            end: Some(proto::BlockId { height: 2, hash: Vec::new() }),
-            pool_types: vec![proto::PoolType::Transparent as i32],
+        let range = service::BlockRange {
+            start: Some(service::BlockId { height: 2, hash: Vec::new() }),
+            end: Some(service::BlockId { height: 2, hash: Vec::new() }),
+            pool_types: vec![service::PoolType::Transparent as i32],
         };
         let response = router
             .call(framed_request(Method::GetBlockRange, range.encode_to_vec().into()))
@@ -491,7 +494,7 @@ mod tests {
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh};
         use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -515,10 +518,10 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
 
-        let range = proto::BlockRange {
-            start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
-            end: Some(proto::BlockId { height: 4, hash: Vec::new() }),
-            pool_types: vec![proto::PoolType::Transparent as i32],
+        let range = service::BlockRange {
+            start: Some(service::BlockId { height: 1, hash: Vec::new() }),
+            end: Some(service::BlockId { height: 4, hash: Vec::new() }),
+            pool_types: vec![service::PoolType::Transparent as i32],
         };
         let response = router
             .call(framed_request(Method::GetBlockRangeNullifiers, range.encode_to_vec().into()))
@@ -564,7 +567,7 @@ mod tests {
     async fn a_malformed_range_is_invalid_argument_before_any_read() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         let chain = MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
@@ -572,7 +575,7 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, genesis, vec![compact]), ..routes() });
 
-        let at = |height: u64| Some(proto::BlockId { height, hash: Vec::new() });
+        let at = |height: u64| Some(service::BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {
             format!("range%20{bound}%20{height}%20is%20above%20the%20protocol%20height%20ceiling")
         };
@@ -585,7 +588,7 @@ mod tests {
         let mut answered = Vec::new();
         for (start, end, _) in &cases {
             let bad =
-                proto::BlockRange { start: start.clone(), end: end.clone(), pool_types: vec![] };
+                service::BlockRange { start: start.clone(), end: end.clone(), pool_types: vec![] };
             let request = framed_request(Method::GetBlockRange, bad.encode_to_vec().into());
             let response = router.call(request).await.expect("router answers");
             let header = |name| response.headers().get(name).and_then(|v| v.to_str().ok());

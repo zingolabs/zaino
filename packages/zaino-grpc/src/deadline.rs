@@ -296,7 +296,7 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_persistence::IndexKind;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
 
         use crate::service::{Method, Routes};
         use crate::testing::{dispatch, indexed, routes, snapshot, MAINNET};
@@ -307,7 +307,7 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, genesis, views), ..routes() });
 
-        let alice = proto::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
+        let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();
         zaino_proto::frame::frame_into(&mut framed, |out| alice.encode_raw(out));
         for (header, expected) in [

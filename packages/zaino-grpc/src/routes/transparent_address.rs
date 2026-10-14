@@ -6,7 +6,7 @@ use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddres
 use zaino_persistence::{CommittedView, OverlayView};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::Zatoshis;
-use zaino_proto::proto::service as proto;
+use zaino_proto::proto::service;
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_address::{ConversionError, ZcashAddress};
@@ -47,7 +47,7 @@ where
     B::Error: std::fmt::Display,
 {
     let address_utxos = utxo_replies(index, body, reads).await?;
-    Ok(unary_response(wire::frame(&proto::GetAddressUtxosReplyList { address_utxos })))
+    Ok(unary_response(wire::frame(&service::GetAddressUtxosReplyList { address_utxos })))
 }
 
 /// `GetAddressUtxosStream`: one message per utxo
@@ -111,11 +111,11 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let request: proto::TransparentAddressBlockFilter = decode_request(body).await?;
+    let request: service::TransparentAddressBlockFilter = decode_request(body).await?;
     let address = transparent_address(&request.address, index.network)?;
     let range = request.range.ok_or_else(|| Status::invalid_argument("range is required"))?;
 
-    let height = |bound: Option<proto::BlockId>, field: &str| {
+    let height = |bound: Option<service::BlockId>, field: &str| {
         bound
             .ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))
             .and_then(|at| wire::height(at.height, field))
@@ -152,12 +152,12 @@ async fn utxo_replies<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
-) -> Result<Vec<proto::GetAddressUtxosReply>, Status>
+) -> Result<Vec<service::GetAddressUtxosReply>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let request: proto::GetAddressUtxosArg = wire::decode_request(body).await?;
+    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
     let from = wire::height(request.start_height, "startHeight")?;
     let addresses = request
         .addresses
@@ -195,8 +195,8 @@ fn reply(
     encoded: &str,
     address: &TransparentAddress,
     utxo: &AddressUtxo,
-) -> Result<proto::GetAddressUtxosReply, Status> {
-    Ok(proto::GetAddressUtxosReply {
+) -> Result<service::GetAddressUtxosReply, Status> {
+    Ok(service::GetAddressUtxosReply {
         address: encoded.to_owned(),
         txid: <[u8; 32]>::from(utxo.outpoint.txid).to_vec(),
         index: i32::try_from(utxo.outpoint.vout)
@@ -217,7 +217,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let list: proto::AddressList = wire::decode_request(body).await?;
+    let list: service::AddressList = wire::decode_request(body).await?;
     total(index, &list.addresses, reads).await.map(unary_response)
 }
 
@@ -231,7 +231,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let streamed: Vec<proto::Address> = wire::decode_request_stream(body).await?;
+    let streamed: Vec<service::Address> = wire::decode_request_stream(body).await?;
     let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
 
     total(index, &addresses, reads).await.map(unary_response)
@@ -255,7 +255,7 @@ async fn total<V: CommittedView>(
     let total = Zatoshis::sum_balances(balances.map_err(to_status)?.into_iter())
         .expect("distinct addresses' balances exceed the money supply: index corrupt");
 
-    Ok(wire::frame(&proto::Balance { value_zat: total.as_i64() }))
+    Ok(wire::frame(&service::Balance { value_zat: total.as_i64() }))
 }
 
 #[cfg(test)]
@@ -281,7 +281,7 @@ mod tests {
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
         use zaino_primitives::types::Script;
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
         use zaino_source::testing::{decoded, raw_transparent, ValidatorViews};
 
         // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
@@ -322,7 +322,7 @@ mod tests {
         let response = router
             .call(framed_request(
                 Method::GetAddressUtxos,
-                proto::GetAddressUtxosArg {
+                service::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
                     max_entries: 0,
@@ -333,10 +333,10 @@ mod tests {
             .await
             .expect("router answers");
         let list =
-            proto::GetAddressUtxosReplyList::decode(&body_of(response).await[FRAME_HEADER..])
+            service::GetAddressUtxosReplyList::decode(&body_of(response).await[FRAME_HEADER..])
                 .expect("one framed message");
         let alice_utxos = vec![
-            proto::GetAddressUtxosReply {
+            service::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
                 txid: <[u8; 32]>::from(first).to_vec(),
                 index: 0,
@@ -344,7 +344,7 @@ mod tests {
                 value_zat: 500,
                 height: 2,
             },
-            proto::GetAddressUtxosReply {
+            service::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
                 txid: <[u8; 32]>::from(second).to_vec(),
                 index: 0,
@@ -359,7 +359,7 @@ mod tests {
         let response = router
             .call(framed_request(
                 Method::GetAddressUtxos,
-                proto::GetAddressUtxosArg {
+                service::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
                     max_entries: 1,
@@ -370,7 +370,7 @@ mod tests {
             .await
             .expect("router answers");
         let capped =
-            proto::GetAddressUtxosReplyList::decode(&body_of(response).await[FRAME_HEADER..])
+            service::GetAddressUtxosReplyList::decode(&body_of(response).await[FRAME_HEADER..])
                 .expect("one framed message");
         assert_eq!(capped.address_utxos, list.address_utxos[..1]);
 
@@ -379,7 +379,7 @@ mod tests {
         let response = router
             .call(framed_request(
                 Method::GetAddressUtxosStream,
-                proto::GetAddressUtxosArg {
+                service::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
                     max_entries: 0,
@@ -394,14 +394,14 @@ mod tests {
         let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         assert_eq!(chunks.len(), 1, "two ready replies, one data frame");
-        let streamed = decode_frames::<proto::GetAddressUtxosReply>(&chunks.concat());
+        let streamed = decode_frames::<service::GetAddressUtxosReply>(&chunks.concat());
         assert_eq!(streamed, list.address_utxos, "one reply per record, same as the list shape");
 
         // GetTaddressBalance, both addresses (alice repeated: counted once) + client-streaming
         let response = router
             .call(framed_request(
                 Method::GetTaddressBalance,
-                proto::AddressList {
+                service::AddressList {
                     addresses: vec![ALICE.to_owned(), BOB.to_owned(), ALICE.to_owned()],
                 }
                 .encode_to_vec()
@@ -409,12 +409,12 @@ mod tests {
             ))
             .await
             .expect("router answers");
-        let balance = proto::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
-        assert_eq!(balance.expect("balance"), proto::Balance { value_zat: 870 });
+        let balance = service::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
+        assert_eq!(balance.expect("balance"), service::Balance { value_zat: 870 });
 
         let mut streamed = Vec::new();
         for address in [ALICE, BOB] {
-            let message = proto::Address { address: address.to_owned() };
+            let message = service::Address { address: address.to_owned() };
             frame_into(&mut streamed, |out| message.encode_raw(out));
         }
         let response = router
@@ -426,13 +426,13 @@ mod tests {
             )
             .await
             .expect("router answers");
-        let balance = proto::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
-        assert_eq!(balance.expect("balance"), proto::Balance { value_zat: 870 }, "= list shape");
+        let balance = service::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
+        assert_eq!(balance.expect("balance"), service::Balance { value_zat: 870 }, "= list shape");
 
         let response = router
             .call(framed_request(
                 Method::GetTaddressBalance,
-                proto::AddressList { addresses: vec!["not-an-address".to_owned()] }
+                service::AddressList { addresses: vec!["not-an-address".to_owned()] }
                     .encode_to_vec()
                     .into(),
             ))
@@ -442,11 +442,11 @@ mod tests {
         assert_eq!(status, Some(&HeaderValue::from_static("3")), "invalid argument");
 
         // GetTaddressTransactions: index names the txids, a validator supplies the bytes + height
-        let filter = proto::TransparentAddressBlockFilter {
+        let filter = service::TransparentAddressBlockFilter {
             address: ALICE.to_owned(),
-            range: Some(proto::BlockRange {
-                start: Some(proto::BlockId { height: 0, hash: Vec::new() }),
-                end: Some(proto::BlockId { height: 3, hash: Vec::new() }),
+            range: Some(service::BlockRange {
+                start: Some(service::BlockId { height: 0, hash: Vec::new() }),
+                end: Some(service::BlockId { height: 3, hash: Vec::new() }),
                 pool_types: Vec::new(),
             }),
         };
@@ -463,11 +463,11 @@ mod tests {
             .await;
             let ok = Some(&HeaderValue::from_static("0"));
             assert_eq!(trailing.get("grpc-status"), ok, "{method:?}");
-            answers.push(decode_frames::<proto::RawTransaction>(&chunks.concat()));
+            answers.push(decode_frames::<service::RawTransaction>(&chunks.concat()));
         }
         let alice_txs = vec![
-            proto::RawTransaction { data: first_raw.into(), height: 2 },
-            proto::RawTransaction { data: second_raw.into(), height: 3 },
+            service::RawTransaction { data: first_raw.into(), height: 2 },
+            service::RawTransaction { data: second_raw.into(), height: 3 },
         ];
         assert_eq!(answers[0], alice_txs, "both of alice's, height order, validator bytes");
         assert_eq!(answers[0], answers[1], "the deprecated alias answers identically");
@@ -480,7 +480,7 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_primitives::testing::{p2pkh, MockChain};
-        use zaino_proto::proto::service as proto;
+        use zaino_proto::proto::service;
         use zcash_address::ToAddress as _;
         use zcash_protocol::consensus::NetworkType;
 
@@ -498,19 +498,19 @@ mod tests {
             zcash_address::ZcashAddress::from_transparent_p2pkh(NetworkType::Test, [0x00; 20])
                 .encode();
         let every_method = |address: &str| {
-            let range = Some(proto::BlockRange {
-                start: Some(proto::BlockId { height: 0, hash: Vec::new() }),
-                end: Some(proto::BlockId { height: 0, hash: Vec::new() }),
+            let range = Some(service::BlockRange {
+                start: Some(service::BlockId { height: 0, hash: Vec::new() }),
+                end: Some(service::BlockId { height: 0, hash: Vec::new() }),
                 pool_types: Vec::new(),
             });
             [
                 (
                     Method::GetTaddressBalance,
-                    proto::AddressList { addresses: vec![address.to_owned()] }.encode_to_vec(),
+                    service::AddressList { addresses: vec![address.to_owned()] }.encode_to_vec(),
                 ),
                 (
                     Method::GetAddressUtxos,
-                    proto::GetAddressUtxosArg {
+                    service::GetAddressUtxosArg {
                         addresses: vec![address.to_owned()],
                         start_height: 0,
                         max_entries: 0,
@@ -519,7 +519,7 @@ mod tests {
                 ),
                 (
                     Method::GetTaddressTransactions,
-                    proto::TransparentAddressBlockFilter { address: address.to_owned(), range }
+                    service::TransparentAddressBlockFilter { address: address.to_owned(), range }
                         .encode_to_vec(),
                 ),
             ]

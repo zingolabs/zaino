@@ -13,7 +13,7 @@ use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
 };
-use zaino_proto::proto::service as proto;
+use zaino_proto::proto::service;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
@@ -166,7 +166,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let id: proto::BlockId = wire::decode_request(body).await?;
+    let id: service::BlockId = wire::decode_request(body).await?;
 
     if id.hash.is_empty() {
         let height = wire::height(id.height, "height")?;
@@ -204,7 +204,7 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
         true => const_hex::encode(tree.as_bytes()),
         false => String::new(),
     };
-    wire::frame(&proto::TreeState {
+    wire::frame(&service::TreeState {
         network: chain_name(params.network).to_owned(),
         height: u64::from(state.height),
         hash: state.block_hash.to_string(),
@@ -230,12 +230,12 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let request: proto::GetSubtreeRootsArg = wire::decode_request(body).await?;
+    let request: service::GetSubtreeRootsArg = wire::decode_request(body).await?;
 
-    let pool = match proto::ShieldedProtocol::try_from(request.shielded_protocol) {
-        Ok(proto::ShieldedProtocol::Sapling) => ShieldedPool::Sapling,
-        Ok(proto::ShieldedProtocol::Orchard) => ShieldedPool::Orchard,
-        Ok(proto::ShieldedProtocol::Ironwood) => ShieldedPool::Ironwood,
+    let pool = match service::ShieldedProtocol::try_from(request.shielded_protocol) {
+        Ok(service::ShieldedProtocol::Sapling) => ShieldedPool::Sapling,
+        Ok(service::ShieldedProtocol::Orchard) => ShieldedPool::Orchard,
+        Ok(service::ShieldedProtocol::Ironwood) => ShieldedPool::Ironwood,
         Err(_) => {
             return Err(Status::unimplemented(format!(
                 "shieldedProtocol {} is not served (sapling = 0, orchard = 1, ironwood = 2)",
@@ -260,7 +260,7 @@ where
 fn root(root: &SubtreeRoot) -> Bytes {
     let mut hash = <[u8; 32]>::from(root.completing.hash);
     hash.reverse();
-    wire::frame(&proto::SubtreeRoot {
+    wire::frame(&service::SubtreeRoot {
         root_hash: <[u8; 32]>::from(root.root).to_vec(),
         completing_block_hash: hash.to_vec(),
         completing_block_height: u64::from(root.completing.height),
@@ -276,7 +276,7 @@ mod tests {
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, SubtreeRoot, UpgradeSchedule};
     use zaino_proto::frame::FRAME_HEADER;
-    use zaino_proto::proto::service as proto;
+    use zaino_proto::proto::service;
     use zcash_protocol::consensus::NetworkUpgrade;
 
     use crate::service::{Method, Routes};
@@ -299,7 +299,7 @@ mod tests {
             .collect();
         let framed = super::FramedRoots::of(&roots);
         let heights = |chunk: bytes::Bytes| {
-            let roots = decode_frames::<proto::SubtreeRoot>(&chunk);
+            let roots = decode_frames::<service::SubtreeRoot>(&chunk);
             roots.into_iter().map(|root| root.completing_block_height).collect::<Vec<_>>()
         };
 
@@ -350,8 +350,11 @@ mod tests {
             ((3, 0, 0), (Some("12".to_owned()), None, 0)),
         ];
         for ((protocol, start_index, max_entries), expected) in cases {
-            let arg =
-                proto::GetSubtreeRootsArg { start_index, shielded_protocol: protocol, max_entries };
+            let arg = service::GetSubtreeRootsArg {
+                start_index,
+                shielded_protocol: protocol,
+                max_entries,
+            };
             let request = framed_request(Method::GetSubtreeRoots, arg.encode_to_vec().into());
             let response = router.call(request).await.expect("router answers");
             let status = |headers: &http::HeaderMap| {
@@ -396,7 +399,7 @@ mod tests {
                     .unwrap_or(tonic::Code::Ok);
                 let body = response.into_body().collect().await.expect("body").to_bytes();
                 assert_eq!(code, tonic::Code::Ok, "{method:?}");
-                let s = proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one message");
+                let s = service::TreeState::decode(&body[FRAME_HEADER..]).expect("one message");
                 let sapling = match s.sapling_tree.as_str() {
                     "" => "",
                     "000000" => "000000",
@@ -405,7 +408,7 @@ mod tests {
                 (s.height, s.hash, sapling, s.orchard_tree, s.ironwood_tree)
             }
         };
-        let at = |height| proto::BlockId { height, hash: Vec::new() }.encode_to_vec();
+        let at = |height| service::BlockId { height, hash: Vec::new() }.encode_to_vec();
         let display = |height: u32| chain.at(h(height)).hash.to_string();
 
         let (blank, empty) = (String::new, || "000000".to_owned());
@@ -446,20 +449,20 @@ mod tests {
         });
 
         // A unary answer: data, then `OK` trailers (status in headers beside a body = malformed)
-        async fn tree_state_of(response: Response<Body>) -> proto::TreeState {
+        async fn tree_state_of(response: Response<Body>) -> service::TreeState {
             use http_body_util::BodyExt as _;
             assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
             let body = response.into_body().collect().await.expect("body");
             let status = body.trailers().and_then(|trailers| trailers.get("grpc-status").cloned());
             assert_eq!(status, Some(HeaderValue::from_static("0")), "unary");
             let body = body.to_bytes();
-            proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
+            service::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
         }
 
         let response = router
             .call(framed_request(
                 Method::GetTreeState,
-                proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec().into(),
+                service::BlockId { height: 0, hash: Vec::new() }.encode_to_vec().into(),
             ))
             .await
             .expect("router answers");
@@ -485,14 +488,14 @@ mod tests {
             body.frame().await.expect("a frame").expect("ok").into_data().expect("data")
         };
         let (first, second) = (latest().await, latest().await);
-        assert_eq!(proto::TreeState::decode(&first[FRAME_HEADER..]).expect("decodes"), state);
+        assert_eq!(service::TreeState::decode(&first[FRAME_HEADER..]).expect("decodes"), state);
         assert_eq!(first.as_ptr(), second.as_ptr(), "one render per snapshot, shared");
 
         // By hash: resolved through the block-hash index, so without it, unimplemented
         let by_hash = |hash: [u8; 32]| {
             framed_request(
                 Method::GetTreeState,
-                proto::BlockId { height: 0, hash: hash.to_vec() }.encode_to_vec().into(),
+                service::BlockId { height: 0, hash: hash.to_vec() }.encode_to_vec().into(),
             )
         };
         let status = |response: &Response<Body>| {
