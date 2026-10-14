@@ -22,6 +22,18 @@ use std::marker::PhantomData;
 use crate::dag::{DependencyDag, FiringRule};
 use crate::primitives::{BatchIndex, BlockOffset, IndexId};
 
+/// How many batches an index may complete beyond its slowest sibling before
+/// the scheduler stops handing it new extraction work.
+///
+/// Indexes with no declared dependency on each other (no DAG edge) are
+/// otherwise unthrottled: each completed batch stashes its ops in the
+/// engine's `pending_ops`, which can only be committed -- and freed -- once
+/// *every* index has reached that batch. Without this cap, a structurally
+/// slower sibling (e.g. one resolving a cross-index lookup per spend) lets a
+/// fast index's uncommitted batches accumulate without bound, growing memory
+/// well past what the slow index itself needs for a single batch.
+const MAX_BATCHES_AHEAD: u32 = 4;
+
 // ===========================================================================
 // State markers — phantom types for index batch lifecycle
 // ===========================================================================
@@ -191,6 +203,10 @@ impl Scheduler {
 
         for &id in &self.all_indexes {
             if self.pending_merge.contains(&id) || self.pending_commit.contains(&id) {
+                continue;
+            }
+
+            if self.too_far_ahead_of_slowest_sibling(id) {
                 continue;
             }
 
@@ -412,6 +428,28 @@ impl Scheduler {
     pub fn provisioner_done(&mut self, total_blocks: u32) {
         self.total_blocks = Some(total_blocks);
         self.blocks_available = total_blocks;
+    }
+
+    /// The number of batches the slowest index has completed so far.
+    ///
+    /// `current_batch[id].value()` is exactly that count for each index: it
+    /// starts at 0 and advances by one per `batch_committed` call.
+    fn slowest_index_progress(&self) -> u32 {
+        self.all_indexes
+            .iter()
+            .map(|id| self.current_batch[id].value())
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Whether `index` has already completed [`MAX_BATCHES_AHEAD`] more
+    /// batches than its slowest sibling, and so must wait before starting
+    /// another.
+    fn too_far_ahead_of_slowest_sibling(&self, index: IndexId) -> bool {
+        let lead = self.current_batch[&index]
+            .value()
+            .saturating_sub(self.slowest_index_progress());
+        lead >= MAX_BATCHES_AHEAD
     }
 
     /// Check whether all firing rules are satisfied for an index at a
@@ -664,6 +702,41 @@ mod tests {
         let ready_ids: HashSet<IndexId> = jobs.iter().map(|j| j.index).collect();
         assert!(ready_ids.contains(&A));
         assert!(ready_ids.contains(&B));
+    }
+
+    #[test]
+    fn extraction_blocked_when_index_races_too_far_ahead_of_sibling() {
+        // A and B are independent (no DAG edge) -- nothing but the backpressure
+        // cap can slow A down while B never advances.
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE), desc("b", DEPS_NONE)])
+            .expect("valid dag");
+        let mut sched = Scheduler::new(dag, 1);
+        sched.set_blocks_available(MAX_BATCHES_AHEAD + 10);
+
+        // Drive A through MAX_BATCHES_AHEAD full batches (batch_size=1, so one
+        // extraction per batch) while B never extracts anything.
+        for _ in 0..MAX_BATCHES_AHEAD {
+            assert!(
+                sched.ready_extractions().iter().any(|j| j.index == A),
+                "A should still be ready before hitting the cap",
+            );
+            let handle = sched
+                .extraction_done(A)
+                .expect("batch size 1 completes in a single extraction");
+            let merged = sched.merge_done(handle);
+            sched.batch_committed(merged);
+        }
+
+        // A has now raced MAX_BATCHES_AHEAD batches ahead of B, which is still
+        // stuck at batch 0. It must not be allowed to start yet another batch
+        // until B's progress advances the shared floor.
+        let jobs = sched.ready_extractions();
+        assert!(
+            jobs.iter().all(|j| j.index != A),
+            "index A raced {MAX_BATCHES_AHEAD} batches ahead of B with no backpressure",
+        );
+        // B itself is unaffected by the cap -- it's the one lagging, not leading.
+        assert!(jobs.iter().any(|j| j.index == B));
     }
 
     #[test]
