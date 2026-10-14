@@ -1,7 +1,7 @@
 //! Wire answers computed once per published view
 //!
-//! - every synced wallet asks the same tip questions right after each block (tree state, subtree
-//!   roots, the mempool): one computation per publication, then refcount clones
+//! - every synced wallet asks the same tip questions right after each block (tree states, subtree
+//!   roots): one computation per publication, then refcount clones
 //! - keyed on the view's `Arc` identity: a new publication = a fresh memo, never an invalidation
 //!   rule to get wrong (a view is immutable)
 //! - one publication held: a request pinned on an older one replaces it (brief, at publication)

@@ -18,7 +18,8 @@ consensus objects are forwarded to the validator.
 
 | Method                                                  | Answered by                                                                                                                                    |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GetLatestBlock`, `GetBlock`, `GetBlockRange`           | compact-block index                                                                                                                            |
+| `GetLatestBlock`                                        | the served snapshot's tip (no index read)                                                                                                      |
+| `GetBlock`, `GetBlockRange`                             | compact-block index                                                                                                                            |
 | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                                                                                                                               |
 | `GetAddressUtxos`, `GetAddressUtxosStream`              | transparent-address index                                                                                                                      |
 | `GetTaddressBalance`, `GetTaddressBalanceStream`        | transparent-address index                                                                                                                      |
@@ -97,18 +98,18 @@ pepper-sync reads as the end, and `maxEntries` 0 means every root. A
 Android SDK survives without dropping its fast sync.
 
 No stream has a total-duration cap. The client's `grpc-timeout` is its
-deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
-(see [running.md](./running.md#stream-time-limits)).
+deadline, and `[grpc] unread_timeout_secs` / `silent_timeout_secs` bound a stream that makes
+no progress (see [running.md](./running.md#stream-time-limits)).
 
 ## Status codes a client must distinguish
 
 | Condition                                                                                           | Code                 | Read it as                                                             |
 | --------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
 | nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
-| stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                     | `UNAVAILABLE`        | retry after the hint                                                   |
+| work-stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                | `UNAVAILABLE`        | retry after the hint                                                   |
 | no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`)              | `UNAVAILABLE`        | back off and retry                                                     |
 | validator unreachable (`GetTransaction`, `SendTransaction`)                                         | `UNAVAILABLE`        | back off and retry                                                     |
-| stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`)                       | `UNAVAILABLE`        | retry                                                                  |
+| stream with nothing to send for `silent_timeout_secs` (not `GetMempoolStream`)                      | `UNAVAILABLE`        | retry                                                                  |
 | index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED`      | never retry                                                            |
 | height, hash or txid not in the chain, or above the answering index's tip                           | `NOT_FOUND`          | ask for something else                                                 |
 | `GetBlockRange` reaching past the compact-block index's tip (after the blocks up to it)             | `OUT_OF_RANGE`       | ask again once the tip moves                                           |

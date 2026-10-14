@@ -312,11 +312,11 @@ pub(crate) struct GrpcConfig {
     pub(crate) max_connections: NonZeroUsize,
     /// Client = peer address, or the PROXY header's behind a `trusted_proxies` entry
     pub(crate) max_connections_per_ip: NonZeroUsize,
-    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS`
+    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` (every stream, health included)
     pub(crate) max_streams_per_connection: NonZeroU32,
     /// Every method but `GetMempoolStream`, across all connections
-    pub(crate) max_streams: NonZeroUsize,
-    /// `GetMempoolStream`, apart from `max_streams` (idle until the next block)
+    pub(crate) max_work_streams: NonZeroUsize,
+    /// `GetMempoolStream`, apart from `max_work_streams` (idle until the next block)
     pub(crate) max_subscriptions: NonZeroUsize,
     /// Block, tree state, subtree roots on the blocking pool (warm = CPU-bound: ~core count)
     pub(crate) max_point_reads: NonZeroUsize,
@@ -324,16 +324,17 @@ pub(crate) struct GrpcConfig {
     pub(crate) max_range_reads: NonZeroUsize,
     /// Transparent-address history scans (few: each walks a whole history)
     pub(crate) max_scan_reads: NonZeroUsize,
-    /// - No progress, never a length cap (unread → connection closed, unsent → `UNAVAILABLE`)
-    /// - `GetMempoolStream` exempt (client's own `grpc-timeout` = its deadline)
-    pub(crate) stall_timeout_secs: NonZeroU64,
+    /// Data its client leaves unread this long → connection closed
+    pub(crate) unread_timeout_secs: NonZeroU64,
+    /// Nothing to send this long → stream `UNAVAILABLE` (`GetMempoolStream` exempt)
+    pub(crate) silent_timeout_secs: NonZeroU64,
     /// 0 = never (±10% each, then GOAWAY → client reconnects + re-resolves DNS, gRPC A9)
     pub(crate) max_connection_age_secs: u64,
     pub(crate) max_connection_age_grace_secs: u64,
     /// 0 = never (no open stream that long → GOAWAY, per-client slot freed)
     pub(crate) max_connection_idle_secs: u64,
-    /// Gradient2 limit under `max_streams` (`false` = always `max_streams`)
-    pub(crate) adaptive_streams: bool,
+    /// Gradient2 limit under `max_work_streams` (`false` = always `max_work_streams`)
+    pub(crate) adaptive_work_streams: bool,
     /// Each connection from one opens with a PROXY v1/v2 header (none = closed, empty = no proxy)
     pub(crate) trusted_proxies: Vec<ipnet::IpNet>,
     /// After SIGTERM / SIGINT (idle `GetMempoolStream` dropped at the deadline)
@@ -347,16 +348,17 @@ impl Default for GrpcConfig {
             max_connections: limits.max_connections,
             max_connections_per_ip: limits.max_connections_per_ip,
             max_streams_per_connection: limits.max_streams_per_connection,
-            max_streams: limits.max_streams,
+            max_work_streams: limits.max_work_streams,
             max_subscriptions: limits.max_subscriptions,
             max_point_reads: limits.max_point_reads,
             max_range_reads: limits.max_range_reads,
             max_scan_reads: limits.max_scan_reads,
-            stall_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.stall_timeout) },
+            unread_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.unread_timeout) },
+            silent_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.silent_timeout) },
             max_connection_age_secs: limits.max_connection_age.map_or(0, |age| age.as_secs()),
             max_connection_age_grace_secs: limits.max_connection_age_grace.as_secs(),
             max_connection_idle_secs: limits.max_connection_idle.map_or(0, |idle| idle.as_secs()),
-            adaptive_streams: limits.adaptive_streams,
+            adaptive_work_streams: limits.adaptive_work_streams,
             trusted_proxies: Vec::new(),
             shutdown_grace_secs: limits.drain_timeout.as_secs(),
         }
@@ -369,17 +371,18 @@ impl From<&GrpcConfig> for GrpcLimits {
             max_connections: config.max_connections,
             max_connections_per_ip: config.max_connections_per_ip,
             max_streams_per_connection: config.max_streams_per_connection,
-            max_streams: config.max_streams,
+            max_work_streams: config.max_work_streams,
             max_subscriptions: config.max_subscriptions,
             max_point_reads: config.max_point_reads,
             max_range_reads: config.max_range_reads,
             max_scan_reads: config.max_scan_reads,
-            stall_timeout: Duration::from_secs(config.stall_timeout_secs.get()),
+            unread_timeout: Duration::from_secs(config.unread_timeout_secs.get()),
+            silent_timeout: Duration::from_secs(config.silent_timeout_secs.get()),
             drain_timeout: Duration::from_secs(config.shutdown_grace_secs),
             max_connection_age: secs_or_never(config.max_connection_age_secs),
             max_connection_age_grace: Duration::from_secs(config.max_connection_age_grace_secs),
             max_connection_idle: secs_or_never(config.max_connection_idle_secs),
-            adaptive_streams: config.adaptive_streams,
+            adaptive_work_streams: config.adaptive_work_streams,
         }
     }
 }
@@ -1099,32 +1102,39 @@ enabled = false
         let partial: DaemonConfig = toml::from_str(
             r#"
 [grpc]
-max_streams = 64
-stall_timeout_secs = 30
+max_work_streams = 64
+unread_timeout_secs = 30
+silent_timeout_secs = 45
 
 [index.compact_block]
 path = "/tmp/zaino-compact-block"
 "#,
         )
         .expect("deserialise");
-        let max_streams = NonZeroUsize::new(64).expect("64 is non-zero");
+        let max_work_streams = NonZeroUsize::new(64).expect("64 is non-zero");
         let limits = GrpcLimits::from(&partial.grpc);
         let expected = GrpcLimits {
-            max_streams,
-            stall_timeout: Duration::from_secs(30),
+            max_work_streams,
+            unread_timeout: Duration::from_secs(30),
+            silent_timeout: Duration::from_secs(45),
             ..GrpcLimits::default()
         };
         assert_eq!(limits, expected, "what the server is bounded by is what was parsed");
 
-        for zeroed in ["max_point_reads", "max_range_reads", "max_scan_reads", "stall_timeout_secs"]
-        {
+        for zeroed in [
+            "max_point_reads",
+            "max_range_reads",
+            "max_scan_reads",
+            "unread_timeout_secs",
+            "silent_timeout_secs",
+        ] {
             let parsed = toml::from_str::<DaemonConfig>(&format!("[grpc]\n{zeroed} = 0\n"));
             assert!(parsed.is_err(), "{zeroed} = 0 serves nothing");
         }
 
         let lifetime: DaemonConfig = toml::from_str(
             "[grpc]\nmax_connection_age_secs = 0\nmax_connection_age_grace_secs = 60\n\
-             max_connection_idle_secs = 120\nadaptive_streams = false\n",
+             max_connection_idle_secs = 120\nadaptive_work_streams = false\n",
         )
         .expect("deserialise");
         let limits = GrpcLimits::from(&lifetime.grpc);
@@ -1133,7 +1143,7 @@ path = "/tmp/zaino-compact-block"
             limits.max_connection_age,
             limits.max_connection_age_grace,
             limits.max_connection_idle,
-            limits.adaptive_streams,
+            limits.adaptive_work_streams,
         );
         assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
     }

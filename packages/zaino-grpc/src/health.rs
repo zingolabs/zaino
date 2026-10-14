@@ -6,15 +6,16 @@
 //!   `max_connections_per_ip` × that); over = `429`
 //! - anything else over HTTP/1.x = `404` (gRPC needs h2)
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use http::{header, Method, Request, Response, StatusCode, Version};
 use http_body_util::{Either, Full};
 use tokio::time::Instant;
+
+use crate::service::take_ready;
 
 /// What the health paths answer (zainod: its `/readyz` + public `/status` projection)
 pub trait Health: Send + Sync + 'static {
@@ -54,7 +55,8 @@ impl Bucket {
     }
 }
 
-/// Health paths answered here, the rest passed on (one per connection)
+/// Health paths answered here, the rest passed on with their RPC resolved (outermost layer, one
+/// per connection)
 #[derive(Clone)]
 pub(crate) struct HealthRoute<Inner> {
     inner: Inner,
@@ -110,13 +112,13 @@ where
 {
     type Response = Answered<ResBody>;
     type Error = Inner::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, mut request: Request<ReqBody>) -> Self::Future {
         let path = request.uri().path();
         let health_path = matches!(path, READYZ | STATUS) && self.health.is_some();
         let local = if health_path && request.method() == Method::GET {
@@ -136,9 +138,8 @@ where
             return Box::pin(std::future::ready(Ok(response.map(Either::Left))));
         }
 
-        // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
-        let mut inner = self.inner.clone();
-        std::mem::swap(&mut self.inner, &mut inner);
+        crate::service::Method::resolve(&mut request);
+        let mut inner = take_ready(&mut self.inner);
         Box::pin(async move { Ok(inner.call(request).await?.map(Either::Right)) })
     }
 }

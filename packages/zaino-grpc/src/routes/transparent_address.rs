@@ -419,15 +419,12 @@ mod tests {
             let message = service::Address { address: address.to_owned() };
             frame_into(&mut streamed, |out| message.encode_raw(out));
         }
-        let response = router
-            .call(
-                Request::builder()
-                    .uri(format!("http://localhost{}", Method::GetTaddressBalanceStream.path()))
-                    .body(Full::new(bytes::Bytes::from(streamed)))
-                    .expect("request"),
-            )
-            .await
-            .expect("router answers");
+        let mut request = Request::builder()
+            .uri(format!("http://localhost{}", Method::GetTaddressBalanceStream.path()))
+            .body(Full::new(bytes::Bytes::from(streamed)))
+            .expect("request");
+        Method::resolve(&mut request);
+        let response = router.call(request).await.expect("router answers");
         let balance = service::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
         assert_eq!(balance.expect("balance"), service::Balance { value_zat: 870 }, "= list shape");
 

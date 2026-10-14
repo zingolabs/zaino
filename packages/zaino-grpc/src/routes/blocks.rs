@@ -58,13 +58,15 @@ fn range_response<V: CommittedView>(
         // - Blocking pool for disk steps only (cold mmap refill ~11.7 ms would stall the worker)
         // - In-memory steps inline (else a task per block on the highest-volume RPC)
         let (cursor, chunk) = if cursor.next_touches_disk() {
-            // - Range lane per disk step, not per request (layer reads never queue)
-            // - Err = runtime shutting down → stream ends
+            // Range lane per disk step, not per request (layer reads never queue)
             let stepped = reads.read(Lane::Range, move || {
                 let chunk = cursor.next_chunk();
                 (cursor, chunk)
             });
-            stepped.await.ok()?
+            match stepped.await {
+                Ok(stepped) => stepped,
+                Err(status) => return Some((Ok(Frame::trailers(trailers(&status))), None)),
+            }
         } else {
             let chunk = cursor.next_chunk();
             (cursor, chunk)

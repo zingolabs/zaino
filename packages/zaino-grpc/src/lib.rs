@@ -20,6 +20,7 @@ mod limits;
 mod memo;
 mod network;
 mod observe;
+mod overload;
 mod report;
 mod routes;
 mod service;
@@ -30,7 +31,7 @@ mod tls;
 mod transport;
 mod wire;
 
-pub use admission::{Load, LoadReport};
+pub use admission::{AdmissionReport, AdmissionState};
 pub use client::TrustedProxies;
 pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use health::Health;

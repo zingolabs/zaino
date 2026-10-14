@@ -145,9 +145,10 @@ queue, except the read lanes. How each cap, the accept loop and the health paths
 ### Stream time limits
 
 No stream has a cap on its total length, so a full sync streams for as long as it keeps
-receiving. A client's own `grpc-timeout` is its deadline, and `[grpc] stall_timeout_secs`
-(default 300) bounds a stream that makes no progress in either direction
-([zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack)).
+receiving. A client's own `grpc-timeout` is its deadline. Two `[grpc]` bounds (default 300 s
+each) catch a stream that makes no progress: `unread_timeout_secs` (its client stopped
+reading: the connection closes) and `silent_timeout_secs` (nothing to send: the stream ends
+`UNAVAILABLE`) ([zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack)).
 
 ### Behind a proxy
 

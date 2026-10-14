@@ -1,13 +1,7 @@
 //! [`GrpcService`]: hyper-util's HTTP/2 server around the path dispatch (`service.rs`)
 //! (`service.bind().await?` at boot, then `tokio::spawn(bound.run(cancel))`)
 //!
-//! Stack, outermost first:
-//!
-//! ```text
-//!   accept ─ connection caps ─ PROXY header ─ TLS ─ h2 / HTTP/1.1 conn ─ health ─ metrics
-//!     ─ admission ─ dispatch
-//! ```
-//!
+//! - stack, outermost first: usage.md "Serve stack"
 //! - hyper, not `tonic::transport::Server` (own accept loop: over-cap closed before a task
 //!   exists; h2 settings per connection)
 
@@ -27,13 +21,13 @@ use tracing::{debug, info, warn, Instrument as _, Span};
 use zaino_persistence::CommittedView;
 use zaino_source::ChainDataSource;
 
-use crate::admission::{Admission, Class, Load};
+use crate::admission::{Admission, AdmissionState, Class};
 use crate::client::TrustedProxies;
 use crate::connections::{ConnectionCaps, Reserved};
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::observe::Measured;
-use crate::report::{self, Held, INTERVAL};
+use crate::report::{self, CapsInUse, INTERVAL};
 use crate::service::{Dispatch, Routes, Routing};
 use crate::{emit, GrpcLimits};
 
@@ -74,7 +68,7 @@ pub struct GrpcService<S: ChainDataSource, V> {
     limits: GrpcLimits,
     proxies: TrustedProxies,
     tls: Option<crate::Tls>,
-    load: Arc<Load>,
+    admission: Arc<AdmissionState>,
     health: Option<Arc<dyn Health>>,
     retire: Retire,
 }
@@ -90,10 +84,10 @@ impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
     /// Unrouted: health answered, every method `UNAVAILABLE` until [`Routing::route`]
     pub fn new(bind: SocketAddr, limits: GrpcLimits) -> Self {
         let dispatch = Dispatch::new(&limits);
-        let load = Arc::new(Load::new(&limits));
+        let admission = Arc::new(AdmissionState::new(&limits));
         let proxies = TrustedProxies::default();
         let retire = Retire::default();
-        Self { dispatch, bind, limits, proxies, tls: None, load, health: None, retire }
+        Self { dispatch, bind, limits, proxies, tls: None, admission, health: None, retire }
     }
 
     /// Routes these methods once its owner has them, before or after `run`
@@ -118,9 +112,9 @@ impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
         self
     }
 
-    /// The work pool's live load (`report()`: adaptive limit, streams in flight, refusals/s)
-    pub fn load(&self) -> Arc<Load> {
-        Arc::clone(&self.load)
+    /// Admission pools, read by `report()`
+    pub fn admission(&self) -> Arc<AdmissionState> {
+        Arc::clone(&self.admission)
     }
 
     /// Terminates TLS on the listener (else plaintext h2c, for a TLS-terminating proxy in front)
@@ -175,7 +169,7 @@ impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
     }
 }
 
-/// Per-connection service stack (module doc)
+/// Per-connection service stack (usage.md "Serve stack")
 type Stack<S, V> = TowerToHyperService<HealthRoute<Measured<Admission<Dispatch<S, V>>>>>;
 
 /// What every connection task shares
@@ -187,17 +181,16 @@ struct Shared<S: ChainDataSource, V> {
     health: Option<Arc<dyn Health>>,
     retire: Retire,
     dispatch: Dispatch<S, V>,
-    load: Arc<Load>,
+    admission: Arc<AdmissionState>,
     limits: GrpcLimits,
     cancel: CancellationToken,
 }
 
 impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
-    /// Permits and connections held now, each against its cap
-    fn held(&self) -> Held {
-        Held {
-            streams: self.load.held(Class::Work),
-            subscriptions: self.load.held(Class::Subscription),
+    fn caps_in_use(&self) -> CapsInUse {
+        CapsInUse {
+            work_streams: self.admission.held(Class::Work),
+            subscriptions: self.admission.held(Class::Subscription),
             connections: self.caps.held(),
         }
     }
@@ -243,7 +236,7 @@ impl<S: ChainDataSource, V: CommittedView> BoundGrpcService<S, V> {
             health: server.health,
             retire: server.retire,
             dispatch: server.dispatch,
-            load: server.load,
+            admission: server.admission,
             limits: server.limits,
             cancel: cancel.clone(),
         });
@@ -257,8 +250,9 @@ impl<S: ChainDataSource, V: CommittedView> BoundGrpcService<S, V> {
                 _ = cancel.cancelled() => return,
                 accepted = listener.accept() => accepted,
                 now = summaries.tick() => {
-                    report::summarise(now - window_opened, shared.held());
-                    emit::adaptive_stream_limit(shared.load.report().limit);
+                    let elapsed = now - window_opened;
+                    let at_capacity = shared.admission.tick(elapsed);
+                    report::summarise(elapsed, shared.caps_in_use(), at_capacity);
                     window_opened = now;
                     continue;
                 }
@@ -374,7 +368,7 @@ impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
     }
 
     /// Until the peer closes, `cancel` (graceful), or a stream holds unread data past
-    /// `stall_timeout` (dropped: graceful would wait on the very stream that stalled)
+    /// `unread_timeout` (dropped: graceful would wait on the very stream that stalled)
     ///
     /// - aged or idle (`lifetime.rs`): GOAWAY, in-flight streams get `max_connection_age_grace`
     async fn serve<I>(&self, io: I, retirement: Retirement)
@@ -384,7 +378,7 @@ impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
         let stalls = Arc::new(crate::stall::Watch::default());
         let activity = Arc::new(Activity::default());
         let admission =
-            Admission::new(self.dispatch.clone(), Arc::clone(&self.load), Arc::clone(&stalls));
+            Admission::new(self.dispatch.clone(), Arc::clone(&self.admission), Arc::clone(&stalls));
         let measured = Measured::new(admission, Arc::clone(&activity));
         let service: Stack<S, V> =
             TowerToHyperService::new(HealthRoute::new(measured, self.health.clone()));
@@ -405,7 +399,7 @@ impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
         };
         let retired = tokio::select! {
             _ = serving.as_mut() => return,
-            _ = stalls.stalled(limits.stall_timeout) => return emit::connection_stalled(),
+            _ = stalls.stalled(limits.unread_timeout) => return emit::connection_stalled(),
             _ = self.cancel.cancelled() => {
                 serving.as_mut().graceful_shutdown();
                 let _ = serving.await;
@@ -419,7 +413,7 @@ impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
         serving.as_mut().graceful_shutdown();
         tokio::select! {
             _ = tokio::time::timeout(limits.max_connection_age_grace, serving.as_mut()) => {}
-            _ = stalls.stalled(limits.stall_timeout) => emit::connection_stalled(),
+            _ = stalls.stalled(limits.unread_timeout) => emit::connection_stalled(),
         }
     }
 }
@@ -531,10 +525,11 @@ mod tests {
                 bind
             }
         };
+        // timed from before the connect (the server's clocks start at accept, before the handshake)
         let connect = |bind| async move {
+            let opened = Instant::now();
             let tcp = tokio::net::TcpStream::connect(bind).await.expect("connects");
             let (client, connection) = h2::client::handshake(tcp).await.expect("h2 handshake");
-            let opened = Instant::now();
             let closed = tokio::spawn(async move { (connection.await, opened.elapsed()) });
             (client, closed)
         };
@@ -642,7 +637,7 @@ mod tests {
     ///   `UNAVAILABLE` [`crate::service::STARTING`]; routed later = the routes' own answer
     /// - ALPN `http/1.1`: `GET /readyz` = 200 + the health body, `/status` = 200, a gRPC path =
     ///   404; ALPN `h2`: `GetLightdInfo` reaches the gRPC stack (`UNAVAILABLE`: nothing served)
-    /// - a monitor's `/readyz` never takes a work permit (`load.in_flight` stays 0)
+    /// - a monitor's `/readyz` never takes a work slot (`in_flight` stays 0)
     #[tokio::test]
     async fn one_tls_listener_answers_health_from_bind_and_grpc_once_routed() {
         use std::sync::Arc;
@@ -674,7 +669,7 @@ mod tests {
         let server = GrpcService::new(ANY_PORT, crate::GrpcLimits::default())
             .with_tls(crate::Tls::load(files).expect("pair loads"))
             .with_health(Arc::new(Serving));
-        let (load, routing) = (server.load(), server.routing());
+        let (admission, routing) = (server.admission(), server.routing());
         let bound = server.bind().await.expect("binds");
         let bind = bound.local_addr().expect("bound");
         tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
@@ -739,7 +734,7 @@ mod tests {
         assert_eq!(readyz, healthy, "monitor's /readyz, unrouted");
         assert_eq!(get("/status".to_owned()).await.0, "200", "/status, unrouted");
         assert_eq!(get(Method::GetLightdInfo.path()).await.0, "404", "gRPC needs h2");
-        assert_eq!(load.report().in_flight, 0, "health never holds a work permit");
+        assert_eq!(admission.report().in_flight, 0, "health never holds a work slot");
         let (status, message) = lightd_info().await;
         assert_eq!(status, "14", "unrouted: UNAVAILABLE");
         assert!(message.starts_with("starting"), "unrouted: {message}");

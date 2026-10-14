@@ -120,15 +120,15 @@ pub fn describe_metrics() {
     describe_histogram!(DURATION_SECONDS, Unit::Seconds, "Admission through trailers, by method");
     describe_histogram!(STREAM_MESSAGES, "Messages sent per stream, by method");
     describe_counter!(SENT_BYTES_TOTAL, Unit::Bytes, "Response body bytes, by method");
-    describe_gauge!(ACTIVE_STREAMS, "Streams holding an admission permit");
+    describe_gauge!(ACTIVE_STREAMS, "Work streams holding an admission slot");
     describe_counter!(
         ADMISSION_REJECTED_TOTAL,
-        "Streams refused UNAVAILABLE for want of an admission permit"
+        "Work streams refused UNAVAILABLE at the adaptive work-stream limit"
     );
-    describe_gauge!(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a permit");
+    describe_gauge!(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a slot");
     describe_counter!(
         SUBSCRIPTIONS_REJECTED_TOTAL,
-        "Subscriptions refused UNAVAILABLE for want of a subscription permit"
+        "Subscriptions refused UNAVAILABLE at max_subscriptions"
     );
     describe_counter!(
         ACCEPT_ERRORS_TOTAL,
@@ -142,20 +142,20 @@ pub fn describe_metrics() {
     describe_gauge!(CONNECTIONS_ACTIVE, "Open client connections");
     describe_counter!(
         STALLED_CONNECTIONS_TOTAL,
-        "Connections closed for holding data their client did not read past the stall timeout"
+        "Connections closed for holding data their client did not read within unread_timeout"
     );
     describe_counter!(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps");
     describe_counter!(
         RETIRED_CONNECTIONS_TOTAL,
-        "Connections sent GOAWAY for their age, idleness (gRPC A9) or an operator hold, by reason"
+        "Connections sent GOAWAY, by reason: age, idle (gRPC A9) or retired (an operator hold)"
     );
     describe_gauge!(
         ADAPTIVE_STREAM_LIMIT,
-        "Work streams admitted at once now (latency-adaptive; max_streams when off)"
+        "Work streams admitted at once now (latency-adaptive; max_work_streams when off)"
     );
 }
 
-/// A connection sent GOAWAY at `max_connection_age` or `max_connection_idle`
+/// A connection sent GOAWAY (`reason` = `age` | `idle` | `retired`)
 pub(crate) fn connection_retired(reason: &'static str) {
     metrics::counter!(RETIRED_CONNECTIONS_TOTAL, "reason" => reason).increment(1);
 }
@@ -173,7 +173,7 @@ pub(crate) fn connection_closed() {
     metrics::gauge!(CONNECTIONS_ACTIVE).decrement(1.0);
 }
 
-/// A connection closed for holding unread data past the stall timeout
+/// A connection closed for holding data unread past `unread_timeout`
 pub(crate) fn connection_stalled() {
     metrics::counter!(STALLED_CONNECTIONS_TOTAL).increment(1);
     report::connection_stalled();
@@ -204,7 +204,6 @@ pub(crate) fn stream_released(class: Class) {
 }
 
 pub(crate) fn stream_rejected(class: Class) {
-    report::at_capacity();
     match class {
         Class::Work => metrics::counter!(ADMISSION_REJECTED_TOTAL).increment(1),
         Class::Subscription => metrics::counter!(SUBSCRIPTIONS_REJECTED_TOTAL).increment(1),

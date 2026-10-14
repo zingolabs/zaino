@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
 use http::{Request, Response};
 use http_body::{Body, Frame, SizeHint};
 use tonic::{Code, Status};
@@ -17,7 +18,7 @@ use crate::admission::AtCapacity;
 use crate::emit;
 use crate::lifetime::{Activity, Open};
 use crate::report;
-use crate::service::Method;
+use crate::service::{take_ready, Method};
 
 /// Each request timed, its body's writes counted, held open on its connection's `activity` until
 /// the body drops
@@ -56,23 +57,18 @@ where
 {
     type Response = Response<Counted<ResBody>>;
     type Error = Inner::Error;
-    type Future = Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>,
-    >;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
-        let method = Method::of(request.uri().path());
+        let method = Method::of_request(&request);
         let started = Instant::now();
         let open = self.activity.opened();
 
-        // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
-        let mut inner = self.inner.clone();
-        std::mem::swap(&mut self.inner, &mut inner);
-
+        let mut inner = take_ready(&mut self.inner);
         Box::pin(async move {
             let response = inner.call(request).await?;
             // Header-carried `grpc-status` = unary answer or error, already complete

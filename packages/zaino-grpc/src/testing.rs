@@ -183,15 +183,18 @@ pub(super) fn framed_request(method: Method, message: Bytes) -> Request<Full<Byt
     request_at(&method.path(), message)
 }
 
-/// gRPC request at any `path`, body = one framed message
+/// gRPC request at any `path`, body = one framed message, its method resolved as the serve stack
+/// resolves it
 pub(super) fn request_at(path: &str, message: Bytes) -> Request<Full<Bytes>> {
     let mut framed = Vec::with_capacity(FRAME_HEADER + message.len());
     frame_into(&mut framed, |out| out.extend_from_slice(&message));
 
-    Request::builder()
+    let mut request = Request::builder()
         .uri(format!("http://localhost{path}"))
         .body(Full::new(Bytes::from(framed)))
-        .expect("request")
+        .expect("request");
+    Method::resolve(&mut request);
+    request
 }
 
 /// Data frames, then the trailers a streaming body ends in

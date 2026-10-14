@@ -123,8 +123,8 @@ routing.route(routes);
 Every method lives in one registry, `ROUTES` in `service.rs`: one row per
 method with its wire name (also its `method` metric label), its admission
 `Class` (`Work`, or `Subscription` for a stream that idles between arrivals:
-own pool, never idled out, no latency recorded) and the index that enables it
-(`None` = always served). A new RPC is:
+own pool, never cut for silence, no latency recorded) and the index whose view
+its handler reads (`None` = reads none, so never disabled). A new RPC is:
 
 1. a `Method` variant (rows stay in `Method` order: a const assertion checks it),
 2. its `ROUTES` row,
@@ -133,8 +133,9 @@ own pool, never idled out, no latency recorded) and the index that enables it
    `wire::streaming`, never by hand: `streaming` joins ready records into full
    DATA frames).
 
-Path lookup, admission, the idle bound, metrics labels and the
-disabled-index answer all read the row; an `Err` becomes its status in one
+The path is resolved to its row once per request (`Method::resolve`, in the
+outermost layer); admission, the silence bound, metrics labels and the
+disabled-index answer all read that row; an `Err` becomes its status in one
 place (`Wired::answer`).
 
 ### Why `GetTransaction` forwards
@@ -160,25 +161,27 @@ failure = `UNAVAILABLE`). `height` = the mined height on the best chain, else `0
 hyper-util's HTTP/2 server around the path dispatch, not
 `tonic::transport::Server`, so the accept loop is zaino's:
 
+Outermost first, per connection after the first three:
+
 ```text
-accept ─ total cap ─ client identity ─ per-client cap ─ h2 / HTTP/1.1 conn ─ health ─ admission ─ dispatch
+accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS ─ h2 / HTTP/1.1
+  ─ health (resolves the RPC) ─ metrics ─ admission ─ dispatch (grpc-timeout, silence) ─ handler
 ```
 
 - **Health** (`with_health(Arc<dyn Health>)`): `GET /readyz` (`Health::readyz` → `200` / `503`)
   and `GET /status` (`Health::status`, always `200`) are answered on this listener over
-  HTTP/1.1 or h2, before admission, so they never take a work permit.
+  HTTP/1.1 or h2, before admission, so they never take a work slot.
   - TLS offers ALPN `h2` then `http/1.1`, so load-balancer monitors connect over HTTPS/1.1.
   - Each connection may send 10 at once and regains one per second; past that the answer is `429`.
   - A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`.
-  - Without `with_health`, those paths go to the gRPC stack like any other.
+  - Without `with_health`, those paths are like any other: `404` over HTTP/1.1, `UNIMPLEMENTED`
+    over h2.
 - **TLS** (`with_tls(Tls::load(files)?)`): rustls with the ring provider, ALPN `h2` then
   `http/1.1`. A missing or mismatched pair fails `Tls::load`, never plaintext. The files are
   checked every 60 s; a changed pair serves new connections, and one that fails to load is
   logged while the previous pair keeps serving. A handshake not done within 10 s closes the
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
-- `load()` → `Load::report()` also carries `overloaded`: ≥ 10% of work refused (at ≥ 1/s,
-  averaged over 60 s) for 5 minutes straight, cleared after 5 minutes under 2%.
 - `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a snapshot, `version` the
   daemon's (`None` = `UNAVAILABLE`).
 
@@ -188,14 +191,15 @@ Every cap refuses; none queues except the read lanes:
 |---|---|---|---|
 | `max_connections` | 4096 | accept | socket closed |
 | `max_connections_per_ip` | 32 | once the client is named | socket closed |
-| `max_streams_per_connection` | 8 | h2 `SETTINGS` | peer cannot open one |
-| `max_streams` | 2048 | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
-| `adaptive_streams` | on | admission, same methods: the latency-adaptive limit (below) | same |
+| `max_streams_per_connection` | 8 | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
+| `max_work_streams` | 2048 | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
+| `adaptive_work_streams` | on | admission, same methods: the latency-adaptive limit (below) | same |
 | `max_subscriptions` | 4096 | admission, `GetMempoolStream` | same |
 | `max_point_reads` | 64 | one block / tree state / root list off the files | bounded wait |
 | `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
 | `max_scan_reads` | 4 | one address-history scan | bounded wait |
-| `stall_timeout` | 300 s | per stream: unread data / nothing to send | connection closed / stream `UNAVAILABLE` |
+| `unread_timeout` | 300 s | per stream: data handed over, unread by the client | connection closed |
+| `silent_timeout` | 300 s | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
 | `drain_timeout` | 10 s | `run`, after `cancel` | still-open connections dropped |
 | `max_connection_age` | 30 min ±10% | per connection | GOAWAY, then the grace |
 | `max_connection_idle` | 30 min | per connection, no open stream | GOAWAY |
@@ -207,8 +211,10 @@ Every cap refuses; none queues except the read lanes:
   within ±10%, so connections opened together do not cycle together) or after
   `max_connection_idle` with no open stream, a connection gets an HTTP/2 GOAWAY.
   Its in-flight streams then have `max_connection_age_grace` to finish before it
-  closes. `zaino_grpc_retired_connections_total{reason="age"|"idle"}` counts
-  them. `None` turns either off.
+  closes. `None` turns either off. `retire()` → `Retire::retire_all()` does the
+  same to every connection open at the call (an operator hold).
+  `zaino_grpc_retired_connections_total{reason="age"|"idle"|"retired"}` counts
+  all three.
 - **Adaptive limit.** Work streams admitted at once follow measured latency,
   using Netflix concurrency-limits' Gradient2:
   - A sample is the time the server spent producing one message: from admission
@@ -217,17 +223,21 @@ Every cap refuses; none queues except the read lanes:
   - Each window (≥ 500 ms and ≥ 10 samples) compares its mean against a
     long-term baseline averaged over 600 windows:
     `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`, smoothed at 0.2.
-  - The limit stays between 32 and `max_streams`, starting at 256.
+  - The limit stays between 32 and `max_work_streams`, starting at 256, and
+    admission holds work streams to it exactly.
   - A window that peaked below half the limit is app-limited and changes nothing.
-  - Refusal is the same `UNAVAILABLE` + pushback. `adaptive_streams = false`
-    keeps the limit at `max_streams`.
-  - `GrpcService::load()` → `Load::report()` gives `{limit, in_flight,
-    refused_per_s}` (refusals decay over ~10 s); `zaino_grpc_adaptive_stream_limit`
-    exports the limit.
-- A stream permit is owned by the response body, so it returns when the stream
+  - Refusal is the same `UNAVAILABLE` + pushback. `adaptive_work_streams = false`
+    keeps the limit at `max_work_streams`.
+  - `zaino_grpc_adaptive_stream_limit` exports the limit.
+- **Load report.** `GrpcService::admission()` → `AdmissionState::report()` gives
+  `{limit, in_flight, refused_per_s, overloaded}`. `refused_per_s` and
+  `overloaded` move once a minute, at the serving summary: `overloaded` sets
+  once every minute for 5 minutes refused ≥ 10% of work (at ≥ 1/s), and clears
+  once every minute for 5 minutes refused under 2% (`overload.rs`).
+- A stream's slot is owned by the response body, so it returns when the stream
   ends or the client disconnects.
 - A mempool subscription idles until the next block, one per connected wallet,
-  so it never holds a work permit.
+  so it never holds a work slot.
 - `with_trusted_proxies(TrustedProxies::new(cidrs))`: a peer inside one of the
   networks must open with a PROXY header (v1 or v2, read under 5 s, ≤ 4 KiB), and
   the per-client cap counts the address it names. `LOCAL`/`UNKNOWN` headers
@@ -241,22 +251,22 @@ Every cap refuses; none queues except the read lanes:
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
 - **No total cap.** A stream lives as long as it makes progress. Its bounds are
-  the client's `grpc-timeout` and `stall_timeout` without progress on either
-  side, below.
+  the client's `grpc-timeout`, `unread_timeout` (client side) and
+  `silent_timeout` (server side), below.
 - **Deadline.** `grpc-timeout` (at most 8 digits plus `H`, `M`, `S`, `m`, `u` or
   `n`; a malformed value is ignored, as tonic ignores it) is read at arrival. Past
   it, a handler still pending answers `DEADLINE_EXCEEDED`, and a stream ends
   with `DEADLINE_EXCEEDED` trailers. The stream's body is dropped with it, so its
-  reads and permits go too.
-- **Stalls.** A body that handed hyper a frame and is not polled again, because
+  reads and slot go too.
+- **Unread.** A body that handed hyper a frame and is not polled again, because
   flow control stalled on a client that stopped reading, owes that frame. Once
-  any stream on a connection has owed for `stall_timeout`, the connection is
+  any stream on a connection has owed for `unread_timeout`, the connection is
   closed and `zaino_grpc_stalled_connections_total` counts it. An idle stream
   (a quiet mempool subscription, a read waiting for its lane) never owes.
-- **Idle.** A handler or stream body with nothing to send for `stall_timeout`
+- **Silence.** A handler or stream body with nothing to send for `silent_timeout`
   while hyper waits on it ends with `UNAVAILABLE` (`nothing to send for …`). The
-  clock restarts at every frame. `GetMempoolStream` never idles out, because it
-  is silent until the next block by design.
+  clock restarts at every frame. `GetMempoolStream` is exempt, because it is
+  silent until the next block by design.
 - **Frames.** Records that are ready back to back (`GetAddressUtxosStream`,
   `GetMempoolTx`, `GetBlockRange`'s in-memory blocks) are joined into DATA
   chunks of up to 16 KiB. A record of 16 KiB or more passes through uncopied,
@@ -291,11 +301,11 @@ The answers every synced wallet asks for right after each block never queue:
 | `GetTreeState` (layer heights), `GetLatestTreeState` | framed once per NFS publish |
 | `GetSubtreeRoots` | each pool's list framed once per NFS publish; a request = one slice |
 
-The per-snapshot memos (`memo::PerView`) are keyed on the snapshot's `Arc`. A
-new snapshot starts empty, so there is no invalidation rule. The first ask per
-snapshot computes on the point lane, single-flight: the rest
-of the herd waits for that one computation, then every later ask is answered
-inline.
+The tree-state memos (`memo::PerView`) are keyed on the NFS publish (the
+`Indexed` `Arc`), not the global snapshot, which moves on every chain-view fold.
+A new publish starts empty, so there is no invalidation rule. The first ask per
+publish computes on the point lane, single-flight: the rest of the herd waits
+for that one computation, then every later ask is answered inline.
 
 - Per connection: 64 KiB per-stream send buffer, 30 s keepalive ping (20 s
   timeout), rapid-reset limit of 128.
@@ -311,7 +321,7 @@ tasks inherit it too), built from the same close-outs the metrics count:
 ```text
 INFO  … Grpc:  Serving    rps=42.1 p99=38.4ms out=3.25MB/s conns=17
 WARN  … Grpc:  Serving    rps=14.7 p99=… failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
-WARN  … Grpc:  High load  rps=412 p99=1.20s out=6.04MB/s conns=1,203/4,096 streams=640/2,048
+WARN  … Grpc:  High load  rps=412 p99=1.20s out=6.04MB/s conns=1,203/4,096 work=640/2,048
 ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 ```
 
@@ -319,8 +329,9 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   the first message of each `OK` work request (a unary answer, or a stream's
   first item; `GetMempoolStream` is never timed), p50 / p99 from log-linear
   buckets ≤ 12.5 % wide, never above `max`, which is exact. **out** = response
-  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **streams / subs /
-  conns** = permits and connections held at the summary, of their caps.
+  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **work / subs /
+  conns** = work streams, subscriptions and connections held at the summary, of
+  their caps.
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
   nothing served yet, validator unreachable; `at_capacity` = the admission share);
@@ -331,7 +342,7 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   longest), a stalled connection closed (`stalled`) or a connection refused at a
   cap (`conns_refused`); problem fields appear only when non-zero. Nothing
   served and nothing held = no line.
-- While more than 25% of the stream, subscription or connection cap is held, the
+- While more than 25% of the work-stream, subscription or connection cap is held, the
   summary is WARN `High load` instead, with each such cap as `used/max`.
 - The window's first failure is logged as it happens (ERROR `Request failed`:
   `method`, `code`, the `error` message the client got), and its first

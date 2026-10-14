@@ -9,14 +9,13 @@
 //! - an unknown path = `UNIMPLEMENTED`
 
 use std::{
-    future::Future,
     num::NonZeroUsize,
-    pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
 
+use futures::future::BoxFuture;
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
@@ -59,8 +58,8 @@ pub(crate) enum Method {
     GetLightdInfo,
 }
 
-/// One registry row: wire name (= the `method` metric label), admission pool, the index that
-/// enables it (`None` = always served)
+/// One registry row: wire name (= the `method` metric label), admission pool, the index whose view
+/// its handler reads (`None` = reads none: always served)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Route {
     pub(crate) method: Method,
@@ -80,7 +79,8 @@ pub(crate) const ROUTES: [Route; 18] = {
     use Method::*;
 
     [
-        row(GetLatestBlock, "GetLatestBlock", Work, Some(CompactBlock)),
+        // the snapshot's tip itself
+        row(GetLatestBlock, "GetLatestBlock", Work, None),
         row(GetBlock, "GetBlock", Work, Some(CompactBlock)),
         row(GetBlockRange, "GetBlockRange", Work, Some(CompactBlock)),
         // TODO: REMOVE — deprecated alias of `GetBlockRange` (pepper-sync still calls it)
@@ -117,9 +117,21 @@ const _: () = {
 
 impl Method {
     /// `/{service}/{method}` → its row's method (`None` = no row)
-    pub(crate) fn of(path: &str) -> Option<Self> {
+    fn of(path: &str) -> Option<Self> {
         let name = path.strip_prefix(SERVICE)?;
         ROUTES.iter().find(|route| route.name == name).map(|route| route.method)
+    }
+
+    /// Once per request, by the outermost layer (`HealthRoute`): every inner layer reads it back
+    pub(crate) fn resolve<B>(request: &mut Request<B>) {
+        if let Some(method) = Self::of(request.uri().path()) {
+            request.extensions_mut().insert(method);
+        }
+    }
+
+    /// What [`Self::resolve`] named (`None` = no row)
+    pub(crate) fn of_request<B>(request: &Request<B>) -> Option<Self> {
+        request.extensions().get::<Self>().copied()
     }
 
     pub(crate) const fn route(self) -> Route {
@@ -164,12 +176,11 @@ pub(crate) const STARTING: &str = "starting: not routed yet";
 ///
 /// - `routed` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
-/// - `idle_limit` = `GrpcLimits::stall_timeout` (nothing to send that long = cut, `deadline.rs`)
 struct Wired<S: ChainDataSource, V> {
     routed: OnceLock<Routed<S, V>>,
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
-    idle_limit: Duration,
+    silent_timeout: Duration,
 }
 
 /// [`Routes`] + each row's unconfigured index, fixed at [`Routing::route`] (`None` = served)
@@ -189,9 +200,9 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
 
 impl<S: ChainDataSource, V: CommittedView> Dispatch<S, V> {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
-        let (reads, idle_limit) = (ReadLanes::new(limits), limits.stall_timeout);
+        let (reads, silent_timeout) = (ReadLanes::new(limits), limits.silent_timeout);
         let routed = OnceLock::new();
-        Self(Arc::new(Wired { routed, reads, tree_states: Arc::default(), idle_limit }))
+        Self(Arc::new(Wired { routed, reads, tree_states: Arc::default(), silent_timeout }))
     }
 
     pub(crate) fn routing(&self) -> Routing<S, V> {
@@ -329,7 +340,7 @@ where
 {
     type Response = Response<Body>;
     type Error = std::convert::Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -338,13 +349,19 @@ where
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let wired = Arc::clone(&self.0);
         let path = request.uri().path().to_owned();
-        let method = Method::of(&path);
-        let idles = method.is_none_or(|method| !method.route().is_subscription());
-        let bounds = Bounds::of(request.headers(), idles.then_some(wired.idle_limit));
+        let method = Method::of_request(&request);
+        let bounded = method.is_none_or(|method| !method.route().is_subscription());
+        let bounds = Bounds::of(request.headers(), bounded.then_some(wired.silent_timeout));
         Box::pin(
             async move { Ok(bounds.apply(wired.answer(method, &path, request.into_body())).await) },
         )
     }
+}
+
+/// `inner` swapped for its clone: the instance polled ready is the one called (tower's contract)
+pub(crate) fn take_ready<Inner: Clone>(inner: &mut Inner) -> Inner {
+    let clone = inner.clone();
+    std::mem::replace(inner, clone)
 }
 
 #[cfg(test)]
@@ -370,9 +387,10 @@ mod tests {
         assert_eq!(others.map(Method::of), [None; 4]);
     }
 
-    /// Routed with only compact_block configured, nothing served yet:
+    /// Routed with only tree_state configured, nothing served yet:
     /// - an enabled method = `UNAVAILABLE` (retry); a disabled one = `UNIMPLEMENTED` naming its
     ///   index, served or not
+    /// - a method reading no index (`GetLatestBlock`, `GetLightdInfo`) = never disabled
     /// - an unknown path = `UNIMPLEMENTED`
     #[tokio::test]
     async fn config_enables_each_method_and_an_unknown_path_is_unimplemented() {
@@ -380,7 +398,7 @@ mod tests {
         use tower::Service as _;
         use Method::*;
 
-        let mut router = dispatch(Routes { indexes: vec![IndexKind::CompactBlock], ..routes() });
+        let mut router = dispatch(Routes { indexes: vec![IndexKind::TreeState], ..routes() });
         let syncing = || (Unavailable, "the indexes are syncing: nothing served yet".to_owned());
         let off = |method: Method, index: &str| {
             let method = method.route().name;
@@ -390,10 +408,10 @@ mod tests {
         let health = "/grpc.health.v1.Health/Check";
         let cases = [
             (GetLatestBlock.path(), syncing()),
-            (GetBlockRange.path(), syncing()),
             (GetLightdInfo.path(), syncing()),
-            (GetTreeState.path(), off(GetTreeState, "tree_state")),
-            (GetSubtreeRoots.path(), off(GetSubtreeRoots, "tree_state")),
+            (GetTreeState.path(), syncing()),
+            (GetBlockRange.path(), off(GetBlockRange, "compact_block")),
+            (GetBlock.path(), off(GetBlock, "compact_block")),
             (GetAddressUtxos.path(), off(GetAddressUtxos, "transparent_address")),
             (GetTaddressTxids.path(), off(GetTaddressTxids, "transparent_address")),
             (unknown.to_owned(), (Unimplemented, format!("{unknown}: no such method"))),

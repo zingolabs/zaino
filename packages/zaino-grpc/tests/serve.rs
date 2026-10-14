@@ -57,7 +57,7 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
             max_connections: non_zero(64),
             max_connections_per_ip: non_zero(1),
             max_streams_per_connection: NonZeroU32::new(8).expect("non-zero"),
-            max_streams: non_zero(64),
+            max_work_streams: non_zero(64),
             ..GrpcLimits::default()
         },
     )

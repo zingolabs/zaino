@@ -1,10 +1,10 @@
-//! Time bounds on one request: the client's `grpc-timeout`, and an idle bound, never a total cap
+//! Time bounds on one request: the client's `grpc-timeout`, and a silence bound, never a total cap
 //!
 //! - deadline = `grpc-timeout` at arrival: past it, a pending handler = `DEADLINE_EXCEEDED`, a
 //!   stream ends in `DEADLINE_EXCEEDED` trailers
-//! - idle = nothing to send for `stall_timeout` while hyper waits on the handler or the body →
-//!   `UNAVAILABLE` (retry); the client-side twin = `stall.rs` (sent, unread → connection closed)
-//! - `GetMempoolStream` never idles out (silent until the next block by design)
+//! - silence = nothing to send for `silent_timeout` while hyper waits on the handler or the body
+//!   → `UNAVAILABLE` (retry); client-side twin = `stall.rs` (`unread_timeout` → connection closed)
+//! - `GetMempoolStream` exempt (silent until the next block by design)
 //! - a long stream that keeps delivering lives as long as the client wants (Z#1537)
 
 use std::future::Future;
@@ -40,16 +40,16 @@ fn requested(headers: &HeaderMap) -> Option<Duration> {
     }
 }
 
-/// One request's bounds, fixed at arrival (`idle_limit` = `None`: never idles out)
+/// One request's bounds, fixed at arrival (`silent_limit` = `None`: never cut for silence)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Bounds {
     deadline: Option<Instant>,
-    idle_limit: Option<Duration>,
+    silent_limit: Option<Duration>,
 }
 
 impl Bounds {
-    pub(crate) fn of(headers: &HeaderMap, idle_limit: Option<Duration>) -> Self {
-        Self { deadline: requested(headers).map(|timeout| Instant::now() + timeout), idle_limit }
+    pub(crate) fn of(headers: &HeaderMap, silent_limit: Option<Duration>) -> Self {
+        Self { deadline: requested(headers).map(|timeout| Instant::now() + timeout), silent_limit }
     }
 
     /// `answer` cut at the first bound; a stream's body (status in trailers) bounded the same
@@ -57,10 +57,10 @@ impl Bounds {
         self,
         answer: impl Future<Output = Response<Body>>,
     ) -> Response<Body> {
-        let first_message = self.idle_limit.map(|limit| Instant::now() + limit);
+        let first_message = self.silent_limit.map(|limit| Instant::now() + limit);
         let cut = match (self.deadline, first_message) {
-            (Some(deadline), Some(idle)) => Some(deadline.min(idle)),
-            (deadline, idle) => deadline.or(idle),
+            (Some(deadline), Some(silent)) => Some(deadline.min(silent)),
+            (deadline, silent) => deadline.or(silent),
         };
         let response = match cut {
             Some(at) => match tokio::time::timeout_at(at, answer).await {
@@ -74,16 +74,16 @@ impl Bounds {
             return response;
         }
         let deadline = self.deadline.map(|at| Box::pin(tokio::time::sleep_until(at)));
-        let (idle_limit, idle_timer) = (self.idle_limit, None);
+        let (silent_limit, silent_timer) = (self.silent_limit, None);
         response.map(|inner| {
-            Body::new(Bounded { inner: Some(inner), deadline, idle_limit, idle_timer })
+            Body::new(Bounded { inner: Some(inner), deadline, silent_limit, silent_timer })
         })
     }
 
     /// Why a cut at `at` ended the request
     fn cut_at(&self, at: Instant) -> Status {
-        match (self.deadline == Some(at), self.idle_limit) {
-            (false, Some(limit)) => idled(limit),
+        match (self.deadline == Some(at), self.silent_limit) {
+            (false, Some(limit)) => silenced(limit),
             _ => expired(),
         }
     }
@@ -93,18 +93,18 @@ fn expired() -> Status {
     Status::deadline_exceeded("grpc-timeout passed")
 }
 
-fn idled(idle: Duration) -> Status {
-    Status::unavailable(format!("nothing to send for {idle:?}"))
+fn silenced(silent: Duration) -> Status {
+    Status::unavailable(format!("nothing to send for {silent:?}"))
 }
 
 /// A stream body under its [`Bounds`] (`inner` dropped at a cut: its reads and permits go with it)
 ///
-/// - `idle_timer` runs from the first `Pending` since the last frame, never while hyper holds one
+/// - `silent_timer` runs from the first `Pending` since the last frame, never while hyper holds one
 struct Bounded {
     inner: Option<Body>,
     deadline: Option<Pin<Box<Sleep>>>,
-    idle_limit: Option<Duration>,
-    idle_timer: Option<Pin<Box<Sleep>>>,
+    silent_limit: Option<Duration>,
+    silent_timer: Option<Pin<Box<Sleep>>>,
 }
 
 impl Bounded {
@@ -129,7 +129,7 @@ impl http_body::Body for Bounded {
         }
         match Pin::new(inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                this.idle_timer = None;
+                this.silent_timer = None;
                 if frame.is_trailers() {
                     this.inner = None;
                 }
@@ -145,11 +145,12 @@ impl http_body::Body for Bounded {
                         return this.cut(expired());
                     }
                 }
-                if let Some(limit) = this.idle_limit {
-                    let timer =
-                        this.idle_timer.get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+                if let Some(limit) = this.silent_limit {
+                    let timer = this
+                        .silent_timer
+                        .get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
                     if timer.as_mut().poll(cx).is_ready() {
-                        return this.cut(idled(limit));
+                        return this.cut(silenced(limit));
                     }
                 }
                 Poll::Pending
@@ -243,30 +244,30 @@ mod tests {
         Response::new(Body::new(StreamBody::new(Box::pin(frames))))
     }
 
-    /// Z#1537 (paused clock, idle = 300 s):
+    /// Z#1537 (paused clock, silent = 300 s):
     /// - no total cap: 1,000 s of a record every 100 s ends `OK`
     /// - `grpc-timeout` 250 s cuts the same stream after two records, `DEADLINE_EXCEEDED`
-    /// - nothing to send for 300 s = `UNAVAILABLE`; no idle bound (a subscription) = never cut
-    /// - a handler pending past its deadline / the idle bound = that status, in the headers
+    /// - nothing to send for 300 s = `UNAVAILABLE`; no silence bound (a subscription) = never cut
+    /// - a handler pending past its deadline / the silence bound = that status, in the headers
     #[tokio::test(start_paused = true)]
-    async fn a_stream_lives_while_it_delivers_until_the_clients_deadline_or_an_idle_bound() {
-        let idle = Some(Duration::from_secs(300));
+    async fn a_stream_lives_while_it_delivers_until_the_clients_deadline_or_a_silence_bound() {
+        let silent = Some(Duration::from_secs(300));
         let data = |at: u64| (at, "data".to_owned());
         let ended = |at: u64, code: &str| (at, code.to_owned());
 
         let start = Instant::now();
-        let bounds = Bounds::of(&HeaderMap::new(), idle);
+        let bounds = Bounds::of(&HeaderMap::new(), silent);
         let long = drained(start, bounds.apply(async { every_100_s(10, false) }).await).await;
         let all: Vec<_> = (1..=10).map(|n| data(n * 100)).chain([ended(1_000, "Ok")]).collect();
         assert_eq!(long, all, "1,000 s, never cut");
 
         let start = Instant::now();
-        let bounds = Bounds::of(&timeout("250S"), idle);
+        let bounds = Bounds::of(&timeout("250S"), silent);
         let cut = drained(start, bounds.apply(async { every_100_s(10, false) }).await).await;
         assert_eq!(cut, [data(100), data(200), ended(250, "DeadlineExceeded")]);
 
         let start = Instant::now();
-        let bounds = Bounds::of(&HeaderMap::new(), idle);
+        let bounds = Bounds::of(&HeaderMap::new(), silent);
         let quiet = drained(start, bounds.apply(async { every_100_s(1, true) }).await).await;
         assert_eq!(quiet, [data(100), ended(400, "Unavailable")], "300 s after the last record");
 
@@ -275,7 +276,7 @@ mod tests {
         let subscribed = bounds.apply(async { every_100_s(1, true) });
         let subscribed = drained(start, subscribed.await);
         let open = tokio::time::timeout(Duration::from_secs(3_000), subscribed).await;
-        assert!(open.is_err(), "no idle bound: open for as long as it takes");
+        assert!(open.is_err(), "no silence bound: open for as long as it takes");
 
         for (headers, expected) in [
             (timeout("2S"), ended(2, "DeadlineExceeded")),
@@ -283,7 +284,7 @@ mod tests {
             (timeout("1H"), ended(300, "Unavailable")),
         ] {
             let start = Instant::now();
-            let pending = Bounds::of(&headers, idle).apply(std::future::pending());
+            let pending = Bounds::of(&headers, silent).apply(std::future::pending());
             assert_eq!(drained(start, pending.await).await, [expected]);
         }
     }
@@ -324,7 +325,8 @@ mod tests {
             if let Some(header) = header {
                 request = request.header("grpc-timeout", header);
             }
-            let request = request.body(StreamBody::new(unending)).expect("request");
+            let mut request = request.body(StreamBody::new(unending)).expect("request");
+            Method::resolve(&mut request);
             let start = Instant::now();
             let response = router.call(request).await.expect("router answers");
             let status = Status::from_header_map(response.headers()).expect("a status");

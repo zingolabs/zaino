@@ -1,41 +1,37 @@
 //! Serving caps + the one bounded wait in the serve path
 //!
 //! - Every cap refuses, never queues, except [`ReadLanes`] (a page-faulting read waits for its
-//!   lane's permit; at most `max_streams` waiting)
+//!   lane's permit; at most `max_work_streams` waiting)
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::emit;
 
-/// What one zainod serves at once
+/// What one zainod serves at once (each field's contract: usage.md "Serve stack")
 ///
-/// - `stall_timeout`: a stream's no-progress bound, never a total cap: unpulled data this long →
-///   connection closed (else a never-reading peer keeps its permits); nothing to send this long
-///   while the client waits → stream ended `UNAVAILABLE` (`GetMempoolStream` exempt)
-/// - `drain_timeout`: open connections' grace after `run`'s cancel + GOAWAY (zero = at once)
-/// - `max_connection_age` (±10% per connection) / `max_connection_idle` (no open stream that
-///   long): GOAWAY, then `max_connection_age_grace` for in-flight streams (`None` = never)
-/// - `adaptive_streams`: work streams capped by measured latency, `max_streams` the ceiling
+/// - `max_streams_per_connection` = every h2 stream; `max_work_streams` = admitted work only
+/// - `unread_timeout` (client stopped reading) != `silent_timeout` (server has nothing to send)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrpcLimits {
     pub max_connections: NonZeroUsize,
     pub max_connections_per_ip: NonZeroUsize,
     pub max_streams_per_connection: NonZeroU32,
-    pub max_streams: NonZeroUsize,
+    pub max_work_streams: NonZeroUsize,
     pub max_subscriptions: NonZeroUsize,
     pub max_point_reads: NonZeroUsize,
     pub max_range_reads: NonZeroUsize,
     pub max_scan_reads: NonZeroUsize,
-    pub stall_timeout: Duration,
+    pub unread_timeout: Duration,
+    pub silent_timeout: Duration,
     pub drain_timeout: Duration,
     pub max_connection_age: Option<Duration>,
     pub max_connection_age_grace: Duration,
     pub max_connection_idle: Option<Duration>,
-    pub adaptive_streams: bool,
+    pub adaptive_work_streams: bool,
 }
 
 impl GrpcLimits {
@@ -47,7 +43,7 @@ impl GrpcLimits {
             max_connections: non_zero(4096),
             max_connections_per_ip: non_zero(32),
             max_streams_per_connection: NonZeroU32::new(8).expect("8 is non-zero"),
-            max_streams: non_zero(2048),
+            max_work_streams: non_zero(2048),
             // one mempool stream per connected wallet
             max_subscriptions: non_zero(4096),
             // µs, warm: CPU-bound, so ~cores in parallel is the useful ceiling
@@ -57,14 +53,15 @@ impl GrpcLimits {
             // whole address histories, capped per request by rows (few in flight, never many)
             max_scan_reads: non_zero(4),
             // past pepper-sync's longest legitimate backpressure (scanning a fetched batch)
-            stall_timeout: Duration::from_secs(300),
+            unread_timeout: Duration::from_secs(300),
+            silent_timeout: Duration::from_secs(300),
             drain_timeout: Duration::from_secs(10),
             // long-held wallet connections re-resolve DNS (gRPC A9)
             max_connection_age: Some(Duration::from_secs(30 * 60)),
             // a whole `GetBlockRange` sync
             max_connection_age_grace: Duration::from_secs(600),
             max_connection_idle: Some(Duration::from_secs(30 * 60)),
-            adaptive_streams: true,
+            adaptive_work_streams: true,
         }
     };
 }
@@ -113,20 +110,6 @@ impl ReadLanes {
         }
     }
 
-    /// Permit of `lane`, wait recorded
-    pub(crate) async fn acquire(&self, lane: Lane) -> ReadPermit {
-        let pool = match lane {
-            Lane::Point => &self.point,
-            Lane::Range => &self.range,
-            Lane::Scan => &self.scan,
-        };
-        let waiting = Instant::now();
-        let permit = Arc::clone(pool).acquire_owned().await.expect("read lanes are never closed");
-        emit::disk_read_waited(lane, waiting.elapsed());
-
-        ReadPermit { _permit: permit }
-    }
-
     /// `read` on the blocking pool under a `lane` permit (faults mmapped pages: never on a runtime
     /// worker, shared by metrics + other RPCs)
     ///
@@ -137,16 +120,17 @@ impl ReadLanes {
         lane: Lane,
         read: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, tonic::Status> {
-        let _permit = self.acquire(lane).await;
+        let pool = match lane {
+            Lane::Point => &self.point,
+            Lane::Range => &self.range,
+            Lane::Scan => &self.scan,
+        };
+        let waiting = Instant::now();
+        let _permit = pool.acquire().await.expect("read lanes are never closed");
+        emit::disk_read_waited(lane, waiting.elapsed());
         tokio::task::spawn_blocking(read).await.map_err(|join| match join.try_into_panic() {
             Ok(panic) => std::panic::resume_unwind(panic),
             Err(_) => tonic::Status::unavailable("shutting down"),
         })
     }
-}
-
-/// Held for one read, released on drop
-#[derive(Debug)]
-pub(crate) struct ReadPermit {
-    _permit: OwnedSemaphorePermit,
 }

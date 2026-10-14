@@ -98,9 +98,8 @@ may reach it: [running.md: Network exposure](../../docs/running.md#network-expos
 
 `/statusz` = zainod's process fields beside the snapshot's report (`zaino_snapshot::Report`,
 flattened): `version`, `network`,
-`uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `load` (the gRPC work pool:
-`limit` = work streams admitted at once now, latency-adaptive with `[grpc] adaptive_streams`,
-`in_flight`, `refused_per_s` decaying over ~10 s, `overloaded`), `grpc.sent_bytes` (response body bytes served,
+`uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `load` (the gRPC work pool,
+[zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack)), `grpc.sent_bytes` (response body bytes served,
 all methods), `disk` (per enabled index: `size_bytes` + `tables` = bytes per subdirectory, from
 the progress task's last walk, so absent until the first, 30 s after boot, then every 2
 minutes), then `seq`, `tips` (`best`, `final`, `served` as `{height, hash}`, `held_by` of

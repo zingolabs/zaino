@@ -31,7 +31,7 @@ pub(crate) const INTERVAL: Duration = Duration::from_secs(60);
 /// Time to first message past this = a slow request
 const SLOW: Duration = Duration::from_secs(1);
 
-/// Share of a cap (streams, subscriptions, connections) held that logs `High load`
+/// Share of a cap (work streams, subscriptions, connections) held that logs `High load`
 const HIGH_LOAD: f64 = 0.25;
 
 /// Latency buckets: `2^SUB_BITS` per power of two of µs (each ≤ 12.5% wide), exact below that
@@ -107,7 +107,6 @@ impl MethodWindow {
 /// Everything counted since the last summary (`*_logged` = this window's first already logged)
 struct Window {
     methods: [MethodWindow; LABELS],
-    at_capacity: AtomicU64,
     connections_refused: AtomicU64,
     stalled: AtomicU64,
     failure_logged: AtomicBool,
@@ -118,7 +117,6 @@ impl Window {
     const fn new() -> Self {
         Self {
             methods: [const { MethodWindow::new() }; LABELS],
-            at_capacity: AtomicU64::new(0),
             connections_refused: AtomicU64::new(0),
             stalled: AtomicU64::new(0),
             failure_logged: AtomicBool::new(false),
@@ -141,11 +139,11 @@ impl Window {
     }
 
     /// Every counter read and zeroed (a request landing mid-swap counts in one window or the next)
-    fn take(&self) -> Snapshot {
+    fn take(&self) -> WindowCounts {
         let take = |counter: &AtomicU64| counter.swap(0, Ordering::Relaxed);
         self.failure_logged.store(false, Ordering::Relaxed);
         self.unavailable_logged.store(false, Ordering::Relaxed);
-        Snapshot {
+        WindowCounts {
             methods: self
                 .methods
                 .iter()
@@ -157,7 +155,6 @@ impl Window {
                     slow: take(&method.slow),
                 })
                 .collect(),
-            at_capacity: take(&self.at_capacity),
             connections_refused: take(&self.connections_refused),
             stalled: take(&self.stalled),
         }
@@ -169,11 +166,6 @@ static WINDOW: Window = Window::new();
 /// A stream's close-out; `latency` = time to its first message, for an answered work request
 pub(crate) fn finished(method: Option<Method>, code: Code, latency: Option<Duration>, sent: u64) {
     WINDOW.finished(method, code, latency, sent);
-}
-
-/// A request refused for want of an admission permit
-pub(crate) fn at_capacity() {
-    WINDOW.at_capacity.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn connection_refused() {
@@ -200,18 +192,16 @@ pub(crate) fn answered_badly(method: Option<Method>, code: Code, message: &str) 
     }
 }
 
-/// Held against the cap it counts towards
+/// Each cap as `(in use, max)` at a summary
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Held {
-    pub(crate) streams: (usize, usize),
+pub(crate) struct CapsInUse {
+    pub(crate) work_streams: (usize, usize),
     pub(crate) subscriptions: (usize, usize),
     pub(crate) connections: (usize, usize),
 }
 
-/// One window's counts
-struct Snapshot {
+struct WindowCounts {
     methods: Vec<MethodTotals>,
-    at_capacity: u64,
     connections_refused: u64,
     stalled: u64,
 }
@@ -265,15 +255,16 @@ fn quantile(buckets: &[u64], max_us: u64, q: f64) -> Option<u64> {
     None
 }
 
-/// Logs the window since the last call (`elapsed` long) and starts the next
-pub(crate) fn summarise(elapsed: Duration, held: Held) {
-    let snapshot = WINDOW.take();
+/// Logs the window since the last call (`elapsed` long, `at_capacity` admission refusals) and
+/// starts the next
+pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
+    let counts = WINDOW.take();
     let secs = elapsed.as_secs_f64().max(f64::EPSILON);
     let mut latency = vec![0; BUCKETS];
     let (mut total, mut sent, mut max_us, mut slow) = (Tally::default(), 0, 0, 0);
     let mut slowest = None;
 
-    for (at, method) in snapshot.methods.iter().enumerate() {
+    for (at, method) in counts.methods.iter().enumerate() {
         let tally = Tally::of(&method.codes);
         if tally.requests == 0 {
             continue;
@@ -309,20 +300,20 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
         }
     }
 
-    let holding = held.streams.0 + held.subscriptions.0 + held.connections.0 > 0;
+    let holding = caps.work_streams.0 + caps.subscriptions.0 + caps.connections.0 > 0;
     let problems =
-        total.refused + total.failed + slow + snapshot.stalled + snapshot.connections_refused;
+        total.refused + total.failed + slow + counts.stalled + counts.connections_refused;
     if total.requests == 0 && !holding && problems == 0 {
         return;
     }
     let nonzero = |count: u64| (count > 0).then_some(count);
     let p99 = quantile(&latency, max_us, 0.99);
     let high = |(used, cap): (usize, usize)| used as f64 > cap as f64 * HIGH_LOAD;
-    let over = |held: (usize, usize)| high(held).then(|| display(Used(held)));
-    let busy = high(held.streams) || high(held.subscriptions) || high(held.connections);
-    let conns = match high(held.connections) {
-        true => Used(held.connections).to_string(),
-        false => Thousands(held.connections.0 as u64).to_string(),
+    let over = |in_use: (usize, usize)| high(in_use).then(|| display(Used(in_use)));
+    let busy = high(caps.work_streams) || high(caps.subscriptions) || high(caps.connections);
+    let conns = match high(caps.connections) {
+        true => Used(caps.connections).to_string(),
+        false => Thousands(caps.connections.0 as u64).to_string(),
     };
 
     macro_rules! summary {
@@ -332,15 +323,15 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
                 p99 = timed(p99),
                 out = byte_rate(sent, secs),
                 conns = %conns,
-                streams = over(held.streams),
-                subs = over(held.subscriptions),
+                work = over(caps.work_streams),
+                subs = over(caps.subscriptions),
                 failed = nonzero(total.failed),
                 refused = nonzero(total.refused),
-                at_capacity = nonzero(snapshot.at_capacity),
+                at_capacity = nonzero(at_capacity),
                 slow = nonzero(slow),
                 slowest = (slow > 0).then_some(slowest).flatten(),
-                stalled = nonzero(snapshot.stalled),
-                conns_refused = nonzero(snapshot.connections_refused),
+                stalled = nonzero(counts.stalled),
+                conns_refused = nonzero(counts.connections_refused),
                 $message
             )
         };
@@ -453,8 +444,8 @@ mod tests {
             window.finished(method, code, None, 0);
         }
 
-        let snapshot = window.take();
-        let totals = &snapshot.methods[slot(method)];
+        let counts = window.take();
+        let totals = &counts.methods[slot(method)];
         let tally = Tally::of(&totals.codes);
         assert_eq!(
             tally,

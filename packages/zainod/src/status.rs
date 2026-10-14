@@ -64,7 +64,7 @@ pub(crate) fn awaiting_validator(awaiting: bool) {
 
 /// - `members` = the balancer's (latency, failures, health); `disk` = the progress task's last walk
 /// - `block_rate` = blocks handed per second over its last ~60 s (`None` before its first tick)
-/// - `grpc_load` = the gRPC work pool's (`/statusz` `load`, `Overloaded`)
+/// - `grpc_admission` = the gRPC work pool's (`/statusz` `load`, `Overloaded`)
 /// - `egress` = the last closed 10-min window's (public `/status`)
 pub(crate) struct Sources {
     pub(crate) network: &'static str,
@@ -74,7 +74,7 @@ pub(crate) struct Sources {
     pub(crate) members: watch::Receiver<Arc<MemberTable>>,
     pub(crate) disk: watch::Receiver<Disk>,
     pub(crate) block_rate: watch::Receiver<Option<f64>>,
-    pub(crate) grpc_load: Arc<zaino_grpc::Load>,
+    pub(crate) grpc_admission: Arc<zaino_grpc::AdmissionState>,
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
@@ -128,7 +128,7 @@ impl Readiness {
 
 const RUNTIME_STALLED: &str = "Runtime stalled";
 
-/// ≥ 10 % of gRPC work refused for 5 min (`zaino_grpc::LoadReport::overloaded`)
+/// `zaino_grpc::AdmissionReport::overloaded`
 const OVERLOADED: &str = "Overloaded";
 
 /// Where the process is: before boot (snapshot bootstrap, first validator answer) or booted
@@ -155,7 +155,7 @@ impl Booted {
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
             standing: snap.standing(now),
-            overloaded: sources.grpc_load.report().overloaded,
+            overloaded: sources.grpc_admission.report().overloaded,
             done: served.or(progress.handed()).map(u32::from),
             target: snap.sync_target().map(u32::from),
             rate,
@@ -308,7 +308,7 @@ pub(crate) struct Status {
     report: Report,
 }
 
-/// The gRPC work pool: `limit` = admitted at once now (adaptive), `refused_per_s` over ~10 s
+/// The gRPC work pool (`zaino_grpc::AdmissionReport`)
 #[derive(Debug, Serialize, PartialEq)]
 struct Load {
     limit: usize,
@@ -317,9 +317,9 @@ struct Load {
     overloaded: bool,
 }
 
-impl From<zaino_grpc::LoadReport> for Load {
-    fn from(report: zaino_grpc::LoadReport) -> Self {
-        let zaino_grpc::LoadReport { limit, in_flight, refused_per_s, overloaded } = report;
+impl From<zaino_grpc::AdmissionReport> for Load {
+    fn from(report: zaino_grpc::AdmissionReport) -> Self {
+        let zaino_grpc::AdmissionReport { limit, in_flight, refused_per_s, overloaded } = report;
         Self { limit, in_flight, refused_per_s, overloaded }
     }
 }
@@ -341,7 +341,7 @@ fn current(live: bool) -> Option<Status> {
         uptime_s: sources.started.elapsed().as_secs(),
         ready: readiness.ready(),
         readiness,
-        load: sources.grpc_load.report().into(),
+        load: sources.grpc_admission.report().into(),
         grpc: Grpc { sent_bytes: zaino_grpc::sent_bytes_total() },
         disk: sources.disk.borrow().clone(),
         report: Report::of(&snap, &sources.progress, &members, configured()),

@@ -31,7 +31,9 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use crate::config::network_name;
 use zaino_chainview::ChainView;
-use zaino_grpc::{GrpcLimits, GrpcService, Load, Routes, Routing, Tls, TlsFiles, TrustedProxies};
+use zaino_grpc::{
+    AdmissionState, GrpcLimits, GrpcService, Routes, Routing, Tls, TlsFiles, TrustedProxies,
+};
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
@@ -89,10 +91,10 @@ async fn start_over<S: ChainDataSource>(
     boot_over(config, client, serving, cancel, tasks).await
 }
 
-/// Bound gRPC server's handles: where the pipeline's routes go, its load for `/statusz`
+/// Bound gRPC server's handles: where the pipeline's routes go, its admission for `/statusz`
 struct Serving<S: ChainDataSource> {
     routing: Routing<S, DiskView>,
-    load: Arc<Load>,
+    admission: Arc<AdmissionState>,
 }
 
 /// gRPC bound + serving: health from here on, every method `UNAVAILABLE` until the pipeline
@@ -110,7 +112,7 @@ async fn listen<S: ChainDataSource>(
         let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
         server = server.with_tls(Tls::load(files)?);
     }
-    let serving = Serving { routing: server.routing(), load: server.load() };
+    let serving = Serving { routing: server.routing(), admission: server.admission() };
     crate::hold::serving(server.retire());
     let server = server.bind().await?;
     let span = component("Grpc");
@@ -384,7 +386,7 @@ fn run_pipeline<S: ChainDataSource>(
         members,
         disk: walked,
         block_rate,
-        grpc_load: serving.load,
+        grpc_admission: serving.admission,
         egress: egress_windows,
     });
     tasks
