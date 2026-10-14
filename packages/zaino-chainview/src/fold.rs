@@ -81,6 +81,12 @@ pub(crate) enum EndpointReport {
     Failed(Health),
 }
 
+/// One fold's effect: `Settle(touched)` = settle (spreads re-judged for `touched`) + publish
+enum Change {
+    Unchanged,
+    Settle(Vec<TxId>),
+}
+
 /// The published cell + its watch, and the lock that serialises folds
 ///
 /// - non-generic: the poll fold and readers hold it (the source type stays the balancer's)
@@ -121,7 +127,7 @@ impl ChainViewCore {
             let mut touched: Vec<TxId> = Vec::new();
             let mut unadmitted: Vec<TxId> = Vec::new();
             let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
-                return (None, unadmitted);
+                return (Change::Unchanged, unadmitted);
             };
             match report {
                 EndpointReport::Read { reading, health, listed } => {
@@ -172,7 +178,7 @@ impl ChainViewCore {
                     }
                 }
             }
-            (Some(touched), unadmitted)
+            (Change::Settle(touched), unadmitted)
         })
     }
 
@@ -194,7 +200,11 @@ impl ChainViewCore {
                     changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
                 }
             }
-            (changed.then(Vec::new), ())
+            let change = match changed {
+                true => Change::Settle(Vec::new()),
+                false => Change::Unchanged,
+            };
+            (change, ())
         })
     }
 
@@ -226,7 +236,7 @@ impl ChainViewCore {
                 }
             });
             let candidates = candidates.collect();
-            (Some(lost), candidates)
+            (Change::Settle(lost), candidates)
         })
     }
 
@@ -248,7 +258,11 @@ impl ChainViewCore {
                     }
                 }
             }
-            ((!touched.is_empty()).then_some(touched), ())
+            let change = match touched.is_empty() {
+                true => Change::Unchanged,
+                false => Change::Settle(touched),
+            };
+            (change, ())
         })
     }
 
@@ -256,18 +270,16 @@ impl ChainViewCore {
     pub(crate) fn apply_headers(&self, chain: Option<Arc<VerifiedChain>>) {
         self.fold(|state| {
             state.verified(chain, Instant::now());
-            (Some(Vec::new()), ())
+            (Change::Settle(Vec::new()), ())
         })
     }
 
-    /// Under the fold lock: `change`, then [`settle`](Self::settle) on its `Some(touched)`
-    ///
-    /// - `None` = nothing changed (no publish)
-    fn fold<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Option<Vec<TxId>>, T)) -> T {
+    /// Under the fold lock: `change`, then [`settle`](Self::settle) unless [`Change::Unchanged`]
+    fn fold<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Change, T)) -> T {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let before = Before::of(&guard);
-        let (touched, out) = change(&mut guard);
-        if let Some(touched) = touched {
+        let (change, out) = change(&mut guard);
+        if let Change::Settle(touched) = change {
             self.settle(guard, before, touched);
         }
         out
@@ -327,14 +339,13 @@ impl ChainViewCore {
 
     /// Relayed by us → served before it propagates
     pub(crate) fn mark_ours(&self, txid: TxId, raw: Bytes) {
-        let mut state = self.state.lock().expect("chainview fold mutex poisoned");
-
-        match state.mempool.get_mut(&txid) {
-            Some(sighting) => sighting.mark_ours(),
-            None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
-        }
-
-        self.publish(state);
+        self.fold(|state| {
+            match state.mempool.get_mut(&txid) {
+                Some(sighting) => sighting.mark_ours(),
+                None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
+            }
+            (Change::Settle(vec![txid]), ())
+        })
     }
 
     /// Stored under the fold lock (publishes in fold order), then signalled
