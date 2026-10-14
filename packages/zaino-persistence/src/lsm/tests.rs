@@ -18,6 +18,7 @@ use super::{
 };
 use crate::{
     fs::{Access, Fs, SimFs},
+    manifest::IndexKind,
     pages::{sums_path, PageError},
     port::{MapTable, Width},
 };
@@ -27,12 +28,12 @@ const FANOUT: Fanout = Fanout(2);
 
 /// `account ‖ seq → seq · 1000`, ranges read per account (scope = the account)
 fn scanned() -> MapTable {
-    MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8)
+    MapTable::scoped(0, "scanned", Width::fixed(12), Width::fixed(8), 8)
 }
 
-/// Hash-like id → position, point lookups only
+/// Hash-like id → position
 fn probed() -> MapTable {
-    MapTable::new(0, "probed", Width::fixed(16), Width::fixed(4), 0)
+    MapTable::point(0, "probed", Width::fixed(16), Width::fixed(4))
 }
 
 /// Uniform 8 bytes per account (the filter shards on them)
@@ -58,13 +59,13 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
 }
 
 #[test]
-#[should_panic(expected = "LSM map scanned: keys must be Fixed")]
+#[should_panic(expected = "LSM map scanned: no Variable keys in the LSM")]
 fn a_map_with_variable_keys_panics() {
     Shape::of(&MapTable { key: Width::Variable, ..scanned() });
 }
 
 #[test]
-#[should_panic(expected = "LSM map scanned: values must be Fixed")]
+#[should_panic(expected = "LSM map scanned: no Variable values in the LSM")]
 fn a_map_with_variable_values_panics() {
     Shape::of(&MapTable { value: Width::Variable, ..scanned() });
 }
@@ -93,8 +94,16 @@ fn a_batch_row_off_its_key_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log =
-        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
+    let mut log = SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        IndexKind::CompactBlock,
+        &scanned(),
+        &[],
+        FANOUT,
+        slots,
+    )
+    .expect("open");
     let _ = log.batch(vec![(&[0; 11], Some(&[0; 8]))]);
 }
 
@@ -104,8 +113,16 @@ fn a_batch_row_off_its_value_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log =
-        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
+    let mut log = SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        IndexKind::CompactBlock,
+        &scanned(),
+        &[],
+        FANOUT,
+        slots,
+    )
+    .expect("open");
     let _ = log.batch(vec![(&[0; 12], Some(&[0; 7]))]);
 }
 
@@ -115,8 +132,16 @@ fn a_tombstone_in_a_map_without_deletes_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log =
-        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
+    let mut log = SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        IndexKind::CompactBlock,
+        &scanned(),
+        &[],
+        FANOUT,
+        slots,
+    )
+    .expect("open");
     let _ = log.batch(vec![(&[0; 12], None)]);
 }
 
@@ -132,6 +157,7 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
     SegmentLog::open(
         fs,
         Path::new("/m"),
+        IndexKind::TransparentAddress,
         &scanned(),
         &[],
         FANOUT,
@@ -141,13 +167,14 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
 
     let scrape = rendered.render();
     let expected = [
-        "zaino_lsm_stall_at{set=\"scanned\"} 6",
-        "zaino_lsm_batch_rows_total{set=\"scanned\"} 0",
-        "zaino_lsm_merge_rows_total{set=\"scanned\"} 0",
-        "zaino_lsm_merge_bytes_total{set=\"scanned\"} 0",
-        "zaino_lsm_merge_cancelled_total{set=\"scanned\"} 0",
-        "zaino_lsm_merge_duration_seconds_count{set=\"scanned\",tier=\"0\"} 0",
-        "zaino_lsm_stall_duration_seconds_count{set=\"scanned\"} 0",
+        "zaino_lsm_stall_at{index=\"transparent_address\",table=\"scanned\"} 6",
+        "zaino_lsm_batch_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
+        "zaino_lsm_merge_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
+        "zaino_lsm_merge_bytes_total{index=\"transparent_address\",table=\"scanned\"} 0",
+        "zaino_lsm_merge_cancelled_total{index=\"transparent_address\",table=\"scanned\"} 0",
+        "zaino_lsm_merge_duration_seconds_count{index=\"transparent_address\",table=\"scanned\",\
+         tier=\"0\"} 0",
+        "zaino_lsm_stall_duration_seconds_count{index=\"transparent_address\",table=\"scanned\"} 0",
     ];
     for line in expected {
         assert!(scrape.lines().any(|scraped| scraped == line), "{line:?} not in:\n{scrape}");
@@ -230,8 +257,10 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], FANOUT, slots)
-        .expect("open");
+    let index = IndexKind::CompactBlock;
+    let mut log =
+        SegmentLog::open(fs.clone(), dir, index, &scanned(), &[kept, second], FANOUT, slots)
+            .expect("open");
     log.settle();
 
     let _ = log.batch(Vec::new());

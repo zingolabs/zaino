@@ -100,7 +100,7 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
     let schema = *view.schema();
     let sequences = schema.sequences().iter().map(|&table| {
         let table = view.sequence(table);
-        let records = table.records(0..table.count());
+        let records = table.records(0..table.len());
         records.iter().map(|record| record.to_vec()).collect()
     });
     let maps = schema.maps().iter().map(|&table| {

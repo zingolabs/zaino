@@ -153,7 +153,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
 
     /// Records in `table` (= the slot of its next append)
     pub(crate) fn len(&self, table: SequenceTable) -> u64 {
-        self.view.sequence(table).count()
+        self.view.sequence(table).len()
     }
 
     /// `None` above the tip

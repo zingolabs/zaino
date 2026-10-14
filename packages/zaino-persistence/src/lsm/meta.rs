@@ -28,7 +28,8 @@ impl SegmentMeta {
     }
 }
 
-/// `count u32 ‖ (id u32 ‖ records u64 ‖ sealed len u64 ‖ tail crc u32)*`, in list order
+/// `count u32 ‖ (id u32 ‖ records u64 ‖ sealed len u64 ‖ tail crc u32 ‖ sums u32)*` (28 B each),
+/// in list order
 pub(crate) fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
     out.extend_from_slice(
         &u32::try_from(segments.len()).expect("segment count < 2^32").to_le_bytes(),

@@ -15,9 +15,9 @@ use zcash_protocol::BlockHash;
 
 const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32)).cache_writes();
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-const DROPPED: MapTable = MapTable::new(0, "dropped", Width::fixed(36), Width::fixed(8), 0);
+const DROPPED: MapTable = MapTable::point(0, "dropped", Width::fixed(36), Width::fixed(8));
 const CACHED: MapTable =
-    MapTable::new(1, "cached", Width::fixed(36), Width::fixed(8), 0).cache_writes();
+    MapTable::point(1, "cached", Width::fixed(36), Width::fixed(8)).cache_writes();
 const SCHEMA: Schema = Schema::new(
     IndexKind::ValueBalance,
     1,

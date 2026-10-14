@@ -71,13 +71,18 @@ impl SegmentFile {
         &self.row(slot)[..self.sections.shape.key_len]
     }
 
-    /// `(key, value)` at `slot`, zero-copy slices of the mapping; `None` = a tombstone
+    /// Value or tombstone at `slot`, borrowed from the mapping
     ///
     /// - panics: a row that decodes as neither (page checksums passed: a writer bug)
+    pub(crate) fn content(&self, slot: usize) -> Row<'_> {
+        decode_row(&self.sections.shape, self.row(slot))
+            .unwrap_or_else(|| panic!("segment {} slot {slot}: a bad row flag", self.meta.id))
+    }
+
+    /// `(key, value)` at `slot`, zero-copy slices of the mapping; `None` = a tombstone
     pub(crate) fn entry(&self, slot: usize) -> (Bytes, Option<Bytes>) {
         let shape = &self.sections.shape;
-        let row = decode_row(shape, self.row(slot))
-            .unwrap_or_else(|| panic!("segment {} slot {slot}: a bad row flag", self.meta.id));
+        let row = self.content(slot);
         let mut key = self.pages.bytes(self.row_range(slot));
         let mut value = key.split_off(shape.key_len);
         value.truncate(shape.value_len);

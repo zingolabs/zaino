@@ -25,11 +25,12 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, info};
-use zaino_persistence::{disk_bytes, IndexKind};
+use zaino_persistence::IndexKind;
 use zaino_primitives::display::{ByteSize, Human};
 
 use crate::config::{DaemonConfig, SnapshotConfig};
 use crate::error::IndexerError;
+use crate::progress::disk_bytes;
 use crate::status::{self, Bootstrap, Phase};
 
 const MANIFEST: &str = "manifest.json";

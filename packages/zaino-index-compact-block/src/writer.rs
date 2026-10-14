@@ -29,7 +29,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     pub fn new(store: S) -> Self {
         let view = store.committed();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
-        assert_eq!(view.sequence(BLOCKS).count(), held, "{NAME}: one record per committed height");
+        assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per committed height");
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }

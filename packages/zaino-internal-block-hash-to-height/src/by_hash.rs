@@ -7,7 +7,7 @@ use crate::HASH;
 
 pub(crate) const HEIGHT: usize = 4;
 pub(crate) const BY_HASH: MapTable =
-    MapTable::new(0, "by_hash", Width::fixed(HASH as u32), Width::fixed(HEIGHT as u32), 0);
+    MapTable::point(0, "by_hash", Width::fixed(HASH as u32), Width::fixed(HEIGHT as u32));
 
 pub(crate) fn encode_height(height: BlockHeight) -> [u8; HEIGHT] {
     u32::from(height).to_be_bytes()

@@ -1,4 +1,5 @@
-//! LSM metrics (labelled `set` = the segment set's directory name) + operator log lines
+//! LSM metrics (labelled `index` = the store's index kind, `table` = the map's name) + operator
+//! log lines
 //!
 //! - write amplification = `merge_rows_total / batch_rows_total`
 //! - every merge = DEBUG: `Compacting segments` at launch, `Compacted segments` once the manifest
@@ -29,108 +30,128 @@ pub(crate) fn describe_metrics() {
 
     describe_gauge!(
         metric_names::SEGMENTS,
-        "Committed segments a read searches, by set and size tier (⌊log_fanout rows⌋)"
+        "Committed segments a read searches, by index, table and size tier (⌊log_fanout rows⌋)"
     );
     describe_gauge!(
         metric_names::MERGING,
-        "1 = a background merge of this size tier is running, by set and tier"
+        "1 = a background merge of this size tier is running, by index, table and tier"
     );
     describe_gauge!(
         metric_names::STALL_AT,
-        "Segments a merging tier may list before a commit waits on its merge, by set"
+        "Segments a merging tier may list before a commit waits on its merge, by index and table"
     );
     describe_counter!(
         metric_names::BATCH_ROWS_TOTAL,
-        "Rows written as new segments by commits, by set"
+        "Rows written as new segments by commits, by index and table"
     );
     describe_counter!(
         metric_names::MERGE_ROWS_TOTAL,
-        "Rows rewritten by finished background merges, by set"
+        "Rows rewritten by finished background merges, by index and table"
     );
     describe_counter!(
         metric_names::MERGE_BYTES_TOTAL,
         Unit::Bytes,
-        "Segment bytes written by finished background merges, by set"
+        "Segment bytes written by finished background merges, by index and table"
     );
     describe_counter!(
         metric_names::MERGE_CANCELLED_TOTAL,
-        "Key value + tombstone pairs dropped by finished background merges, by set"
+        "Key value + tombstone pairs dropped by finished background merges, by index and table"
     );
     describe_histogram!(
         metric_names::MERGE_DURATION_SECONDS,
         Unit::Seconds,
-        "One background merge, read through sealed and linked, by set and input tier"
+        "One background merge, read through sealed and linked, by index, table and input tier"
     );
     describe_histogram!(
         metric_names::STALL_DURATION_SECONDS,
         Unit::Seconds,
-        "Commit time spent waiting on a merge that fell two windows behind, by set"
+        "Commit time spent waiting on a merge that fell two windows behind, by index and table"
     );
+}
+
+/// One map's label values (table names repeat across indexes: `index` keeps series apart)
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Series {
+    pub(super) index: &'static str,
+    pub(super) table: &'static str,
+}
+
+impl Series {
+    fn labels(self) -> [(&'static str, String); 2] {
+        [("index", self.index.to_owned()), ("table", self.table.to_owned())]
+    }
+
+    fn tier_labels(self, tier: impl ToString) -> [(&'static str, String); 3] {
+        let [index, table] = self.labels();
+        [index, table, ("tier", tier.to_string())]
+    }
 }
 
 /// Per tier `0..shape.len()`: `(segments listed, merge running)`
 ///
 /// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
-pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
+pub(super) fn shape(series: Series, shape: &[(usize, bool)]) {
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
-        let labels = [("set", set.to_owned()), ("tier", tier.to_string())];
+        let labels = series.tier_labels(tier);
         metrics::gauge!(metric_names::SEGMENTS, &labels).set(segments as f64);
         metrics::gauge!(metric_names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
     }
 }
 
-/// Every per-set series registered at open (absent on /metrics = not built, never "nothing yet")
+/// Every per-map series registered at open (absent on /metrics = not built, never "nothing yet")
 ///
 /// - merge histogram registered at tier 0 (first tier to merge)
-pub(super) fn opened(set: &str, stall_at: usize) {
-    let set = set.to_owned();
-    metrics::gauge!(metric_names::STALL_AT, "set" => set.clone()).set(stall_at as f64);
+pub(super) fn opened(series: Series, stall_at: usize) {
+    let labels = series.labels();
+    metrics::gauge!(metric_names::STALL_AT, &labels).set(stall_at as f64);
     for counter in [
         metric_names::BATCH_ROWS_TOTAL,
         metric_names::MERGE_ROWS_TOTAL,
         metric_names::MERGE_BYTES_TOTAL,
         metric_names::MERGE_CANCELLED_TOTAL,
     ] {
-        metrics::counter!(counter, "set" => set.clone()).increment(0);
+        metrics::counter!(counter, &labels).increment(0);
     }
-    let _ = metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, "set" => set.clone(), "tier" => "0");
-    let _ = metrics::histogram!(metric_names::STALL_DURATION_SECONDS, "set" => set);
+    let _ = metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &series.tier_labels(0));
+    let _ = metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &labels);
 }
 
-pub(super) fn batched(set: &str, segment: &SegmentMeta) {
-    metrics::counter!(metric_names::BATCH_ROWS_TOTAL, "set" => set.to_owned())
-        .increment(segment.records);
+pub(super) fn batched(series: Series, segment: &SegmentMeta) {
+    metrics::counter!(metric_names::BATCH_ROWS_TOTAL, &series.labels()).increment(segment.records);
 }
 
 /// `tier` = the inputs' tier (output lands one above)
-pub(super) fn merged(set: &str, tier: u32, merged: &Merged, took: Duration) {
-    let set = set.to_owned();
+pub(super) fn merged(series: Series, tier: u32, merged: &Merged, took: Duration) {
+    let labels = series.labels();
     let (rows, bytes) = merged.output.map_or((0, 0), |output| (output.records, output.sealed.len));
-    metrics::counter!(metric_names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(rows);
-    metrics::counter!(metric_names::MERGE_BYTES_TOTAL, "set" => set.clone()).increment(bytes);
-    metrics::counter!(metric_names::MERGE_CANCELLED_TOTAL, "set" => set.clone())
-        .increment(merged.cancelled);
-    metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
+    metrics::counter!(metric_names::MERGE_ROWS_TOTAL, &labels).increment(rows);
+    metrics::counter!(metric_names::MERGE_BYTES_TOTAL, &labels).increment(bytes);
+    metrics::counter!(metric_names::MERGE_CANCELLED_TOTAL, &labels).increment(merged.cancelled);
+    metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &series.tier_labels(tier))
         .record(took);
 }
 
 /// `tiers` = merging tiers the commit joined (each `stall_at` segments deep)
-pub(super) fn stalled(set: &str, tiers: &[u32], waited: Duration) {
-    metrics::histogram!(metric_names::STALL_DURATION_SECONDS, "set" => set.to_owned())
-        .record(waited);
-    warn!(set, tiers = ?tiers, waited = %Elapsed(waited), "Commit waited on compaction");
+pub(super) fn stalled(series: Series, tiers: &[u32], waited: Duration) {
+    metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &series.labels()).record(waited);
+    let Series { index, table } = series;
+    warn!(index, table, tiers = ?tiers, waited = %Elapsed(waited), "Commit waited on compaction");
 }
 
-pub(super) fn launched(set: &str, tier: u32, inputs: &[SegmentMeta]) {
+pub(super) fn launched(series: Series, tier: u32, inputs: &[SegmentMeta]) {
+    let Series { index, table } = series;
     let bytes: u64 = inputs.iter().map(|segment| segment.sealed.len).sum();
     let rows: u64 = inputs.iter().map(|segment| segment.records).sum();
-    debug!(set, tier, segments = inputs.len(), rows, size = %Size(bytes), "Compacting segments");
+    let size = Size(bytes);
+    debug!(index, table, tier, segments = inputs.len(), rows, size = %size, "Compacting segments");
 }
 
-pub(super) fn swapped(set: &str, landed: &Landed) {
+pub(super) fn swapped(series: Series, landed: &Landed) {
+    let Series { index, table } = series;
     let output = landed.merged.output;
     debug!(
-        set,
+        index,
+        table,
         tier = landed.tier,
         rows = output.map_or(0, |output| output.records),
         cancelled = landed.merged.cancelled,
@@ -140,8 +161,9 @@ pub(super) fn swapped(set: &str, landed: &Landed) {
     );
 }
 
-pub(super) fn cancelled(set: &str, merges: usize) {
-    debug!(set, merges, "Compaction cancelled at close");
+pub(super) fn cancelled(series: Series, merges: usize) {
+    let Series { index, table } = series;
+    debug!(index, table, merges, "Compaction cancelled at close");
 }
 
 /// `412.3MiB` (binary units, no space: one logfmt token)

@@ -59,14 +59,15 @@ pub trait Store: Send + 'static {
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
-    /// - panics: that commit failing ([`CommitFailed::crash`])
+    /// - panics: that commit failing ([`CommitFailed::crash`]), or a store an earlier failed
+    ///   commit poisoned
     fn apply(&mut self, changes: BlockChanges);
 
     /// Every buffered change + the last applied tip, durable together (one fsync), then in
     /// [`committed`](Self::committed)
     ///
     /// - nothing buffered = `Ok`, nothing written
-    /// - `Err` poisons the store: every later commit panics (failed sync never retried)
+    /// - `Err` poisons the store: every later apply / commit panics (failed sync never retried)
     fn commit(&mut self) -> Result<(), CommitFailed>;
 
     /// Committed only (what serving pins: no crash takes back what a reader saw)
@@ -147,16 +148,20 @@ pub struct SequenceView<'a, V> {
 
 impl<V: SequenceRead> SequenceView<'_, V> {
     /// Records held (= the next position)
-    pub fn count(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.view.len(self.table)
     }
 
-    /// `None` = at or past `count`
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// `None` = at or past `len`
     pub fn record(&self, at: u64) -> Option<Bytes> {
         self.view.record(self.table, at)
     }
 
-    /// In order (`range` within `count`)
+    /// In order (`range` within `len`)
     pub fn records(&self, range: Range<u64>) -> Vec<Bytes> {
         self.view.records(self.table, range)
     }
@@ -253,7 +258,8 @@ impl SequenceTable {
 
 /// Handle + declaration; keys compare as bytes (big-endian fields = numeric order)
 ///
-/// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
+/// - `scope` = leading key bytes every range read shares (0 = [`point`](Self::point); partition
+///   hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
 /// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
 /// - `deletes` = keys removable ([`deletes`](Self::deletes))
@@ -269,9 +275,16 @@ pub struct MapTable {
 }
 
 impl MapTable {
-    /// `id` = position in its [`Tables`]
-    pub const fn new(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
-        Self { id: MapId(id), name, key, value, scope, cache_writes: false, deletes: false }
+    /// Point lookups only (scope 0); `id` = position in its [`Tables`]
+    pub const fn point(id: u16, name: &'static str, key: Width, value: Width) -> Self {
+        Self { id: MapId(id), name, key, value, scope: 0, cache_writes: false, deletes: false }
+    }
+
+    /// Range reads within `scope` leading key bytes (panics: `scope` 0, checked at compile time
+    /// when `const`)
+    pub const fn scoped(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
+        assert!(scope > 0, "a scoped map shares at least one key byte per range");
+        Self { scope, ..Self::point(id, name, key, value) }
     }
 
     /// Keys removable ([`MapChanges::remove`]) under a contract: per key, inserted at most once,

@@ -26,7 +26,7 @@ use rayon::prelude::*;
 use zaino_primitives::types::BlockRef;
 
 use crate::{
-    dir::{self, IndexDir},
+    dir::{self, Depth, IndexDir},
     fs::{Durability, Fs},
     lsm::{
         self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
@@ -181,11 +181,11 @@ impl PersistenceEngine for DiskEngine {
             None => {
                 for table in schema.sequences() {
                     for name in sequence::names(table) {
-                        dir.ensure_empty(&name, false)?;
+                        dir.ensure_empty(&name, Depth::Shallow)?;
                     }
                 }
                 for table in schema.maps() {
-                    dir.ensure_empty(table.name, true)?;
+                    dir.ensure_empty(table.name, Depth::Recursive)?;
                 }
                 Body::empty(schema)
             }
@@ -200,13 +200,13 @@ impl PersistenceEngine for DiskEngine {
             .zip(&body.sequences)
             .map(|(table, seals)| SequenceFile::open(self.fs.as_ref(), dir.path(), table, *seals))
             .collect::<Result<Vec<_>, _>>()?;
-        // the files a `Barrier` commit writes back: every sequence's (each exists now)
+        // the files a `Barrier` commit writes back: every sequence's, checksums included (each
+        // exists now)
         let written_back: Vec<PathBuf> = schema
             .sequences()
             .iter()
-            .zip(&body.sequences)
-            .flat_map(|(table, seals)| sequence::files(table, seals))
-            .map(|(name, _)| dir.path().join(name))
+            .flat_map(sequence::names)
+            .map(|name| dir.path().join(name))
             .collect();
         let durability = self.fs.durability(&written_back)?;
         tracing::info!(index = schema.kind.name(), path = %path.display(), ?durability, "Commits");
@@ -220,7 +220,8 @@ impl PersistenceEngine for DiskEngine {
         for ((table, list), map_dir) in schema.maps().iter().zip(&body.maps).zip(&map_dirs) {
             let fs = Arc::clone(&self.fs);
             let slots = Arc::clone(&self.slots);
-            maps.push(SegmentLog::open(fs, map_dir, table, list, self.fanout, slots)?);
+            let log = SegmentLog::open(fs, map_dir, schema.kind, table, list, self.fanout, slots)?;
+            maps.push(log);
         }
         let state = State {
             schema: *schema,
@@ -256,7 +257,7 @@ fn verify_committed(
     fs: &dyn Fs,
     path: &Path,
     schema: &Schema,
-    mut committed: impl FnMut() -> io::Result<Option<Vec<u8>>>,
+    mut committed: impl FnMut() -> Result<Option<Vec<u8>>, ManifestError>,
 ) -> Result<Verification, StoreError> {
     let mut manifest = committed()?;
     loop {
@@ -284,6 +285,11 @@ impl DiskStore {
     /// Heap the buffer holds (≈ RAM, >= its item bytes; `write_buffer` of it = a commit)
     pub fn buffered_bytes(&self) -> usize {
         self.buffer.heap()
+    }
+
+    /// Panics after a failed commit (fsync errors are never retried: recovery = reopen)
+    fn assert_unpoisoned(&self, call: &str) {
+        assert!(!self.failed, "{call} on a store a failed commit poisoned (reopen it)");
     }
 
     /// WriteBuffer written + sealed, every table in parallel → (`Barrier`) one device flush →
@@ -361,6 +367,7 @@ impl Store for DiskStore {
     }
 
     fn apply(&mut self, changes: BlockChanges) {
+        self.assert_unpoisoned("apply");
         self.buffer.assert_accepts(&changes, self.view.tip());
         self.buffer.push(&changes);
         if self.buffer.heap() >= self.write_buffer.get() {
@@ -371,7 +378,7 @@ impl Store for DiskStore {
     }
 
     fn commit(&mut self) -> Result<(), CommitFailed> {
-        assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
+        self.assert_unpoisoned("commit");
         let Some(tip) = self.buffer.tip() else { return Ok(()) };
         let (bytes, started) = (self.buffer.item_bytes(), Instant::now());
         if let Err(cause) = self.write(tip) {
@@ -392,7 +399,6 @@ impl Store for DiskStore {
     }
 }
 
-// names unique vs callers' methods (inherent methods win resolution, even private ones)
 /// One table's committed files: bytes on disk, bytes of them in page cache (`None` = not
 /// knowable: a simulated filesystem, or the kernel refused)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,6 +422,7 @@ impl DiskView {
         tables.map(|(table, (bytes, cached))| TableFootprint { table, bytes, cached }).collect()
     }
 
+    // names != the read traits' `sequence` / `map` (inherent methods win resolution, even private)
     fn sequence_pages(&self, table: SequenceId) -> &SequencePages {
         table_slot(&self.state.sequences, table)
     }

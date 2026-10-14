@@ -165,7 +165,7 @@ pub trait Uncommitted: Clone {
 
     fn tip(&self) -> Option<BlockRef>;
 
-    fn record_count(&self, table: SequenceId) -> u64;
+    fn len(&self, table: SequenceId) -> u64;
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes>;
 
@@ -208,7 +208,7 @@ impl Uncommitted for Overlay {
         Overlay::tip(self)
     }
 
-    fn record_count(&self, table: SequenceId) -> u64 {
+    fn len(&self, table: SequenceId) -> u64 {
         self.records(table).len() as u64
     }
 
@@ -244,8 +244,8 @@ impl<A: Uncommitted> Uncommitted for &A {
         (**self).tip()
     }
 
-    fn record_count(&self, table: SequenceId) -> u64 {
-        (**self).record_count(table)
+    fn len(&self, table: SequenceId) -> u64 {
+        (**self).len(table)
     }
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
@@ -308,7 +308,7 @@ impl<V: CommittedView> CommittedView for OverlayView<V, Overlay> {}
 
 impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView<V, A> {
     fn len(&self, table: SequenceId) -> u64 {
-        self.durable.len(table) + self.above.record_count(table)
+        self.durable.len(table) + self.above.len(table)
     }
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {

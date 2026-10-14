@@ -200,7 +200,7 @@ impl Uncommitted for WriteBuffer {
         self.tip
     }
 
-    fn record_count(&self, table: SequenceId) -> u64 {
+    fn len(&self, table: SequenceId) -> u64 {
         let (table, records) = self.sequence(table);
         records.len(table.record) as u64
     }

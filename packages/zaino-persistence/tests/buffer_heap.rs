@@ -1,4 +1,4 @@
-//! `Store::buffered_bytes` vs the heap a `DiskStore` buffer really holds
+//! `DiskStore::buffered_bytes` vs the heap a `DiskStore` buffer really holds
 //!
 //! - own binary: `#[global_allocator]` counts every allocation of this process only
 
@@ -51,7 +51,7 @@ static GLOBAL: Counting = Counting;
 
 const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32));
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-const MAP: MapTable = MapTable::new(0, "map", Width::fixed(36), Width::fixed(8), 0);
+const MAP: MapTable = MapTable::point(0, "map", Width::fixed(36), Width::fixed(8));
 const SCHEMA: Schema = Schema::new(
     IndexKind::ValueBalance,
     1,

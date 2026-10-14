@@ -25,7 +25,7 @@ There are two kinds of table:
 
 ```rust
 const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
-const SPENT: MapTable = MapTable::new(0, "spent", Width::fixed(36), Width::fixed(36), 0);
+const SPENT: MapTable = MapTable::point(0, "spent", Width::fixed(36), Width::fixed(36));
 pub const FORMAT: u16 = 1;
 pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]); // ids = positions, checked at compile time
 
@@ -49,25 +49,27 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **Map keys compare as bytes**, so a number in a key is big-endian (the root `CLAUDE.md` byte
   order rule: locators big-endian, quantities little-endian). Keys must lead with at least 8
   uniformly distributed bytes (a hash, a txid): the segment filter shards on them.
-- **`scope`** is the number of leading key bytes every range read shares (an address, say). The
-  filter covers that prefix, so a range scan only visits segments that may hold it. Scope 0 means
-  point lookups only.
+- **`MapTable::point` vs `MapTable::scoped`.** A point map is read by whole key. A scoped map
+  declares its `scope`: the number of leading key bytes every range read shares (an address, say).
+  The filter covers that prefix, so a range scan only visits segments that may hold it.
 - **`cache_writes()`** marks a table a fold reads back (tree-state, value-balance's `outputs`).
   Everything else is dropped from page cache once synced, so bulk writes never evict hot tables.
 - **`apply` vs `commit`.** `apply` buffers in RAM; a writer folding the next block reads its parent
   through `staged()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
   reaches the `write_buffer` given to `open`, `apply` commits by itself. `commit` writes everything
   buffered at the last applied tip. `Schema::changes(at)` (or `store.changes(at)`) opens a block's
-  delta.
-- **A failed commit poisons the store.** Any later `commit` panics. Drop the store and reopen it:
-  recovery is always a fresh `open` from the last durable manifest, never a retried `fsync`.
-  `commit`'s `CommitFailed` names the index and its directory (a full disk anywhere in the error
+  delta. Point reads through `staged()` hit the buffer's hash index; a map `range` through it
+  scans and sorts every row the buffer holds for that map, so a fold should not range-read its own
+  buffered map.
+- **A failed commit poisons the store.** Any later `apply` or `commit` panics. Drop the store and
+  reopen it: recovery is always a fresh `open` from the last durable manifest, never a retried
+  `fsync`. `commit`'s `CommitFailed` names the index and its directory (a full disk anywhere in the error
   chain reads as "disk … full"); `CommitFailed::crash` turns it into that panic.
 - **Reads never return errors.** Reading past what was committed is a bug, and a page that fails its
   checksum panics on first touch with the remedy (`zainod verify`, resync).
 - **Misuse panics where it happens**, naming the table: a handle from another schema, a fixed-width
-  item of the wrong size, a tip that does not advance, a key inserted twice, a map shape the LSM
-  cannot hold (variable-width key or value, fewer than 8 filtered key bytes).
+  item of the wrong size, a tip that does not advance, a key inserted twice, a table the engine
+  cannot hold (for `DiskEngine`, see [its LSM's limits](#on-disk)).
 - **`IndexKind::name()`** (`compact_block`, …) is the one spelling of an index: metric label,
   statusz key, default directory, task name.
 
@@ -127,6 +129,11 @@ thread merges them at low CPU and I/O priority, within an engine-wide cap (`merg
 `merge_mib_per_sec`). A merge commits nothing itself: the next commit's manifest lists its output,
 and the inputs are deleted only after that manifest is durable. A commit waits for a merge only
 when its tier has fallen two windows behind, which bounds how many segments a read searches.
+
+Rows are fixed-stride, so the LSM holds only `Width::Fixed` keys and values, and its filter shards
+on 8 key bytes, so a map filters at least 8 (its whole key when `point`, else its `scope`). These
+are the LSM's limits, not the port's (`Width::Variable` maps are expressible for another engine):
+`DiskEngine::open` panics on a map outside them, naming it.
 
 ## The commit and crash contract
 
@@ -202,9 +209,9 @@ newer manifest. `zainod verify` wraps this.
 
 ## Observability
 
-- `zaino.store.commit_seconds` / `commit_bytes_total` per index; `zaino.lsm.*` per map (segments
-  per tier, merges, stalls, cancelled tombstone pairs). Register with `describe_metrics` and the
-  `METRIC_BUCKETS` constants.
+- `zaino.store.commit_seconds` / `commit_bytes_total` per index (label `index`); `zaino.lsm.*` per
+  map (labels `index` + `table`: segments per tier, merges, stalls, cancelled tombstone pairs).
+  Register with `describe_metrics` and the `METRIC_BUCKETS` constants.
 - `DiskView::footprint()`: per table, committed bytes and how many are in page cache (`mincore`).
 - Logs: `Compacting segments` / `Compacted segments` (debug), `Commit waited on compaction` (warn).
 

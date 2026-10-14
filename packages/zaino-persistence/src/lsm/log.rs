@@ -17,7 +17,7 @@ use std::{
 
 use super::{
     dir::SegmentDir,
-    emit,
+    emit::{self, Series},
     layout::Shape,
     meta::{merge_candidates, tier_of, tier_shape},
     reader::Snapshot,
@@ -25,7 +25,7 @@ use super::{
     writer::{Merged, SegmentWriter},
     Fanout, Result, SegmentMeta,
 };
-use crate::{fs::Fs, port::MapTable};
+use crate::{fs::Fs, manifest::IndexKind, port::MapTable};
 
 /// Idle windows a merging tier may queue before [`SegmentLog::batch`] waits on its merge
 /// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
@@ -37,7 +37,7 @@ const STALL_WINDOWS: usize = 2;
 ///   small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
-    name: String,
+    series: Series,
     snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
     fanout: Fanout,
@@ -73,7 +73,7 @@ struct Merge {
 }
 
 impl SegmentLog {
-    /// `table`'s segments in `dir`, at the committed `listed`
+    /// `index`'s `table` segments in `dir`, at the committed `listed`
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
     /// - unlisted files removed ([`SegmentDir::retain`])
@@ -82,6 +82,7 @@ impl SegmentLog {
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         dir: &Path,
+        index: IndexKind,
         table: &MapTable,
         listed: &[SegmentMeta],
         fanout: Fanout,
@@ -98,7 +99,7 @@ impl SegmentLog {
             .unwrap_or(0);
         let mut log = Self {
             writer: SegmentWriter::new(dir, shape),
-            name: table.name.to_owned(),
+            series: Series { index: index.name(), table: table.name },
             snapshot,
             fanout,
             slots,
@@ -108,7 +109,7 @@ impl SegmentLog {
             merges: Vec::new(),
             shape_tiers: 0,
         };
-        emit::opened(&log.name, stall_at(fanout));
+        emit::opened(log.series, stall_at(fanout));
         log.launch_merges()?;
         Ok(log)
     }
@@ -125,15 +126,14 @@ impl SegmentLog {
     /// - waits only on a merging tier the staged list holds `STALL_WINDOWS` windows behind
     ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
     pub(crate) fn batch(&mut self, rows: Vec<(&[u8], Option<&[u8]>)>) -> Result<Vec<SegmentMeta>> {
-        assert!(self.staged.is_none(), "{}: batch before the last one was committed", self.name);
+        let name = self.series.table;
+        assert!(self.staged.is_none(), "{name}: batch before the last one was committed");
         let shape = self.writer.shape();
         for (key, value) in &rows {
-            assert_eq!(key.len(), shape.key_len, "LSM map {}: key width", self.name);
+            assert_eq!(key.len(), shape.key_len, "LSM map {name}: key width");
             match value {
-                Some(value) => {
-                    assert_eq!(value.len(), shape.value_len, "LSM map {}: value", self.name)
-                }
-                None => assert!(shape.deletes, "LSM map {}: tombstone", self.name),
+                Some(value) => assert_eq!(value.len(), shape.value_len, "LSM map {name}: value"),
+                None => assert!(shape.deletes, "LSM map {name}: tombstone"),
             }
         }
         let mut staged =
@@ -143,7 +143,7 @@ impl SegmentLog {
         let id = self.allocate();
         if let Some(segment) = self.writer.write(id, rows)? {
             self.writer.dir().sync()?;
-            emit::batched(&self.name, &segment);
+            emit::batched(self.series, &segment);
             staged.segments.push(segment);
         }
 
@@ -158,7 +158,7 @@ impl SegmentLog {
             stalled.extend(tiers);
         }
         if !stalled.is_empty() {
-            emit::stalled(&self.name, &stalled, waited.elapsed());
+            emit::stalled(self.series, &stalled, waited.elapsed());
         }
 
         let segments = staged.segments.clone();
@@ -172,10 +172,11 @@ impl SegmentLog {
         let staged = self.staged.take().expect("committed follows batch");
         self.segments = staged.segments;
         self.snapshot = Arc::new(self.snapshot.next(self.writer.dir(), &self.segments)?);
-        assert_eq!(self.snapshot.segments(), self.segments, "{}: readers see the list", self.name);
+        let name = self.series.table;
+        assert_eq!(self.snapshot.segments(), self.segments, "{name}: readers see the list");
         self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
-            emit::swapped(&self.name, landed);
+            emit::swapped(self.series, landed);
         }
         self.launch_merges()
     }
@@ -198,40 +199,38 @@ impl SegmentLog {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
         self.shape_tiers = shape.len();
-        emit::shape(&self.name, &shape);
+        emit::shape(self.series, &shape);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
-        let name = &self.name;
+        let (series, name) = (self.series, self.series.table);
         assert_eq!(inputs.len(), self.fanout.get(), "{name}: merge of {} segments", inputs.len());
         for input in &inputs {
-            assert_eq!(tier_of(input, self.fanout), tier, "{}: {input:?}", self.name);
+            assert_eq!(tier_of(input, self.fanout), tier, "{name}: {input:?}");
         }
         let (id, writer) = (self.allocate(), self.writer.clone());
         let cancel = Arc::new(AtomicBool::new(false));
-        emit::launched(&self.name, tier, &inputs);
-        let thread =
-            thread::Builder::new().name(format!("merge {} t{tier}", self.name)).spawn({
-                let (inputs, cancel, name) =
-                    (inputs.clone(), Arc::clone(&cancel), self.name.clone());
-                let slots = Arc::clone(&self.slots);
-                let span = tracing::Span::current();
-                move || {
-                    let _owner = span.enter();
-                    crate::thread::background_priority();
-                    let Some(slot) = slots.acquire(tier, &cancel) else {
-                        return Ok(None);
-                    };
-                    let started = Instant::now();
-                    let Some(merged) = writer.merge(id, &inputs, &cancel, &slot)? else {
-                        return Ok(None);
-                    };
-                    writer.dir().sync()?;
-                    let took = started.elapsed();
-                    emit::merged(&name, tier, &merged, took);
-                    Ok(Some((merged, took)))
-                }
-            })?;
+        emit::launched(series, tier, &inputs);
+        let thread = thread::Builder::new().name(format!("merge {name} t{tier}")).spawn({
+            let (inputs, cancel) = (inputs.clone(), Arc::clone(&cancel));
+            let slots = Arc::clone(&self.slots);
+            let span = tracing::Span::current();
+            move || {
+                let _owner = span.enter();
+                crate::thread::background_priority();
+                let Some(slot) = slots.acquire(tier, &cancel) else {
+                    return Ok(None);
+                };
+                let started = Instant::now();
+                let Some(merged) = writer.merge(id, &inputs, &cancel, &slot)? else {
+                    return Ok(None);
+                };
+                writer.dir().sync()?;
+                let took = started.elapsed();
+                emit::merged(series, tier, &merged, took);
+                Ok(Some((merged, took)))
+            }
+        })?;
         Ok(Merge { tier, inputs, cancel, thread })
     }
 
@@ -302,7 +301,7 @@ impl Staged {
 impl Drop for SegmentLog {
     fn drop(&mut self) {
         if !self.merges.is_empty() {
-            emit::cancelled(&self.name, self.merges.len());
+            emit::cancelled(self.series, self.merges.len());
         }
         for merge in &self.merges {
             merge.cancel.store(true, Ordering::Relaxed);
@@ -316,7 +315,7 @@ impl Drop for SegmentLog {
 impl fmt::Debug for SegmentLog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SegmentLog")
-            .field("name", &self.name)
+            .field("series", &self.series)
             .field("segments", &self.segments.len())
             .field("merging", &self.merges.iter().map(|merge| merge.tier).collect::<Vec<_>>())
             .finish()

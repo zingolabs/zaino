@@ -31,6 +31,13 @@ pub(crate) struct IndexDir {
     _lock: LockGuard,
 }
 
+/// How deep [`IndexDir::ensure_empty`] looks: `Shallow` skips nested directories
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Depth {
+    Shallow,
+    Recursive,
+}
+
 /// Freshly opened directory + committed manifest body (`None` = never committed)
 #[derive(Debug)]
 pub(crate) struct Opened {
@@ -104,13 +111,7 @@ impl IndexDir {
 
     /// Fresh-directory check: `relative` absent, an empty file, or a directory of empty files
     /// (crash between creating them and the first commit); else uncommitted data
-    ///
-    /// - `recursive` = nested directories checked too, else skipped
-    pub(crate) fn ensure_empty(
-        &self,
-        relative: &str,
-        recursive: bool,
-    ) -> Result<(), ManifestError> {
+    pub(crate) fn ensure_empty(&self, relative: &str, depth: Depth) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
         let names = match self.fs.size(&path) {
@@ -121,8 +122,8 @@ impl IndexDir {
         };
         for name in names {
             let child = format!("{relative}/{name}");
-            if recursive {
-                self.ensure_empty(&child, true)?;
+            if depth == Depth::Recursive {
+                self.ensure_empty(&child, depth)?;
                 continue;
             }
             match self.fs.size(&self.path.join(&child)) {
@@ -142,16 +143,14 @@ impl IndexDir {
 
 /// `path`'s committed body, read offline (read only, no lock: safe beside a live writer)
 ///
-/// - `None` = never committed; manifest not decoding as `identity` = `InvalidData`
+/// - `None` = never committed; manifest not decoding as `identity` = its `ManifestError`
 pub(crate) fn read_committed(
     fs: &dyn Fs,
     path: &Path,
     identity: Identity,
-) -> io::Result<Option<Vec<u8>>> {
+) -> Result<Option<Vec<u8>>, ManifestError> {
     let Some(file) = fs.open_read(&path.join(MANIFEST))? else { return Ok(None) };
-    let committed = committed_body(file.as_ref(), identity);
-    let committed = committed.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok(committed.map(|(_, body)| body))
+    Ok(committed_body(file.as_ref(), identity)?.map(|(_, body)| body))
 }
 
 /// `(sequence number, body)` of the manifest's last commit; `None` = never committed
@@ -161,27 +160,6 @@ fn committed_body(
 ) -> Result<Option<(u64, Vec<u8>)>, ManifestError> {
     let bytes = read_all(manifest)?;
     Ok(manifest::latest(identity, &bytes)?.map(|(seq, body)| (seq, body.to_vec())))
-}
-
-/// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
-///
-/// - file removed mid-walk = gone
-pub fn disk_bytes(path: &Path) -> io::Result<u64> {
-    let mut total = 0;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let bytes = match entry.metadata() {
-            Ok(meta) if meta.is_dir() => disk_bytes(&entry.path()),
-            Ok(meta) => Ok(meta.len()),
-            Err(error) => Err(error),
-        };
-        match bytes {
-            Ok(bytes) => total += bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(total)
 }
 
 #[cfg(test)]
@@ -241,15 +219,15 @@ mod tests {
         let top = fs.open(&path.join("written.dat")).expect("file").file;
         top.write_all_at(&[9], 0).expect("write");
 
-        assert!(opened.dir.ensure_empty("absent.dat", false).is_ok());
-        assert!(opened.dir.ensure_empty("map/empty.seg", false).is_ok());
-        assert!(opened.dir.ensure_empty("map", false).is_ok(), "nested directory skipped");
+        assert!(opened.dir.ensure_empty("absent.dat", Depth::Shallow).is_ok());
+        assert!(opened.dir.ensure_empty("map/empty.seg", Depth::Shallow).is_ok());
+        assert!(opened.dir.ensure_empty("map", Depth::Shallow).is_ok(), "nested directory skipped");
         assert!(matches!(
-            opened.dir.ensure_empty("map", true),
+            opened.dir.ensure_empty("map", Depth::Recursive),
             Err(ManifestError::Unmanifested { path }) if path == "/idx/map/nested/written.seg"
         ));
         assert!(matches!(
-            opened.dir.ensure_empty("written.dat", false),
+            opened.dir.ensure_empty("written.dat", Depth::Shallow),
             Err(ManifestError::Unmanifested { path }) if path == "/idx/written.dat"
         ));
     }
@@ -282,7 +260,7 @@ mod tests {
 
     /// - offline reader (`zainod verify`, read only, no lock) = what `IndexDir` sees
     /// - nothing before a manifest or its first commit, then the newest commit
-    /// - older layout = `InvalidData`
+    /// - older layout = `ManifestError::Layout`, foreign network = `ManifestError::Network`
     #[test]
     fn the_offline_reader_answers_the_newest_commit() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -299,22 +277,12 @@ mod tests {
         }
         drop(opened);
 
+        let foreign = Identity { network: NetworkType::Main, ..IDENTITY };
+        let refused = read_committed(fs.as_ref(), &path, foreign).expect_err("foreign network");
+        assert!(matches!(refused, ManifestError::Network { .. }), "{refused}");
+
         std::fs::write(path.join(MANIFEST), [1; 40]).expect("older layout");
         let older = read().expect_err("refused");
-        assert_eq!(older.kind(), io::ErrorKind::InvalidData, "{older}");
-    }
-
-    /// Every file counted, nested included; missing directory = error
-    #[test]
-    fn disk_bytes_sums_every_file_under_the_directory() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::write(root.path().join("MANIFEST"), [0; 10]).expect("manifest");
-        std::fs::create_dir(root.path().join("by_hash")).expect("subdir");
-        std::fs::write(root.path().join("by_hash/0.seg"), [0; 4096]).expect("segment");
-        std::fs::write(root.path().join("by_hash/1.seg"), []).expect("empty segment");
-
-        assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
-        let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(matches!(older, ManifestError::Layout { len: 40 }), "{older}");
     }
 }

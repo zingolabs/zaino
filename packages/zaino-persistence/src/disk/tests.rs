@@ -30,8 +30,8 @@ const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
 const HEIGHTS: SequenceTable = SequenceTable::new(1, "heights", Width::fixed(8));
 const NODES: SequenceTable = SequenceTable::new(2, "pool/nodes", Width::fixed(4));
 const SCANNED: MapTable =
-    MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8).deletes();
-const PROBED: MapTable = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(4), 0);
+    MapTable::scoped(0, "scanned", Width::fixed(12), Width::fixed(8), 8).deletes();
+const PROBED: MapTable = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(4));
 
 /// Every shape an index declares: variable sequence, fixed one, one in a sub-directory, scoped map
 /// with removals (`account ‖ seq`, read per account), insert-only point-lookup map (hash-like ids)
@@ -218,7 +218,7 @@ impl Model {
         {
             let (name, read) = (table.name, view.sequence(table));
             let len = model.len() as u64;
-            assert_eq!(read.count(), len, "{label}: {name} count");
+            assert_eq!(read.len(), len, "{label}: {name} len");
             let one_by_one: Vec<_> = (0..len).map(|at| read.record(at)).collect();
             let expected: Vec<_> =
                 model.iter().map(|record| Some(Bytes::from(record.clone()))).collect();
@@ -781,14 +781,14 @@ fn a_write_to_a_sequence_outside_the_schema_panics() {
 #[test]
 #[should_panic(expected = "compact_block: map probed not in its schema")]
 fn a_write_to_a_map_outside_the_schema_panics() {
-    let stray = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(8), 0);
+    let stray = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(8));
     BlockChanges::new(block_ref(1), SCHEMA).map(stray).insert(&[0; 16], &[0; 8]);
 }
 
 #[test]
 #[should_panic(expected = "compact_block: map probed not in its schema")]
 fn a_read_of_a_map_outside_the_schema_panics() {
-    let stray = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(8), 0);
+    let stray = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(8));
     open(&DiskEngine::with_fanout(SimFs::new(), 2)).committed().map(stray).value(&[0; 16]);
 }
 
@@ -927,7 +927,7 @@ fn a_merge_of_a_key_held_twice_fails_the_next_commit() {
 }
 
 #[test]
-#[should_panic(expected = "commit after a failed one")]
+#[should_panic(expected = "commit on a store a failed commit poisoned")]
 fn a_commit_after_a_failed_one_panics() {
     let fs = SimFs::new();
     let mut store = open(&DiskEngine::with_fanout(fs.clone(), 2));
@@ -937,6 +937,19 @@ fn a_commit_after_a_failed_one_panics() {
     store.apply(changes);
     store.commit().expect_err("injected EIO");
     let _ = store.commit();
+}
+
+#[test]
+#[should_panic(expected = "apply on a store a failed commit poisoned")]
+fn an_apply_after_a_failed_commit_panics() {
+    let fs = SimFs::new();
+    let mut store = open(&DiskEngine::with_fanout(fs.clone(), 2));
+    fs.fail_from(fs.mutations());
+    let mut changes = store.changes(block_ref(1));
+    changes.sequence(BLOCKS).append(&block(1));
+    store.apply(changes);
+    store.commit().expect_err("injected EIO");
+    store.apply(store.changes(block_ref(2)));
 }
 
 /// - open drops bytes past the manifest
@@ -992,7 +1005,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
 fn a_manifest_body_is_its_golden_bytes() {
     const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(4));
     const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-    const MAP: MapTable = MapTable::new(0, "map", Width::fixed(8), Width::fixed(1), 0);
+    const MAP: MapTable = MapTable::point(0, "map", Width::fixed(8), Width::fixed(1));
     const TABLES: Tables = Tables::new(&[FIXED, VARIABLE], &[MAP]);
     let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
     let sealed =
@@ -1033,9 +1046,10 @@ fn a_manifest_body_is_its_golden_bytes() {
 }
 
 /// `verify` over a real directory: clean, flipped byte names its page, missing file lost, file a
-/// merge retired between manifest read and scrub scrubbed again
+/// merge retired between manifest read and scrub scrubbed again, another identity's = its
+/// `ManifestError`
 #[test]
-fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
+fn verify_names_bad_pages_and_lost_files_rescrubs_after_a_merge_and_refuses_another_identity() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("idx");
     let fs = RealFs::shared();
@@ -1079,4 +1093,8 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
 
     let fresh = engine.verify(&root.path().join("absent"), &SCHEMA).expect("verify");
     assert_eq!(fresh, Verification { heights: 0, units: Vec::new() });
+
+    let mainnet = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Main, TABLES);
+    let foreign = engine.verify(&path, &mainnet).expect_err("another network's directory");
+    assert!(matches!(foreign, StoreError::Manifest(ManifestError::Network { .. })), "{foreign}");
 }

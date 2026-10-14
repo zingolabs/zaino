@@ -84,6 +84,22 @@ impl SegmentOut {
     }
 }
 
+/// `Contract` reason for `key`: each input's row of it, in input order (= the merge heap's order
+/// for equal keys; each input holds a key at most once)
+fn held_reason(sources: &[SegmentFile], key: &[u8]) -> String {
+    let held: Vec<&str> = sources
+        .iter()
+        .filter_map(|file| {
+            let slot = file.seek(key);
+            (slot < file.records() && file.key(slot) == key).then(|| match file.content(slot) {
+                Row::Value(_) => "value",
+                Row::Tombstone => "tombstone",
+            })
+        })
+        .collect();
+    format!("key held {} times: {}", held.len(), held.join(", "))
+}
+
 fn navigation_error(segment: u32, error: FilterError) -> SegmentError {
     match error {
         FilterError::Build(reason) => SegmentError::Filter { segment, reason },
@@ -171,36 +187,34 @@ impl SegmentWriter {
                 return Ok(None);
             }
             heads.extend(head(source, at + 1));
-            let mut group = vec![(source, at)];
+            let first = sources[source].row(at);
+            let (mut values, mut tombstones) = (0, 0);
+            let mut tally = |content| match content {
+                Row::Value(_) => values += 1,
+                Row::Tombstone => tombstones += 1,
+            };
+            tally(sources[source].content(at));
             while let Some(&Reverse((next, source, at))) = heads.peek() {
                 if next != key {
                     break;
                 }
                 heads.pop();
                 heads.extend(head(source, at + 1));
-                group.push((source, at));
+                tally(sources[source].content(at));
             }
-            uncharged += group.len() * self.shape.stride;
-            let held: Vec<&str> = group
-                .iter()
-                .map(|&(source, at)| match sources[source].entry(at).1 {
-                    Some(_) => "value",
-                    None => "tombstone",
-                })
-                .collect();
-            match (group.as_slice(), held.as_slice()) {
-                ([only], _) => {
-                    let row = sources[only.0].row(only.1);
+            uncharged += (values + tombstones) * self.shape.stride;
+            match (values, tombstones) {
+                (1, 0) | (0, 1) => {
                     let writing = match &mut out {
                         Some(out) => out,
                         None => out.insert(self.create(id, total)?),
                     };
-                    writing.push(row)?;
-                    uncharged += row.len();
+                    writing.push(first)?;
+                    uncharged += first.len();
                 }
-                (_, ["value", "tombstone"] | ["tombstone", "value"]) => cancelled += 1,
+                (1, 1) => cancelled += 1,
                 _ => {
-                    let reason = format!("key held {} times: {}", group.len(), held.join(", "));
+                    let reason = held_reason(&sources, key);
                     return Err(SegmentError::Contract { segment: id, reason });
                 }
             }
@@ -244,7 +258,7 @@ impl SegmentWriter {
             }
             let filtered = &key[..file.filtered()];
             assert!(file.may_contain(filtered), "segment {} slot {slot}: filter finds it", meta.id);
-            file.entry(slot);
+            file.content(slot);
             digest.update(file.row(slot));
         }
         assert_eq!(digest.finalize(), written, "segment {}: rows read back as written", meta.id);

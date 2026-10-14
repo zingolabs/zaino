@@ -24,7 +24,7 @@ pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(256 << 20).expect("256 MiB is non-zero");
 
-const RECEIVES: MapTable = MapTable::new(
+const RECEIVES: MapTable = MapTable::scoped(
     0,
     "receives",
     Width::fixed(RECEIVE_KEY as u32),
@@ -32,4 +32,4 @@ const RECEIVES: MapTable = MapTable::new(
     AddressKey::LEN as u32,
 );
 const SPENT: MapTable =
-    MapTable::new(1, "spent", Width::fixed(SPENT_KEY as u32), Width::fixed(SPEND as u32), 0);
+    MapTable::point(1, "spent", Width::fixed(SPENT_KEY as u32), Width::fixed(SPEND as u32));
