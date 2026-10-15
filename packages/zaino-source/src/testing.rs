@@ -12,6 +12,7 @@ use std::time::Duration;
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{Block, BlockRef, DecodedHeader, Transaction, TransactionLocation};
 use zcash_protocol::consensus::{BlockHeight, Parameters, UPGRADES_IN_ORDER};
+use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
@@ -57,10 +58,11 @@ pub enum Port {
     Transaction,
     Send,
     Check,
+    StandardFee,
 }
 
 impl Port {
-    pub const ALL: [Port; 7] = [
+    pub const ALL: [Port; 8] = [
         Port::Poll,
         Port::Links,
         Port::Block,
@@ -68,6 +70,7 @@ impl Port {
         Port::Transaction,
         Port::Send,
         Port::Check,
+        Port::StandardFee,
     ];
 }
 
@@ -79,6 +82,7 @@ pub struct Calls {
     pub blocks: usize,
     pub sends: usize,
     pub checks: usize,
+    pub standard_fees: usize,
 }
 
 /// [`MockValidator`]s on a [`MockChain`]
@@ -525,6 +529,17 @@ impl ChainDataSource for MockValidator {
         }
         let refused = |refused| QueryError::Domain(CheckAdmissionError::Refused(refused));
         Ok(state.verdict(transaction).map_err(refused)?.tx.txid)
+    }
+
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<crate::StandardFee, QueryError<crate::GetStandardFeeError>> {
+        self.enter(Port::StandardFee, |calls| calls.standard_fees += 1).await?;
+        // ZIP 2009 fee, static estimator
+        Ok(crate::StandardFee {
+            fee_zat: Zatoshis::from_u64(1000).expect("1000 zatoshis in supply"),
+            estimator_version: 0,
+        })
     }
 }
 

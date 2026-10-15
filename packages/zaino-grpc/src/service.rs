@@ -56,6 +56,7 @@ pub(crate) enum Method {
     GetMempoolStream,
     GetTransaction,
     GetLightdInfo,
+    GetStandardFee,
 }
 
 /// One registry row: wire name (= the `method` metric label), admission pool, the index whose view
@@ -73,7 +74,7 @@ const fn row(method: Method, name: &'static str, class: Class, index: Option<Ind
 }
 
 /// The registry: every served method (a new RPC = a [`Method`], its row, its `handle` arm)
-pub(crate) const ROUTES: [Route; 18] = {
+pub(crate) const ROUTES: [Route; 19] = {
     use Class::{Subscription, Work};
     use IndexKind::{CompactBlock, TransparentAddress, TreeState};
     use Method::*;
@@ -103,6 +104,8 @@ pub(crate) const ROUTES: [Route; 18] = {
         row(GetMempoolStream, "GetMempoolStream", Subscription, None),
         row(GetTransaction, "GetTransaction", Work, None),
         row(GetLightdInfo, "GetLightdInfo", Work, None),
+        // the validator's relay policy, reached through the balancer
+        row(GetStandardFee, "GetStandardFee", Work, None),
     ]
 };
 
@@ -314,6 +317,7 @@ impl<S: ChainDataSource, V: DurableView> Routed<S, V> {
                 let info = chain::lightd_info(&snap, routes.network, routes.version)?;
                 Ok(unary_response(frame(&info)))
             }
+            GetStandardFee => chain::standard_fee(&routes.validators).await,
         }
     }
 }

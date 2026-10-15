@@ -16,6 +16,7 @@ mod parse;
 mod peer_info;
 mod queries;
 mod rpc;
+mod standard_fee;
 
 pub use blockchain_info::BlockchainInfo;
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
@@ -28,11 +29,12 @@ pub use peer_info::PeerInfo;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    GetStandardFeeError, GetTransactionError, MempoolListed, MetadataReading, PollReading,
+    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
+pub use standard_fee::StandardFee;
 
 // `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]
