@@ -1,0 +1,29 @@
+[[changes]]
+crate = "zaino-store"
+kind = "fix"
+description = """
+The address-history reads (`balance`, `unspent_outpoints`, `deltas`, \
+`tx_ids`) run on the blocking pool. A pool-scale address scans for tens of \
+seconds, and on an async worker a few such reads at once stopped the server \
+from answering any other request.
+"""
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "fix"
+description = """
+The gRPC server disables Nagle on accepted connections, removing a ~40 ms \
+delay on small unary replies.
+"""
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "fix"
+description = """
+`GetBlockRange` and `GetBlockRangeNullifiers` stream the range in steps of \
+100 heights instead of composing it whole before sending the first block, so \
+an open range stream holds at most one step in memory. A range whose start is \
+above its end is served in descending order, as lightwalletd does; it was \
+previously answered empty. `LightServe::get_block_range_nullifiers` returns a \
+stream rather than a `Vec`.
+"""
