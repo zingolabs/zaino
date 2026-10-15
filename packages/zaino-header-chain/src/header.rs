@@ -1,7 +1,7 @@
 //! One exact consensus header (`HeaderBytes` with nothing after the solution), its bytes kept for
 //! the Equihash check
 
-use zaino_primitives::types::{HeaderBytes, HeaderError, MerkleRoot};
+use zaino_primitives::types::{HeaderBytes, HeaderError};
 use zcash_protocol::BlockHash;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -44,10 +44,6 @@ impl Header {
 
     pub(crate) fn prev_hash(&self) -> BlockHash {
         self.view().prev_hash()
-    }
-
-    pub(crate) fn merkle_root(&self) -> MerkleRoot {
-        self.view().merkle_root()
     }
 
     pub(crate) fn time(&self) -> u32 {

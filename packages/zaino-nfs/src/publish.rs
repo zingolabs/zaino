@@ -48,17 +48,12 @@ impl ChainParams {
     }
 }
 
-/// Which branch of the publication's chain a block sits on (`from` = the side branch's best parent)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Branch {
-    Best,
-    Side { from: BlockRef },
-}
-
 /// Every enabled index as of one block: what a route reads
+///
+/// - `on_best` = `block` on the publication chain's best branch
 pub struct IndexesAtBlock<V> {
     block: BlockRef,
-    branch: Branch,
+    on_best: bool,
     params: ChainParams,
     views: Views<V>,
 }
@@ -68,11 +63,9 @@ impl<V: View> IndexesAtBlock<V> {
     /// block (side branch: durable data past it = best chain, not this branch)
     pub fn answers_through(&self, kind: IndexKind) -> BlockHeight {
         let durable = self.views.durable.get(kind).and_then(View::tip).map(|tip| tip.height);
-        match self.branch {
-            Branch::Best => {
-                durable.map_or(self.block.height, |durable| durable.max(self.block.height))
-            }
-            Branch::Side { .. } => self.block.height,
+        match (self.on_best, durable) {
+            (true, Some(durable)) => durable.max(self.block.height),
+            _ => self.block.height,
         }
     }
 }
@@ -81,10 +74,6 @@ impl<V> IndexesAtBlock<V> {
     /// `GetLatestBlock` + every read naming no height (one tip across indexes)
     pub fn tip(&self) -> BlockRef {
         self.block
-    }
-
-    pub fn branch(&self) -> Branch {
-        self.branch
     }
 
     pub fn params(&self) -> ChainParams {
@@ -174,7 +163,7 @@ fn at<V: View>(
     let empty = PerIndex::default();
     let layers = base.folded.as_deref().map_or(&empty, |folded| &folded.layers);
     let views = Views::at(durable, layers, Some(base.at.height));
-    IndexesAtBlock { block: base.at, branch: base.branch, params, views }
+    IndexesAtBlock { block: base.at, on_best: base.on_best, params, views }
 }
 
 /// Every enabled index's durable view + a layer above it: [`IndexesAtBlock`]'s state, and a fold's

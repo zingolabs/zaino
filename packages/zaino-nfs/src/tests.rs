@@ -152,7 +152,6 @@ fn verify(
 ) {
     let (chain, tip) = (indexed.chain(), indexed.served().tip());
     assert!(chain.on_best(tip), "{context}: N4 tip {tip:?} off best");
-    assert_eq!(indexed.served().branch(), Branch::Best, "{context}: N4 served on the best");
     let durable: Vec<(IndexKind, Option<BlockRef>)> = indexed.durable().collect();
     let views = indexed.served().views();
     let lowest = durable.iter().filter_map(|(kind, _)| views.view(*kind)?.tip());
@@ -177,22 +176,15 @@ fn verify(
         };
         let block = at.tip();
         let path = blocks.blocks(blocks.block(*hash).block_ref());
-        let shared = path.iter().take_while(|block| chain.on_best(block.block_ref())).count();
-        let branch = match shared {
-            all if all == path.len() => Branch::Best,
-            shared => Branch::Side { from: path[shared - 1].block_ref() },
-        };
-        assert_eq!((block.hash, at.branch()), (*hash, branch), "{context}: G7 at({hash:?})");
+        let on_best = path.iter().all(|block| chain.on_best(block.block_ref()));
+        assert_eq!(block.hash, *hash, "{context}: G7 at({hash:?})");
         for (kind, durable) in &durable {
             let name = kind.name();
             let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
             let view = at.views().view(*kind);
             let view = view.unwrap_or_else(|| panic!("{context}: {name} unreadable at {block:?}"));
             assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
-            let reach = match branch {
-                Branch::Best => through.height,
-                Branch::Side { .. } => block.height,
-            };
+            let reach = if on_best { through.height } else { block.height };
             let answers = at.answers_through(*kind);
             assert_eq!(answers, reach, "{context}: {name} answers_through, at {block:?}");
             let expected =

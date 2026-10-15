@@ -52,7 +52,7 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - `served().tip()` = the served tip ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)).
   The publish is `None` (withdrawn) only with no folded best node and no root on the best chain.
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
-  or unknown. `IndexesAtBlock::branch()` = `Best` or `Side { from }`.
+  or unknown.
 - `durable()` = each enabled index's durable tip, current as of the publish.
 - `served_above_durable()` = the full blocks `served` extends above the root, served first (its own
   path only, side nodes never): what the mempool stream excludes.

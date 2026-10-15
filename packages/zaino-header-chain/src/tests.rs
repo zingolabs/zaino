@@ -126,7 +126,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     for index in [78, 189, 190, 191, 200] {
         let header = verified.header_at(at(index).height).expect("held");
         let real = &headers[index];
-        assert_eq!((header.hash, header.merkle_root), (real.hash(), real.merkle_root()), "{index}");
+        assert_eq!((header.hash, header.time), (real.hash(), real.time()), "{index}");
     }
     assert_eq!(verified.header_at(at(77).height), None, "past the 113 finalized headers kept");
     assert!(verified.on_best(at(5)) && verified.on_best(at(77)), "finalized by definition");

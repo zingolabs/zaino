@@ -23,7 +23,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use zaino_primitives::types::{BlockRef, FinalityDepth, MerkleRoot};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
@@ -47,7 +47,6 @@ const MAX_DIFFICULTY_DROP: u128 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record {
     pub hash: BlockHash,
-    pub merkle_root: MerkleRoot,
     pub time: u32,
     pub(crate) bits: u32,
     pub(crate) cumulative_work: u128,
@@ -124,7 +123,6 @@ impl HeaderChain {
     pub fn anchor(&mut self, header: &Header, height: BlockHeight) {
         let record = Record {
             hash: header.hash(),
-            merkle_root: header.merkle_root(),
             time: header.time(),
             bits: header.bits(),
             cumulative_work: 0,
@@ -162,8 +160,7 @@ impl HeaderChain {
     pub fn verified(&self) -> Option<VerifiedChain> {
         let best = self.best()?;
         let (above, finalized_headers) = (self.best_path.clone(), self.finalized_headers.clone());
-        let (nodes, leaves) = (self.nodes.clone(), self.leaves.clone());
-        Some(VerifiedChain::new(best, above, finalized_headers, nodes, leaves))
+        Some(VerifiedChain::new(best, above, finalized_headers, self.nodes.clone()))
     }
 
     /// Headers held above the finalized tip, every branch
@@ -219,13 +216,7 @@ impl HeaderChain {
         let bits = header.bits();
         let own = header_work(bits)?;
         let cumulative_work = parent_work.checked_add(own).ok_or(Rejected::WorkOverflow)?;
-        let record = Record {
-            hash,
-            merkle_root: header.merkle_root(),
-            time: header.time(),
-            bits,
-            cumulative_work,
-        };
+        let record = Record { hash, time: header.time(), bits, cumulative_work };
 
         self.received += 1;
         let received = self.received;

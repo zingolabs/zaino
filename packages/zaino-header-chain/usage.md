@@ -93,7 +93,6 @@ holder's answers never change (H5).
 | `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the finalized tip past the finalized headers kept |
 | `holds(at)` | `on_best(at)`, or a side block held above the finalized tip (the NFS prunes by it) |
 | `locator()` | zcashd's `GetLocator`, ending at the finalized tip |
-| `forks()` / `branch(tip)` | one `Fork` per side leaf (≤ 32, most work first) / its side blocks above `from` |
 
 ## Invariants, checked
 

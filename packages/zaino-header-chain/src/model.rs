@@ -34,9 +34,7 @@ use zcash_protocol::BlockHash;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{header_work, Rejected, CONTEXT};
-use crate::{
-    decode_header, BestTip, Fork, Header, HeaderChain, Inserted, Params, Record, VerifiedChain,
-};
+use crate::{decode_header, BestTip, Header, HeaderChain, Inserted, Params, Record, VerifiedChain};
 
 const DEPTH: u32 = 3;
 /// Headers a fetch may reach past `depth` above the finalized tip (`HeaderSync`'s batch)
@@ -237,7 +235,6 @@ impl Model {
         let own = header_work(header.bits()).expect("palette bits");
         let record = Record {
             hash,
-            merkle_root: header.merkle_root(),
             time: header.time(),
             bits: header.bits(),
             cumulative_work: parent_work + own,
@@ -387,33 +384,6 @@ impl Model {
         }
         locator
     }
-
-    /// Per side leaf: its fork (`from` = end of the common prefix of its mined ancestry and the
-    /// best path) + its branch above `from`; most work first, first received on a tie
-    fn forks(&self) -> Vec<(Fork, Vec<BlockRef>)> {
-        let path = self.best_path();
-        let best = self.best().map(|best| best.block.hash);
-        let mut forks: Vec<(u64, Fork, Vec<BlockRef>)> = Vec::new();
-        for leaf in self.leaves().into_iter().filter(|leaf| Some(*leaf) != best) {
-            let mut ascending = vec![leaf];
-            while let Some(header) = self.by_hash.get(ascending.last().expect("leaf")) {
-                if header.prev_hash() == BlockHash([0; 32]) {
-                    break;
-                }
-                ascending.push(header.prev_hash());
-            }
-            ascending.reverse();
-            let shared = ascending.iter().zip(&path).take_while(|(at, on)| **at == on.hash).count();
-            let at = |h: usize| BlockRef { hash: ascending[h], height: height(h as u32) };
-            let alive = self.alive[&leaf];
-            let work = alive.record.cumulative_work;
-            let tip = at(ascending.len() - 1);
-            let fork = Fork { from: at(shared - 1), tip, cumulative_work: work };
-            forks.push((alive.received, fork, (shared..ascending.len()).map(at).collect()));
-        }
-        forks.sort_by_key(|(received, fork, _)| (Reverse(fork.cumulative_work), *received));
-        forks.into_iter().map(|(_, fork, branch)| (fork, branch)).collect()
-    }
 }
 
 fn height(h: u32) -> BlockHeight {
@@ -487,7 +457,6 @@ fn run(moves: Vec<Move>) {
     chain.anchor(&genesis, H0);
     let anchor = Record {
         hash: genesis.hash(),
-        merkle_root: genesis.merkle_root(),
         time: genesis.time(),
         bits: genesis.bits(),
         cumulative_work: 0,
@@ -501,8 +470,10 @@ fn run(moves: Vec<Move>) {
         received: 0,
         last_vouched: (H0, header_work(genesis.bits()).expect("regtest limit")),
     };
-    // (published chain, the model's path then, the lowest height it answered by height, forks)
-    let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
+    // (published chain, the model's path then, the lowest height it answered by height, each
+    // probe's `holds` then)
+    type Published = (VerifiedChain, Vec<Record>, usize, Vec<(BlockRef, bool)>);
+    let mut published: Option<Published> = None;
 
     // the driver's: nothing above the ceiling offered (H9); untrusted = every rule run first
     let params = Params::regtest(all_at(height(1)));
@@ -655,36 +626,35 @@ fn run(moves: Vec<Move>) {
         assert_eq!(verified.hash_at(height(path.len() as u32)), None, "{context}: above best");
         assert_eq!(verified.locator(), model.locator(), "{context}: locator");
 
-        let (forks, branches): (Vec<Fork>, Vec<Vec<BlockRef>>) = model.forks().into_iter().unzip();
-        assert_eq!(verified.forks(), forks, "{context}: forks");
-        let held: Vec<Vec<BlockRef>> = forks.iter().map(|f| verified.branch(&f.tip.hash)).collect();
-        assert_eq!(held, branches, "{context}: branch of each fork");
-        let best = verified.best();
-        assert_eq!(verified.branch(&best.hash), [], "{context}: the best tip = no side branch");
+        let mut holds = Vec::new();
         for header in &model.mined {
             let hash = header.hash();
             let at = BlockRef { hash, height: builder.templates[&hash].height };
             let below = u32::from(at.height).checked_sub(1).map(BlockHeight::from);
             for at in below.into_iter().chain([at.height, at.height + 1]) {
                 let at = BlockRef { hash, height: at };
-                assert_eq!(verified.holds(at), model.holds(at, &path), "{context}: holds {at:?}");
+                let held = verified.holds(at);
+                assert_eq!(held, model.holds(at, &path), "{context}: holds {at:?}");
+                holds.push((at, held));
             }
         }
 
-        if let Some((old, old_path, old_kept_from, old_forks)) = &published {
+        if let Some((old, old_path, old_kept_from, old_holds)) = &published {
             let answered = answers(old, old_path);
             assert_eq!(
                 answered,
                 expected(old_path, *old_kept_from),
                 "{context}: H5, a published chain never changes"
             );
-            assert_eq!(old.forks(), *old_forks, "{context}: H5, nor its forks");
+            let still: Vec<(BlockRef, bool)> =
+                old_holds.iter().map(|(at, _)| (*at, old.holds(*at))).collect();
+            assert_eq!(still, *old_holds, "{context}: H5, nor its side blocks");
             let finalized_height = |chain: &VerifiedChain| chain.finalized_tip().height;
             assert!(
                 finalized_height(&verified) >= finalized_height(old),
                 "{context}: H2, finalized moves up"
             );
         }
-        published = Some((verified, path, kept_from, forks));
+        published = Some((verified, path, kept_from, holds));
     }
 }

@@ -32,7 +32,7 @@ use crate::fold::{fold_block, Folded};
 
 pub use crate::emit::describe_metrics;
 pub use crate::fold::FoldError;
-pub use crate::publish::{Branch, ChainParams, IndexesAtBlock, NfsPublication, Published, Views};
+pub use crate::publish::{ChainParams, IndexesAtBlock, NfsPublication, Published, Views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {

@@ -28,7 +28,6 @@ use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
 use super::{Indexes, Input, NfsCore, Output, Publication};
-use crate::publish::Branch;
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 /// Fold window (the driver's `2 · depth`)
@@ -361,27 +360,23 @@ impl Sim {
             nodes.chain(tip.root.map(|root| root.hash)).chain([self.decoy]).collect();
         for hash in asked {
             let got = tip.graph.at(&tip.chain, tip.root, &hash);
-            let got = got.map(|base| (base.at, base.branch, base.folded.is_some()));
+            let got = got.map(|base| (base.at, base.on_best, base.folded.is_some()));
             let expected = self.at(&tip, hash);
             assert_eq!(got, expected, "{context}: G7 at {hash:?}");
         }
         self.published = Some(at);
     }
 
-    /// Naive `at`: the root unfolded; a node folded, branch = its path vs the chain's
-    fn at(&self, tip: &Publication<Toys>, hash: BlockHash) -> Option<(BlockRef, Branch, bool)> {
+    /// Naive `at`: the root unfolded; a node folded, on best iff its whole path is
+    fn at(&self, tip: &Publication<Toys>, hash: BlockHash) -> Option<(BlockRef, bool, bool)> {
         if let Some(root) = tip.root.filter(|root| root.hash == hash) {
-            return Some((root, Branch::Best, false));
+            return Some((root, true, false));
         }
         tip.graph.get(&hash)?;
         let blocks = self.builder.blocks(self.builder.block(hash).block_ref());
         let path: Vec<BlockRef> = blocks.iter().map(|block| block.block_ref()).collect();
-        let shared = path.iter().take_while(|at| tip.chain.on_best(**at)).count();
-        let branch = match path.get(shared) {
-            None => Branch::Best,
-            Some(_) => Branch::Side { from: path[shared - 1] },
-        };
-        Some((path[path.len() - 1], branch, true))
+        let on_best = path.iter().all(|at| tip.chain.on_best(*at));
+        Some((path[path.len() - 1], on_best, true))
     }
 
     /// After every step: every node's folds = the oracle; no node outside the window

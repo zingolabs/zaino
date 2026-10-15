@@ -11,8 +11,6 @@ use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::publish::Branch;
-
 #[derive(Debug)]
 pub(crate) struct Node<F> {
     pub(crate) at: BlockRef,
@@ -37,7 +35,7 @@ impl<F> Clone for Graph<F> {
 #[derive(Debug)]
 pub(crate) struct Base<F> {
     pub(crate) at: BlockRef,
-    pub(crate) branch: Branch,
+    pub(crate) on_best: bool,
     pub(crate) folded: Option<Arc<F>>,
 }
 
@@ -115,25 +113,11 @@ impl<F> Graph<F> {
         hash: &BlockHash,
     ) -> Option<Base<F>> {
         if let Some(root) = root.filter(|root| root.hash == *hash) {
-            return Some(Base { at: root, branch: Branch::Best, folded: None });
+            return Some(Base { at: root, on_best: true, folded: None });
         }
         let node = self.nodes.get(hash)?;
         let folded = Some(Arc::clone(&node.folded));
-        Some(Base { at: node.at, branch: self.branch(chain, node), folded })
-    }
-
-    /// Best, or side from its first ancestor on `chain`'s best (a best node or the root: N2)
-    fn branch(&self, chain: &VerifiedChain, node: &Node<F>) -> Branch {
-        if chain.on_best(node.at) {
-            return Branch::Best;
-        }
-        let mut lowest = node;
-        while let Some(parent) = self.nodes.get(&lowest.parent).filter(|p| !chain.on_best(p.at)) {
-            lowest = parent;
-        }
-        let below = u32::from(lowest.at.height).checked_sub(1);
-        let height = BlockHeight::from(below.expect("a side node sits above the root"));
-        Branch::Side { from: BlockRef { hash: lowest.parent, height } }
+        Some(Base { at: node.at, on_best: chain.on_best(node.at), folded })
     }
 
     /// N1, N2, G8; panics naming the invariant broken

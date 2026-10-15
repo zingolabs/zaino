@@ -4,8 +4,6 @@
 //! - at or below the finalized tip = finalized by definition (a trusted validator held it); only
 //!   the newest `2 · depth` finalized headers answer by height
 
-use std::cmp::Reverse;
-
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -14,23 +12,13 @@ use crate::chain::{BestTip, Node, Record};
 
 /// - `above[i]` = best branch at `finalized + 1 + i`; `finalized_headers` = the newest finalized
 ///   headers, oldest first, the finalized tip last
-/// - `nodes`, `leaves` = the header tree above the finalized tip, every branch (side ones:
-///   [`Fork`])
+/// - `nodes` = the header tree above the finalized tip, every branch
 #[derive(Debug, Clone)]
 pub struct VerifiedChain {
     best: BestTip,
     above: imbl::Vector<Record>,
     finalized_headers: imbl::Vector<(BlockHeight, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
-    leaves: imbl::HashSet<BlockHash>,
-}
-
-/// Side branch held beside the best: `from` = its best-chain parent (at or above the finalized tip)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Fork {
-    pub from: BlockRef,
-    pub tip: BlockRef,
-    pub cumulative_work: u128,
 }
 
 /// zcashd `CChain::GetLocator`: the step doubles once the locator holds more than this many
@@ -42,39 +30,12 @@ impl VerifiedChain {
         above: imbl::Vector<Record>,
         finalized_headers: imbl::Vector<(BlockHeight, Record)>,
         nodes: imbl::HashMap<BlockHash, Node>,
-        leaves: imbl::HashSet<BlockHash>,
     ) -> Self {
         assert!(
             !finalized_headers.is_empty(),
             "H5: a published chain has a finalized tip (its anchor)"
         );
-        Self { best, above, finalized_headers, nodes, leaves }
-    }
-
-    /// One per side leaf (≤ `SIDE_TIPS`, H4), most work first, first received on a tie
-    pub fn forks(&self) -> Vec<Fork> {
-        let best = self.best.block.hash;
-        let mut leaves: Vec<&Node> = self
-            .leaves
-            .iter()
-            .filter(|leaf| **leaf != best)
-            .map(|leaf| &self.nodes[leaf])
-            .collect();
-        leaves.sort_by_key(|leaf| (Reverse(leaf.record.cumulative_work), leaf.received));
-        let fork = |leaf: &Node| {
-            let lowest = *self.off_best(leaf.record.hash).last().expect("a side leaf is off best");
-            let below = u32::from(lowest.height).checked_sub(1);
-            let height =
-                BlockHeight::from(below.expect("a side node sits above the finalized tip"));
-            let from = BlockRef { hash: lowest.parent, height };
-            Fork { from, tip: leaf.block_ref(), cumulative_work: leaf.record.cumulative_work }
-        };
-        leaves.into_iter().map(fork).collect()
-    }
-
-    /// Side blocks from the fork's `from` (exclusive) up to `tip`; empty = `tip` not a side block
-    pub fn branch(&self, tip: &BlockHash) -> Vec<BlockRef> {
-        self.off_best(*tip).iter().rev().map(|node| node.block_ref()).collect()
+        Self { best, above, finalized_headers, nodes }
     }
 
     /// On the best chain (finalized included), or a side block held above the finalized tip
@@ -90,20 +51,6 @@ impl VerifiedChain {
             Some(record) => record.hash == at.hash,
             None => at.height <= self.finalized_tip().height,
         }
-    }
-
-    /// Side nodes from `tip` down to the best chain, `tip` first
-    fn off_best(&self, tip: BlockHash) -> Vec<&Node> {
-        let mut walked = Vec::new();
-        let mut at = tip;
-        while let Some(node) = self.nodes.get(&at) {
-            if self.hash_at(node.height) == Some(at) {
-                break;
-            }
-            walked.push(node);
-            at = node.parent;
-        }
-        walked
     }
 
     pub fn best(&self) -> BlockRef {
@@ -123,7 +70,7 @@ impl VerifiedChain {
         self.header_at(height).map(|record| record.hash)
     }
 
-    /// Best-chain header at `height`: hash, merkle root, time
+    /// Best-chain header at `height`: hash, time
     pub fn header_at(&self, height: BlockHeight) -> Option<Record> {
         if height > self.best.block.height {
             return None;
