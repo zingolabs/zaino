@@ -54,16 +54,15 @@ live-tests/                        Standalone workspace, run on the ztest Kubern
   sync/                              Mainnet sync profiles (own workspace, `ztest sync`)
 
 docs/                              Operator docs, architecture, RPC API, testing
-tools/workbench/                   Repo guards run by `makers lint`
-nix/, flake.nix                    Nix build and dev shell
+nix/, flake.nix                    Nix build and dev shell (every dev, lint and release tool, pinned)
 .github/                           CI workflows and issue templates
-.githooks/                         pre-push hook (`makers lint`)
 .changeset/                        Pending change files (Knope)
 
-Makefile.toml                      cargo-make tasks
+.pre-commit-config.yaml            Every lint CI runs (pre-commit hooks)
 knope.toml                         Release config: one version, changelog, GitHub release
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy
+dupes.toml, .dupes-ignore.toml     code-dupes policy and reviewed exceptions
 Dockerfile                         Container image
 CONTEXT.md                         Glossary of canonical terms
 CLAUDE.md, AGENTS.md               AI-contributor guidelines

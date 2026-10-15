@@ -13,8 +13,10 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc in lint/test: zaino-proto build.rs uses the checked-in generated code; the `proto`
-# job regenerates with protoc and fails on drift (a .proto edit without its .rs)
+# every run step inside the flake devshell (flake.lock pins all tools)
+defaults:
+  run:
+    shell: nix develop -c bash --noprofile --norc -eo pipefail {0}
 
 jobs:
   lint:
@@ -22,57 +24,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            tools/workbench
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make,cargo-deny,cargo-nextest
-
-      # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
-      - run: cargo make lint
-
-  proto:
-    name: Generated protos match their .proto
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: Swatinem/rust-cache@v2
-
-      - run: sudo apt-get install -y protobuf-compiler
-
-      - run: cargo check --locked -p zaino-proto
-
-      - run: git diff --exit-code packages/zaino-proto/src/proto
+      # pre-push stage = every hook (stage-less hooks run in all stages)
+      - run: pre-commit run --all-files --hook-stage pre-push
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
-      - uses: taiki-e/install-action@nextest
-
-      - run: cargo nextest run --locked --workspace --no-fail-fast
+      - run: cargo nextest run --locked --workspace --all-features --no-fail-fast
 
   features:
     name: Each feature compiles
-    # dev only; each package ≤ 1 feature (`testing`) → --each-feature = --feature-powerset
+    # dev only; each package ≤ 1 feature → --each-feature = --feature-powerset
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@cargo-hack
 
       - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
         env:

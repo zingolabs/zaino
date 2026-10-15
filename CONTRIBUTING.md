@@ -26,18 +26,10 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
 - Open PRs against [`dev`](https://github.com/zingolabs/zaino/tree/dev), from a
   personal fork if you are a new contributor. Keep a PR in `Draft` until it is
   ready for review.
-- Run `makers lint` before pushing: it runs every lint CI runs (fmt, clippy,
-  cargo-deny bans, shellcheck, the Dockerfile openssl ban, code duplication,
-  `tools/` lints).
-  `git config core.hooksPath .githooks` runs it as a pre-push hook.
+- Run the lints before pushing ([Development](#development)).
 - Every PR that changes a released crate carries a change file (`knope document-change`); see
   [RELEASING.md](./RELEASING.md#every-pr-a-change-file).
 - All CI checks must pass. Review happens in public on the PR.
-- A PR from a fork does not dispatch the `zcash/integration-tests` suite,
-  because GitHub withholds repository secrets from fork PRs. Its
-  `Trigger integration tests` check is skipped, and a skipped check does not
-  mean the suite passed. The suite first runs when the change merges to `dev`,
-  unless a maintainer pushes the branch to `zingolabs/zaino` first.
 - A PR is written by one developer, reviewed in detail by a second, and merged
   by a third. Experienced maintainers may waive this case by case.
 - Signed (verified) commits are encouraged; see GitHub's
@@ -46,16 +38,28 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
   affected crate's `usage.md` and, for system-level behaviour,
   `docs/architecture.md`.
 
-## Testing
+## Development
 
-Zaino uses [`cargo nextest`](https://nexte.st/)
-(`cargo install cargo-nextest --locked`):
+`nix develop` gives the pinned Rust toolchain and every tool CI uses, at the versions in
+`flake.lock`. CI runs each job inside that same shell. Without Nix, rustup picks up
+`rust-toolchain.toml`, but the other tools (`pre-commit`, `cargo-nextest`, `cargo-deny`,
+`cargo-hack`, `code-dupes`, `protoc`) are yours to install, and a version other than the pinned
+one may lint differently from CI.
+
+Every lint is a hook in [`.pre-commit-config.yaml`](./.pre-commit-config.yaml), and CI's `Lint`
+job runs exactly these:
 
 ```sh
-cargo nextest run --workspace
+pre-commit install                                   # once: fast hooks on commit, clippy on push
+pre-commit run --all-files --hook-stage pre-push     # every lint, as CI runs it
+cargo nextest run --workspace --all-features         # CI's `Test` job
 ```
 
-The live suites run on a Kubernetes cluster through `ztest`; see
+A duplicate the `code-dupes` hook reports is fixed by sharing the code. When sharing would make
+it worse, `code-dupes ignore <fingerprint> --reason "..."` records a reviewed exception in
+`.dupes-ignore.toml`.
+
+The live suites run on a Kubernetes cluster through `ztest`, never in GitHub CI; see
 [docs/testing.md](./docs/testing.md).
 
 The reference platform is Debian 12 (Bookworm) on `x86_64-unknown-linux-gnu`;

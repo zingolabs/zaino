@@ -1,0 +1,42 @@
+# Tools = nix devshell (pinned by flake.lock); `pre-commit install` once
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      # - per file, not `cargo fmt` (live-tests' path dep on ../ztest = no cargo metadata in CI)
+      # - generated protos excluded (per-file rustfmt ignores their `#[rustfmt::skip]` mod decl)
+      - id: rustfmt
+        name: rustfmt
+        language: system
+        entry: rustfmt --check --edition 2021
+        types: [rust]
+        exclude: ^packages/zaino-proto/src/proto/
+      # build.rs regenerates src/proto/*.rs (protoc in devshell) → drift = files modified → fail
+      - id: proto-drift
+        name: generated protos match their .proto
+        language: system
+        entry: cargo check --locked --quiet -p zaino-proto
+        files: ^packages/zaino-proto/
+        pass_filenames: false
+      - id: cargo-deny
+        name: cargo deny (deny.toml)
+        language: system
+        entry: cargo deny check bans
+        files: (Cargo\.(toml|lock)|deny\.toml)$
+        pass_filenames: false
+      - id: code-dupes
+        name: code-dupes (dupes.toml)
+        language: system
+        entry: code-dupes check
+        types: [rust]
+        pass_filenames: false
+      # cargo_common_metadata: crates.io-required manifest fields (`knope publish`)
+      - id: clippy
+        name: cargo clippy
+        language: system
+        entry: >-
+          cargo clippy --locked --workspace --all-targets --all-features --
+          -D warnings -D clippy::cargo_common_metadata
+        pass_filenames: false
+        stages: [pre-push]

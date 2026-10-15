@@ -52,6 +52,18 @@
 
         # Build env defined once in nix/package.nix; devShell reuses it via passthru
         inherit (zainod.passthru) commonArgs;
+
+        # not in nixpkgs; crates.io tarball + its own Cargo.lock
+        code-dupes = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "code-dupes";
+          version = "0.2.1";
+          src = pkgs.fetchCrate {
+            inherit pname version;
+            hash = "sha256-WUF++iDROO4mjA5FseT3FpFExbVx0GEBd+KylkpYWc0=";
+          };
+          cargoHash = "sha256-sv7jawb02hi4h2LPLoDJA10Rnp8YVz/L+X5GNcm4/+Y=";
+          doCheck = false; # tests read ../cargo-dupes/tests/fixtures (absent from crates.io tarball)
+        };
       in
       {
         packages = {
@@ -72,12 +84,15 @@
             protobuf
             pkg-config
             cargo-nextest
-            cargo-deny
-            cargo-make
+            cargo-hack
             # changesets, version bump, changelog, GitHub release (knope.toml)
             knope
-            shellcheck
             rust-analyzer
+
+            # .pre-commit-config.yaml hooks
+            pre-commit
+            cargo-deny
+            code-dupes
 
             # zainod `snapshot` bootstrap + its e2e test (`--all-features`)
             aria2
