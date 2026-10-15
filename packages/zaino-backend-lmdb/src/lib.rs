@@ -51,6 +51,13 @@ use zaino_persistence::{
 use deferred::manifest::MANIFEST_NAMESPACE;
 use deferred::{Deferral, Prepared};
 
+/// Reader-table slots. With thread-local slots each thread that has ever read
+/// holds one until it exits: the async workers, the blocking pool (up to 512
+/// threads by default) and the component threads. LMDB's default of 126 would
+/// fail reads with `MDB_READERS_FULL` once more threads than that had read. A
+/// slot is a few dozen bytes of the lock file.
+const MAX_READERS: u32 = 2048;
+
 /// Configuration for [`LmdbBackend`].
 pub struct LmdbConfig {
     /// Path to the LMDB environment directory.
@@ -80,14 +87,14 @@ impl Default for LmdbConfig {
 /// Thread-safe: LMDB allows concurrent read transactions and serializes
 /// writes internally.
 ///
-/// `Clone` is cheap and shares one environment: the `env` is `Arc`-shared and
-/// the `dbs` map holds `Copy` LMDB handles into it. Cloning yields another
+/// `Clone` is cheap and shares one environment: the `env` and the handle map
+/// are `Arc`-shared, the map holding `Copy` LMDB handles into the environment. Cloning yields another
 /// handle onto the *same* database — as the engine and the store reader both
 /// need when they operate over one backend.
 #[derive(Clone)]
 pub struct LmdbBackend {
     env: Arc<Environment>,
-    dbs: HashMap<Namespace, Database>,
+    dbs: Arc<HashMap<Namespace, Database>>,
     /// Each namespace's [`KeyOrder`], so a writer selects
     /// [`WriteFlags::APPEND`] for the [`WalkOrdered`](KeyOrder::WalkOrdered)
     /// ones. Holds `Copy` entries; cloning per handle is cheap.
@@ -132,8 +139,18 @@ impl LmdbBackend {
         let env = Environment::new()
             .set_max_dbs(max_dbs)
             .set_map_size(config.map_size_bytes)
+            .set_max_readers(MAX_READERS)
             .set_flags(
-                // NO_TLS: allows sharing read transactions across threads.
+                // Thread-local reader slots (no NO_TLS): every read transaction
+                // here opens and closes inside one synchronous call and never
+                // crosses threads, so LMDB can bind a reader slot to each
+                // thread and reuse it on the next transaction without taking
+                // the reader-table lock. Under NO_TLS every read transaction
+                // claimed a slot under that lock, which serialised every read
+                // in the process (16 threads read no faster than one). The
+                // rule that comes with it: a thread holds at most one
+                // transaction at a time, so no backend method nests them.
+                //
                 // NO_READAHEAD: better for random-access patterns.
                 // NO_SYNC: no fsync per commit. Durability is the caller's to
                 // force, through `Backend::flush`.
@@ -154,9 +171,7 @@ impl LmdbBackend {
                 // a *recoverable* store honest — it is written in the same
                 // transaction as the data it vouches for, so it can never lead
                 // it — but it cannot help an environment that fails to open.
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_SYNC,
+                EnvironmentFlags::NO_READAHEAD | EnvironmentFlags::NO_SYNC,
             )
             .open(&config.path)
             .map_err(|e| open_error("open environment", e))?;
@@ -181,7 +196,7 @@ impl LmdbBackend {
 
         Ok(Self {
             env: Arc::new(env),
-            dbs,
+            dbs: Arc::new(dbs),
             key_orders,
             deferral: Arc::new(deferral),
             #[cfg(feature = "sync-profile")]
@@ -283,14 +298,14 @@ impl Backend for LmdbBackend {
     fn reader(&self) -> Result<Self::Reader, OpenError> {
         Ok(LmdbReader {
             env: Arc::clone(&self.env),
-            dbs: self.dbs.clone(),
+            dbs: Arc::clone(&self.dbs),
         })
     }
 
     fn writer(&self) -> Result<Self::Writer, OpenError> {
         Ok(LmdbWriter {
             env: Arc::clone(&self.env),
-            dbs: self.dbs.clone(),
+            dbs: Arc::clone(&self.dbs),
             key_orders: self.key_orders.clone(),
             deferral: Arc::clone(&self.deferral),
             #[cfg(feature = "sync-profile")]
@@ -334,7 +349,9 @@ impl Backend for LmdbBackend {
 /// LMDB read handle.
 pub struct LmdbReader {
     env: Arc<Environment>,
-    dbs: HashMap<Namespace, Database>,
+    /// Shared with the backend: a reader is taken per read, so it must not
+    /// copy the namespace map.
+    dbs: Arc<HashMap<Namespace, Database>>,
 }
 
 impl LmdbReader {
@@ -487,7 +504,7 @@ impl BackendReader for LmdbReader {
 /// LMDB write handle.
 pub struct LmdbWriter {
     env: Arc<Environment>,
-    dbs: HashMap<Namespace, Database>,
+    dbs: Arc<HashMap<Namespace, Database>>,
     key_orders: HashMap<Namespace, KeyOrder>,
     /// The shared deferral controller: routes `Scattered` puts to run logs while
     /// bulk mode is active and holds the open log handles.

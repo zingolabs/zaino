@@ -210,3 +210,14 @@ description = """
 call, so a `freshness` check no longer rebuilds and hashes the codec's samples \
 on each read. `EntryCodec` is now `'static`, the cache's key.
 """
+
+[[changes]]
+crate = "zaino-backend-lmdb"
+kind = "fix"
+description = """
+Reads no longer serialise on LMDB's reader-table lock: the environment uses \
+thread-local reader slots (no `NO_TLS`), so a thread reuses its slot without \
+the lock, and the reader table holds 2,048 slots instead of LMDB's 126, which \
+the blocking pool alone could exceed. Taking a reader no longer copies the \
+namespace map.
+"""
