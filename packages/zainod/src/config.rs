@@ -238,8 +238,9 @@ mod fixture;
 
 #[cfg(feature = "ztest-fixture")]
 pub use fixture::{
-    fixture_deferred_writes, fixture_deployment, mainnet_direct_state_fixture, mainnet_rpc_fixture,
-    regtest_direct_fixture, FIXTURE_DEPLOYMENT_ENV, MAINNET_RPC_FIXTURE_ENV,
+    fixture_deferred_writes, fixture_deployment, fixture_metrics_endpoint,
+    mainnet_direct_state_fixture, mainnet_rpc_fixture, regtest_direct_fixture,
+    FIXTURE_DEPLOYMENT_ENV, FIXTURE_METRICS_ENDPOINT_ENV, MAINNET_RPC_FIXTURE_ENV,
     MAINNET_STATE_FIXTURE_ENV, TEST_FIXTURE_DEFERRED_WRITES_ENV, TEST_FIXTURE_ENV,
     TEST_FIXTURE_FETCH_ENV, TEST_FIXTURE_JSONRPC_ENV, TEST_FIXTURE_MAP_SIZE_ENV,
     TEST_FIXTURE_STORE_ENV, TEST_FIXTURE_ZEBRA_ENV,

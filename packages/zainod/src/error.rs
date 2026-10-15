@@ -60,6 +60,20 @@ pub enum IndexerError {
     #[cfg(feature = "ztest-fixture")]
     #[error("`ZAINO_TEST_DEFERRED_WRITES` is not valid Unicode")]
     FixtureDeferredWritesEnv(#[source] std::env::VarError),
+    /// A fixture's metrics-endpoint env var is not a socket address.
+    #[cfg(feature = "ztest-fixture")]
+    #[error("`ZAINO_METRICS_ENDPOINT={value}` is not a socket address")]
+    FixtureMetricsEndpoint {
+        /// The value the variable held.
+        value: String,
+        /// Why it did not parse as a socket address.
+        #[source]
+        source: std::net::AddrParseError,
+    },
+    /// A fixture's metrics-endpoint env var is not valid Unicode.
+    #[cfg(feature = "ztest-fixture")]
+    #[error("`ZAINO_METRICS_ENDPOINT` is not valid Unicode")]
+    FixtureMetricsEndpointEnv(#[source] std::env::VarError),
     /// A fatal runtime escalation — the caller's run loop restarts the daemon.
     #[error("restart zaino")]
     Restart,

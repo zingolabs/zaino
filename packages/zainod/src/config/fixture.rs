@@ -333,6 +333,40 @@ fn deployment_from_env_value(
         .map_err(|source| IndexerError::FixtureDeployment { value, source })
 }
 
+/// The env var a fixture reads for its Prometheus `/metrics` address.
+///
+/// The same key the layered loader maps onto [`DaemonConfig::metrics_endpoint`],
+/// so a deploy that sets it gets metrics whichever config path boots. Absent
+/// means no metrics endpoint.
+pub const FIXTURE_METRICS_ENDPOINT_ENV: &str = "ZAINO_METRICS_ENDPOINT";
+
+/// The metrics endpoint a fixture serves: [`FIXTURE_METRICS_ENDPOINT_ENV`] parsed
+/// as a socket address, or none when the variable is unset.
+///
+/// A fixture builds its whole config from env and bypasses the layered loader,
+/// so without this a fixture-booted daemon never exported metrics.
+pub fn fixture_metrics_endpoint() -> Result<Option<SocketAddr>, IndexerError> {
+    metrics_endpoint_from_env_value(std::env::var(FIXTURE_METRICS_ENDPOINT_ENV))
+}
+
+/// [`fixture_metrics_endpoint`]'s parse, separated from the process environment
+/// so it is testable without mutating shared env state.
+fn metrics_endpoint_from_env_value(
+    read: Result<String, std::env::VarError>,
+) -> Result<Option<SocketAddr>, IndexerError> {
+    let value = match read {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(source @ std::env::VarError::NotUnicode(_)) => {
+            return Err(IndexerError::FixtureMetricsEndpointEnv(source))
+        }
+    };
+    value
+        .parse()
+        .map(Some)
+        .map_err(|source| IndexerError::FixtureMetricsEndpoint { value, source })
+}
+
 /// Env var selecting the fixture's deferred-writes policy — `auto` (the default
 /// when unset) or `off` — so a cluster A/B can toggle the scattered-write
 /// deferral without a rebuild. An unrecognised value is a typed error, not a
@@ -471,6 +505,25 @@ mod tests {
     /// is the default (`auto`), and an unknown name or a non-Unicode value is a
     /// typed error rather than a silent default — the A/B must not run the wrong
     /// arm unflagged.
+    #[test]
+    fn fixture_metrics_endpoint_reads_a_socket_address() {
+        use super::metrics_endpoint_from_env_value;
+        use std::env::VarError;
+
+        assert_eq!(
+            metrics_endpoint_from_env_value(Ok("0.0.0.0:9998".to_owned())).expect("valid"),
+            Some(SocketAddr::from(([0, 0, 0, 0], 9998)))
+        );
+        assert_eq!(
+            metrics_endpoint_from_env_value(Err(VarError::NotPresent)).expect("unset is none"),
+            None
+        );
+        assert!(matches!(
+            metrics_endpoint_from_env_value(Ok("not-an-address".to_owned())),
+            Err(IndexerError::FixtureMetricsEndpoint { .. })
+        ));
+    }
+
     #[test]
     fn fixture_deferred_writes_reads_the_config_names() {
         assert_eq!(

@@ -42,6 +42,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         );
         let mut config = crate::config::regtest_direct_fixture();
         config.store.deferred_writes = crate::config::fixture_deferred_writes()?;
+        config.metrics_endpoint = crate::config::fixture_metrics_endpoint()?;
         config
     } else if std::env::var_os(crate::config::MAINNET_STATE_FIXTURE_ENV).is_some() {
         warn!(
@@ -52,6 +53,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         let mut config = crate::config::mainnet_direct_state_fixture();
         config.deployment = crate::config::fixture_deployment()?;
         config.store.deferred_writes = crate::config::fixture_deferred_writes()?;
+        config.metrics_endpoint = crate::config::fixture_metrics_endpoint()?;
         config
     } else if std::env::var_os(crate::config::MAINNET_RPC_FIXTURE_ENV).is_some() {
         warn!(
@@ -62,6 +64,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         let mut config = crate::config::mainnet_rpc_fixture();
         config.deployment = crate::config::fixture_deployment()?;
         config.store.deferred_writes = crate::config::fixture_deferred_writes()?;
+        config.metrics_endpoint = crate::config::fixture_metrics_endpoint()?;
         config
     } else {
         load_config(&config_path)?
