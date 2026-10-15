@@ -106,3 +106,12 @@ The finalised treestate read renders on the blocking pool and keeps up to \
 composer reads at the watermark and heights several wallets ask for are not \
 re-rendered.
 """
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`CommitmentTrees` is a block's commitment trees without their roots, the shape \
+a light wallet reads; `Treestate::into_trees` drops the roots from a full \
+treestate.
+"""

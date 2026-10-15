@@ -62,3 +62,48 @@ pub struct Treestate {
     /// Ironwood commitment tree, if the pool is active at this height (NU6.3).
     pub ironwood: Option<PoolTreestate>,
 }
+
+impl Treestate {
+    /// The commitment trees alone, without their roots.
+    pub fn into_trees(self) -> CommitmentTrees {
+        let tree = |pool: Option<PoolTreestate>| pool.map(|pool| pool.final_state);
+        CommitmentTrees {
+            block_hash: self.block_hash,
+            height: self.height,
+            time: self.time,
+            sapling: tree(self.sapling),
+            orchard: tree(self.orchard),
+            ironwood: tree(self.ironwood),
+        }
+    }
+}
+
+/// The commitment trees as of a block, without their roots.
+///
+/// What a light wallet builds witnesses from: it parses each tree itself and
+/// never reads a root. A root is a function of its tree, but computing one hashes
+/// up the whole tree depth (milliseconds per pool), so this shape exists for the
+/// reads that do not need it. [`Treestate`] is the shape that carries roots.
+///
+/// The pool fields keep [`Treestate`]'s meaning: `None` is the pool having no
+/// tree at this block (below its activation), never an empty tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitmentTrees {
+    /// Block these trees are the state after.
+    pub block_hash: BlockHash,
+
+    /// Height of that block.
+    pub height: Height,
+
+    /// Block time, in seconds since the Unix epoch.
+    pub time: BlockTime,
+
+    /// Sapling commitment tree, if the pool is active at this height.
+    pub sapling: Option<TreeBytes>,
+
+    /// Orchard commitment tree, if the pool is active at this height.
+    pub orchard: Option<TreeBytes>,
+
+    /// Ironwood commitment tree, if the pool is active at this height (NU6.3).
+    pub ironwood: Option<TreeBytes>,
+}

@@ -100,7 +100,7 @@ pub use transparent_spend::TransparentSpend;
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};
-pub use treestate::{PoolTreestate, TreeBytes, Treestate};
+pub use treestate::{CommitmentTrees, PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
 pub use work::{
