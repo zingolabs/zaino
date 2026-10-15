@@ -12,7 +12,7 @@ mod subtrees;
 mod writer;
 
 pub use reader::TreeStateReader;
-pub use serve::{PoolActivations, ServeError};
+pub use serve::{pool_activations, ServeError};
 pub use writer::{fold, FoldError, TreeStateIndexWriter};
 
 use nodes::{MERKLE_DEPTH, NODE};

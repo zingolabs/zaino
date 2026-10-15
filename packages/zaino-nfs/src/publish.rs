@@ -12,11 +12,11 @@ use tokio::sync::watch;
 use zaino_header_chain::VerifiedChain;
 use zaino_index_compact_block::CompactBlockReader;
 use zaino_index_transparent_address::TransparentAddressReader;
-use zaino_index_tree_state::{PoolActivations, TreeStateReader};
+use zaino_index_tree_state::{pool_activations, TreeStateReader};
 use zaino_index_utxo_set::UtxoSetReader;
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, Schema, SequenceRead, View};
-use zaino_primitives::types::{Block, BlockRef};
+use zaino_primitives::types::{Block, BlockRef, PerPool};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
@@ -34,8 +34,8 @@ pub struct ChainParams {
 
 impl ChainParams {
     /// Each shielded pool's first height
-    pub fn activations(&self) -> PoolActivations {
-        PoolActivations::new(&self.schedule)
+    pub fn activations(&self) -> PerPool<Option<BlockHeight>> {
+        pool_activations(&self.schedule)
     }
 }
 

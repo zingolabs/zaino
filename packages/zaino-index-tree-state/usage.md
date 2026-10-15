@@ -70,8 +70,9 @@ tokio::spawn(writer.run(blocks));
 - Fallible only at boot (`StoreError` from `open`). `new` asserts one `heights`
   record per durable height. `run` panics on a failed commit or an unfoldable
   block ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- `PoolActivations::new(&LocalNetwork)` gives each pool's first height:
-  Sapling, NU5 (Orchard), NU6.3 (Ironwood), or `None` when unscheduled.
+- `pool_activations(&LocalNetwork)` gives each pool's first height as a
+  `PerPool<Option<BlockHeight>>`: Sapling, NU5 (Orchard), NU6.3 (Ironwood), or `None` when
+  unscheduled.
 - zainod builds it only when `index.tree_state.enabled`. Disabled, the three
   methods answer `UNIMPLEMENTED`.
 
@@ -118,7 +119,7 @@ Routes read through one `GrpcSnapshot` per request (`at.views().tree_state()`,
   above the tip are left out.
 - Each pool's tree is `write_commitment_tree` of the real tree (`000000` when
   empty). A pool's field is written only from its activation height
-  (`PoolActivations::active`), and `""` below it, matching zebra and
+  (`pool_activations`), and `""` below it, matching zebra and
   lightwalletd. An active pool is never `""`, because clients silently read an
   absent field as an empty tree.
 - By `BlockID.hash`, the block-hash index

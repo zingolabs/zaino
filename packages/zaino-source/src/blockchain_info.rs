@@ -26,7 +26,7 @@ pub enum ScheduleError {
 impl BlockchainInfo {
     /// Listed heights as a schedule (unlisted = never)
     ///
-    /// - Sapling required: every schedule Zaino serves activates it (`PoolActivations`)
+    /// - Sapling required: every schedule Zaino serves activates it (`pool_activations`)
     pub fn schedule(&self) -> Result<LocalNetwork, ScheduleError> {
         let listed = |upgrade: NetworkUpgrade| {
             let entry = self.activations.iter().find(|(id, _)| *id == upgrade.branch_id());

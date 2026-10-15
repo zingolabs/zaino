@@ -3,42 +3,18 @@
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
+use zaino_primitives::types::PerPool;
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::ShieldedPool;
 
-/// Height each pool's tree begins (`None` = unscheduled)
+/// Height each pool's tree begins: Sapling, NU5 (orchard), NU6.3 (ironwood), `None` = unscheduled
 ///
-/// - zebra's `z_gettreestate` omits a pool below its upgrade, lightwalletd then answers `""`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PoolActivations {
-    pub sapling: BlockHeight,
-    pub orchard: Option<BlockHeight>,
-    pub ironwood: Option<BlockHeight>,
-}
-
-impl PoolActivations {
-    /// Sapling, NU5 (orchard), NU6.3 (ironwood)
-    ///
-    /// - Sapling = invariant: compiled schedules + `BlockchainInfo::schedule` (refuses one without)
-    pub fn new(schedule: &LocalNetwork) -> Self {
-        Self {
-            sapling: schedule
-                .activation_height(NetworkUpgrade::Sapling)
-                .expect("served schedule activates Sapling (refused at boot otherwise)"),
-            orchard: schedule.activation_height(NetworkUpgrade::Nu5),
-            ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
-        }
-    }
-
-    /// `pool` has a tree at `at`
-    pub fn active(&self, pool: ShieldedPool, at: BlockHeight) -> bool {
-        let from = match pool {
-            ShieldedPool::Sapling => Some(self.sapling),
-            ShieldedPool::Orchard => self.orchard,
-            ShieldedPool::Ironwood => self.ironwood,
-        };
-        from.is_some_and(|from| from <= at)
+/// - zebra's `z_gettreestate` omits a pool below its upgrade (lightwalletd then answers `""`)
+pub fn pool_activations(schedule: &LocalNetwork) -> PerPool<Option<BlockHeight>> {
+    PerPool {
+        sapling: schedule.activation_height(NetworkUpgrade::Sapling),
+        orchard: schedule.activation_height(NetworkUpgrade::Nu5),
+        ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
     }
 }
 
@@ -66,15 +42,15 @@ mod tests {
         use zcash_protocol::consensus::NetworkType;
 
         let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");
-        let expected = PoolActivations {
-            sapling: h(419_200),
+        let expected = PerPool {
+            sapling: Some(h(419_200)),
             orchard: Some(h(1_687_104)),
             ironwood: Some(h(3_428_143)),
         };
-        assert_eq!(PoolActivations::new(&mainnet), expected);
+        assert_eq!(pool_activations(&mainnet), expected);
 
         let no_nu5 = LocalNetwork { nu5: None, ..all_at(h(1)) };
-        let expected = PoolActivations { sapling: h(1), orchard: None, ironwood: Some(h(1)) };
-        assert_eq!(PoolActivations::new(&no_nu5), expected, "no NU5 = never orchard");
+        let expected = PerPool { sapling: Some(h(1)), orchard: None, ironwood: Some(h(1)) };
+        assert_eq!(pool_activations(&no_nu5), expected, "no NU5 = never orchard");
     }
 }

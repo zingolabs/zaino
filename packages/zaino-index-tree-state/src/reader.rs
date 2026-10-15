@@ -59,12 +59,12 @@ impl<V: View> TreeStateReader<OverlayView<V>> {
 impl<V: SequenceRead> TreeStateReader<V> {
     /// Tree state after `at`: all three pools, always, as the real tree's serialization
     ///
-    /// - `000000` when empty: both clients map an empty *field* onto `CommitmentTree::empty()`
-    ///   (`zcash_client_backend/src/proto.rs:404,420-444`), so `""` post-activation is wrong
-    /// - Sapling floor and blank pools below their upgrade = the route's ([`PoolActivations`])
+    /// - `000000` when empty (both clients map an empty *field* onto `CommitmentTree::empty()`:
+    ///   `zcash_client_backend/src/proto.rs:404,420-444`, so `""` post-activation = wrong)
+    /// - blank pools below their upgrade = the route's ([`pool_activations`])
     /// - reads mmapped nodes: run off async workers
     ///
-    /// [`PoolActivations`]: crate::PoolActivations
+    /// [`pool_activations`]: crate::pool_activations
     pub fn treestate(&self, at: BlockHeight) -> Result<Treestate, ServeError> {
         let record = self.height_record(at).ok_or(ServeError::NotFound { height: at })?;
         let inconsistent = ServeError::Inconsistent { height: at };
