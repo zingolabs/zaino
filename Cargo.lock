@@ -6145,11 +6145,16 @@ dependencies = [
 name = "zaino-lightserve"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
+ "http",
+ "http-body",
+ "metrics",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
+ "tower 0.4.13",
  "zaino-component",
  "zaino-core",
  "zaino-indexer",

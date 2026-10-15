@@ -57,7 +57,12 @@ impl<S: LightWalletService + Clone + 'static> RunLoop for GrpcServer<S> {
             .with_nodelay(Some(true));
         reporter.ready();
         let service = CompactTxStreamerServer::new(GrpcService::new(self.handler.clone()));
-        Server::builder()
+        // With the `prometheus` feature every call is measured (see `observe`).
+        #[cfg(feature = "prometheus")]
+        let mut builder = Server::builder().layer(crate::observe::MeasuredLayer);
+        #[cfg(not(feature = "prometheus"))]
+        let mut builder = Server::builder();
+        builder
             .add_service(service)
             .serve_with_incoming_shutdown(incoming, async move { cancel.cancelled().await })
             .await

@@ -15,13 +15,19 @@
 //! ([`RunLoop`](zaino_component::RunLoop)).
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "prometheus")]
+mod emit;
 mod error;
 mod grpc;
+#[cfg(feature = "prometheus")]
+mod observe;
 mod range;
 mod schedule;
 mod transport;
 mod wire;
 
+#[cfg(feature = "prometheus")]
+pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use error::ServeError;
 pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};

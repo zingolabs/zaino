@@ -15,6 +15,12 @@ tonic.workspace = true
 futures.workspace = true
 tokio = { workspace = true }
 zcash_protocol.workspace = true
+# Per-request serving metrics, behind the `prometheus` feature.
+metrics = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+http = { version = "1.5.0", optional = true }
+http-body = { version = "1.0.1", optional = true }
+bytes = { workspace = true, optional = true }
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }
@@ -29,3 +35,9 @@ zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-core = { path = "../zaino-core", features = ["testing"] }
 serde_json.workspace = true
+
+[features]
+# Per-request serving metrics (counts by method and status, time to first
+# message, duration, messages and bytes sent). Off by default: observability is
+# opt-in. Labels are the method name and gRPC status code only.
+prometheus = ["dep:metrics", "dep:tower", "dep:http", "dep:http-body", "dep:bytes"]

@@ -5,15 +5,15 @@
 
 use std::net::SocketAddr;
 
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tracing::info;
 
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
-// never drift. On the runtime stack the only emitter wired so far is the
-// outbound JSON-RPC client (`zaino-rpc`); the sync/DB/gRPC/mempool metric sets
-// that the legacy serving stack described are re-added here as the new stack's
-// components start emitting them.
+// never drift. On the runtime stack the emitters wired so far are the outbound
+// JSON-RPC client (`zaino-rpc`) and the light-wallet gRPC server
+// (`zaino-lightserve`); the sync/DB/mempool metric sets are re-added here as
+// the new stack's components start emitting them.
 use zaino_rpc::metric_names::*;
 
 use crate::error::IndexerError;
@@ -26,7 +26,14 @@ const BUILD_INFO: &str = "zainod.build_info";
 /// This must be called **once** before any `metrics::gauge!()` / `metrics::counter!()`
 /// calls, otherwise those calls silently no-op.
 pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    PrometheusBuilder::new()
+    // Each emitting crate states its histograms' bucket edges; without them a
+    // histogram is exported as a summary, which cannot be aggregated.
+    zaino_lightserve::METRIC_BUCKETS
+        .iter()
+        .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
+            builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
+        })
+        .map_err(|e| IndexerError::MetricsError(format!("Failed to set histogram buckets: {e}")))?
         .with_http_listener(endpoint)
         .install()
         .map_err(|e| {
@@ -49,9 +56,11 @@ fn describe_metrics() {
         "Static build metadata; always 1. Version exposed as a label."
     );
 
-    // Outbound JSON-RPC (the validator connection) — the only metrics the
-    // runtime stack emits so far. Sync / DB / inbound-gRPC / mempool sets are
-    // re-added as the runtime components gain their own metric names.
+    // Inbound light-wallet gRPC: per-method calls, latency, messages, bytes.
+    zaino_lightserve::describe_metrics();
+
+    // Outbound JSON-RPC (the validator connection). Sync / DB / mempool sets
+    // are re-added as the runtime components gain their own metric names.
     metrics::describe_counter!(
         RPC_OUTBOUND_REQUESTS_TOTAL,
         "Total outbound JSON-RPC requests by method"

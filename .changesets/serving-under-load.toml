@@ -161,3 +161,21 @@ description = """
 `z_gettreestate` reads through `TreestateRootsRead`, keeping `finalRoot` in its \
 response.
 """
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "feature"
+description = """
+A non-default `prometheus` feature measures every gRPC call: \
+`zaino.grpc.requests_total` by method and status, time to first message, \
+duration, messages and bytes sent. Labels are the method name and status code \
+only. `describe_metrics` and `METRIC_BUCKETS` register them with the exporter.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+The `prometheus` feature enables the light-wallet gRPC metrics and exports \
+their histograms with explicit bucket edges.
+"""
