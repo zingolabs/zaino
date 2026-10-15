@@ -31,7 +31,8 @@ domain → wire conversions and nothing about where an answer comes from.
 
 ## Metrics (`prometheus` feature)
 
-Off by default. With the feature, `GrpcServer` wraps the service in a measuring
+The wire layer of [Zaino's metrics](../../docs/observability.md), which holds
+the principles, layering, conventions and hot-path budget. Off by default. With the feature, `GrpcServer` wraps the service in a measuring
 layer: the clock starts when a request reaches the server, the first response
 DATA frame records time-to-first-message, and the call closes out when its
 response body drops, so a client that disconnects mid-stream is counted as
@@ -45,9 +46,5 @@ response body drops, so a client that disconnects mid-stream is counted as
 | `zaino.grpc.stream_messages` | histogram | `method` |
 | `zaino.grpc.sent_bytes_total` | counter | `method` |
 
-Labels come from fixed tables only: `method` is a `CompactTxStreamer` method name
-or `unknown`, `code` one of the 17 gRPC status codes. Nothing about the client,
-its addresses, transactions or heights is ever a label. The exporter registers
-the `# HELP` text with `describe_metrics()` and the histogram edges from
-`METRIC_BUCKETS`; without the edges a histogram is exported as a summary, which
-cannot be aggregated across instances.
+`method` is a `CompactTxStreamer` method name or `unknown`; `code` is one of the
+17 gRPC status codes.

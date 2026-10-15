@@ -1,4 +1,6 @@
-//! Serve-path metrics, one call site per measurement.
+//! Serve-path metrics, one call site per measurement. The rules every emitting
+//! crate follows (opt-in, fixed-table labels, resolved handles, unit-of-work
+//! granularity) are in `docs/observability.md`.
 //!
 //! Every series is labelled by the `CompactTxStreamer` method and, for the
 //! request count, the gRPC status code. Both come from fixed tables, so the

@@ -150,6 +150,7 @@ parallelism — re-run, or lower `--test-threads`.
 
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
+- [Observability](./docs/observability.md): Holds the metrics principles (opt-in, nothing identifying), the measurement layers, the emit conventions, and the hot-path budget with the assumptions behind it.
 - [Live-test guidelines](./live-tests/CLAUDE.md): The rules for writing live tests — the live oracle, QoS tiers, parameterization.
 - [Live Service System Architecture](./docs/zaino_live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
 - [Library System Architecture](./docs/zaino_lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
