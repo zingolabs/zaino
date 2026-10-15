@@ -9,7 +9,8 @@ mod metric_names {
 
 /// `(metric, bucket edges)` for the exporter, every histogram this crate emits
 ///
-/// - commits: ms at the tip → minutes on a stalled disk; merges: ms at tier 0 → an hour at the top
+/// - commits: ms at the tip → minutes on a stalled disk
+/// - merges: ms at tier 0 → an hour at the top
 pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
     (
         metric_names::COMMIT_SECONDS,

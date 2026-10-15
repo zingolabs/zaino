@@ -29,7 +29,8 @@ fn block(n: u8) -> BlockChanges {
 }
 
 impl Overlay {
-    /// Per-table items = what the blocks added; tips ascending
+    /// - per-table items = what the blocks added
+    /// - tips ascending
     pub(crate) fn check(&self, label: &str) {
         let tips: Vec<_> = self.deltas.iter().map(|delta| delta.tip.height).collect();
         assert!(tips.is_sorted_by(|a, b| a < b), "{label}: layer blocks ascending {tips:?}");

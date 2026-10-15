@@ -3,8 +3,8 @@
 /// Calling thread → background priority: CPU nice 10, I/O best-effort level 7 (merges yield disk
 /// + cores to serving reads)
 ///
-/// - hint: failures ignored; I/O class honoured by BFQ / mq-deadline only (`none`, common on NVMe,
-///   ignores it)
+/// - hint: failures ignored
+/// - I/O class honoured by BFQ / mq-deadline only (`none`, common on NVMe, ignores it)
 /// - sound: plain syscalls on the calling thread's own id, no memory passed
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]

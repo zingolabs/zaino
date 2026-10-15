@@ -2,16 +2,17 @@
 //!
 //! - file content: durable bytes + writes pending since the last `sync_data`
 //! - device flush ([`SimFs::flush_device`]): any `sync_data` also makes every file's written-back
-//!   writes durable (ext4 / XFS: `Durability::Barrier`); written back + unflushed = still volatile
+//!   writes durable (ext4 / XFS: `Durability::Barrier`)
+//! - written back + unflushed = still volatile
 //! - namespace: durable entries + changes pending since the parent's last `sync_dir`
-//! - crash points recorded around persistence points only (just before and after each
-//!   `sync_data` / `sync_dir`, after each `rename` / `remove`; CrashMonkey: bugs surface there)
-//! - `Image::crash_states` = what a crash at that point could leave (ALICE model: unsynced
-//!   writes dropped, prefix-applied, reordered, torn (in half, and on 512 B sector boundaries,
-//!   sectors out of order), zero- or garbage-filled, lost in one file while kept in the rest;
-//!   unsynced entries lost or kept)
-//! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`);
-//!   `SimFs::fail_reads_from` = same for positional reads
+//! - crash points recorded around persistence points only (CrashMonkey: bugs surface there):
+//!   just before and after each `sync_data` / `sync_dir`, after each `rename` / `remove`
+//! - `Image::crash_states` = what a crash at that point could leave (ALICE model)
+//!   - unsynced writes: dropped, prefix-applied, reordered, torn (in half, and on 512 B sector
+//!     boundaries, sectors out of order), zero- or garbage-filled, lost in one file only
+//!   - unsynced entries: lost or kept
+//! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`)
+//! - `SimFs::fail_reads_from` = same for positional reads
 //! - `SimFs::power_loss` / [`SimFs::restarted`] = crash / process exit at any instant
 
 use std::{
@@ -81,7 +82,7 @@ impl Content {
         self.written_back = 0;
     }
 
-    /// Written-back ops durable (a device flush); later ones still pending
+    /// Written-back ops durable, later ones still pending (a device flush)
     fn flush_written_back(&mut self) {
         for op in self.pending.drain(..self.written_back) {
             op.apply(&mut self.durable);
@@ -351,7 +352,9 @@ struct Faults {
 }
 
 impl Faults {
-    /// One call counted; `EIO` naming `what` (given its index) from `fail_from` on
+    /// One call counted
+    ///
+    /// - from `fail_from` on: `EIO` naming `what` (given its index)
     fn count(&mut self, what: impl FnOnce(u64) -> String) -> io::Result<()> {
         let at = self.calls;
         self.calls += 1;
@@ -363,12 +366,12 @@ impl Faults {
 }
 
 impl Inner {
-    /// One positional read; `EIO` from [`SimFs::fail_reads_from`]'s read on
+    /// One positional read (`EIO` from [`SimFs::fail_reads_from`]'s read on)
     fn read(&mut self, path: &Path) -> io::Result<()> {
         self.reads.count(|at| format!("read EIO at read {at}: {}", path.display()))
     }
 
-    /// One mutating call; `EIO` from [`SimFs::fail_from`]'s op on
+    /// One mutating call (`EIO` from [`SimFs::fail_from`]'s op on)
     fn mutate(&mut self, op: impl FnOnce() -> String) -> io::Result<()> {
         self.mutations.count(|at| format!("EIO at op {at}: {}", op()))
     }
@@ -380,7 +383,7 @@ impl Inner {
     }
 }
 
-/// In-memory [`Fs`]; see the module docs
+/// In-memory [`Fs`] (module docs)
 #[derive(Debug, Default)]
 pub struct SimFs {
     inner: Arc<Mutex<Inner>>,
@@ -491,8 +494,9 @@ impl SimFs {
         self.reopened(image)
     }
 
-    /// Image after a power loss right now (only synced entries + bytes; background threads
-    /// mid-write included), healthy
+    /// Image after a power loss right now, healthy
+    ///
+    /// - only synced entries + bytes (background threads mid-write included)
     pub fn power_loss(&self) -> Arc<SimFs> {
         let image = self.lock_inner().image.power_loss();
         self.reopened(image)
@@ -733,7 +737,8 @@ impl FileHandle for SimFile {
         self.push(Op::SetLen(len))
     }
 
-    /// This file durable; [`SimFs::flush_device`] on = every file's written-back writes too
+    /// - this file durable
+    /// - [`SimFs::flush_device`] on → every file's written-back writes too
     fn sync_data(&self) -> io::Result<()> {
         let mut inner = self.lock_inner();
         inner.mutate(|| format!("sync_data {}", self.path.display()))?;
@@ -772,7 +777,8 @@ mod tests {
 
     use super::*;
 
-    /// - synced name + bytes always survive; unsynced writes as prefix, reordered and torn
+    /// - synced name + bytes always survive
+    /// - unsynced writes as prefix, reordered and torn
     /// - unsynced rename over the file: whole or not at all
     #[test]
     fn crash_states_keep_what_was_synced_and_every_shape_of_what_was_not() {
@@ -818,9 +824,9 @@ mod tests {
         );
     }
 
-    /// `a` + `b` written back, then `b` rewritten: a crash keeps neither (written back = on the
-    /// device's volatile cache); `a`'s `sync_data` then makes `a` durable, and on a flushing device
-    /// `b`'s written-back bytes too, never its later rewrite
+    /// - `a` + `b` written back, `b` rewritten → crash keeps neither (written back = device cache)
+    /// - `a`'s `sync_data` → `a` durable, on a flushing device `b`'s written-back bytes too, never
+    ///   its later rewrite
     #[test]
     fn a_device_flush_makes_written_back_writes_durable_and_nothing_later() {
         for flush_device in [false, true] {
@@ -862,8 +868,8 @@ mod tests {
         }
     }
 
-    /// `fail_from(2)`: calls 0-1 apply, 2 on = named `EIO` + nothing applied; `restarted()` = same
-    /// volatile image, healthy
+    /// - `fail_from(2)`: calls 0-1 apply, 2 on = named `EIO` + nothing applied
+    /// - `restarted()` = same volatile image, healthy
     #[test]
     fn injected_failures_apply_nothing_and_a_restart_heals() {
         let fs = SimFs::new();

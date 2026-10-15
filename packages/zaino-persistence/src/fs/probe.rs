@@ -4,13 +4,13 @@
 //! - flush = every completed write durable, any file (kernel `block/writeback_cache_control.rst`)
 //! - anything but ext4 / XFS = `PerFile` (CoW, log-structured, network: overwrite = new metadata)
 //! - allowlist on positive evidence: any unknown fact, or any probe failing = `PerFile`
-//! - mount: ext4 with `barrier`, no `journal_async_commit`, no DAX (`/proc/fs/ext4/<dev>/options`
-//!   lists every option, superblock defaults included; mountinfo hides them); XFS on one device
-//!   (no `logdev` / `rtdev`), no DAX
+//! - ext4 mount: `barrier`, no `journal_async_commit`, no DAX (`/proc/fs/ext4/<dev>/options`
+//!   lists every option incl. superblock defaults, mountinfo hides them)
+//! - XFS mount: one device (no `logdev` / `rtdev`), no DAX
 //! - every file the barrier covers: on the first's device, not DAX, no shared (reflinked) extent
 //!   on XFS (overwriting one = copy-on-write: a remap the barrier never commits)
 //! - re-verify on a kernel bump: `ext4_sync_file`, `xfs_file_fsync` still flush a clean file's
-//!   device; the option names above unchanged
+//!   device, option names above unchanged
 
 use std::{
     io,
@@ -237,8 +237,8 @@ mod tests {
         list.split(',').map(str::to_owned).collect()
     }
 
-    /// Real mountinfo lines: optional fields before ` - `, none, `\040` in a mount point, a
-    /// `fuse.` type; the id picks the line, escapes undone
+    /// - real mountinfo lines: optional fields before ` - `, none, `\040` in a mount point, `fuse.`
+    /// - id picks the line, escapes undone
     #[test]
     fn mountinfo_records_parse_by_mount_id() {
         let mountinfo = "\
@@ -268,8 +268,9 @@ mod tests {
         assert_eq!(device_name(partitions, (254, 7)), None);
     }
 
-    /// Allowlist: barrier on, no async commit, no DAX (ext4); one device, no DAX (XFS); every
-    /// other combination refused
+    /// - ext4 allowed: barrier on, no async commit, no DAX
+    /// - XFS allowed: one device, no DAX
+    /// - every other combination refused
     #[test]
     fn only_flush_honouring_in_place_mounts_allow_a_barrier() {
         #[rustfmt::skip]
@@ -292,8 +293,8 @@ mod tests {
         }
     }
 
-    /// A file in this host's temp dir: probing never fails loudly, whatever the filesystem; no
-    /// files = nothing a barrier covers
+    /// - file in this host's temp dir: probing never fails loudly, whatever the filesystem
+    /// - no files = nothing a barrier covers
     #[test]
     fn probing_real_files_answers() {
         let file = tempfile::NamedTempFile::new().expect("temp file");

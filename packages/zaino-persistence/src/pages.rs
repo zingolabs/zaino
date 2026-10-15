@@ -6,13 +6,14 @@
 //! MANIFEST     per file: durable length, the tail page's CRC, a digest of <file>.crc (`Sealed`)
 //! ```
 //!
-//! - complete page never changes → its CRC in `<file>.crc`; growing tail page → CRC in manifest
-//!   (no durable page ever left with a stale CRC)
+//! - complete page never changes → its CRC in `<file>.crc`
+//! - growing tail page → CRC in manifest (no durable page ever left with a stale CRC)
 //! - CRC covers page index + bytes (page moved with its CRC still fails)
 //! - manifest digest of `<file>.crc`, checked at open: manifest pins every CRC, each CRC its page
 //!   (stale page + stale CRC after a lost write still fails)
 //! - integrity only (meaning settled before the write)
-//! - open checks lengths, tail page, digest; a read checks each page on first touch
+//! - open checks lengths, tail page, digest
+//! - read checks each page on first touch
 
 use std::{
     io,
@@ -118,7 +119,7 @@ fn page_sum(index: u64, bytes: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// Tail page's checksum; 0 = no tail (so [`Sealed::EMPTY`] can be a constant)
+/// Tail page's checksum (0 = no tail, so [`Sealed::EMPTY`] can be a constant)
 fn tail_sum(index: u64, bytes: &[u8]) -> u32 {
     match bytes.is_empty() {
         true => 0,
@@ -147,7 +148,7 @@ pub(crate) fn sums_name(name: &str) -> String {
     format!("{name}{SUMS_SUFFIX}")
 }
 
-/// Data file whose checksums `name` holds; `None` = not a checksum file
+/// Data file whose checksums `name` holds (`None` = not a checksum file)
 pub(crate) fn sums_of(name: &str) -> Option<&str> {
     name.strip_suffix(SUMS_SUFFIX)
 }
@@ -169,7 +170,7 @@ pub enum PageError {
 
 /// How a paged file grows + who makes its name durable
 ///
-/// - `Segment` = written once, sealed for good (LSM): grows by exactly the appends; caller syncs
+/// - `Segment` = written once, sealed for good (LSM): grows by exactly the appends, caller syncs
 ///   the linking directory
 /// - `Log` = appended commit after commit: linked durably at creation, grown into a [`Reserve`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +183,8 @@ pub(crate) enum FileKind {
 /// change: seal's `fdatasync` never waits on the journal / other files' writeback)
 ///
 /// - zeros, not `fallocate` (unwritten extents = metadata change on first write)
-/// - cost: file's bytes written twice; dropped at open (truncated to the seal), rebuilt on append
+/// - cost: file's bytes written twice
+/// - dropped at open (truncated to the seal), rebuilt on append
 #[derive(Debug)]
 struct Reserve {
     end: u64,
@@ -232,7 +234,8 @@ impl PagedFile {
     /// refused, tail page + checksums' digest read back and checked (`.crc` = 1/1024 of the data)
     ///
     /// - [`FileKind::Log`] with either file created here → directory synced (survives a crash
-    ///   before any manifest names it; commits never sync directories)
+    ///   before any manifest names it)
+    /// - commits never sync directories
     pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
@@ -282,7 +285,7 @@ impl PagedFile {
         self.len
     }
 
-    /// At the end; neither durable nor sealed until [`seal`](Self::seal)
+    /// At the end (neither durable nor sealed until [`seal`](Self::seal))
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
     pub(crate) fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
@@ -480,7 +483,7 @@ impl Pages {
         &self.inner.data[range]
     }
 
-    /// Sealed bytes in page cache (`None` = not knowable; an empty file holds none)
+    /// Sealed bytes in page cache (`None` = not knowable, empty file holds none)
     pub(crate) fn resident_bytes(&self) -> Option<u64> {
         match &self.inner.mapping {
             Some(mapping) => mapping.resident_bytes(self.inner.data.len()),
@@ -616,8 +619,8 @@ mod tests {
 
     /// - appends across page boundaries seal to a from-scratch hash's CRCs
     /// - reopen continues the tail
-    /// - flipped durable byte passes open (lengths only); forged checksum, torn tail, short file
-    ///   refused
+    /// - flipped durable byte passes open (lengths only)
+    /// - forged checksum, torn tail, short file refused
     #[test]
     fn seals_reopen_and_every_durable_byte_is_checked() {
         let fs = SimFs::new();
@@ -725,7 +728,8 @@ mod tests {
     ///
     /// - log linked durably at creation (either of its two files missing counts)
     /// - appends inside a zeroed reserve (size fixed between growth steps: seal = no metadata)
-    /// - seals + reads = the segment's; reopen drops the reserve, next append rebuilds it
+    /// - seals + reads = the segment's
+    /// - reopen drops the reserve, next append rebuilds it
     #[test]
     fn a_log_grows_into_a_reserve_its_seals_never_see() {
         let fs = SimFs::new();

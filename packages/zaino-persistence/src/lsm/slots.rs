@@ -1,6 +1,7 @@
-//! Engine-wide merge slots: <= `LsmConfig::merge_slots` merges working at once across every set
-//! of every index, sharing `LsmConfig::merge_mib_per_sec`; next free slot → lowest waiting tier
+//! Engine-wide merge slots: <= `LsmConfig::merge_slots` merges at once across every set of every
+//! index, sharing `LsmConfig::merge_mib_per_sec`
 //!
+//! - next free slot → lowest waiting tier
 //! - cap: else a merge per tier per set = dozens of threads competing with serving reads for disk
 //! - bandwidth: merges never take the whole device (commits' fsyncs + folds' reads queue behind)
 //! - lowest tier first: small merges (bound a commit's stall) never queue behind a large one
@@ -86,7 +87,7 @@ impl Slots {
         self.state.lock().expect("merge slots never held across a panic")
     }
 
-    /// Waits for a slot; `None` if `cancel` is raised first
+    /// Waits for a slot (`None` if `cancel` raised first)
     pub(super) fn acquire(&self, tier: u32, cancel: &AtomicBool) -> Option<Slot<'_>> {
         let mut state = self.lock();
         let ticket = Reverse((tier, state.arrivals));
@@ -128,7 +129,8 @@ mod tests {
 
     use std::{sync::Arc, thread};
 
-    /// - never past capacity at once; freed slot → lowest waiting tier
+    /// - never past capacity at once
+    /// - freed slot → lowest waiting tier
     /// - cancelled waiter leaves the queue without a slot
     #[test]
     fn slots_cap_concurrency_and_serve_the_lowest_tier_first() {

@@ -167,8 +167,9 @@ impl FileHandle for RealFile {
     }
 }
 
-/// Bytes of `map[..len]` in page cache (`mincore`; sound: `map` = a live mapping, `len` <= its
-/// length, the vector one byte per page)
+/// Bytes of `map[..len]` in page cache (`mincore`)
+///
+/// - sound: `map` = live mapping, `len` <= its length, vector one byte per page
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub(super) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
@@ -204,7 +205,8 @@ impl AsRef<[u8]> for Shared {
 }
 
 /// - sound: mapped bytes below a durable length never rewritten or truncated after publication
-///   (truncation only in `PagedFile::open`, before any map; `LOCK` keeps other processes out)
+///   (truncation only in `PagedFile::open`, before any map)
+/// - other processes kept out by `LOCK`
 /// - broken rule = SIGBUS (uncatchable) or corrupted zero-copy `Bytes` already handed out
 #[allow(unsafe_code)]
 fn map_read_only(file: &File) -> io::Result<Mmap> {

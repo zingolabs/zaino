@@ -29,8 +29,10 @@ pub(crate) struct SegmentFile {
 }
 
 impl SegmentFile {
-    /// Maps `meta`'s segment (lengths and checksum digest checked, the summary read into memory;
-    /// every other page checked as reads touch it)
+    /// Maps `meta`'s segment
+    ///
+    /// - lengths + checksum digest checked, summary read into memory
+    /// - every other page checked as reads touch it
     pub(crate) fn open(
         dir: &SegmentDir,
         meta: &SegmentMeta,
@@ -46,8 +48,9 @@ impl SegmentFile {
         Ok(Self { meta: *meta, pages, sections, summary })
     }
 
-    /// Whole filter section read + checked up front (no probe ever faults in or checks a cold
-    /// filter page; reader's copy, merges never probe)
+    /// Whole filter section read + checked up front (no probe ever faults in / checks a cold page)
+    ///
+    /// - reader's copy only (merges never probe)
     pub(crate) fn warm_filter(&self) {
         let (at, layout) = &self.sections.filter;
         let range = *at..*at + layout.len();
@@ -79,7 +82,7 @@ impl SegmentFile {
             .unwrap_or_else(|| panic!("segment {} slot {slot}: a bad row flag", self.meta.id))
     }
 
-    /// `(key, value)` at `slot`, zero-copy slices of the mapping; `None` = a tombstone
+    /// `(key, value)` at `slot`, zero-copy slices of the mapping (`None` value = tombstone)
     pub(crate) fn entry(&self, slot: usize) -> (Bytes, Option<Bytes>) {
         let shape = &self.sections.shape;
         let row = self.content(slot);
@@ -130,7 +133,8 @@ impl SegmentFile {
 
     /// First slot whose key `>= needle` (record count when every key is below it)
     ///
-    /// - in-memory summary → page of fences → fence → block; search stays inside it (≈ one page)
+    /// - in-memory summary → page of fences → fence → block
+    /// - search stays inside that block (≈ one page)
     pub(crate) fn seek(&self, needle: &[u8]) -> usize {
         let rows = self.sections.shape.block_rows;
         let fence = |b| self.pages.read(self.sections.fence(b));

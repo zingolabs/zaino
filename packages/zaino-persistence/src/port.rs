@@ -2,8 +2,10 @@
 //!
 //! - finalized data only, insert only (+ single removes on a `deletes()` map), buffered then one
 //!   atomic commit, pinned reads, verifiable
-//! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
-//! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
+//! - sequence table = records at positions 0, 1, 2, ...
+//! - map table = values under unique keys
+//! - index declares its tables once (`const` handles)
+//! - engine's `View` reads each kind it holds
 
 use std::{
     fmt,
@@ -23,9 +25,9 @@ use crate::{manifest::IndexKind, write_buffer::AppliedView, CommitFailed, StoreE
 pub trait PersistenceEngine: Send + Sync + 'static {
     type Store: Store;
 
-    /// Store at `path`: created, or resumed at its durable tip; commits by itself once
-    /// `write_buffer` bytes are buffered
+    /// Store at `path`: created, or resumed at its durable tip
     ///
+    /// - commits by itself once `write_buffer` bytes buffered
     /// - another identity there (kind, format, network) = error, never a reformat
     /// - table this engine cannot hold = panic naming it (tables = constants: a bug)
     fn open(
@@ -54,9 +56,9 @@ pub trait Store: Send + 'static {
         self.schema().changes(at)
     }
 
-    /// `changes` buffered: in [`applied`](Self::applied), not in [`durable`](Self::durable),
-    /// not durable; buffer then at `write_buffer` bytes = durable (as [`commit`](Self::commit))
+    /// `changes` buffered: in [`applied`](Self::applied), not in [`durable`](Self::durable)
     ///
+    /// - buffer at `write_buffer` bytes → durable (as [`commit`](Self::commit))
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
     /// - panics: that commit failing ([`CommitFailed::crash`]), or a store an earlier failed
@@ -86,7 +88,7 @@ pub trait View: Clone + Send + Sync {
     fn schema(&self) -> &Schema;
 }
 
-/// Reads of sequence tables (engine side: by position; index side: [`sequence`](Self::sequence))
+/// Reads of sequence tables (engine side by position, index side [`sequence`](Self::sequence))
 pub trait SequenceRead: View {
     /// Records held (= the next position)
     fn len(&self, table: SequenceId) -> u64;
@@ -107,7 +109,7 @@ pub trait SequenceRead: View {
     }
 }
 
-/// Reads of map tables (engine side: by position; index side: [`map`](Self::map))
+/// Reads of map tables (engine side by position, index side [`map`](Self::map))
 pub trait MapRead: View {
     /// Value under `key`
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes>;
@@ -115,7 +117,7 @@ pub trait MapRead: View {
     /// One answer per key, in `keys` order
     fn values(&self, table: MapId, keys: &[&[u8]]) -> Vec<Option<Bytes>>;
 
-    /// `(key, value)` for `start <= key < end`, in key order; `None` = more than `limit`
+    /// `(key, value)` for `start <= key < end`, in key order (`None` = more than `limit`)
     fn range(
         &self,
         table: MapId,
@@ -184,7 +186,7 @@ impl<V: MapRead> MapView<'_, V> {
         self.view.values(self.table, keys)
     }
 
-    /// `(key, value)` for `start <= key < end`, in key order; `None` = more than `limit`
+    /// `(key, value)` for `start <= key < end`, in key order (`None` = more than `limit`)
     pub fn range(&self, start: &[u8], end: &[u8], limit: usize) -> Option<Vec<(Bytes, Bytes)>> {
         self.view.range(self.table, start, end, limit)
     }
@@ -260,17 +262,19 @@ impl SequenceTable {
         Self { id: SequenceId(id), name, record, cache_writes: false }
     }
 
-    /// A fold reads it: what a commit appends stays in page cache (default: dropped once synced,
-    /// so bulk appends never evict the tables folds read; serving faults pages back in)
+    /// Fold reads it: what a commit appends stays in page cache
+    ///
+    /// - default: dropped once synced (bulk appends never evict the tables folds read)
+    /// - serving faults pages back in
     pub const fn cache_writes(self) -> Self {
         Self { cache_writes: true, ..self }
     }
 }
 
-/// Handle + declaration; keys compare as bytes (big-endian fields = numeric order)
+/// Handle + declaration, keys compare as bytes (big-endian fields = numeric order)
 ///
-/// - `scope` = leading key bytes every range read shares (0 = [`point`](Self::point); partition
-///   hint)
+/// - `scope` = leading key bytes every range read shares, partition hint
+///   (0 = [`point`](Self::point))
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
 /// - `key`, `value` = fixed widths in bytes (rows = fixed stride)
 /// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
@@ -287,8 +291,10 @@ pub struct MapTable {
 }
 
 impl MapTable {
-    /// Point lookups only (scope 0); `id` = position in its [`Tables`]; `key`, `value` = bytes
-    /// (> 0, checked at compile time when `const`)
+    /// Point lookups only (scope 0)
+    ///
+    /// - `id` = position in its [`Tables`]
+    /// - `key`, `value` = bytes (> 0, checked at compile time when `const`)
     pub const fn point(id: u16, name: &'static str, key: u32, value: u32) -> Self {
         let (key, value) = (fixed_bytes(key), fixed_bytes(value));
         Self { id: MapId(id), name, key, value, scope: 0, cache_writes: false, deletes: false }
@@ -302,15 +308,17 @@ impl MapTable {
     }
 
     /// Keys removable ([`MapChanges::remove`]) under a contract: per key, inserted at most once,
-    /// removed at most once, never re-inserted (RocksDB `SingleDelete`; usage.md "Deletes")
+    /// removed at most once, never re-inserted (RocksDB `SingleDelete`, usage.md "Deletes")
     ///
     /// - the LSM then stores a flag byte per row (value or tombstone)
     pub const fn deletes(self) -> Self {
         Self { deletes: true, ..self }
     }
 
-    /// A fold reads it: what a commit or merge writes stays in page cache (default: dropped once
-    /// synced, so bulk writes never evict the tables folds read; serving faults pages back in)
+    /// Fold reads it: what a commit or merge writes stays in page cache
+    ///
+    /// - default: dropped once synced (bulk writes never evict the tables folds read)
+    /// - serving faults pages back in
     pub const fn cache_writes(self) -> Self {
         Self { cache_writes: true, ..self }
     }
@@ -387,7 +395,8 @@ impl Schema {
 /// One block's delta: buffer per table, opened by [`Schema::changes`]
 ///
 /// - widths checked per item on arrival (wrong = panic naming the table)
-/// - fixed-width tables: bytes only; variable: + end offset per item
+/// - fixed-width tables: bytes only
+/// - variable: + end offset per item
 #[derive(Debug, Clone)]
 pub struct BlockChanges {
     block: BlockRef,
@@ -528,7 +537,7 @@ impl MapChanges<'_> {
     }
 }
 
-/// Table's items back to back; `ends` = where each ends (Variable only)
+/// Table's items back to back (`ends` = where each ends, Variable only)
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Items {
     bytes: Vec<u8>,
@@ -598,7 +607,8 @@ impl Items {
 
 /// What [`PersistenceEngine::verify`] found
 ///
-/// - `heights` = tip height + 1 (0 = nothing durable); `units` = files, for the file engines
+/// - `heights` = tip height + 1 (0 = nothing durable)
+/// - `units` = files, for the file engines
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Verification {
     pub heights: u64,
@@ -614,7 +624,8 @@ impl Verification {
 /// Stored unit, checked
 ///
 /// - `orphaned_bytes` = past what the commit claims (interrupted commit's tail: harmless)
-/// - `lost` = shorter than durable; `bad_sums` = checksum list != commit's
+/// - `lost` = shorter than durable
+/// - `bad_sums` = checksum list != commit's
 /// - `bad_pages` = pages whose bytes != their checksum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Checked {

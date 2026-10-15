@@ -170,7 +170,8 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
 }
 
 /// - retain removes unlisted segments (+ checksums) + any writer's scratch
-/// - short or unsummed segment refused; flipped durable byte passes open (lengths only)
+/// - short or unsummed segment refused
+/// - flipped durable byte passes open (lengths only)
 #[test]
 fn retain_removes_strays_and_open_checks_lengths_leaving_pages_to_the_first_touch() {
     let fs = SimFs::new();
@@ -255,7 +256,8 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     let _ = log.batch(Vec::new());
 }
 
-/// Last byte = filter fingerprint; whole filter read + checked at map → open dies before any probe
+/// - last byte = filter fingerprint
+/// - whole filter read + checked at map → open dies before any probe
 #[test]
 #[should_panic(expected = "checksum mismatch")]
 fn a_corrupt_filter_panics_at_open() {
@@ -416,10 +418,12 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     assert!(passed < 200, "{passed} of {absent} absent accounts passed (≈ 39 expected)");
 }
 
-/// Merge of `deletes()` segments, one row group per key (row `(n, live)` = `probed_row(n)`, its
-/// value if `live`, else its tombstone; expected = output rows + pairs cancelled):
+/// Merge of `deletes()` segments, one row group per key
 ///
-/// - value + tombstone → both dropped, in either input order; all dropped → no output segment
+/// - row `(n, live)` = `probed_row(n)`'s value if `live`, else its tombstone
+/// - expected = output rows + pairs cancelled
+/// - value + tombstone → both dropped, in either input order
+/// - all dropped → no output segment
 /// - lone tombstone → kept (its value lives outside the merge)
 /// - two values, two tombstones, three rows of one key → `Contract`, naming the rows
 #[test]

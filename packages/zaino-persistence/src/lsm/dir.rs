@@ -92,7 +92,7 @@ pub(crate) fn file_name(id: u32) -> String {
     format!("{id:010}.seg")
 }
 
-/// Id of a segment file or its checksums; `None` for anything else in the directory
+/// Id of a segment file or its checksums (`None` for anything else in the directory)
 fn segment_id(name: &str) -> Option<u32> {
     sums_of(name).unwrap_or(name).strip_suffix(".seg")?.parse().ok()
 }

@@ -89,7 +89,7 @@ impl WriteBuffer {
         table_slot(&self.sequences, table.id).items(table.record)
     }
 
-    /// `table`'s rows, arrival order (commit: the LSM sorts them); `None` = a tombstone
+    /// `table`'s rows, arrival order (LSM sorts them at commit, `None` value = tombstone)
     pub(crate) fn map_rows(&self, table: MapTable) -> Vec<(&[u8], Option<&[u8]>)> {
         let rows = table_slot(&self.maps, table.id);
         let all = rows.keys.items(table.key).zip(rows.values.items(table.value)).zip(&rows.kinds);
@@ -128,8 +128,8 @@ impl WriteBuffer {
 }
 
 impl MapRows {
-    /// Inserts as value rows; each removal cancels the buffered insert of its key, else becomes a
-    /// tombstone row
+    /// - inserts → value rows
+    /// - each removal cancels the buffered insert of its key, else → tombstone row
     fn append(&mut self, table: MapTable, items: &MapItems, hasher: &DefaultHashBuilder) {
         let first = self.keys.len(table.key);
         self.keys.extend(&items.keys);
@@ -232,7 +232,8 @@ mod tests {
     use super::*;
 
     impl WriteBuffer {
-        /// Each map's index = its rows, each found by its own key; first <= tip
+        /// - each map's index = its rows, each found by its own key
+        /// - first <= tip
         pub(crate) fn check(&self, label: &str) {
             let first = self.first.map(|first| Some(first) <= self.tip.map(|tip| tip.height));
             assert!(first.is_none_or(|ordered| ordered), "{label}: buffer first above its tip");

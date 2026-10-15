@@ -114,8 +114,8 @@ fn salted(mut bytes: Vec<u8>, salt: u8) -> Vec<u8> {
 
 /// Every table's contents through the last [`advance`](Self::advance)
 ///
-/// - `salt` = branch of the next advance's contents (0 outside [`history`]); `bytes` = inserted
-///   item bytes (a lower bound on what a buffer holds: removals uncounted)
+/// - `salt` = branch of the next advance's contents (0 outside [`history`])
+/// - `bytes` = inserted item bytes (lower bound on what a buffer holds: removals uncounted)
 #[derive(Debug, Clone, Default)]
 struct Model {
     advances: usize,
@@ -207,9 +207,9 @@ impl Model {
         scanned_key(owner, raw % (self.seq + 2))
     }
 
-    /// - every sequence record (one at a time + as ranges); full + per-owner scans
-    /// - sampled values + a miss; values over every id issued + as many never issued (each asked
-    ///   twice: answers in caller order)
+    /// - every sequence record (one at a time + as ranges), full + per-owner scans
+    /// - sampled values + a miss
+    /// - values over every id issued + as many never issued (each asked twice: caller order)
     fn assert_view(&self, view: &(impl SequenceRead + MapRead), label: &str) {
         assert_eq!(view.tip(), self.tip, "{label}: tip");
         for (table, model) in
@@ -288,8 +288,10 @@ struct Node {
     layer: Overlay,
 }
 
-/// Oracle for [`history`]: `nodes` = blocks above `durable`, oldest first, the first `applied`
-/// buffered in the store; `salt` = branch of the next node
+/// Oracle for [`history`]
+///
+/// - `nodes` = blocks above `durable`, oldest first, the first `applied` buffered in the store
+/// - `salt` = branch of the next node
 #[derive(Default)]
 struct Oracle {
     durable: Model,
@@ -334,9 +336,9 @@ impl Oracle {
         }
     }
 
-    /// Store view = durable; staged = through the last applied; node layers over the view =
-    /// their contents (oldest + newest read in full); buffered bytes >= applied item bytes, 0 iff
-    /// nothing applied
+    /// - store view = durable, staged = through the last applied
+    /// - node layers over the view = their contents (oldest + newest read in full)
+    /// - buffered bytes >= applied item bytes, 0 iff nothing applied
     fn assert(&self, store: &DiskStore, label: &str) {
         self.durable.assert_view(&store.durable(), &format!("{label}: view"));
         self.buffered().assert_view(&store.applied(), &format!("{label}: staged"));
@@ -368,8 +370,8 @@ struct Pinned {
 /// - `Apply`: oldest unapplied nodes into the store, `count` reduced at run time
 /// - `Commit`: every buffered node durable, then every node rebased onto the new view
 /// - `Reorg`: unapplied nodes cut to `keep` (reduced), later nodes on a new branch
-/// - `Settle`: merges finish; `Reopen`: exit mid-merge; `PowerLoss`: crash now (both: buffer
-///   lost, nodes kept and re-applied later)
+/// - `Settle`: merges finish
+/// - `Reopen`: exit mid-merge, `PowerLoss`: crash now (both: buffer lost, nodes kept + re-applied)
 /// - `Pin`: views + models kept, re-checked every later step
 /// - `Scan`: raw bounds reduced at run time, every limit around the answer's size
 #[derive(Debug, Clone)]
@@ -390,7 +392,7 @@ enum Step {
 fn steps() -> impl Strategy<Value = Vec<Step>> {
     let on = prop::array::uniform8(prop::bool::ANY);
     on.prop_flat_map(|[settle, reopen, power_loss, pin, scan, large, reorg, removing]| {
-        // small blocks; with `large`, sometimes past a 4 KiB block (205 scanned / 204 probed)
+        // small blocks, with `large` sometimes past a 4 KiB block (205 scanned / 204 probed)
         let small = prop::collection::vec(0u8..4, 0..8);
         let (owners, ids) = match large {
             true => (
@@ -446,9 +448,10 @@ fn steps() -> impl Strategy<Value = Vec<Step>> {
 
 /// History against `Oracle`, after every step:
 ///
-/// - `durable()` = durable prefix; `staged()` = durable + buffered; buffered bytes >= applied
-/// - each node's layer over the view = its contents; pinned views = their models
-/// - crash or reopen = exactly the durable nodes; [`assert_tiers`] + `Overlay::check` hold
+/// - `durable()` = durable prefix, `staged()` = durable + buffered, buffered bytes >= applied
+/// - each node's layer over the view = its contents, pinned views = their models
+/// - crash or reopen = exactly the durable nodes
+/// - [`assert_tiers`] + `Overlay::check` hold
 fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
     let mut fs = sim_fs(SimFs::new(), flush_device);
     let mut store = open(&DiskEngine::with_fanout(fs.clone(), fanout));
@@ -550,7 +553,7 @@ fn assert_tiers(store: &DiskStore, fs: &SimFs, fanout: usize, just_opened: bool,
 }
 
 proptest! {
-    // 64 cases ≈ seconds; heavy run after any change: docs/testing.md "Heavy run"
+    // 64 cases ≈ seconds (heavy run after any change: docs/testing.md "Heavy run")
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
     /// [`history`] at fanouts merging every few commits and rarely, per-file fsync and one-flush
@@ -579,10 +582,12 @@ fn a_store_at_the_smallest_write_buffer_commits_inside_apply() {
     assert_eq!(store.buffered_bytes(), 0);
 }
 
-/// Fanout 2, merges launched + landed mid-history, some cancelling value + tombstone pairs; per
-/// crash state: recovered = an acked or the attempted commit, every table = the model at that
-/// commit (a removed row never back), only listed files, commits continue; per-file fsync and
-/// one-flush (`Barrier`) commits
+/// Fanout 2, merges launched + landed mid-history, some cancelling value + tombstone pairs,
+/// per-file fsync and one-flush (`Barrier`) commits
+///
+/// - per crash state: recovered = an acked or the attempted commit
+/// - every table = the model at that commit (a removed row never back), only listed files
+/// - commits continue
 #[test]
 fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
     for flush_device in [false, true] {
@@ -634,9 +639,11 @@ fn crash_states_reopen_to_a_commit(flush_device: bool) {
     }
 }
 
-/// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`); each = the injected `Err`
-/// (never a panic, never swallowed), restart = acked or attempted commit; per-file fsync and
+/// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`), per-file fsync and
 /// one-flush (`Barrier`) commits (a failed `write_back` included)
+///
+/// - each failure = the injected `Err` (never a panic, never swallowed)
+/// - restart = acked or attempted commit
 #[test]
 fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_durable_state() {
     for flush_device in [false, true] {
@@ -720,7 +727,8 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
 
 /// Read 0, 1, 2, … failed while reopening a durable store until the open succeeds
 ///
-/// - each failure = the injected `Err`, never a panic; successful open finds every commit
+/// - each failure = the injected `Err`, never a panic
+/// - successful open finds every commit
 #[test]
 fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
     let fs = SimFs::new();
@@ -902,8 +910,8 @@ fn a_deletes_key_held_in_two_durable_segments_panics_on_read() {
     store.durable().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
 }
 
-/// Two 1-row segments at fanout 2 = a merge; its duplicate = the merge's `Contract` error, surfaced
-/// at the next commit (either table kind)
+/// - two 1-row segments at fanout 2 = a merge
+/// - its duplicate = the merge's `Contract` error, surfaced at the next commit (either table kind)
 #[test]
 fn a_merge_of_a_key_held_twice_fails_the_next_commit() {
     for table in [PROBED, SCANNED] {

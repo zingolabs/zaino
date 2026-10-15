@@ -19,10 +19,11 @@ const DESCRIPTOR: usize = BinaryFuse8::DESCRIPTOR_LEN;
 /// Per-shard table entry: descriptor ‖ fingerprint count u32 LE
 const ENTRY: usize = DESCRIPTOR + 4;
 
-/// Filter input for one encoded key (distinct keys → distinct inputs w.h.p.; dups deduped per
-/// shard)
+/// Filter input for one encoded key (distinct keys → distinct inputs w.h.p.)
 ///
-/// - first word = key's own uniform prefix; later words folded through splitmix64's finalizer
+/// - dups deduped per shard
+/// - first word = key's own uniform prefix
+/// - later words folded through splitmix64's finalizer
 pub(crate) fn probe_hash(key: &[u8]) -> u64 {
     let (first, rest) = key.split_at(key.len().min(8));
     let mut hash = word(first);
@@ -69,8 +70,8 @@ pub(crate) enum FilterError {
 
 /// Streams ascending keys into the serialized filter section
 ///
-/// - only the shard being built and the table stay in memory; each closed shard's fingerprints
-///   go straight to `fingerprints`
+/// - in memory: only the shard being built + the table
+/// - each closed shard's fingerprints → straight to `fingerprints`
 pub(crate) struct FilterWriter {
     bits: u8,
     current: usize,
@@ -141,7 +142,7 @@ pub(crate) struct FilterLayout {
 }
 
 impl FilterLayout {
-    /// `read` = the section's bytes by range (only the table is read); `None` = malformed
+    /// `read` = section's bytes by range (only the table read here, `None` = malformed)
     pub(crate) fn parse<'a>(read: impl Fn(Range<usize>) -> &'a [u8], len: usize) -> Option<Self> {
         let bits = *read(0..1.min(len)).first()?;
         if bits >= 32 {
@@ -166,7 +167,8 @@ impl FilterLayout {
         self.len
     }
 
-    /// `false` = certainly absent; `true` = present or a false positive (≈ 2^-8)
+    /// - `false` = certainly absent
+    /// - `true` = present or a false positive (≈ 2^-8)
     pub(crate) fn may_contain<'a>(
         &self,
         read: impl Fn(Range<usize>) -> &'a [u8],
@@ -191,7 +193,8 @@ mod tests {
     };
 
     /// - golden inputs (persisted filter readable only while these stay byte-identical)
-    /// - sharding monotone in key order; every written key found, strangers mostly refused
+    /// - sharding monotone in key order
+    /// - every written key found, strangers mostly refused
     #[test]
     fn hashes_are_stable_shards_follow_key_order_and_written_keys_are_found() {
         assert_eq!(probe_hash(&[0x01; 8]), 0x0101_0101_0101_0101);

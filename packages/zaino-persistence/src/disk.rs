@@ -283,7 +283,9 @@ fn verify_durable(
 }
 
 impl DiskStore {
-    /// Heap the buffer holds (≈ RAM, >= its item bytes; `write_buffer` of it = a commit)
+    /// Heap the buffer holds (≈ RAM, >= its item bytes)
+    ///
+    /// - `write_buffer` of it = a commit
     pub fn buffered_bytes(&self) -> usize {
         self.buffer.heap()
     }

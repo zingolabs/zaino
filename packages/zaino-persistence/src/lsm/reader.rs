@@ -1,6 +1,6 @@
 //! Reading across one map's durable segments
 //!
-//! - [`SegmentsView`] = one durable list, mapped; immutable (a commit builds the next one)
+//! - [`SegmentsView`] = one durable list, mapped, immutable (a commit builds the next one)
 //! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 //! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
 //!   (insert-once / remove-once: at most one value + one tombstone exist)
@@ -46,8 +46,11 @@ fn mapped(dir: &SegmentDir, shape: Shape, meta: &SegmentMeta) -> Result<Arc<Segm
     Ok(Arc::new(file))
 }
 
-/// Ascending byte ranges widened to whole pages (readahead's unit), then merged where they
-/// overlap or touch: one readahead request per run of contiguous pages; empty ranges dropped
+/// Ascending byte ranges widened to whole pages (readahead's unit), merged where they overlap or
+/// touch
+///
+/// - one readahead request per run of contiguous pages
+/// - empty ranges dropped
 fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
     let pages = ranges
         .filter(|range| !range.is_empty())
@@ -63,7 +66,7 @@ fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
 }
 
 impl SegmentsView {
-    /// Every listed segment mapped (lengths only; pages checked on touch)
+    /// Every listed segment mapped (lengths only, pages checked on touch)
     pub(crate) fn open(dir: &SegmentDir, shape: Shape, listed: &[SegmentMeta]) -> Result<Self> {
         let segments = listed.iter().map(|meta| mapped(dir, shape, meta)).collect::<Result<_>>()?;
         Ok(Self { shape, segments })
@@ -82,8 +85,8 @@ impl SegmentsView {
         Ok(Self { shape: self.shape, segments })
     }
 
-    /// `(key, value)` for `start <= key < end`, ascending across all segments; `None` once more
-    /// than `limit` match
+    /// `(key, value)` for `start <= key < end`, ascending across all segments (`None` once more
+    /// than `limit` match)
     ///
     /// - stops scanning at row `limit + 1` (cost bounded by `limit`, not by the range)
     /// - `start` and `end` sharing the filtered prefix → only segments whose filter may hold it
@@ -147,7 +150,8 @@ impl SegmentsView {
     ///
     /// - probed in ascending key order: neighbouring keys share fence, filter and record pages
     /// - [`PARALLEL_FROM`] keys and up: prefetched ([`prefetch`](Self::prefetch)), then probed on
-    ///   the rayon pool; below: this thread, no prefetch
+    ///   the rayon pool
+    /// - below [`PARALLEL_FROM`]: this thread, no prefetch
     pub(crate) fn get_many(&self, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
         let mut sorted: Vec<(&[u8], usize)> =
             keys.iter().enumerate().map(|(at, key)| (*key, at)).collect();
@@ -200,9 +204,9 @@ impl SegmentsView {
 
     /// Value under `key` (each segment's filter first: a miss = a memory probe per segment)
     ///
-    /// - newest segment first: list ≈ data age (batches append, a merge takes its oldest input's
-    ///   slot) + lookups skew recent; order never changes an answer (keys unique across segments)
-    ///
+    /// - newest segment first (lookups skew recent, list ≈ data age: batches append, a merge takes
+    ///   its oldest input's slot)
+    /// - order never changes an answer (keys unique across segments)
     /// - `deletes()` table: every admitting segment checked, a tombstone in any = absent
     pub(crate) fn get(&self, key: &[u8]) -> Option<Bytes> {
         assert_eq!(key.len(), self.shape.key_len, "a point lookup names a whole key");
@@ -241,7 +245,8 @@ impl SegmentsView {
 mod tests {
     use super::*;
 
-    /// - pages 0, 1, 2 touched → one run; page 4 after untouched page 3 → its own run
+    /// - pages 0, 1, 2 touched → one run
+    /// - page 4 after untouched page 3 → its own run
     /// - empty ranges vanish
     #[test]
     fn coalesced_widens_to_pages_and_merges_contiguous_runs() {

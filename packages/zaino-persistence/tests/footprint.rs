@@ -26,8 +26,9 @@ const SCHEMA: Schema = Schema::new(
 
 /// - bytes = durable data (records + 8-byte ends, every listed segment), never the files'
 ///   preallocated tails
-/// - cached right after the commit: each `cache_writes` table all of it; a default sequence none
-///   (dropped once synced), a default map only what opening the view reads (summary + filters)
+/// - cached right after the commit, `cache_writes` table: all of it
+/// - default sequence: none (dropped once synced)
+/// - default map: only what opening the view reads (summary + filters)
 /// - `SimFs`: same bytes, cached unknowable (`None`)
 #[test]
 fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {

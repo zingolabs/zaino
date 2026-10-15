@@ -26,8 +26,10 @@ use crate::{
 /// Records buffered to this before each append
 const CHUNK: usize = 1 << 20;
 
-/// O(rows) read-back of every sealed segment (RocksDB `paranoid_file_checks`): tests and index
-/// test suites only (writer bugs fail at write time; production skips the re-read)
+/// O(rows) read-back of every sealed segment (RocksDB `paranoid_file_checks`)
+///
+/// - tests + index test suites only (writer bugs fail at write time)
+/// - production skips the re-read
 const PARANOID_FILE_CHECKS: bool = cfg!(any(test, feature = "testing"));
 
 /// Merge input's next record: `(key, source, slot)`, min-first
@@ -41,7 +43,7 @@ pub(crate) struct Merged {
     pub(crate) cancelled: u64,
 }
 
-/// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
+/// Writes one map's segments into its directory (ids allocated by the caller, one writer per id)
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentWriter {
     dir: SegmentDir,
@@ -84,8 +86,10 @@ impl SegmentOut {
     }
 }
 
-/// `Contract` reason for `key`: each input's row of it, in input order (= the merge heap's order
-/// for equal keys; each input holds a key at most once)
+/// `Contract` reason for `key`: each input's row of it, in input order
+///
+/// - input order = merge heap's order for equal keys
+/// - each input holds a key at most once
 fn held_reason(sources: &[SegmentFile], key: &[u8]) -> String {
     let held: Vec<&str> = sources
         .iter()
@@ -120,12 +124,12 @@ impl SegmentWriter {
         self.shape
     }
 
-    /// Sorts `rows` (`(key, value)`, `None` = tombstone) and writes them as segment `id`, sealed;
-    /// `None` for none
+    /// Sorts `rows` (`(key, value)`, `None` = tombstone), writes them as segment `id`, sealed
+    /// (`None` for no rows)
     ///
     /// - not yet durable until listed in a manifest, unlinked until [`SegmentDir::sync`]
     /// - duplicate keys panic (the buffer holds one row per key: a cancelled pair writes neither)
-    /// - unique keys → unstable sort exact; parallel on the CPU pool
+    /// - unique keys → unstable sort exact, parallel on the CPU pool
     pub(crate) fn write(
         &self,
         id: u32,
@@ -146,8 +150,10 @@ impl SegmentWriter {
         self.sealed(out).map(Some)
     }
 
-    /// K-way merge of `inputs` into segment `id`, sealed; `None` once `cancel` is set (partial file
-    /// unlisted → removed at open); no row left → no file (`output: None`)
+    /// K-way merge of `inputs` into segment `id`, sealed
+    ///
+    /// - `None` once `cancel` set (partial file unlisted → removed at open)
+    /// - no row left → no file (`output: None`)
     /// - row rules / commit order + memory: `usage.md` "Deletes" / "On disk"
     pub(crate) fn merge(
         &self,

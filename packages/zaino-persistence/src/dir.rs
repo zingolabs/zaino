@@ -49,7 +49,8 @@ impl IndexDir {
     /// `path` created if absent (durably in its parent), locked, manifest read
     ///
     /// - missing manifest → two zeroed slots under `CREATING`, synced, renamed in (`MANIFEST`
-    ///   only ever whole; later commits overwrite existing blocks)
+    ///   only ever whole)
+    /// - later commits overwrite existing blocks
     /// - leftover `CREATING` = creation a crash interrupted → removed
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
@@ -109,8 +110,11 @@ impl IndexDir {
         Ok(())
     }
 
-    /// Fresh-directory check: `relative` absent, an empty file, or a directory of empty files
-    /// (crash between creating them and the first commit); else not yet durable data
+    /// Fresh-directory check
+    ///
+    /// - ok: `relative` absent, an empty file, or a directory of empty files (crash between
+    ///   creating them and the first commit)
+    /// - else → not yet durable data
     pub(crate) fn ensure_empty(&self, relative: &str, depth: Depth) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
@@ -143,7 +147,8 @@ impl IndexDir {
 
 /// `path`'s durable body, read offline (read only, no lock: safe beside a live writer)
 ///
-/// - `None` = no commit yet; manifest not decoding as `identity` = its `ManifestError`
+/// - `None` = no commit yet
+/// - manifest not decoding as `identity` = its `ManifestError`
 pub(crate) fn read_durable(
     fs: &dyn Fs,
     path: &Path,
@@ -153,7 +158,7 @@ pub(crate) fn read_durable(
     Ok(durable_body(file.as_ref(), identity)?.map(|(_, body)| body))
 }
 
-/// `(sequence number, body)` of the manifest's last commit; `None` = no commit yet
+/// `(sequence number, body)` of the manifest's last commit (`None` = no commit yet)
 fn durable_body(
     manifest: &dyn ReadHandle,
     identity: Identity,
@@ -172,9 +177,10 @@ mod tests {
     const IDENTITY: Identity =
         Identity { kind: IndexKind::CompactBlock, format: 1, network: NetworkType::Regtest };
 
-    /// - fresh → commit → reopen reads it back; commits after a reopen continue the sequence
-    ///   (never over the live slot); manifest never past its two slots
-    /// - second opener locked out; foreign network never commits
+    /// - fresh → commit → reopen reads it back
+    /// - commits after a reopen continue the sequence (never over the live slot)
+    /// - manifest never past its two slots
+    /// - second opener locked out, foreign network never commits
     #[test]
     fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
         let fs = SimFs::new();
@@ -206,7 +212,8 @@ mod tests {
         assert!(matches!(foreign, Err(ManifestError::Network { .. })));
     }
 
-    /// Absent, empty file, directory of empty files = empty; a written file anywhere it looks = not
+    /// - absent, empty file, directory of empty files = empty
+    /// - written file anywhere it looks = not empty
     #[test]
     fn ensure_empty_refuses_a_written_file_at_the_depth_it_checks() {
         let fs = SimFs::new();

@@ -6,7 +6,8 @@
 //!        ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
-//! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
+//! - little-endian throughout
+//! - CRC-32 (IEEE) over the slot's bytes before it
 //! - commit `seq` overwrites slot `seq % 2` in place (other slot = the commit before it)
 //! - durable state = valid slot with the highest `seq` ([`latest`])
 //! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
@@ -116,8 +117,9 @@ pub(crate) fn fits(body: usize) -> bool {
     HEADER + body + CRC <= SLOT
 }
 
-/// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; rest of the slot untouched,
-/// outside the CRC)
+/// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`)
+///
+/// - rest of the slot untouched, outside the CRC
 pub(crate) fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
     assert!(
         fits(body.len()),
@@ -142,7 +144,8 @@ pub(crate) fn slot_offset(seq: u64) -> u64 {
 }
 
 /// - `Unwritten` = all zeros (no commit used it yet)
-/// - `Torn` = fails magic, length or CRC (write a crash interrupted; why, for the error)
+/// - `Torn` = fails magic, length or CRC (write a crash interrupted)
+/// - `Torn`'s `ManifestError` = why, for the error
 #[derive(Debug)]
 enum Slot<'a> {
     Unwritten,
@@ -182,14 +185,14 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
     Ok(Slot::Valid { seq, body })
 }
 
-/// Durable `(seq, body)` of a whole manifest file; `None` = no commit ever completed
+/// Durable `(seq, body)` of a whole manifest file (`None` = no commit ever completed)
 ///
 /// - both valid → higher `seq` (other = the commit before it)
 /// - valid + torn → the valid one (torn = later commit interrupted before its ack)
 ///   - bit rot in the live slot reads as torn too → rollback one commit (CRC can't tell them apart)
 /// - none valid, <= 1 torn → nothing durable yet (first commit interrupted)
-/// - both torn → error (created zeroed + synced first; a crash tears only the slot written)
-/// - other length → error (older layout; file only ever created whole)
+/// - both torn → error (created zeroed + synced first, a crash tears only the slot written)
+/// - other length → error (older layout, file only ever created whole)
 pub(crate) fn latest(
     identity: Identity,
     file: &[u8],
@@ -385,7 +388,8 @@ mod tests {
         assert!(matches!(network, Err(Network { expected: NetworkType::Main, found: 1 })));
     }
 
-    /// - tip presence follows the count both ways; zero hash = still a tip
+    /// - tip presence follows the count both ways
+    /// - zero hash = still a tip
     /// - on disk = block count from genesis (tip height + 1) ‖ hash
     #[test]
     fn durable_tip_round_trips_and_refuses_a_tip_with_nothing_durable() {

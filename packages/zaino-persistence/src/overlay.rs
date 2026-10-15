@@ -2,7 +2,7 @@
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
 //! - [`OverlayView`] = an [`AppliedLayer`]'s rows over its durable view: above first, then durable
-//! - a key removed above masks durable ([`Entry::Removed`]; usage.md "Deletes")
+//! - a key removed above masks durable ([`Entry::Removed`], usage.md "Deletes")
 
 use std::{
     fmt,
@@ -169,7 +169,7 @@ pub trait AppliedLayer: Clone {
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes>;
 
-    /// `key`'s state here; `None` = not held here (durable decides)
+    /// `key`'s state here (`None` = not held here, durable decides)
     fn value(&self, table: MapId, key: &[u8]) -> Option<Entry>;
 
     /// Every entry in `start..end`, key order (removals included: they mask durable)

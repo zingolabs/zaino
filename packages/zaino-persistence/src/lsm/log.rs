@@ -1,7 +1,7 @@
 //! Segment set's write side: batches → segments on the commit path, merges on background threads
 //!
-//! - merge output rides the next batch's manifest (no commit of its own; LevelDB/RocksDB
-//!   `VersionEdit` via `LogAndApply`)
+//! - merge output rides the next batch's manifest (no commit of its own)
+//! - same as LevelDB/RocksDB `VersionEdit` via `LogAndApply`
 //! - inputs unlinked only once that manifest is durable (open removes anything unlisted)
 
 use std::{
@@ -65,7 +65,7 @@ pub(super) struct Landed {
     pub(super) took: Duration,
 }
 
-/// Background merge; thread yields `(merged, wall time)`, `None` = cancelled
+/// Background merge (thread yields `(merged, wall time)`, `None` = cancelled)
 struct Merge {
     tier: u32,
     inputs: Vec<SegmentMeta>,
@@ -328,7 +328,7 @@ mod tests {
     use super::*;
 
     impl SegmentLog {
-        /// Durable list, ≈ data age (readers probe newest first; answers never depend on order)
+        /// Durable list, ≈ data age (readers probe newest first, answers never depend on order)
         pub(crate) fn segments(&self) -> &[SegmentMeta] {
             &self.segments
         }

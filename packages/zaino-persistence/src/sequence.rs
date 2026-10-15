@@ -150,7 +150,7 @@ impl SequenceFile {
         Ok(Self { data, records, grown: false, cache_writes: table.cache_writes })
     }
 
-    /// `record` at the end; neither durable nor readable until [`seal`](Self::seal) + commit
+    /// `record` at the end (neither durable nor readable until [`seal`](Self::seal) + commit)
     pub(crate) fn append(&mut self, record: &[u8]) -> io::Result<()> {
         if let Records::Fixed(n) = self.records {
             let n = usize::try_from(n.get()).expect("u32 fits usize");
@@ -166,8 +166,8 @@ impl SequenceFile {
 
     /// Files made durable per `durability` if grown → seals for the next manifest + whether it grew
     ///
-    /// - `PerFile`: an fsync per file (∝ files: tree-state holds ~100); `Barrier`: written back,
-    ///   durable at the store's one [`flush`](Self::flush)
+    /// - `PerFile`: an fsync per file (∝ files, tree-state holds ~100)
+    /// - `Barrier`: written back, durable at the store's one [`flush`](Self::flush)
     pub(crate) fn seal(&mut self, durability: Durability) -> io::Result<(Seals, bool)> {
         let grown = std::mem::take(&mut self.grown);
         if grown {
@@ -185,8 +185,9 @@ impl SequenceFile {
         self.data.file.flush()
     }
 
-    /// Read view at the last seal; `previous` reused whole when at the same seals, else its
-    /// checked pages carried over
+    /// Read view at the last seal
+    ///
+    /// - `previous` reused whole when at the same seals, else its checked pages carried over
     pub(crate) fn pages(&self, previous: Option<&SequencePages>) -> io::Result<SequencePages> {
         let sealed = self.seals();
         if let Some(previous) = previous.filter(|old| old.sealed == sealed) {

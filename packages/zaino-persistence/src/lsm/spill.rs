@@ -42,7 +42,7 @@ impl Spill {
         self.file.as_ref().map_or(0, |(_, written)| *written) + self.buffer.len() as u64
     }
 
-    /// Every pushed byte appended to `out`, in order; the scratch file removed
+    /// Every pushed byte appended to `out`, in order, scratch file removed
     pub(crate) fn append_to(mut self, out: &mut PagedFile) -> io::Result<()> {
         let Some((file, _)) = &self.file else {
             return out.append(&self.buffer);
@@ -66,7 +66,7 @@ impl Spill {
     fn write_out(&mut self) -> io::Result<()> {
         if self.file.is_none() {
             let file = self.fs.open(&self.path)?.file;
-            // scratch name reusable after a crash (open removes it; belt and braces)
+            // scratch name reusable after a crash (belt and braces: open removes it too)
             file.set_len(0)?;
             self.file = Some((file, 0));
         }
@@ -88,7 +88,8 @@ mod tests {
         pages::{FileKind, Sealed},
     };
 
-    /// - past the threshold → scratch file; appended bytes = exactly what was pushed, scratch gone
+    /// - past the threshold → scratch file
+    /// - appended bytes = exactly what was pushed, scratch gone
     /// - below it: nothing touches the disk
     #[test]
     fn a_spill_appends_every_byte_in_order_and_removes_its_scratch() {

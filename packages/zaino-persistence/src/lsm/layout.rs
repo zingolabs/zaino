@@ -9,9 +9,10 @@
 //!
 //! - summary in reader memory (≈ 1/100 of the fences): key's block = one page of fences touched,
 //!   not a binary search over all of them on disk
-//! - row = key ‖ value, both fixed width; a `deletes()` table adds a flag byte: key ‖ value ‖ flag
-//!   (0 = value, 1 = tombstone with zeroed value bytes; [`encode_row`] / [`decode_row`])
-//! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
+//! - row = key ‖ value, both fixed width
+//! - `deletes()` table row = key ‖ value ‖ flag (0 = value, 1 = tombstone with zeroed value bytes,
+//!   [`encode_row`] / [`decode_row`])
+//! - integrity = the file's page checksums (`crate::pages`), nothing here re-proven on read
 
 use std::{cmp::Ordering, ops::Range, sync::Arc};
 
@@ -64,8 +65,10 @@ pub(crate) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<
     }
 }
 
-/// Encoded row's value or tombstone; `None` = a flag that is neither, or a tombstone whose value
-/// bytes are not zero (corruption: page checksums passed, so a writer bug)
+/// Encoded row's value or tombstone
+///
+/// - `None` = flag that is neither, or a tombstone with non-zero value bytes (writer bug: page
+///   checksums passed)
 pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<Row<'a>> {
     let (value, flag) = row[shape.key_len..].split_at(shape.value_len);
     match flag {
@@ -138,8 +141,10 @@ impl Sections {
         at..at + self.shape.key_len
     }
 
-    /// Blocks whose fences a search for `key` reads: the group `summary` (in memory) picks, so
-    /// no disk read; spans at most two pages of fences
+    /// Blocks whose fences a search for `key` reads: the group `summary` picks (in memory, no disk
+    /// read)
+    ///
+    /// - spans at most two pages of fences
     pub(crate) fn group_of(&self, summary: &[u8], key: &[u8]) -> Range<usize> {
         let key_len = self.shape.key_len;
         let groups = summary.len() / key_len;
@@ -195,8 +200,8 @@ pub(crate) struct Navigation {
 }
 
 impl Navigation {
-    /// - `records` = most it will be pushed (sizes the filter's shards; a merge cancelling pairs
-    ///   pushes fewer)
+    /// - `records` = most it will be pushed (sizes the filter's shards)
+    /// - merge cancelling pairs pushes fewer
     /// - scratch files, if any, beside segment `id` in `dir`
     pub(crate) fn new(shape: Shape, records: u64, dir: &SegmentDir, id: u32) -> Self {
         let spill = |part| Spill::new(Arc::clone(dir.shared_fs()), dir.scratch(id, part));
@@ -258,8 +263,9 @@ impl Navigation {
 mod tests {
     use super::*;
 
-    /// - `key ‖ value` without `deletes()`; `key ‖ value ‖ flag` with (tombstone value = zeros)
-    /// - each decodes back; an unknown flag or a non-zero tombstone value decodes to `None`
+    /// - `key ‖ value` without `deletes()`, `key ‖ value ‖ flag` with (tombstone value = zeros)
+    /// - each decodes back
+    /// - unknown flag or non-zero tombstone value → `None`
     #[test]
     fn rows_encode_to_golden_bytes_and_a_corrupt_flag_decodes_to_none() {
         let table = MapTable::point(0, "rows", 8, 4);

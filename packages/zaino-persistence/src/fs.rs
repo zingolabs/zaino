@@ -35,7 +35,7 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// Read only, `None` when absent (sealed segments, offline verify beside a live writer)
     fn open_read(&self, path: &Path) -> io::Result<Option<Arc<dyn ReadHandle>>>;
 
-    /// `path`'s bytes (a stat: nothing opened); `None` when absent, `IsADirectory` for one
+    /// `path`'s bytes via stat, nothing opened (`None` when absent, `IsADirectory` for one)
     fn size(&self, path: &Path) -> io::Result<Option<u64>>;
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
@@ -47,7 +47,7 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
 
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
 
-    /// Exclusive for the guard's life; held elsewhere = `ErrorKind::WouldBlock`
+    /// Exclusive for the guard's life (held elsewhere = `ErrorKind::WouldBlock`)
     fn lock(&self, path: &Path) -> io::Result<LockGuard>;
 
     /// How a commit may make `files` durable (decided once, at open: the files a barrier covers)
@@ -77,11 +77,12 @@ pub trait ReadHandle: Send + Sync + fmt::Debug {
 
     fn read_exact_at(&self, buf: &mut [u8], at: u64) -> io::Result<()>;
 
-    /// Read-only view of the whole file; `None` when empty (mmap refuses zero length)
+    /// Read-only view of the whole file (`None` when empty: mmap refuses zero length)
     fn map(&self) -> io::Result<Option<Mapping>>;
 
-    /// Its clean pages out of page cache (`POSIX_FADV_DONTNEED`; advisory: later reads fault them
-    /// back in)
+    /// Its clean pages out of page cache (`POSIX_FADV_DONTNEED`, advisory)
+    ///
+    /// - later reads fault them back in
     fn drop_cache(&self) -> io::Result<()>;
 }
 
@@ -98,8 +99,9 @@ pub trait FileHandle: ReadHandle {
     /// later flush: [`Durability::Barrier`])
     fn write_back(&self) -> io::Result<()>;
 
-    /// Writeback of `range` started: no wait, no durability (bounds dirty pages ahead of
-    /// `sync_data`; RocksDB `bytes_per_sync`)
+    /// Writeback of `range` started: no wait, no durability
+    ///
+    /// - bounds dirty pages ahead of `sync_data` (RocksDB `bytes_per_sync`)
     fn write_behind(&self, range: Range<u64>) -> io::Result<()>;
 }
 
@@ -111,7 +113,7 @@ pub(crate) fn read_all(file: &dyn ReadHandle) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Held lock; released on drop
+/// Held lock (released on drop)
 pub struct LockGuard {
     _held: Box<dyn Send + Sync>,
 }
@@ -124,7 +126,8 @@ impl fmt::Debug for LockGuard {
 
 /// Read-only file contents, sliceable into refcounted [`Bytes`] (zero-copy on [`RealFs`])
 ///
-/// - `mmap` = the live mapping (`None` = a copy: `SimFs`; advice + residency then no-ops)
+/// - `mmap` = the live mapping (`None` = a copy, as in `SimFs`)
+/// - `mmap` `None` → advice + residency no-ops
 #[derive(Clone)]
 pub struct Mapping {
     bytes: Bytes,
@@ -149,7 +152,7 @@ impl Mapping {
         resident_bytes(self.mmap.as_deref()?, len).ok()
     }
 
-    /// Readahead for this mapping only (advice is per mapping, never per file; advisory)
+    /// Readahead for this mapping only (advisory, per mapping, never per file)
     pub(crate) fn advise(&self, access: Access) {
         let advice = match access {
             Access::Normal => return,
