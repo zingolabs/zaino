@@ -18,6 +18,7 @@
 mod error;
 mod grpc;
 mod range;
+mod schedule;
 mod transport;
 mod wire;
 
@@ -25,10 +26,12 @@ pub use error::ServeError;
 pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
+use std::sync::Arc;
+
 use futures::stream::{BoxStream, StreamExt};
 use zaino_primitives::types::{
-    BlockSelector, Height, HeightRange, RawTransaction, ShieldedPool, TransactionId,
-    TransactionLocation, TransparentAddress,
+    BlockSelector, Height, HeightRange, NetworkUpgradeInfo, RawTransaction, ShieldedPool,
+    TransactionId, TransactionLocation, TransparentAddress,
 };
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
@@ -59,20 +62,34 @@ fn txid_matches_a_suffix(txid: TransactionId, suffixes: &[Vec<u8>]) -> bool {
 
 /// Lightwalletd-compatible handler over a [`LightWalletService`] engine.
 ///
-/// Carries the network it serves: the lightwalletd `TreeState.network` and
-/// `GetLightdInfo.chainName` fields are a function of the chain, not of any
-/// block read, so the network is a serving parameter the adapter renders — it
-/// is not a capability the engine answers.
+/// Carries the network it serves and the validator's network upgrade schedule:
+/// the lightwalletd `TreeState.network` and `GetLightdInfo` chain fields are a
+/// function of the chain, not of any block read, so they are serving parameters
+/// the adapter renders — not capabilities the engine answers.
 #[derive(Clone)]
 pub struct LightServe<S: LightWalletService> {
     engine: S,
     network: Network,
+    upgrades: Arc<[NetworkUpgradeInfo]>,
 }
 
 impl<S: LightWalletService> LightServe<S> {
-    /// Build the handler over `engine`, serving `network`'s chain names.
+    /// Build the handler over `engine`, serving `network`'s chain names, with no
+    /// upgrade schedule: `GetLightdInfo` then leaves its schedule fields empty.
     pub fn new(engine: S, network: Network) -> Self {
-        Self { engine, network }
+        Self {
+            engine,
+            network,
+            upgrades: Arc::from([]),
+        }
+    }
+
+    /// Carry the validator's network upgrade schedule, as read at boot, so
+    /// `GetLightdInfo` reports the Sapling activation height, the consensus
+    /// branch in force at the served tip, and the next pending upgrade.
+    pub fn with_upgrades(mut self, upgrades: Vec<NetworkUpgradeInfo>) -> Self {
+        self.upgrades = upgrades.into();
+        self
     }
 
     /// `GetLatestBlock`: the tip of the pinned best chain, as a wire `BlockRef`.
@@ -84,26 +101,40 @@ impl<S: LightWalletService> LightServe<S> {
 
     /// `GetLightdInfo`: serving metadata + the current tip height.
     ///
-    /// Minimal but valid: `version`/`vendor`/`taddr_support` are static,
-    /// `chain_name` is the served network's BIP70 name (as zebra renders it),
-    /// and `block_height`/`estimated_height` are read from the pinned tip (0
-    /// before any block is served). The remaining network-derived fields
-    /// (`sapling_activation_height`, `consensus_branch_id`) are chain-schedule
-    /// facts the adapter does not yet carry and ride out best-effort empty; the
-    /// clients that gate readiness on this call read only the height.
+    /// `version`/`vendor`/`taddr_support` are static, `chain_name` is the served
+    /// network's BIP70 name (as zebra renders it), and
+    /// `block_height`/`estimated_height` are read from the pinned tip (0 before
+    /// any block is served). The schedule fields come from the upgrade schedule
+    /// the handler carries ([`with_upgrades`](Self::with_upgrades)):
+    /// `sapling_activation_height`, `consensus_branch_id` (the branch in force
+    /// at the pinned tip, as lightwalletd reports `consensus.chaintip`), and
+    /// `upgrade_name`/`upgrade_height` for the next pending upgrade. Without a
+    /// schedule they ride out empty.
     pub async fn get_lightd_info(&self) -> Result<proto::LightdInfo, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        let block_height = snapshot
-            .pinned_tip()
-            .map(|tip| u64::from(tip.height))
-            .unwrap_or(0);
+        let tip = snapshot.pinned_tip().map(|tip| tip.height);
+        let block_height = tip.map(u64::from).unwrap_or(0);
+        let schedule = schedule::at(&self.upgrades, tip);
         Ok(proto::LightdInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             vendor: "zaino".to_string(),
             taddr_support: true,
             chain_name: bip70_network_name(self.network).to_string(),
+            sapling_activation_height: schedule.sapling_activation.map(u64::from).unwrap_or(0),
+            consensus_branch_id: schedule
+                .branch_in_force
+                .map(|branch| branch.to_string())
+                .unwrap_or_default(),
             block_height,
             estimated_height: block_height,
+            upgrade_name: schedule
+                .next_upgrade
+                .map(|upgrade| upgrade.name.clone())
+                .unwrap_or_default(),
+            upgrade_height: schedule
+                .next_upgrade
+                .map(|upgrade| u64::from(upgrade.activation_height))
+                .unwrap_or(0),
             ..Default::default()
         })
     }

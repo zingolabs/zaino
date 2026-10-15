@@ -22,7 +22,7 @@ use zaino_runtime::deployment::{
     LightWalletLocal, LightWalletPassthrough, LightWalletPassthroughSource, NodeRpcLocal,
     NodeRpcSource,
 };
-use zaino_runtime::{boot_indexed, Orchestra};
+use zaino_runtime::{boot_indexed, read_upgrade_schedule, Orchestra};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
@@ -229,21 +229,31 @@ where
     // network, not of any block read, so it carries the network it serves:
     // lightwalletd's `TreeState.network` / `GetLightdInfo.chainName` on the gRPC
     // adapter, and `validateaddress` / `z_validateaddress` (pure functions of an
-    // address and a network) on the node-rpc one.
+    // address and a network) on the node-rpc one. The light-wallet adapter also
+    // carries the validator's upgrade schedule, for `GetLightdInfo`'s Sapling
+    // activation, consensus branch and next-upgrade fields.
     let network = to_zcash_network(config.network);
     let orchestra = match config.deployment {
         DeploymentKind::LightWalletPassthrough => {
+            let upgrades = read_upgrade_schedule(client.as_ref()).await?;
             let orchestra =
                 boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
-                    GrpcServer::new(LightServe::new(engine, network), grpc)
+                    GrpcServer::new(
+                        LightServe::new(engine, network).with_upgrades(upgrades),
+                        grpc,
+                    )
                 })
                 .await?;
             info!(grpc = %grpc, "Zaino runtime booted");
             orchestra
         }
         DeploymentKind::LightWalletLocal => {
+            let upgrades = read_upgrade_schedule(client.as_ref()).await?;
             let orchestra = boot_indexed::<LightWalletLocal, _, C>(client, &runtime, |engine| {
-                GrpcServer::new(LightServe::new(engine, network), grpc)
+                GrpcServer::new(
+                    LightServe::new(engine, network).with_upgrades(upgrades),
+                    grpc,
+                )
             })
             .await?;
             info!(grpc = %grpc, "Zaino runtime booted");

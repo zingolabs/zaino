@@ -31,7 +31,7 @@ use zaino_indexes::sets::current_zaino::{
 };
 use zaino_persistence::{NamespaceSpec, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
-use zaino_primitives::types::PoolActivations;
+use zaino_primitives::types::{NetworkUpgradeInfo, PoolActivations};
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
 use zaino_source::GetBlockchainInfo;
@@ -227,22 +227,33 @@ where
     Ok((orchestra, backend, chain_head))
 }
 
+/// Read the validator's reported network upgrade schedule.
+///
+/// A validator that cannot describe its chain fails the boot: Zaino carries no
+/// compiled-in schedule, and defaulting to a wrong one would misreport which
+/// pools are active and which consensus branch is in force.
+pub async fn read_upgrade_schedule<C: GetBlockchainInfo>(
+    source: &C,
+) -> Result<Vec<NetworkUpgradeInfo>, DeployError> {
+    source
+        .get_blockchain_info()
+        .await
+        .map(|info| info.upgrades)
+        .map_err(|e| DeployError::ActivationSchedule(e.to_string()))
+}
+
 /// Read the validator's reported upgrade schedule once and project it to the
 /// per-pool activation heights, keyed by consensus branch id.
 ///
-/// A validator that cannot describe its chain fails the boot: Zaino carries no
-/// compiled-in schedule, and defaulting to a wrong one would make the treestate
-/// read report an active pool absent (or an inactive one present) — which
-/// pepper-sync rejects.
+/// Fails the boot when the schedule cannot be read: a wrong schedule would make
+/// the treestate read report an active pool absent (or an inactive one
+/// present) — which pepper-sync rejects.
 async fn read_pool_activations<C: GetBlockchainInfo>(
     source: &C,
 ) -> Result<PoolActivations, DeployError> {
-    let info = source
-        .get_blockchain_info()
-        .await
-        .map_err(|e| DeployError::ActivationSchedule(e.to_string()))?;
     Ok(PoolActivations::from_branch_activations(
-        info.upgrades
+        read_upgrade_schedule(source)
+            .await?
             .iter()
             .map(|upgrade| (u32::from(upgrade.branch_id), upgrade.activation_height)),
     ))

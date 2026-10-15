@@ -57,3 +57,22 @@ one lookup in the spends index, instead of locating the spending transaction \
 and decoding its block's transparent data. `deltas` and `tx_ids`, which report \
 where a spend happened, still resolve the full site.
 """
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "feature"
+description = """
+`LightServe::with_upgrades` carries the validator's network upgrade schedule. \
+`GetLightdInfo` then reports `saplingActivationHeight`, `consensusBranchId` \
+(the branch in force at the served tip) and `upgradeName`/`upgradeHeight` for \
+the next pending upgrade, which were previously empty.
+"""
+
+[[changes]]
+crate = "zaino-runtime"
+kind = "feature"
+description = """
+`read_upgrade_schedule` reads the validator's network upgrade schedule, \
+failing with `DeployError::ActivationSchedule` as the boot does when the \
+validator cannot describe its chain.
+"""

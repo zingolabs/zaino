@@ -35,7 +35,7 @@ mod status_log;
 mod supervisor;
 mod validator;
 
-pub use boot::{boot_indexed, DeployError, IndexedEngine};
+pub use boot::{boot_indexed, read_upgrade_schedule, DeployError, IndexedEngine};
 pub use deployment::{compose, Deployment, DeploymentEngine, IndexedSource};
 pub use health::{HealthServeError, HealthServer};
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
