@@ -2,8 +2,8 @@
 //!
 //! - counter read at each window boundary (UTC epoch multiple of [`WINDOW`]): rate = bytes since
 //!   the last reading over the time between them (a first, partial window measured from boot)
-//! - published: Mbit/s, 3 significant figures, < 0.1 = 0 (near-idle windows hidden); `None`
-//!   until the first window closes
+//! - published: Mbit/s, 3 significant figures, < 0.1 = 0 (near-idle windows hidden)
+//! - `None` until the first window closes
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -66,7 +66,8 @@ pub(crate) async fn run(
 mod tests {
     use super::*;
 
-    /// 3 significant figures, under 0.1 Mbit/s hidden as 0; boundaries on UTC 10-min multiples
+    /// - 3 significant figures, under 0.1 Mbit/s hidden as 0
+    /// - Boundaries on UTC 10-min multiples
     #[test]
     fn a_window_publishes_three_significant_figures_and_hides_near_idle() {
         let secs = WINDOW.as_secs_f64();

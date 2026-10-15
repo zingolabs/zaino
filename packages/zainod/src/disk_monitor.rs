@@ -1,7 +1,8 @@
 //! What the disk is doing to zainod: one sample per progress tick, as metrics
 //!
 //! - per table: durable bytes + their page-cache share (cold lookups = disk reads)
-//! - per index directory: its filesystem's free + capacity; the walk's total = [`walked`]
+//! - per index directory: its filesystem's free + capacity
+//! - walk's total = [`walked`]
 //! - process: block-device bytes read / written, time stalled on I/O (own cgroup's PSI)
 //! - unreadable source (no PSI, not Linux) = its metric left out, never a guessed zero
 

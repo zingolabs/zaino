@@ -56,8 +56,9 @@ mod tests {
 
     use super::*;
 
-    /// A listing in any order reads back as the schedule it lists; unlisted = never; out of
-    /// protocol order or without Sapling = refused
+    /// - Listing in any order reads back as the schedule it lists
+    /// - Unlisted = never
+    /// - Out of protocol order or without Sapling = refused
     #[test]
     fn a_listed_schedule_reads_back_unlisted_never_activates_and_disorder_or_no_sapling_is_refused()
     {

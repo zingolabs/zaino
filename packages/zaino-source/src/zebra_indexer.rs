@@ -28,8 +28,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Mutual TLS to a validator's indexer (zakurad refuses plaintext off loopback: `[rpc.indexer_tls]`)
 ///
-/// - `ca_path` verifies the server; `cert_path` (leaf first) + `key_path` (PKCS#8, PKCS#1 or SEC1)
-///   = this client, signed by the server's client CA
+/// - `ca_path` verifies the server
+/// - `cert_path` (leaf first) + `key_path` (PKCS#8, PKCS#1 or SEC1) = this client, signed by the
+///   server's client CA
 /// - `server_name` = the name on the server's certificate (`None` = the address's host)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,8 +41,9 @@ pub struct ZebraIndexerTls {
     pub server_name: Option<String>,
 }
 
-/// `address`'s indexer endpoint, plaintext or mutual TLS; unprobed (PEMs read here: unreadable
-/// = refused at boot, a rotated file = read on restart)
+/// `address`'s indexer endpoint, plaintext or mutual TLS, unprobed
+///
+/// - PEMs read here: unreadable = refused at boot, rotated file = read on restart
 pub(crate) fn zebra_indexer_endpoint(
     address: &str,
     tls: Option<&ZebraIndexerTls>,

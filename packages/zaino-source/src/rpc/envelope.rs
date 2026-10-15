@@ -26,7 +26,8 @@ pub(crate) fn build_batch<'a>(calls: impl IntoIterator<Item = &'a Call>, first: 
 
 /// JSON-RPC 2.0 response body → `result` as `T` (straight off the body bytes, no `Value` hop)
 ///
-/// - Error object → [`RpcError::Rpc`]; null result → [`RpcError::NullResult`]
+/// - Error object → [`RpcError::Rpc`]
+/// - Null result → [`RpcError::NullResult`]
 pub(crate) fn parse_response<T: DeserializeOwned>(body: &[u8]) -> Result<T, RpcError> {
     serde_json::from_slice::<RpcResponseEnvelope<T>>(body)?.into_result()
 }
@@ -90,7 +91,8 @@ mod tests {
     }
 
     /// - Error object wins over `result: null` (zebrad sends both)
-    /// - `null` alone = fault, never an empty answer; unparseable body = fault
+    /// - `null` alone = fault, never an empty answer
+    /// - Unparseable body = fault
     #[test]
     fn a_reply_is_its_result_its_error_object_or_a_fault() {
         let cases: [(&[u8], &str); 4] = [

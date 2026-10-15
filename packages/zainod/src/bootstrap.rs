@@ -4,7 +4,8 @@
 //!   every archive queued, one active at `connections` (`-j 1`), sha256 checked by aria2c itself
 //! - Each archive as aria2c finishes it: unpack (zstd + tar) into staging, rename into its index
 //! - Staging = `.<index>.snapshot` beside each index (same filesystem as its target)
-//! - Free space checked per filesystem before any download; `unpacked.done` = restart at install
+//! - Free space checked per filesystem before any download
+//! - `unpacked.done` = restart at install
 
 use std::{
     collections::BTreeMap,
@@ -53,7 +54,7 @@ struct Manifest {
     indexes: BTreeMap<String, Archive>,
 }
 
-/// Keyed by `IndexKind::name()`; `archive` = URL relative to the manifest's
+/// Keyed by `IndexKind::name()` (`archive` = URL relative to the manifest's)
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Archive {
@@ -88,7 +89,7 @@ fn at<E: std::fmt::Display>(path: &Path) -> impl FnOnce(E) -> IndexerError + '_ 
     move |e| error(format!("{}: {e}", path.display()))
 }
 
-/// Fills every enabled index whose directory is missing or empty; a no-op once none is
+/// Fills every enabled index whose directory is missing or empty (no-op once none is)
 pub(crate) async fn bootstrap(
     snapshot: &IndexSnapshotConfig,
     config: &DaemonConfig,
@@ -169,7 +170,7 @@ fn staging(index: &Path, kind: IndexKind) -> Result<PathBuf, IndexerError> {
     Ok(parent.join(format!(".{}.snapshot", kind.name())))
 }
 
-/// Fetched by aria2c too (HTTPS without a TLS stack here); a stale copy is removed first
+/// Fetched by aria2c too (HTTPS without a TLS stack here), stale copy removed first
 async fn read_manifest(aria2: &Aria2, url: &Url, dir: &Path) -> Result<Manifest, IndexerError> {
     let path = dir.join(MANIFEST);
     let _ = std::fs::remove_file(&path);
@@ -262,7 +263,7 @@ fn marker(path: &Path) -> Result<(), IndexerError> {
     std::fs::write(path, b"").map_err(at(path))
 }
 
-/// `src` (unpacked) → `index` path; an empty directory there is replaced
+/// `src` (unpacked) → `index` path (empty directory there replaced)
 fn rename_into(src: &Path, index: &Path) -> Result<(), IndexerError> {
     if index.exists() {
         std::fs::remove_dir(index).map_err(at(index))?;
@@ -287,7 +288,9 @@ struct Slot {
     done: Arc<AtomicU64>,
 }
 
-/// Slowest step's bytes (archives past it counted whole); `None` = every archive installed
+/// Slowest step's bytes (archives past it counted whole)
+///
+/// - `None` = every archive installed
 fn overall(slots: &[Slot], source: &str, height: u32) -> Option<Bootstrap> {
     let slowest = slots.iter().map(|slot| slot.step).min()?;
     let Step::Active(phase) = slowest else { return None };
@@ -359,7 +362,7 @@ impl Board {
         let _ = self.set(slot, Step::Installed, 0, 0);
     }
 
-    /// Publishes until dropped (raced against the installs); logs every [`LOG_EVERY`]
+    /// Publishes until dropped (raced against the installs), logs every [`LOG_EVERY`]
     async fn report(&self, status: &DaemonStatus) {
         let mut ticks = tokio::time::interval(POLL_EVERY);
         let mut logged = Instant::now();
@@ -410,8 +413,9 @@ impl<R: Read> Read for Counted<R> {
     }
 }
 
-/// zstd + tar into `into` (wiped first: a crash mid-unpack restarts it); `tar` refuses entries
-/// escaping `into`
+/// zstd + tar into `into` (wiped first: crash mid-unpack restarts it)
+///
+/// - `tar` refuses entries escaping `into`
 fn unpack(archive: &Path, into: &Path, read: Arc<AtomicU64>) -> Result<(), IndexerError> {
     if into.exists() {
         std::fs::remove_dir_all(into).map_err(at(into))?;
@@ -430,14 +434,16 @@ fn eta(left: u64, rate: u64) -> Human {
     })
 }
 
-/// One download's aria2 status: bytes `done` at `rate` bytes/s; `verified` while hashing
+/// Download's aria2 status: bytes `done` at `rate` bytes/s, `verified` while hashing
 struct State {
     done: u64,
     rate: u64,
     verified: Option<u64>,
 }
 
-/// aria2c over JSON-RPC on loopback; killed when dropped (and stops itself if this process dies)
+/// aria2c over JSON-RPC on loopback
+///
+/// - Killed when dropped (and stops itself if this process dies)
 struct Aria2 {
     child: tokio::process::Child,
     url: String,
@@ -515,7 +521,9 @@ impl Aria2 {
         }
     }
 
-    /// Queued behind earlier ones; `sha256` = checked by aria2c once downloaded (and on resume)
+    /// Queued behind earlier ones
+    ///
+    /// - `sha256` = checked by aria2c once downloaded (and on resume)
     async fn add(
         &self,
         uri: &Url,
@@ -560,8 +568,8 @@ impl Aria2 {
             });
             match field("status").unwrap_or_default() {
                 "complete" => return Ok(()),
-                // max-tries=0: transient failures retry inside aria2; `error` = permanent (404,
-                // sha256 mismatch, …)
+                // - max-tries=0: transient failures retry inside aria2
+                // - `error` = permanent (404, sha256 mismatch, …)
                 "error" | "removed" => {
                     let why = field("errorMessage").unwrap_or_default();
                     return Err(error(format!("download {uri}: {why}")));
@@ -682,10 +690,10 @@ mod tests {
         }
     }
 
-    /// Manifest v2 → one fetch per empty index (URL relative to the manifest, staging = hidden
-    /// sibling); a v1 manifest and an index the manifest lacks refused; space need = per
-    /// filesystem Σ archive + installed less staged bytes (unpacked = nothing left), refused past
-    /// free space
+    /// - Manifest v2 → one fetch per empty index (manifest-relative URL, staging = hidden sibling)
+    /// - v1 manifest / index absent from the manifest → refused
+    /// - Space need = per filesystem Σ archive + installed − staged bytes (unpacked = none left),
+    ///   refused past free space
     #[test]
     fn manifest_fetches_and_free_space_per_filesystem() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -759,10 +767,11 @@ mod tests {
         );
     }
 
-    /// Fresh regtest node, compact_block (+ utxo_set) and block_hash on, block_hash holding
-    /// data: a utxo_set archive failing its sha256 stops startup and wipes its staging;
-    /// republished, a restart installs both empty indexes byte for byte, block_hash's archive
-    /// never fetched, nothing staged, the bootstrap status cleared (aria2c from the dev shell)
+    /// Fresh regtest node, compact_block (+ utxo_set) and block_hash on, block_hash holding data
+    ///
+    /// - utxo_set archive failing its sha256 → startup stopped, its staging wiped
+    /// - Republished → restart installs both empty indexes byte for byte, block_hash's archive
+    ///   never fetched, nothing staged, bootstrap status cleared (aria2c from the dev shell)
     #[tokio::test]
     async fn bootstrap_refuses_a_bad_archive_then_installs_every_empty_index() {
         let dir = tempfile::tempdir().expect("tempdir");

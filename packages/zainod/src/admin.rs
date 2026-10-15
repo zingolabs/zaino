@@ -2,8 +2,8 @@
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` + `/metrics`' gauges = [`DaemonStatus`] (one `GrpcSnapshot` load each; `/readyz`
-//!   inline)
+//! - `/readyz` + `/metrics`' gauges = [`DaemonStatus`] (one `GrpcSnapshot` load each)
+//! - `/readyz` answered inline
 
 use std::{
     convert::Infallible,
@@ -22,15 +22,15 @@ use tracing::{error, warn};
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
 
-/// Bounds `AtomicBucket` growth between scrapes (`render` drains itself; this covers no scraper)
+/// Bounds `AtomicBucket` growth between scrapes (`render` drains itself, upkeep covers no scraper)
 const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Concurrent admin connections; the rest wait in the accept backlog
+/// Concurrent admin connections (rest wait in the accept backlog)
 ///
 /// - Unbounded `spawn` per connection = fd exhaustion of the whole process (may bind non-private)
 const MAX_CONNECTIONS: usize = 32;
 
-/// Heartbeat age failing `/livez` (wedged serving runtime stops [`beat`]; this thread answers)
+/// Heartbeat age failing `/livez` (wedged serving runtime stops [`beat`], admin thread answers)
 const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 
 /// [`beat`] cadence
@@ -219,7 +219,7 @@ mod tests {
         let network = zcash_protocol::consensus::NetworkType::Regtest;
         tokio::spawn(serve(listener, handle, Arc::new(DaemonStatus::new(network, []))));
 
-        // The accept loop races the connect; retry rather than sleep a fixed guess
+        // Retry, no fixed sleep (accept loop races the connect)
         let get = |path: &'static str| async move {
             for _ in 0..50 {
                 if let Ok(mut stream) = tokio::net::TcpStream::connect(endpoint).await {

@@ -23,8 +23,9 @@ async fn links_and_polls_read_its_best_chain_up_to_its_tip() {
     assert_eq!(polled.info, chain.blockchain_info(tip));
 }
 
-/// Tip + estimate at the asked block; every scheduled upgrade listed (NU7 pending included), so
-/// the listing reads back as the chain's own schedule
+/// - Tip + estimate at the asked block
+/// - Every scheduled upgrade listed (NU7 pending included) → listing reads back as the chain's
+///   own schedule
 #[test]
 fn blockchain_info_reports_the_tip_and_reads_back_as_the_chains_schedule() {
     let early = Some(h(1));
@@ -151,7 +152,7 @@ async fn a_tampered_header_is_served_and_hashed_as_edited() {
     assert_eq!((linked, block.header().time), (tampered, early));
 }
 
-/// Two 5 000 coinbases to Alice; heard + relayed spends listed at the fee their spends leave
+/// Two 5 000 coinbases to Alice → heard + relayed spends listed at the fee their spends leave
 #[tokio::test]
 async fn mempool_lists_heard_and_relayed_txs_until_mined_or_evicted() {
     let alice = p2pkh([0xaa; 20]);
@@ -188,7 +189,8 @@ async fn mempool_lists_heard_and_relayed_txs_until_mined_or_evicted() {
     assert_eq!(listed, Ok(Vec::new()), "evicted = unlisted");
 }
 
-/// Check = verdict only, nothing listed; unknown prevout / garbage bytes = refused
+/// - Check = verdict only, nothing listed
+/// - Unknown prevout / garbage bytes = refused
 #[tokio::test]
 async fn sends_and_checks_judge_a_tx_on_its_tip() {
     let alice = p2pkh([0xaa; 20]);

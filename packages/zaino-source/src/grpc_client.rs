@@ -1,7 +1,8 @@
 //! [`ZebraIndexerGrpcClient`]: blocks over zebrad's indexer gRPC, every other question over its JSON-RPC
 //!
-//! - `GetBlockRange` / `GetBlock` = stored consensus bytes as protobuf `bytes` (no hex, no JSON;
-//!   `Bytes` = a slice of the received frame), decoded by the same [`decode::decode_block`] as JSON-RPC
+//! - `GetBlockRange` / `GetBlock` = stored consensus bytes as protobuf `bytes` (no hex, no JSON),
+//!   decoded by the same [`decode::decode_block`] as JSON-RPC
+//! - `Bytes` = slice of the received frame
 //! - HTTP/2: streams multiplexed over a few connections (zebrad admits 20 streams per one),
 //!   requests rotated across them
 //! - the rest (poll, headers, mempool, transactions) = [`ZcashLegacyRpcClient`]'s (no indexer
@@ -44,9 +45,9 @@ const MAX_MESSAGE_BYTES: usize = 4 << 20;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// One validator: blocks from its indexer, the rest from its JSON-RPC; single attempt per call
-/// (retries, concurrency = the caller's balancer)
+/// One validator: blocks from its indexer, the rest from its JSON-RPC
 ///
+/// - Single attempt per call (retries, concurrency = the caller's balancer)
 /// - `read` = silence before a call fails (per message, never a total: a range takes as long as
 ///   it takes)
 pub struct ZebraIndexerGrpcClient {
@@ -57,11 +58,11 @@ pub struct ZebraIndexerGrpcClient {
 }
 
 impl ZebraIndexerGrpcClient {
-    /// Blocks from the zebra indexer at `zebra_indexer_address` (`host:port`; `tls` = mutual TLS),
-    /// the rest through `rpc`; unprobed
+    /// Blocks from the zebra indexer at `zebra_indexer_address` (`host:port`, `tls` = mutual TLS),
+    /// the rest through `rpc` (unprobed)
     ///
-    /// - connections = `max_connections` streams at zebrad's 20 per connection; each opens on its
-    ///   first call (inside a tokio runtime)
+    /// - connections = `max_connections` streams at zebrad's 20 per connection
+    /// - Each connection opens on its first call (inside a tokio runtime)
     pub fn new(
         rpc: ZcashLegacyRpcClient,
         zebra_indexer_address: &str,

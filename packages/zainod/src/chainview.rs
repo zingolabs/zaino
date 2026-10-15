@@ -25,9 +25,9 @@ use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
 use crate::peers::ZebraPeers;
 
-/// Balancer + the tasks driving it (spawn every one); the view comes once the upgrade schedule
-/// is known ([`view`]: regtest's is a poll's)
+/// Balancer + the tasks driving it (spawn every one)
 ///
+/// - View only once the upgrade schedule known ([`view`]: regtest's = a poll's)
 /// - `balancing` = the balancer's driver (every poll included)
 /// - `watches`: push streams of each validator naming an `indexer_address`
 /// - `p2p`: `[p2p]` on = the port + the future starting the network behind it
@@ -40,7 +40,8 @@ pub(crate) struct Wiring<S: ChainDataSource> {
 
 /// View + the tasks feeding it (spawn every one)
 ///
-/// - `merge` = polls into the view; `peers`: `[p2p]` on = network start + block `inv` merge
+/// - `merge` = polls into the view
+/// - `peers`: `[p2p]` on = network start + block `inv` merge
 pub(crate) struct Viewed<S: ChainDataSource> {
     pub(crate) view: Arc<ChainView<S>>,
     pub(crate) merge: ObservationMerge<S>,
@@ -153,7 +154,8 @@ pub(crate) fn grpc_client(
 mod tests {
     use super::*;
 
-    /// No `indexer_address` = refused, naming the validator; one set = a client (unprobed)
+    /// - No `indexer_address` = refused, naming the validator
+    /// - `indexer_address` set = client (unprobed)
     #[tokio::test]
     async fn the_grpc_client_needs_each_validators_indexer_address() {
         let refused = grpc_client(&TrustedValidatorConfig::default()).err().map(|e| e.to_string());

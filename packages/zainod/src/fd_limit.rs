@@ -1,5 +1,6 @@
-//! Open-file limit vs `grpc.max_connections` (one fd per connection; past the limit `accept()`
-//! fails with `EMFILE`, and an index open would too)
+//! Open-file limit vs `grpc.max_connections` (one fd per connection)
+//!
+//! - Past the limit: `accept()` fails with `EMFILE`, index open too
 
 use std::num::NonZeroUsize;
 
@@ -31,7 +32,8 @@ fn fits(max_connections: NonZeroUsize, limit: u64) -> Result<(), IndexerError> {
 mod tests {
     use super::*;
 
-    /// Connections + the reserve must fit; the refusal names the knob and both remedies
+    /// - Connections + the reserve must fit
+    /// - Refusal names the knob and both remedies
     #[test]
     fn max_connections_plus_the_reserve_must_fit_the_limit() {
         let connections = |n| NonZeroUsize::new(n).expect("non-zero");

@@ -51,7 +51,7 @@ impl LogConfig {
         )
     }
 
-    /// `(var, lowercased value)` per knob; `tty` = what `auto` colour resolves to
+    /// `(var, lowercased value)` per knob (`tty` = what `auto` colour resolves to)
     fn parse(
         format: Option<(&'static str, String)>,
         color: Option<(&'static str, String)>,

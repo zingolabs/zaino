@@ -2,7 +2,7 @@
 
 use zcash_protocol::consensus::BlockHeight;
 
-/// `build` e.g. `v6.4.2`; `user_agent` = p2p, e.g. `/Zebra:6.4.2/`
+/// `build` e.g. `v6.4.2`, `user_agent` = p2p, e.g. `/Zebra:6.4.2/`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRelease {
     pub build: String,

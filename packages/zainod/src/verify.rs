@@ -17,7 +17,8 @@ use zaino_persistence::{
 use crate::config::{load_config, DaemonConfig, IndexConfig};
 use crate::stores::schema;
 
-/// Disabled index = `None`; `clean` = every sealed file present with every page intact
+/// - Disabled index = `None`
+/// - `clean` = every sealed file present with every page intact
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Report {
     clean: bool,
@@ -38,7 +39,7 @@ pub(super) enum VerifyError {
     Render(#[from] serde_json::Error),
 }
 
-/// Verifies the indexes `config_path` enables; exit status 0 clean, 1 corrupt
+/// Verifies the indexes `config_path` enables (exit status 0 clean, 1 corrupt)
 pub(super) fn run(config_path: &Path) -> Result<ExitCode, VerifyError> {
     let report = verify(&load_config(config_path)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -119,9 +120,10 @@ mod tests {
     use zaino_sync::{FeeSink, FinalizedStream, Step};
     use zcash_protocol::consensus::NetworkType;
 
-    /// Five indexes from one chain, scrubbed through the daemon's own config:
-    /// - clean = 0; flipped durable byte = its page named + 1; lost file = 1
-    /// - disabled = skipped; no config = 2
+    /// Five indexes from one chain, scrubbed through the daemon's own config
+    ///
+    /// - clean = 0, flipped durable byte = its page named + 1, lost file = 1
+    /// - disabled = skipped, no config = 2
     #[tokio::test]
     async fn verify_scrubs_every_sealed_file_and_exits_by_the_corruption_rule() {
         let root = tempfile::tempdir().expect("tempdir");

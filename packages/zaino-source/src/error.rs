@@ -9,7 +9,7 @@ pub enum FailureMode {
     Timeout,
     HttpStatus(u16),
     RpcError(i64),
-    /// The indexer gRPC's status code (`tonic::Code` as `i32`; transport losses = `Connection`)
+    /// Indexer gRPC's status code (`tonic::Code` as `i32`, transport losses = `Connection`)
     GrpcStatus(i32),
     Parse,
     Auth,
@@ -55,7 +55,7 @@ impl std::error::Error for NonDomainError {
     }
 }
 
-/// `Domain` = the validator's answer; `NonDomain` = none
+/// `Domain` = the validator's answer, `NonDomain` = none
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError<E: fmt::Debug + fmt::Display> {
     #[error("{0}")]

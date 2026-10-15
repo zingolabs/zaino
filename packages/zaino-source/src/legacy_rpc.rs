@@ -19,8 +19,9 @@ use crate::{
     RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 
-/// One validator's link; single attempt per call (retries, concurrency = the caller's balancer)
+/// Validator's link
 ///
+/// - Single attempt per call (retries, concurrency = the caller's balancer)
 /// - `rpc` `pub(crate)`: [`ZebraIndexerGrpcClient`](crate::ZebraIndexerGrpcClient) asks the rest through it and
 ///   shares its metric label + byte pacing
 pub struct ZcashLegacyRpcClient {
@@ -49,7 +50,7 @@ impl ZcashLegacyRpcClient {
         Ok(Self { rpc })
     }
 
-    /// Call + parse; `classify` decides which transport failures are the port's answer
+    /// Call + parse (`classify` = which transport failures are the port's answer)
     async fn call_parsed<T, E>(
         &self,
         method: &str,
@@ -80,7 +81,7 @@ const ABOVE_TIP_CODES: [i64; 2] = [-8, -32602];
 /// JSON-RPC "method not implemented"
 const METHOD_NOT_FOUND: i64 = -32601;
 
-/// Not-found code → the port's absent answer; anything else stays a fetch failure
+/// Not-found code → the port's absent answer, anything else stays a fetch failure
 fn absent_or_fetch<E>(error: RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -88,7 +89,7 @@ where
     absent_on(&NOT_FOUND_CODES, error, absent)
 }
 
-/// One of `codes` → the port's absent answer; anything else stays a fetch failure
+/// One of `codes` → the port's absent answer, anything else stays a fetch failure
 fn absent_on<E>(codes: &[i64], error: RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -128,8 +129,11 @@ fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionErro
     }
 }
 
-/// `checkadmission`'s error: `-32601` = no such method here (zcashd, stock zebrad), an answer
-/// (never a failure: the validator stays healthy); else [`submission_rejection`]'s verdicts
+/// `checkadmission`'s error
+///
+/// - `-32601` = no such method here (zcashd, stock zebrad) = an answer (never a failure: the
+///   validator stays healthy)
+/// - Else [`submission_rejection`]'s verdicts
 fn admission_check_answer(error: NonDomainError) -> QueryError<CheckAdmissionError> {
     if error.mode == FailureMode::RpcError(METHOD_NOT_FOUND) {
         return QueryError::Domain(CheckAdmissionError::Unsupported);
@@ -148,7 +152,8 @@ const MEMPOOL_INACTIVE: &str = "mempool is not active";
 
 /// `getrawmempool` answers about the node, not transient failures
 ///
-/// - `-32601` = no mempool at all; `-1` + [`MEMPOOL_INACTIVE`] = none until caught up
+/// - `-32601` = no mempool at all
+/// - `-1` + [`MEMPOOL_INACTIVE`] = none until caught up
 fn mempool_unavailable_or_fetch(error: RpcError) -> QueryError<GetMempoolListingError> {
     let error: NonDomainError = error.into();
     match error.mode {
@@ -395,7 +400,7 @@ mod tests {
     }
 
     /// - Batches keep listing order, cover it exactly
-    /// - Batch closes at 100 calls or before passing the budget (8 MiB); entry over it = alone
+    /// - Batch closes at 100 calls or before passing the budget (8 MiB), entry over it = alone
     /// - Budget at the 32 MiB cap = 100 hex replies + envelopes
     #[test]
     fn raw_batches_split_in_order_on_either_budget() {
@@ -449,8 +454,8 @@ mod tests {
     }
 
     /// - Rejections carry the validator's code + reason verbatim (wallets match the text)
-    /// - zebrad's `-1` = a verdict only when it names the transaction; node state / warming up =
-    ///   never considered (next validator)
+    /// - zebrad's `-1` = verdict only when it names the transaction
+    /// - Node state / warming up = never considered (next validator)
     #[test]
     fn submission_rejections_carry_the_validators_code_and_reason() {
         use SendRawTransactionError::{Malformed, Rejected};
@@ -480,11 +485,11 @@ mod tests {
         }
     }
 
-    /// `checkadmission` (zebra fork; zcashd + stock zebrad have none)
+    /// `checkadmission` (zebra fork, zcashd + stock zebrad have none)
     ///
     /// - `-32601` = unsupported, an answer (the validator stays healthy)
-    /// - `-25` / a `-1` mempool verdict = refused, verbatim; any other `-1` (inactive mempool,
-    ///   verifier timeout) = no verdict, a failure
+    /// - `-25` / a `-1` mempool verdict = refused, verbatim
+    /// - Any other `-1` (inactive mempool, verifier timeout) = no verdict, a failure
     #[test]
     fn admission_checks_are_a_missing_method_a_refusal_or_no_verdict() {
         let missing = admission_check_answer(rpc(METHOD_NOT_FOUND, "Method not found").into());

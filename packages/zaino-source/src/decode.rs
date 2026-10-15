@@ -49,8 +49,7 @@ pub enum DecodeError {
 /// ZIP-203: `nExpiryHeight` ≤ this, or the transaction is invalid on its own
 const MAX_EXPIRY_HEIGHT: u32 = 499_999_999;
 
-/// `getblock <h> 0` / p2p block bytes → [`Block`] (the one block parse; every index projects
-/// from it)
+/// `getblock <h> 0` / p2p block bytes → [`Block`] (only block parse, every index projects from it)
 pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
     let (header, body) = HeaderBytes::split(raw)?;
     let mut cursor = Cursor::new(body);
@@ -72,7 +71,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
 /// nothing, not even the txid)
 ///
 /// - `expiry_height` `None` = never expires (0 on the wire, or pre-Overwinter)
-/// - `branch` = v5+'s embedded consensus branch id; earlier versions carry none
+/// - `branch` = v5+'s embedded consensus branch id (earlier versions carry none)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prepared {
     pub txid: TxId,
@@ -108,7 +107,8 @@ where
     decode_block(raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
 }
 
-/// Branch id = read from the tx itself for v5+; v1–v4 only store it (txid = hash of the bytes)
+/// - Branch id = read from the tx itself for v5+
+/// - v1–v4 only store it (txid = hash of the bytes)
 fn read_transaction(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedTransaction> {
     CompressedTransaction::read(cursor, BranchId::Sprout)
 }
@@ -148,7 +148,8 @@ fn block_header(
     })
 }
 
-/// Genesis = height 0 (its coinbase predates BIP 34); every later block's coinbase opens with it
+/// - Genesis = height 0 (its coinbase predates BIP 34)
+/// - Every later block's coinbase opens with its height
 fn block_height(
     raw: &HeaderBytes<'_>,
     coinbase: &CompressedTransaction,
@@ -240,7 +241,7 @@ fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
                 })
             })
             .collect::<Result<Vec<_>, DecodeError>>()?,
-        // v4 without spends or outputs → 0 (protocol.pdf#txnconsensus; zip-0225)
+        // v4 without spends or outputs → 0 (protocol.pdf#txnconsensus, zip-0225)
         value_balance: *bundle.value_balance(),
     })
 }

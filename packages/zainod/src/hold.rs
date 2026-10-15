@@ -1,10 +1,11 @@
 //! Operator hold: `zainod hold` / `zainod resume`
 //!
-//! - marker `<serve.state_dir>/held` = the hold (survives restart, deploy, reboot; a stopped
-//!   zainod is never held, only absent)
+//! - marker `<serve.state_dir>/held` = the hold (survives restart, deploy, reboot)
+//! - stopped zainod never held, only absent
 //! - the running zainod polls it every second (`POLL`): held = state `held` (outranks every
 //!   other), then after `[serve] hold_goaway_delay_secs` every gRPC connection, open or accepted
-//!   later, GOAWAY'd ([`zaino_grpc::Retire`]); resume = normal evaluation again
+//!   later, GOAWAY'd ([`zaino_grpc::Retire`])
+//! - resume = normal evaluation again
 //! - only drain before a stop (a SIGTERM alone closes the listener at once): `zainod hold`
 //!   returns once the GOAWAYs went out
 //! - no write endpoint: holding takes the state dir, not network reach to the admin listener
@@ -39,13 +40,13 @@ pub(crate) enum Action {
     /// load balancer: a shutdown signal alone closes the listener at once.
     ///
     /// Prints `held`, then on stderr what changed. With `[metrics] listen_address` set, waits
-    /// until the running zainod reports its GOAWAYs sent; without it, waits as long as a running
+    /// until the running zainod reports its GOAWAYs sent. Without it, waits as long as a running
     /// zainod can take to send them. Exits 0 once the marker is in place (holding twice is a
     /// no-op), 1 when the config or state directory could not be read or written.
     Hold,
     /// Undo `zainod hold`: back to syncing or serving as the indexes dictate.
     ///
-    /// Removes the marker in `[serve] state_dir`; the running zainod picks it up within a
+    /// Removes the marker in `[serve] state_dir`. The running zainod picks it up within a
     /// second. Prints `resumed`, then on stderr what changed and the running zainod's state.
     /// Exits 0 once the marker is gone (resuming when not held is a no-op), 1 on an error.
     Resume,
@@ -68,7 +69,7 @@ enum Changed {
     NotHeld,
 }
 
-/// Marker written (synced, with its directory) or removed; idempotent
+/// Marker written (synced, with its directory) or removed (idempotent)
 fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
     let marker = state_dir.join(MARKER);
     let changed = match action {
@@ -91,8 +92,10 @@ fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
     Ok(changed)
 }
 
-/// `zainod hold` / `zainod resume`: prints the resulting state; `Ok` = the marker says what was
-/// asked (hold: and a running zainod's connections GOAWAY'd, or the longest that can take waited)
+/// `zainod hold` / `zainod resume`: prints the resulting state
+///
+/// - `Ok` = marker says what was asked (hold: and a running zainod's connections GOAWAY'd, or the
+///   longest that can take waited)
 pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
     let config = crate::config::load_config(config_path)?;
     let state_dir = &config.serve.state_dir;
@@ -160,8 +163,9 @@ struct Readyz {
     detail: Option<String>,
 }
 
-/// The running zainod's `/readyz` once `done` (or the last one seen after `within`); `None` =
-/// nothing answering
+/// Running zainod's `/readyz` once `done` (or the last one seen after `within`)
+///
+/// - `None` = nothing answering
 fn confirm(admin: SocketAddr, within: Duration, done: impl Fn(&Readyz) -> bool) -> Option<Readyz> {
     let admin = match admin.ip().is_unspecified() {
         true => SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), admin.port()),
@@ -226,8 +230,8 @@ pub(crate) fn spawn(status: Arc<DaemonStatus>, state_dir: PathBuf, drain_delay: 
 mod tests {
     use super::*;
 
-    /// Hold twice = held once; resume twice = resumed once; the marker is the whole state, kept
-    /// in a state dir created on first hold
+    /// - Hold twice = held once, resume twice = resumed once
+    /// - Marker = the whole state, kept in a state dir created on first hold
     #[test]
     fn hold_and_resume_are_idempotent_on_the_marker() {
         let root = tempfile::tempdir().expect("tempdir");

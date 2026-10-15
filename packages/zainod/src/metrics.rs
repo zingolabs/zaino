@@ -20,7 +20,8 @@ const BUILD_INFO: &str = "zaino.build_info";
 
 /// Global recorder, served from [`crate::admin`] (own thread: answers however busy the workers)
 pub(crate) fn init(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
-    // Bind first (recorder before listener = undrained samples; bind failure fails startup)
+    // - Bind first (recorder before listener = undrained samples)
+    // - Bind failure fails startup
     let listener = crate::admin::bind(endpoint)?;
     let builder = zaino_grpc::METRIC_BUCKETS
         .iter()

@@ -47,7 +47,7 @@ pub(crate) fn auth_from_parts(
     Ok(Some(("__cookie__".to_string(), token.to_string())))
 }
 
-/// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection →
+/// `http://{address}`, hostname kept, not pre-resolved (reqwest resolves per connection →
 /// follows a validator whose IP changes, e.g. a restarted pod)
 pub(crate) fn validator_url(address: &str) -> Result<String, EndpointError> {
     let invalid = |reason: &str| EndpointError::Address {
@@ -71,9 +71,10 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// - Cookie wins over a configured pair; user always `__cookie__`
+    /// - Cookie wins over a configured pair, user always `__cookie__`
     /// - Token trimmed with or without its prefix (packagers write both)
-    /// - No cookie = the pair, none, or a half pair refused; unreadable cookie = error
+    /// - No cookie = the pair, none, or a half pair refused
+    /// - Unreadable cookie = error
     #[test]
     fn credentials_come_from_the_cookie_first_then_the_pair() {
         let cookie = |contents: &str| {

@@ -41,7 +41,9 @@ pub trait ChainDataSource: Send + Sync + 'static {
     ) -> impl Future<Output = Result<BlockLinks, NonDomainError>> + Send;
 
     /// Poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
-    /// per `holds` height; with `metadata`, `getpeerinfo` + `getinfo` + `getdeprecationinfo` too
+    /// per `holds` height
+    ///
+    /// - With `metadata`: `getpeerinfo` + `getinfo` + `getdeprecationinfo` too
     ///
     /// - `Err` = no tip read (transport, or the info unparseable)
     fn get_poll_reading(
@@ -113,8 +115,9 @@ pub type BlockLinks = Vec<Result<BlockLink, GetAtHeightError>>;
 
 /// Poll batch answers (`info` = tip the listing is tagged with)
 ///
-/// - `held[i]` = its best-chain hash at `holds[i]`; `HeightNotFound` = above its tip; `NonDomain`
-///   = that item unanswered (the rest of the poll stands)
+/// - `held[i]` = its best-chain hash at `holds[i]`
+/// - `HeightNotFound` = above its tip
+/// - `NonDomain` = that item unanswered (rest of the poll stands)
 #[derive(Debug)]
 pub struct PollReading {
     pub info: BlockchainInfo,

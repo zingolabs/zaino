@@ -16,9 +16,11 @@
 //!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘       └▶ admin, logs
 //! ```
 //!
-//! - Finalized path: follower → writers (disk); tip path: NFS (RAM); one `GrpcSnapshot` per request
-//! - Each writer = its own task over its subscription; a disabled index is never opened
-//! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
+//! - Finalized path: follower → writers (disk)
+//! - Tip path: NFS (RAM)
+//! - One `GrpcSnapshot` per request
+//! - Each writer = its own task over its subscription (disabled index never opened)
+//! - Every stage = one plain task in a `JoinSet` (first to end ends the daemon)
 
 use std::future::Future;
 use std::sync::Arc;
@@ -59,7 +61,7 @@ use crate::stores;
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
 
-/// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits; nothing
+/// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits, nothing
 /// restarts in-process)
 ///
 /// - signal handlers first: a signal anywhere in boot (bootstrap, regtest schedule wait) = clean stop
@@ -148,7 +150,8 @@ async fn listen<S: ChainDataSource>(
     Ok(serving)
 }
 
-/// Mainnet/testnet: compiled in (no validator needed to boot); regtest: its validator's
+/// - Mainnet/testnet: compiled in (no validator needed to boot)
+/// - Regtest: its validator's
 async fn upgrade_schedule<S: ChainDataSource>(
     network: NetworkType,
     balancer: &TrafficBalancer<S>,
@@ -198,7 +201,8 @@ async fn regtest_schedule<S: ChainDataSource>(
 /// Chain view over the trusted validators ([`crate::chainview::connect`]'s `wiring`) → pipeline
 /// over it, routed into `serving` → every task spawned beside the gRPC server's
 ///
-/// - One balancer over every validator; its driver first (regtest's upgrade schedule is a poll's)
+/// - One balancer over every validator
+/// - Balancer's driver first (regtest's upgrade schedule = a poll's)
 async fn boot_over<S: ChainDataSource>(
     config: &DaemonConfig,
     wiring: crate::chainview::Wiring<S>,
@@ -253,7 +257,7 @@ async fn boot_over<S: ChainDataSource>(
     Ok(())
 }
 
-/// Pipeline inputs (production: header sync + trusted validators on disk; tests: mocks on `SimFs`)
+/// Pipeline inputs (production: header sync + trusted validators on disk, tests: mocks on `SimFs`)
 struct Inputs<S: ChainDataSource> {
     fs: Arc<dyn Fs>,
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
@@ -337,8 +341,8 @@ fn open_indexes<S: ChainDataSource>(
     Ok(indexes)
 }
 
-/// Every opened index's writer, the follower, NFS, publisher, progress + egress spawned into
-/// `tasks`; gRPC routed; `status` sources published
+/// - Every opened index's writer, the follower, NFS, publisher, progress + egress → `tasks`
+/// - gRPC routed, `status` sources published
 fn run_pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
     indexes: Indexes<S>,
@@ -442,7 +446,7 @@ impl<S: ChainDataSource> Indexes<S> {
     }
 }
 
-/// Signal → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
+/// Signal → `Ok(())`, else the first failure (ending cleanly before shutdown = one)
 ///
 /// - Either way: cancel the rest, then wait for them (writers commit what they hold, gRPC gives
 ///   open connections `[grpc] shutdown_grace_secs`)
@@ -664,8 +668,10 @@ mod tests {
         assert!(std::net::TcpStream::connect(grpc).is_err(), "listener closed");
     }
 
-    /// `boot` raced against the signal channel: boot first = its outcome; a signal first = boot
-    /// dropped mid-await (what it holds released: an aria2c child killed on drop)
+    /// `boot` raced against the signal channel
+    ///
+    /// - Boot first = its outcome
+    /// - Signal first = boot dropped mid-await (its holdings released: aria2c child killed on drop)
     #[tokio::test]
     async fn boot_raced_against_a_signal_drops_boot_on_the_signal() {
         let (signal, mut signals) = mpsc::channel(1);
@@ -693,13 +699,15 @@ mod tests {
         assert!(released.load(Ordering::SeqCst), "boot dropped");
     }
 
-    /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3):
-    /// - A 0..=8 at once (0..=5 finalized: bulk, committed on idle; 6..=8 folded at the tip)
+    /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3)
+    ///
+    /// - A 0..=8 at once (0..=5 finalized: bulk, committed on idle)
+    /// - A 6..=8 folded at the tip
     /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's, `GetLightdInfo` B8 under
     ///   zainod's version (not zaino-grpc's)
     /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
-    /// - a `GetMempoolStream` opened at A8 ends on the reorg; the `GetLatestBlock` right after it
-    ///   is never A8 (G5: the race one `GrpcSnapshot` closes)
+    /// - a `GetMempoolStream` opened at A8 ends on the reorg
+    /// - `GetLatestBlock` right after it never A8 (G5: the race one `GrpcSnapshot` closes)
     /// - a scrape then renders every ztest family this process emits
     /// - SIGTERM stops every task cleanly (header sync's sender gone mid-drain included)
     #[tokio::test]

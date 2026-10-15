@@ -1,8 +1,8 @@
 //! JSON-RPC `result` → zaino-primitives types, one parser per method
 //!
 //! - Only fields Zaino reads are parsed: an unread field never fails a poll
-//! - Absent / `null` optional field = `None`; present but malformed = error ("inactive" and
-//!   "garbled" are different facts)
+//! - Absent / `null` optional field = `None`
+//! - Present but malformed = error ("inactive" != "garbled")
 
 use zaino_primitives::types::{BlockRef, TransactionLocation};
 
@@ -101,8 +101,8 @@ pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, Pars
 
 /// Hex-string `result` decoded straight off the body: one SIMD pass into an exact-size buffer
 ///
-/// - `deserialize_bytes`: serde_json hands the string's raw bytes (no UTF-8 pass; a non-hex byte
-///   = a hex error)
+/// - `deserialize_bytes`: serde_json hands the string's raw bytes (no UTF-8 pass)
+/// - Non-hex byte = hex error
 pub(crate) struct HexBytes(pub(crate) Vec<u8>);
 
 impl<'de> serde::Deserialize<'de> for HexBytes {
@@ -129,8 +129,10 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
     }
 }
 
-/// `getblockchaininfo`: tip, estimate, each known upgrade's activation height (keyed by branch
-/// id; an id this build does not know = skipped); every other field ignored
+/// `getblockchaininfo`: tip, estimate, each known upgrade's activation height (keyed by branch id)
+///
+/// - Branch id unknown to this build = skipped
+/// - Every other field ignored
 pub(crate) fn parse_blockchain_info(
     value: &serde_json::Value,
 ) -> Result<BlockchainInfo, ParseError> {
@@ -152,8 +154,9 @@ pub(crate) fn parse_blockchain_info(
     Ok(BlockchainInfo { tip, estimated_height, activations })
 }
 
-/// Entries accepted from one `getrawmempool` (a ZIP-401 node holds ~8k; this only trips on a
-/// hostile node, before a million raw-transaction fetches follow)
+/// Entries accepted from one `getrawmempool` (ZIP-401 node holds ~8k)
+///
+/// - Trips only on a hostile node, before a million raw-transaction fetches follow
 const MAX_MEMPOOL_LISTING_ENTRIES: usize = 1_000_000;
 
 /// `getrawmempool true` (`{txid: {fee, ..}}`), refused on its count before any entry is decoded
@@ -195,8 +198,9 @@ fn as_zec(value: &serde_json::Value) -> Result<Zatoshis, ParseError> {
     Zatoshis::from_u64(zats as u64).map_err(|_| ParseError::Zec(zec))
 }
 
-/// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best
-/// chain; any other negative refused (undefined, never folded into side chain)
+/// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best chain
+///
+/// - Any other negative refused (undefined, never folded into side chain)
 pub(crate) fn parse_transaction(
     value: &serde_json::Value,
 ) -> Result<TransactionResponse, ParseError> {
@@ -299,7 +303,8 @@ mod tests {
 
     /// Zebra's verbose listing (`fee` = lossy `f64` ZEC)
     ///
-    /// - key reversed → txid; fee → exact zatoshis (ZIP-317 minimum, sub-zat noise, whole supply)
+    /// - key reversed → txid
+    /// - fee → exact zatoshis (ZIP-317 minimum, sub-zat noise, whole supply)
     /// - `size` = encoded length
     /// - refused: negative / past-supply fee, missing fee or size, size past `u32`, over-cap
     ///   listing
@@ -402,8 +407,11 @@ mod tests {
         assert!(location(json!({ "hex": "00", "height": -7 })).is_err());
     }
 
-    /// zebrad 6.4.2's shapes: mainnet → halt height; other networks → omitted; release before
-    /// `getdeprecationinfo` → unknown (never read as "no halt")
+    /// zebrad 6.4.2's shapes
+    ///
+    /// - mainnet → halt height
+    /// - other networks → omitted
+    /// - release before `getdeprecationinfo` → unknown (never read as "no halt")
     #[test]
     fn a_release_reads_its_build_and_where_it_halts() {
         let info = json!({

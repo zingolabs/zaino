@@ -2,9 +2,9 @@
 //! listings, block `inv`s, pushes) and the balancer's [`PeerTransport`] (the peer set = one
 //! member: headers + block bodies)
 //!
-//! - started in the background (seeds dialled + crawled: seconds); boot never waits on it, and
-//!   until it is up the view hears no peer, every submission relays through a trusted validator
-//!   and every ask of the peer set fails (`Connection`)
+//! - started in the background (seeds dialled + crawled: seconds), boot never waits on it
+//! - until up: view hears no peer, every submission relays through a trusted validator, every
+//!   ask of the peer set fails (`Connection`)
 
 use std::future::Future;
 use std::net::SocketAddr;

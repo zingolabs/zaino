@@ -90,7 +90,7 @@ impl Phase {
     }
 }
 
-/// Until `cancel`; each tick's blocks/s over the last two in `rate`
+/// Until `cancel`, each tick's blocks/s over the last two in `rate`
 pub(crate) async fn run(
     grpc_snapshots: GrpcSnapshots<DiskView>,
     progress: SyncProgress,
@@ -226,7 +226,7 @@ pub(crate) fn disk_bytes(path: &Path) -> io::Result<u64> {
 mod tests {
     use super::*;
 
-    /// Every file counted, nested included; missing directory = error
+    /// Every file counted, nested included (missing directory = error)
     #[test]
     fn disk_bytes_sums_every_file_under_the_directory() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -240,9 +240,8 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
-    /// Finalized blocks first (handed, else the lowest durable tip), then the window up to best;
-    /// the us-west-1 restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the
-    /// window
+    /// - Finalized blocks first (handed, else the lowest durable tip), then the window up to best
+    /// - us-west-1 restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the window
     #[test]
     fn the_phase_is_finalized_blocks_then_the_non_finalized_window_then_nothing() {
         use zaino_primitives::types::BlockRef;

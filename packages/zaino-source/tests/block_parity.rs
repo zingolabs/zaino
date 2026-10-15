@@ -1,8 +1,8 @@
 //! Canned zebrad blocks through both clients → decoded block = block-explorer data
 //!
 //! - `tests/fixtures/block_<height>.hex` = zebrad's `getblock <height> 0` hex
-//! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC; `ZebraIndexerGrpcClient` = the same
-//!   bytes over the indexer's `GetBlock` / `GetBlockRange`
+//! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC
+//! - `ZebraIndexerGrpcClient` = same bytes over the indexer's `GetBlock` / `GetBlockRange`
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -185,8 +185,9 @@ fn answer(call: &serde_json::Value, fixtures: &HashMap<String, String>) -> serde
 type Blocks = Pin<Box<dyn Stream<Item = Result<BlockAndHash, Status>> + Send>>;
 
 /// zebrad's indexer over the fixtures: `GetBlock` by hash, `GetBlockRange` by height (each range
-/// recorded); a height past the fixtures = `NOT_FOUND` mid-stream, as zebrad ends a range at its
-/// tip
+/// recorded)
+///
+/// - Height past the fixtures = `NOT_FOUND` mid-stream (as zebrad ends a range at its tip)
 struct FakeIndexer {
     by_height: HashMap<u32, Vec<u8>>,
     by_hash: HashMap<[u8; 32], Vec<u8>>,
@@ -260,7 +261,7 @@ impl Indexer for FakeIndexer {
     }
 }
 
-/// Each fixture through `client` = the explorer's facts; by height = by hash
+/// Each fixture through `client` = the explorer's facts (by height = by hash)
 async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
     for expected in FIXTURES {
         let height = BlockHeight::from(expected.height);
@@ -316,8 +317,9 @@ async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
 }
 
 /// - Both clients: every fixture = the explorer's facts (one decoder, two transports)
-/// - gRPC: heights cut into one `GetBlockRange` per consecutive run, blocks in asked order; a
-///   height past the indexer's tip = `HeightNotFound` for it; undecodable bytes = `Parse`
+/// - gRPC: heights cut into one `GetBlockRange` per consecutive run, blocks in asked order
+/// - Height past the indexer's tip = `HeightNotFound` for it
+/// - Undecodable bytes = `Parse`
 #[tokio::test]
 async fn both_clients_decode_every_block_to_the_explorers_facts() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");

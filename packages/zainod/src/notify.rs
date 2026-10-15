@@ -1,9 +1,11 @@
-//! systemd start notifications (`Type=notify`); no-ops unless systemd set `NOTIFY_SOCKET`
+//! systemd start notifications (`Type=notify`)
 //!
+//! - No-ops unless systemd set `NOTIFY_SOCKET`
 //! - `READY=1` the first time `/readyz` passes (or the node is held): the start job lasts until
 //!   serving at the tip, then nothing more is sent
-//! - not ready yet: `EXTEND_TIMEOUT_USEC` per tick that saw progress (past `TimeoutStartSec`,
-//!   [`STALL_WINDOW`] without progress = failed start; a slow but moving one never fails)
+//! - not ready yet: `EXTEND_TIMEOUT_USEC` per tick that saw progress
+//! - past `TimeoutStartSec`: [`STALL_WINDOW`] without progress = failed start (slow but moving
+//!   start never fails)
 
 use std::{sync::Arc, time::Duration};
 

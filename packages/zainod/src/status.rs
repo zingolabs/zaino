@@ -24,7 +24,8 @@ use crate::egress::Egress;
 /// One process's status: config facts, then what each stage sets as it starts
 ///
 /// - `retire` = the operator hold (`hold.rs` sets it, the gRPC service reads it from boot)
-/// - `sources` set once the pipeline boots (`provisioning` until then); a second set panics
+/// - `sources` set once the pipeline boots (`provisioning` until then)
+/// - Second `sources` set panics
 pub(crate) struct DaemonStatus {
     network: NetworkType,
     configured: Vec<IndexKind>,
@@ -47,7 +48,7 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set; first match: held, not booted, runtime stalled, the `GrpcSnapshot`'s [`Standing`]
+/// Closed set, first match wins: held, not booted, runtime stalled, `GrpcSnapshot`'s [`Standing`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DaemonState {
@@ -205,7 +206,7 @@ impl DaemonStatus {
         self.heartbeat.beat();
     }
 
-    /// Serving runtime still scheduling (`/livez`; stale = `down`, "Runtime stalled")
+    /// Serving runtime still scheduling (`/livez`, stale = `down`, "Runtime stalled")
     pub(crate) fn live(&self) -> bool {
         self.heartbeat.live()
     }
@@ -259,7 +260,8 @@ impl DaemonStatus {
         }
     }
 
-    /// Booted: handed + served heights + every index's durable one; before: bootstrap phase + bytes
+    /// - Booted: handed + served heights + every index's durable one
+    /// - Before boot: bootstrap phase + bytes
     pub(crate) fn startup(&self) -> Startup {
         let readiness = self.current_readiness();
         let started = readiness.ready() || readiness.state == DaemonState::Held;
@@ -321,9 +323,9 @@ impl zaino_grpc::Health for DaemonStatus {
 
 /// Archive bootstrap progress, written by [`crate::bootstrap`] before the indexer boots
 ///
-/// - `source` = archive host; `indexes` archives fetched, `total` = Σ their bytes
-/// - `phase` = slowest archive's, `done` = its bytes (archives past it whole); `rate` = bytes/s
-///   (`downloading` only)
+/// - `source` = archive host, `indexes` archives fetched, `total` = Σ their bytes
+/// - `phase` = slowest archive's, `done` = its bytes (archives past it whole)
+/// - `rate` = bytes/s (`downloading` only)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bootstrap {
     pub(crate) phase: Phase,
@@ -474,9 +476,10 @@ pub(crate) struct Startup {
 mod tests {
     use super::*;
 
-    /// Every state rule, first match wins, as `/status` serializes it; across all of them
-    /// `ready` ⇔ serving or degraded, `detail` only when down, degraded or held, `progress` only
-    /// provisioning or syncing
+    /// Every state rule, first match wins, as `/status` serializes it
+    ///
+    /// - Across all: `ready` ⇔ serving or degraded, `detail` only when down, degraded or held
+    /// - `progress` only provisioning or syncing
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
         let stage = |standing, overloaded, target: Option<u32>, rate: Option<f64>| {
@@ -676,9 +679,11 @@ mod tests {
         }
     }
 
-    /// Public `/status`, field by field: before boot (chain facts `null`), then booted with a
-    /// tip, one of two validators answering, an egress window and `GetLightdInfo`; never a
-    /// validator address, peer, disk or mempool
+    /// Public `/status`, field by field
+    ///
+    /// - Before boot (chain facts `null`), then booted with a tip, one of two validators
+    ///   answering, an egress window and `GetLightdInfo`
+    /// - Never a validator address, peer, disk or mempool
     #[test]
     fn the_public_status_projects_readiness_and_counts_only() {
         let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];

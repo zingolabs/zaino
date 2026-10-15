@@ -1,7 +1,8 @@
 //! One simulated zebrad ([`MockValidator`]) over a [`MockChain`]'s blocks, answering
 //! [`ChainDataSource`] as zebrad does, plus what a test scripts (latency, failures, lies, verdicts)
 //!
-//! - best chain only, by height and hash; nothing above its tip; upgrades from the chain's schedule
+//! - best chain only, by height and hash (nothing above its tip)
+//! - upgrades from the chain's schedule
 //! - N nodes over one `MockChain` = N validators (`chain.validator(tip)`), each `follow`ing its tip
 //! - own mempool = entries of the chain's it `hear`s + sends, each admitted on its own tip
 
@@ -36,9 +37,11 @@ pub async fn within<T>(what: &str, waited: impl std::future::Future<Output = T>)
     }
 }
 
-/// How `get_block_by_hash` / `get_block_by_height` misanswer (each caught by a body check):
+/// How `get_block_by_hash` / `get_block_by_height` misanswer (each caught by a body check)
+///
 /// - `WrongBlock` = the asked block re-mined under another nonce
-/// - `Poisoned` = asked header + one extra transaction; `Mutated` = last tx repeated (CVE-2012-2459)
+/// - `Poisoned` = asked header + one extra transaction
+/// - `Mutated` = last tx repeated (CVE-2012-2459)
 /// - `WrongHeight` = the asked block labelled one height up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lie {
@@ -87,7 +90,7 @@ pub struct Calls {
 
 /// [`MockValidator`]s on a [`MockChain`]
 pub trait ValidatorViews {
-    /// Best chain = genesis ..= `tip`; reachable, accepting, mempool empty, no latency
+    /// Best chain = genesis ..= `tip`, reachable, accepting, mempool empty, no latency
     fn validator(&self, tip: BlockRef) -> MockValidator;
 
     /// `getblockchaininfo` with `tip` as the validator's best
@@ -227,7 +230,9 @@ impl MockValidator {
     }
 
     /// `sendrawtransaction` + `checkadmission` verdict (default `Ok`: the fee its bytes leave over
-    /// the best; only a send lists it)
+    /// the best)
+    ///
+    /// - Only a send lists it
     pub fn relay(&self, verdict: Result<(), SendRawTransactionError>) {
         self.state().relay = verdict;
     }
@@ -547,9 +552,10 @@ pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TxId, Vec<u8>) {
     v4(lock_time, expiry, None)
 }
 
-/// Real v4 transaction spending `spends`, paying `pays` in vout order; no shielded bundles
+/// Real v4 transaction spending `spends`, paying `pays` in vout order (no shielded bundles)
 ///
-/// - empty script sigs (nothing here verifies a signature); distinct per `spends`
+/// - empty script sigs (nothing here verifies a signature)
+/// - distinct per `spends`
 pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TxId, Vec<u8>) {
     use zcash_transparent::bundle::{Authorized, Bundle, TxIn, TxOut};
     let vin =

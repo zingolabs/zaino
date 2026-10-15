@@ -1,8 +1,8 @@
 //! zainod daemon config: the one operator surface
 //!
-//! - A table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
-//!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`]); the rest translated
-//!   at boot ([`crate::indexer::start_indexer`])
+//! - Table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
+//!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`])
+//! - Rest translated at boot ([`crate::indexer::start_indexer`])
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
 use std::net::SocketAddr;
@@ -27,7 +27,7 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::error::IndexerError;
 
-/// TOML spelling of [`NetworkType`] (no serde impls upstream; `mainnet`, not `Main`)
+/// TOML spelling of [`NetworkType`] (`mainnet`, not `Main`, no serde impls upstream)
 #[derive(Deserialize, Serialize)]
 #[serde(remote = "NetworkType", rename_all = "lowercase")]
 enum NetworkDef {
@@ -56,7 +56,9 @@ pub(crate) const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 "#;
 
 /// Zebra JSON-RPC endpoint Zaino trusts: headers for the verified chain, mempool admission (with
-/// fees), mined-transaction lookups; no vote (`priority` = who is asked first)
+/// fees), mined-transaction lookups
+///
+/// - No vote (`priority` = who is asked first)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct TrustedValidatorConfig {
@@ -140,8 +142,9 @@ impl TrustedValidatorConfig {
     }
 }
 
-/// One enabled index, resolved: its directory + the shared `[sync]` queue budget (boot's input;
-/// its write buffer = the index crate's `WRITE_BUFFER`)
+/// Enabled index, resolved: its directory + the shared `[sync]` queue budget (boot's input)
+///
+/// - Write buffer = the index crate's `WRITE_BUFFER`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexConfig {
     pub(crate) path: PathBuf,
@@ -151,7 +154,8 @@ pub(crate) struct IndexConfig {
 /// `[index.*]`: which indexes this daemon builds and serves, one directory each
 ///
 /// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and utxo_set)
-/// - defaults name every path (`generate-config` prints them); a table without one = `None`
+/// - defaults name every path (`generate-config` prints them)
+/// - table without one = `None`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct Indexes {
@@ -174,7 +178,7 @@ impl Default for Indexes {
     }
 }
 
-/// One `[index.<name>]` table (`path` created if absent; `None` = `<cache dir>/zaino/indexes/<name>`)
+/// `[index.<name>]` table (`path` created if absent, `None` = `<cache dir>/zaino/indexes/<name>`)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 struct IndexTable {
@@ -303,7 +307,8 @@ pub(crate) struct MetricsConfig {
 
 /// Empty index ← published index snapshot (`aria2c` on PATH)
 ///
-/// - Only a missing or empty directory filled; one holding data never touched
+/// - Only a missing or empty directory filled
+/// - Directory holding data never touched
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct IndexSnapshotConfig {
@@ -352,7 +357,7 @@ pub(crate) struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            // Mainnet = the deployment target; testnet/regtest operators declare theirs
+            // Mainnet = the deployment target (testnet/regtest operators declare theirs)
             network: NetworkType::Main,
             // every validator speaks it (zcashd has no indexer gRPC)
             validator_client: ValidatorClient::LegacyRpc,
@@ -370,7 +375,7 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// `kind`'s directory + the `[sync]` budgets; `None` = disabled
+    /// `kind`'s directory + the `[sync]` budgets (`None` = disabled)
     ///
     /// - utxo_set = compact_block's fee index: on with it, `utxo_set` beside its `path`
     pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
@@ -513,7 +518,7 @@ impl DaemonConfig {
             return;
         };
         // - Public bind publishes chain tip, sync progress, request volumes, RSS
-        // - Warn, not reject (read-only telemetry; containers bind 0.0.0.0 by norm)
+        // - Warn, not reject (read-only telemetry, containers bind 0.0.0.0 by norm)
         if !is_private_listen_addr(&endpoint) {
             tracing::warn!(
                 %endpoint,
@@ -907,7 +912,9 @@ path = "/tmp/zaino-compact-block"
         assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
     }
 
-    /// Stop grace → the gRPC server's drain; hold delay → the hold; trusted proxies parsed
+    /// - Stop grace → the gRPC server's drain
+    /// - Hold delay → the hold
+    /// - Trusted proxies parsed
     #[test]
     fn stop_grace_hold_delay_and_proxies_reach_the_server_and_the_hold() {
         let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml);
@@ -952,7 +959,7 @@ path = "/tmp/zaino-compact-block"
         assert!(toml::from_str::<DaemonConfig>(r#"network = "main""#).is_err());
     }
 
-    /// Default = `legacy_rpc` (every validator speaks it); `grpc` only when asked
+    /// Default = `legacy_rpc` (every validator speaks it), `grpc` only when asked
     #[test]
     fn validator_client_defaults_to_legacy_rpc_and_grpc_is_opt_in() {
         let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).validator_client;

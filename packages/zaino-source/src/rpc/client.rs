@@ -52,8 +52,8 @@ impl ResponseSizeCap {
     }
 }
 
-/// - `read` = silence, never total duration (a multi-MB block over a slow link must finish; a
-///   total deadline below its transfer time = retry livelock)
+/// - `read` = silence, never total duration (multi-MB block over a slow link must finish)
+/// - Total deadline below a block's transfer time = retry livelock
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Duration,
@@ -91,7 +91,8 @@ impl Default for LinkLimits {
     }
 }
 
-/// `name` = metric label (the validator's configured address); `auth` = basic (user, password)
+/// - `name` = metric label (the validator's configured address)
+/// - `auth` = basic (user, password)
 pub(crate) struct RpcClientConfig {
     pub(crate) url: String,
     pub(crate) name: String,
@@ -171,8 +172,9 @@ impl RpcClient {
         settled
     }
 
-    /// `calls` in one HTTP request, one outcome per item (call order); `Err` = whole batch failed
+    /// `calls` in one HTTP request, one outcome per item (call order)
     ///
+    /// - `Err` = whole batch failed
     /// - metric `method` = the calls' one method, or `batch` when mixed
     pub(crate) async fn call_batch<T: DeserializeOwned>(
         &self,
@@ -213,9 +215,9 @@ impl RpcClient {
         self.read_body_capped(response).await
     }
 
-    /// Chunk-wise (never allocates an oversized body; a lying `Content-Length` is caught by the
-    /// running total)
+    /// Chunk-wise (never allocates an oversized body)
     ///
+    /// - Lying `Content-Length` caught by the running total
     /// - each chunk [`received`](Self::received) as read (pacing, not after-the-fact accounting)
     async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<Vec<u8>, RpcError> {
         let max = self.response_size_cap.bytes();
@@ -282,7 +284,7 @@ mod tests {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let url = format!("http://{}", listener.local_addr().expect("bound"));
-        // "x" → "a"; "y" → busy; "z" → not found
+        // "x" → "a", "y" → busy, "z" → not found
         let validator = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
             let mut request = Vec::new();
