@@ -1,8 +1,19 @@
 # `zainod` — usage
 
-The daemon binary: its admin listener and states, operator hold, systemd, index snapshot,
+The daemon binary: its validator client, admin listener and states, operator hold, systemd, index snapshot,
 offline disk check, failure policy and logging. Configuration, running the daemon and network
 exposure are in [`docs/running.md`](../../docs/running.md).
+
+## Validator client
+
+`validator_client` picks one client type for every `[[trusted_validators]]` entry:
+
+- `legacy_rpc` (default): JSON-RPC for everything, zebrad or zcashd.
+- `grpc`: blocks over zebrad's indexer gRPC (`GetBlock`, `GetBlockRange` at each entry's
+  `indexer_address`), everything else over JSON-RPC. `GetBlockRange` exists only in Zaino's
+  zebra fork (`elicbarbieri/zebra` `perf/indexer-block-range`). An entry without
+  `indexer_address` fails boot before anything binds. Client detail:
+  [zaino-source](../zaino-source/usage.md).
 
 ## The admin listener
 
@@ -46,7 +57,8 @@ moments.
   the network itself, so zainod reports `syncing` until a holder lists its mempool.
 - `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
   validator reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or
-  `Overloaded` (a degraded node only ever shows one of the first two).
+  `Overloaded` (a degraded node only ever shows one of the first two). When `held` it names the
+  drain: `GOAWAY pending` or `GOAWAY sent`.
 - `Overloaded` is a backstop for a node persistently over capacity: admission already sheds
   bursts within seconds, and this only takes the node out of a load balancer. It follows the gRPC
   work pool's `overloaded` flag (thresholds in
@@ -75,18 +87,21 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
 - `hold` writes the marker `<[serve] state_dir>/held` (default `<data dir>/zaino/state`),
   synced to disk with its directory. `resume` removes it. There is no network endpoint, so
   holding a node requires write access to its state directory.
-- The running zainod checks the marker every second. Held:
-  - `state` becomes `held`: `/readyz` answers `503` and `detail` is `null`.
+- The running zainod checks the marker every second, from process start (before the
+  index-snapshot bootstrap and before the gRPC listener binds). Held:
+  - `state` becomes `held`: `/readyz` answers `503` with `detail` `GOAWAY pending`, then
+    `GOAWAY sent` once the delay below has passed.
   - It outranks every other state. A held node that is overloaded or has lost its validators
     still reports `held`, and so does a held node stopping, so a planned stop's last answer
     before exit is `held`.
-  - After `[serve] hold_goaway_delay_secs` (default 0), every open gRPC connection gets a
-    GOAWAY, and its in-flight streams get `max_connection_age_grace`. Set the delay to at least
-    the time your load balancer takes to mark a server down, plus its DNS TTL.
-  - The process keeps running and answering `/readyz`, `/status` and the admin listener. New
-    connections are still served.
+  - `[serve] hold_goaway_delay_secs` (default 0) after the hold was seen, every gRPC connection
+    gets a GOAWAY, and its in-flight streams get `max_connection_age_grace`. That covers
+    connections open then and every connection accepted while still held (each GOAWAY'd at
+    once). Set the delay to at least the time your load balancer takes to mark a server down,
+    plus its DNS TTL.
+  - The process keeps running and answering `/readyz`, `/status` and the admin listener.
 - On resume, the state returns to normal evaluation, so a node that fell behind while held
-  reports `syncing` first.
+  reports `syncing` first. A hold, resume and hold again counts the delay from the last hold.
 - A stopped or killed zainod is never reported `held`, only absent. A dashboard can therefore
   tell a planned removal (last report `held`) from a crash.
 - Under systemd, a node that starts held finishes its start job (`READY=1`) instead of waiting
@@ -95,12 +110,14 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
   - stdout: `held` or `resumed`.
   - stderr: what changed (`hold marker written`, `already held`, `hold marker removed`,
     `was not held`).
-  - stderr, when `[metrics] listen_address` is set: the state the running zainod reports
+  - `resume`, when `[metrics] listen_address` is set: the state the running zainod reports
     within 5 s, or that none answered (the marker applies when it next starts).
-  - `hold` then blocks until a running zainod has sent its GOAWAYs: the marker's write time,
-    plus the 1 s poll, plus `hold_goaway_delay_secs`, plus 1 s of slack. A marker written long
-    ago returns at once. It skips the wait only when `[metrics] listen_address` is set and
-    nothing answered there (no zainod running).
+  - `hold`, when `[metrics] listen_address` is set: blocks until the running zainod's `/readyz`
+    reports `GOAWAY sent` (at most 1 s poll + `hold_goaway_delay_secs` + 1 s + 5 s), then
+    `safe to stop`; or names the state it saw instead, or that none answered.
+  - `hold` without one: blocks for the longest a running zainod can take to send its GOAWAYs
+    (1 s poll + `hold_goaway_delay_secs` + 1 s), counted from the command, so an old marker or
+    a zainod restarted since it was written never cuts the wait short.
   - Exit 0 once the marker matches the command (both commands are idempotent), 1 when the
     config or state directory could not be read or written.
 

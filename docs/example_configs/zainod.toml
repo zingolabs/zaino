@@ -11,8 +11,9 @@ network = "testnet"
 
 # How zainod talks to every [[trusted_validators]] entry (default legacy_rpc)
 # - legacy_rpc = JSON-RPC for everything (zebrad or zcashd); blocks arrive as hex inside JSON
-# - grpc = blocks over zebrad's indexer gRPC as stored bytes (no hex, no JSON; needs each
-#   validator's indexer_address and a zebrad serving GetBlockRange), everything else over JSON-RPC
+# - grpc = blocks over zebrad's indexer gRPC (GetBlock, GetBlockRange) as stored bytes, no hex
+#   or JSON; everything else over JSON-RPC. Needs each validator's indexer_address and a zebrad
+#   serving GetBlockRange: Zaino's zebra fork only (elicbarbieri/zebra perf/indexer-block-range)
 # validator_client = "grpc"
 
 # Admin listener (/metrics, /livez, /readyz). Omit listen_address to disable.

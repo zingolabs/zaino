@@ -16,6 +16,7 @@ testing = ["zaino-primitives/testing"]
 [dependencies]
 futures.workspace = true
 metrics.workspace = true
+serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tokio-util.workspace = true
 tracing.workspace = true

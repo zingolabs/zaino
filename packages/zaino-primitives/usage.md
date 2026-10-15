@@ -4,7 +4,7 @@ Zaino's domain vocabulary: Zcash chain types in Zaino's own terms, independent
 of how they are transported or stored. Every other Zaino crate that needs a
 height, hash, block or amount depends on this one.
 
-## Dependencies: `thiserror`, `sha2`, `uint` and librustzcash's light crates only
+## Dependencies: `thiserror`, `sha2`, `uint`, `serde` and librustzcash's light crates only
 
 Anything added here lands in every crate above it. `zcash_protocol`,
 `zcash_transparent` and `zcash_script` carry the protocol types Zaino takes as-is
@@ -13,8 +13,11 @@ Anything added here lands in every crate above it. `zcash_protocol`,
 `sha256d`: block hashes (`HeaderBytes::hash`) and `MerkleRoot::of_txids`, the
 consensus merkle root a block's transactions must rebuild (the NFS's body
 check, and the chain builder's headers); `uint` for the 256-bit `Target`
-arithmetic (zebra's own U256). In particular there is no serde:
-formats are owned by the boundary that speaks them.
+arithmetic (zebra's own U256). No domain type implements serde: formats are owned
+by the boundary that speaks them. `serde` is here for `serde_secs` only: the
+`#[serde(with = …)]` adapters every crate whose config type is a zainod table uses
+for its whole-second `*_secs` keys (`any`, `nonzero`, `zero_is_never` = 0 means
+`None`).
 
 | Direction | Owner |
 |---|---|

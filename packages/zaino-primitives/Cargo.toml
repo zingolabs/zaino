@@ -14,6 +14,7 @@ license.workspace = true
 testing = []
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10"
 thiserror = { workspace = true }
 uint = "0.9"
@@ -25,3 +26,6 @@ zcash_transparent.workspace = true
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
+
+[dev-dependencies]
+toml.workspace = true

@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 pub mod display;
 pub mod protocol;
+pub mod serde_secs;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod types;

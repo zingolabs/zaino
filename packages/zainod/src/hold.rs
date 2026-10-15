@@ -3,8 +3,8 @@
 //! - marker `<serve.state_dir>/held` = the hold (survives restart, deploy, reboot; a stopped
 //!   zainod is never held, only absent)
 //! - the running zainod polls it every second (`POLL`): held = state `held` (outranks every
-//!   other), then after `[serve] hold_goaway_delay_secs` every open gRPC connection GOAWAY'd;
-//!   resume = normal evaluation again
+//!   other), then after `[serve] hold_goaway_delay_secs` every gRPC connection, open or accepted
+//!   later, GOAWAY'd ([`zaino_grpc::Retire`]); resume = normal evaluation again
 //! - only drain before a stop (a SIGTERM alone closes the listener at once): `zainod hold`
 //!   returns once the GOAWAYs went out
 //! - no write endpoint: holding takes the state dir, not network reach to the admin listener
@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::status::DaemonStatus;
+use crate::status::{DaemonStatus, GOAWAY_SENT};
 
 /// Marker check cadence (a `zainod hold` lands within this)
 const POLL: Duration = Duration::from_secs(1);
@@ -34,14 +34,14 @@ pub(crate) enum Action {
     ///
     /// Writes a marker in `[serve] state_dir`. The running zainod picks it up within a second:
     /// its state becomes `held` (`/readyz` 503), and after `[serve] hold_goaway_delay_secs` every
-    /// open gRPC connection is sent GOAWAY. It keeps answering health and admin requests. A
-    /// stopped zainod is never reported held. Hold before stopping a node behind a load balancer:
-    /// a shutdown signal alone closes the listener at once.
+    /// gRPC connection, open or opened later, is sent GOAWAY. It keeps answering health and admin
+    /// requests. A stopped zainod is never reported held. Hold before stopping a node behind a
+    /// load balancer: a shutdown signal alone closes the listener at once.
     ///
-    /// Prints `held`, then on stderr what changed and, when `[metrics] listen_address` is set,
-    /// the state the running zainod reports. Then waits until a running zainod has sent its
-    /// GOAWAYs. Exits 0 once the marker is in place (holding twice is a no-op), 1 when the config
-    /// or state directory could not be read or written.
+    /// Prints `held`, then on stderr what changed. With `[metrics] listen_address` set, waits
+    /// until the running zainod reports its GOAWAYs sent; without it, waits as long as a running
+    /// zainod can take to send them. Exits 0 once the marker is in place (holding twice is a
+    /// no-op), 1 when the config or state directory could not be read or written.
     Hold,
     /// Undo `zainod hold`: back to syncing or serving as the indexes dictate.
     ///
@@ -92,7 +92,7 @@ fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
 }
 
 /// `zainod hold` / `zainod resume`: prints the resulting state; `Ok` = the marker says what was
-/// asked (hold: and a running zainod's connections GOAWAY'd)
+/// asked (hold: and a running zainod's connections GOAWAY'd, or the longest that can take waited)
 pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
     let config = crate::config::load_config(config_path)?;
     let state_dir = &config.serve.state_dir;
@@ -106,63 +106,79 @@ pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ho
     };
     println!("{state}");
     eprintln!("{note}: {}", state_dir.join(MARKER).display());
-    let held = action == Action::Hold;
-    let maybe_running = match config.metrics.listen_address {
-        Some(admin) => match confirm(admin, held) {
-            Some(running) => {
-                eprintln!("zainod at {admin} reports {running}");
-                true
+    let goaway_by = goaway_bound(config.serve.hold_goaway_delay);
+    match (action, config.metrics.listen_address) {
+        (Action::Resume, Some(admin)) => {
+            match confirm(admin, CONFIRM_WITHIN, |r| r.state != "held") {
+                Some(running) => eprintln!("zainod at {admin} reports {}", running.state),
+                None => eprintln!("no zainod answering at {admin}: applies when it next starts"),
             }
-            None => {
-                eprintln!("no zainod answering at {admin}: applies when it next starts");
-                false
-            }
-        },
-        None => {
+        }
+        (Action::Resume, None) => {
             eprintln!(
-                "no [metrics] listen_address to confirm on: a running zainod applies it within 1 s"
+                "no [metrics] listen_address to confirm on: a running zainod resumes within 1 s"
+            )
+        }
+        (Action::Hold, Some(admin)) => {
+            let sent = |running: &Readyz| running.detail.as_deref() == Some(GOAWAY_SENT);
+            match confirm(admin, goaway_by + CONFIRM_WITHIN, sent) {
+                Some(running) if sent(&running) => eprintln!(
+                    "zainod at {admin} reports held, every gRPC connection sent GOAWAY: safe to stop"
+                ),
+                Some(running) => eprintln!(
+                    "zainod at {admin} reports {} ({}): GOAWAY not confirmed",
+                    running.state,
+                    running.detail.as_deref().unwrap_or("no detail")
+                ),
+                None => eprintln!("no zainod answering at {admin}: applies when it next starts"),
+            }
+        }
+        (Action::Hold, None) => {
+            eprintln!(
+                "no [metrics] listen_address to confirm on: waiting {}s, the longest a running \
+                 zainod takes to GOAWAY every gRPC connection",
+                goaway_by.as_secs()
             );
-            true
+            std::thread::sleep(goaway_by);
+            eprintln!("a running zainod has sent every gRPC connection GOAWAY: safe to stop");
         }
-    };
-    if held && maybe_running {
-        let goaway_by =
-            goaway_deadline(state_dir, config.serve.hold_goaway_delay()).map_err(marker_failed)?;
-        if let Ok(remaining) = goaway_by.duration_since(std::time::SystemTime::now()) {
-            eprintln!("waiting {}s for open gRPC connections' GOAWAY", remaining.as_secs());
-            std::thread::sleep(remaining);
-        }
-        eprintln!("open gRPC connections sent GOAWAY: safe to stop");
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// When a running zainod has GOAWAY'd every connection under this hold: marker written + its poll
-/// + `delay` (+ one more poll for scheduling slack); an old marker = already past
-fn goaway_deadline(state_dir: &Path, delay: Duration) -> io::Result<std::time::SystemTime> {
-    let written = std::fs::metadata(state_dir.join(MARKER))?.modified()?;
-    Ok(written + POLL + delay + POLL)
+/// Longest from now until any running zainod has GOAWAY'd under the hold: it reads the marker
+/// within a [`POLL`] (written now, or read at its own start), sends `delay` later (+ a poll of
+/// scheduling slack)
+fn goaway_bound(delay: Duration) -> Duration {
+    POLL + delay + POLL
 }
 
-/// The running zainod's `/readyz` state once it matches `held` (or the last one seen after
-/// [`CONFIRM_WITHIN`]); `None` = nothing answering
-fn confirm(admin: SocketAddr, held: bool) -> Option<String> {
+/// `/readyz` as `zainod hold` / `resume` read it
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+struct Readyz {
+    state: String,
+    detail: Option<String>,
+}
+
+/// The running zainod's `/readyz` once `done` (or the last one seen after `within`); `None` =
+/// nothing answering
+fn confirm(admin: SocketAddr, within: Duration, done: impl Fn(&Readyz) -> bool) -> Option<Readyz> {
     let admin = match admin.ip().is_unspecified() {
         true => SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), admin.port()),
         false => admin,
     };
-    let deadline = std::time::Instant::now() + CONFIRM_WITHIN;
+    let deadline = std::time::Instant::now() + within;
     loop {
-        let state = readyz_state(admin)?;
-        if (state == "held") == held || std::time::Instant::now() >= deadline {
-            return Some(state);
+        let running = readyz(admin)?;
+        if done(&running) || std::time::Instant::now() >= deadline {
+            return Some(running);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
 }
 
-/// One `GET /readyz` over plain HTTP/1.1: its `state`
-fn readyz_state(admin: SocketAddr) -> Option<String> {
+/// One `GET /readyz` over plain HTTP/1.1
+fn readyz(admin: SocketAddr) -> Option<Readyz> {
     use std::io::{Read as _, Write as _};
 
     let mut stream = std::net::TcpStream::connect_timeout(&admin, Duration::from_secs(1)).ok()?;
@@ -172,11 +188,11 @@ fn readyz_state(admin: SocketAddr) -> Option<String> {
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
     let body = response.split("\r\n\r\n").nth(1)?;
-    let readiness: serde_json::Value = serde_json::from_str(body).ok()?;
-    readiness["state"].as_str().map(str::to_owned)
+    serde_json::from_str(body).ok()
 }
 
-/// For the process's life: the marker every [`POLL`] (unreadable = last state kept, warned)
+/// For the process's life: the marker every [`POLL`] → the status's hold (unreadable = last
+/// state kept, warned)
 pub(crate) fn spawn(status: Arc<DaemonStatus>, state_dir: PathBuf, drain_delay: Duration) {
     tokio::spawn(async move {
         let marker = state_dir.join(MARKER);
@@ -195,20 +211,13 @@ pub(crate) fn spawn(status: Arc<DaemonStatus>, state_dir: PathBuf, drain_delay: 
                 continue;
             }
             held = now;
-            status.hold(held);
-            if !held {
+            if held {
+                status.retire().hold(drain_delay);
+                warn!(delay = ?drain_delay, "Held by operator: /readyz 503, GOAWAY after the delay");
+            } else {
+                status.retire().resume();
                 info!("Resumed by operator");
-                continue;
             }
-            warn!(delay = ?drain_delay, "Held by operator: /readyz 503 until `zainod resume`");
-            let status = Arc::clone(&status);
-            tokio::spawn(async move {
-                tokio::time::sleep(drain_delay).await;
-                if let (true, Some(retire)) = (status.held(), status.retire()) {
-                    retire.retire_all();
-                    info!("Held: every open gRPC connection sent GOAWAY");
-                }
-            });
         }
     });
 }
@@ -234,14 +243,39 @@ mod tests {
             assert_eq!(apply(&state_dir, action).expect("applies"), changed, "step {step}");
             assert_eq!(state_dir.join(MARKER).exists(), marked, "step {step}: marker");
         }
+    }
 
-        // GOAWAY deadline = the marker's write time + its poll + the delay + slack; none unheld
+    /// A running zainod (paused clock, delay 155 s) with a marker already there at start:
+    /// - held from its first poll: `/readyz` held + "GOAWAY pending", then "GOAWAY sent" by the
+    ///   CLI's bound from that moment (the marker's age never shortens it)
+    /// - marker removed: resumed within a poll, the hold off
+    #[tokio::test(start_paused = true)]
+    async fn a_marker_holds_a_running_zainod_and_its_goaways_land_within_the_cli_bound() {
         let delay = Duration::from_secs(155);
-        assert!(goaway_deadline(&state_dir, delay).is_err(), "deadline without a marker");
+        let root = tempfile::tempdir().expect("tempdir");
+        let state_dir = root.path().join("state");
         apply(&state_dir, Action::Hold).expect("holds");
-        let written = std::fs::metadata(state_dir.join(MARKER)).and_then(|m| m.modified());
-        let deadline = goaway_deadline(&state_dir, delay).expect("marker readable");
-        let after = deadline.duration_since(written.expect("mtime")).expect("deadline after write");
-        assert_eq!(after, delay + POLL + POLL);
+        let status = Arc::new(DaemonStatus::new(zcash_protocol::consensus::NetworkType::Main, []));
+        let readyz = |status: &DaemonStatus| {
+            let body = status.readiness_json().1;
+            serde_json::from_str::<Readyz>(&body).expect("readyz body")
+        };
+        let read = |status: &DaemonStatus| {
+            let readyz = readyz(status);
+            (readyz.state, readyz.detail)
+        };
+
+        spawn(Arc::clone(&status), state_dir.clone(), delay);
+        tokio::time::sleep(POLL).await;
+        let pending = (String::from("held"), Some(String::from("GOAWAY pending")));
+        assert_eq!(read(&status), pending, "held at the first poll");
+        tokio::time::sleep(goaway_bound(delay) - POLL).await;
+        let sent = (String::from("held"), Some(GOAWAY_SENT.to_owned()));
+        assert_eq!(read(&status), sent, "GOAWAY by the CLI's bound");
+
+        apply(&state_dir, Action::Resume).expect("resumes");
+        tokio::time::sleep(POLL).await;
+        assert_eq!(status.retire().state(), zaino_grpc::Hold::Off, "resumed within a poll");
+        assert_ne!(readyz(&status).state, "held");
     }
 }

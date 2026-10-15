@@ -41,7 +41,7 @@ metrics = { workspace = true }
 zaino-chainview.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 ppp = "2.3"
-ipnet = "2.12"
+ipnet = { version = "2.12", features = ["serde"] }
 socket2 = { version = "0.6", features = ["all"] }
 tracing.workspace = true
 hyper-util = { workspace = true, features = ["http2", "server", "server-auto", "server-graceful", "service", "tokio"] }

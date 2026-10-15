@@ -19,6 +19,7 @@ fastrand = "2"
 futures.workspace = true
 imbl.workspace = true
 metrics.workspace = true
+serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-util.workspace = true

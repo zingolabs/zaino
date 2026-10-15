@@ -36,7 +36,7 @@ fn blockchain_info_reports_the_tip_and_reads_back_as_the_chains_schedule() {
     let info = chain.blockchain_info(chain.at(h(4)));
     assert_eq!((info.tip, info.estimated_height), (chain.at(h(4)), h(4)));
     assert_eq!(info.activations.len(), 11, "every scheduled upgrade, NU7 included");
-    assert_eq!(info.schedule(), Some(chain.schedule().upgrades));
+    assert_eq!(info.schedule(), Ok(chain.schedule().upgrades));
 }
 
 #[tokio::test]

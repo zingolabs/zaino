@@ -18,7 +18,7 @@ mod rpc;
 mod standard_fee;
 mod zebra_indexer;
 
-pub use blockchain_info::BlockchainInfo;
+pub use blockchain_info::{BlockchainInfo, ScheduleError};
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZebraIndexerGrpcClient;

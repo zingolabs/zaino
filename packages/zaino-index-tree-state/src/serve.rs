@@ -19,11 +19,13 @@ pub struct PoolActivations {
 
 impl PoolActivations {
     /// Sapling, NU5 (orchard), NU6.3 (ironwood)
+    ///
+    /// - Sapling = invariant: compiled schedules + `BlockchainInfo::schedule` (refuses one without)
     pub fn new(schedule: &LocalNetwork) -> Self {
         Self {
             sapling: schedule
                 .activation_height(NetworkUpgrade::Sapling)
-                .expect("every schedule activates Sapling (compiled tables, getblockchaininfo)"),
+                .expect("served schedule activates Sapling (refused at boot otherwise)"),
             orchard: schedule.activation_height(NetworkUpgrade::Nu5),
             ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
         }

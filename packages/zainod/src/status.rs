@@ -11,6 +11,7 @@ use std::sync::{
 
 use serde::Serialize;
 use tokio::sync::watch;
+use zaino_grpc::{Hold, Retire};
 use zaino_grpc_snapshot::{Down, GrpcSnapshot, GrpcSnapshots, Standing};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_sync::SyncProgress;
@@ -22,16 +23,15 @@ use crate::egress::Egress;
 
 /// One process's status: config facts, then what each stage sets as it starts
 ///
-/// - `retire` set once the gRPC service exists, `sources` once the pipeline boots (`provisioning`
-///   until then); a second set of either panics
+/// - `retire` = the operator hold (`hold.rs` sets it, the gRPC service reads it from boot)
+/// - `sources` set once the pipeline boots (`provisioning` until then); a second set panics
 pub(crate) struct DaemonStatus {
     network: NetworkType,
     configured: Vec<IndexKind>,
     heartbeat: Heartbeat,
-    held: AtomicBool,
+    retire: Retire,
     awaiting_validator: AtomicBool,
     bootstrap: std::sync::Mutex<Option<Bootstrap>>,
-    retire: OnceLock<zaino_grpc::Retire>,
     sources: OnceLock<Sources>,
 }
 
@@ -77,8 +77,8 @@ enum Unit {
 
 /// Head of `/status` (`/readyz` = `state` + `detail`)
 ///
-/// - `detail` only when `down` or `degraded`, `progress` only while provisioning or syncing,
-///   `notes` = raised alarms
+/// - `detail` only when `down`, `degraded` or `held` (its GOAWAYs), `progress` only while
+///   provisioning or syncing, `notes` = raised alarms
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Readiness {
     state: DaemonState,
@@ -98,6 +98,12 @@ const RUNTIME_STALLED: &str = "Runtime stalled";
 
 /// `zaino_grpc::AdmissionReport::overloaded`
 const OVERLOADED: &str = "Overloaded";
+
+/// Held, `hold_goaway_delay_secs` not yet passed
+const GOAWAY_PENDING: &str = "GOAWAY pending";
+
+/// Held past the delay: every connection, open or new, GOAWAY'd (`zainod hold` waits for this)
+pub(crate) const GOAWAY_SENT: &str = "GOAWAY sent";
 
 /// Where the process is: before boot (index-snapshot bootstrap, first validator answer) or booted
 enum Stage {
@@ -133,14 +139,19 @@ impl Booted {
 }
 
 /// Pure: the state rules over the hold + heartbeat + stage (held > the rest)
-fn readiness(held: bool, live: bool, stage: Stage) -> Readiness {
+fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
     let at = |state, progress, detail, notes| Readiness { state, progress, detail, notes };
-    if held {
+    let goaway = match hold {
+        Hold::Off => None,
+        Hold::Draining => Some(GOAWAY_PENDING),
+        Hold::Drained => Some(GOAWAY_SENT),
+    };
+    if let Some(goaway) = goaway {
         let notes = match stage {
             Stage::Booted(booted) => booted.notes,
             Stage::Starting { .. } => Vec::new(),
         };
-        return at(DaemonState::Held, None, None, notes);
+        return at(DaemonState::Held, None, Some(goaway), notes);
     }
     match (live, stage) {
         (false, Stage::Booted(booted)) => {
@@ -183,10 +194,9 @@ impl DaemonStatus {
             network,
             configured: configured.into_iter().collect(),
             heartbeat: Heartbeat::default(),
-            held: AtomicBool::new(false),
+            retire: Retire::default(),
             awaiting_validator: AtomicBool::new(false),
             bootstrap: std::sync::Mutex::new(None),
-            retire: OnceLock::new(),
             sources: OnceLock::new(),
         }
     }
@@ -200,27 +210,15 @@ impl DaemonStatus {
         self.heartbeat.live()
     }
 
-    /// Operator hold (`hold.rs`, from its marker): `held` above every other state
-    pub(crate) fn hold(&self, held: bool) {
-        self.held.store(held, Ordering::Relaxed);
-    }
-
-    pub(crate) fn held(&self) -> bool {
-        self.held.load(Ordering::Relaxed)
+    /// Operator hold (`hold.rs`, from its marker): `held` above every other state, and the gRPC
+    /// service's GOAWAYs
+    pub(crate) fn retire(&self) -> &Retire {
+        &self.retire
     }
 
     /// Boot waiting on its first validator answer (the upgrade schedule): `down`, not `provisioning`
     pub(crate) fn awaiting_validator(&self, awaiting: bool) {
         self.awaiting_validator.store(awaiting, Ordering::Relaxed);
-    }
-
-    pub(crate) fn serving(&self, retire: zaino_grpc::Retire) {
-        assert!(self.retire.set(retire).is_ok(), "one gRPC service per process");
-    }
-
-    /// `None` = no gRPC service yet (a hold before boot has no connection to retire)
-    pub(crate) fn retire(&self) -> Option<&zaino_grpc::Retire> {
-        self.retire.get()
     }
 
     pub(crate) fn publish(&self, sources: Sources) {
@@ -235,7 +233,7 @@ impl DaemonStatus {
                 awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
             },
         };
-        readiness(self.held(), self.live(), stage)
+        readiness(self.retire.state(), self.live(), stage)
     }
 
     /// `/readyz`: `(ready, {"state", "detail"})`
@@ -477,7 +475,7 @@ mod tests {
     use super::*;
 
     /// Every state rule, first match wins, as `/status` serializes it; across all of them
-    /// `ready` ⇔ serving or degraded, `detail` only when down or degraded, `progress` only
+    /// `ready` ⇔ serving or degraded, `detail` only when down, degraded or held, `progress` only
     /// provisioning or syncing
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
@@ -606,7 +604,12 @@ mod tests {
                 "bootstrap downloading",
                 true,
                 starting(
-                    Some(Progress { done: 4 << 30, total: 9 << 30, unit: Unit::Byte, rate: Some(5e7) }),
+                    Some(Progress {
+                        done: 4 << 30,
+                        total: 9 << 30,
+                        unit: Unit::Byte,
+                        rate: Some(5e7),
+                    }),
                     false,
                 ),
                 serde_json::json!({
@@ -616,7 +619,7 @@ mod tests {
             ),
         ];
         for (case, live, stage, expected) in cases {
-            let readiness = readiness(false, live, stage);
+            let readiness = readiness(Hold::Off, live, stage);
             let state = readiness.state;
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
             let serving = matches!(state, DaemonState::Serving | DaemonState::Degraded);
@@ -627,37 +630,47 @@ mod tests {
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
 
-        // held: the operator's intent over every condition, notes kept
-        let held = |notes| serde_json::json!({ "state": "held", "progress": null, "detail": null, "notes": notes });
+        // held: the operator's intent over every condition, notes kept, detail = its GOAWAYs
+        let held = |detail, notes| serde_json::json!({ "state": "held", "progress": null, "detail": detail, "notes": notes });
         let held_cases = [
             (
                 "held while serving",
+                Hold::Draining,
                 true,
                 booted(Standing::Serving, None, None),
-                held(stale.clone()),
+                held("GOAWAY pending", stale.clone()),
             ),
-            ("held while overloaded", true, overloaded(unreachable), held(stale.clone())),
+            (
+                "held while overloaded",
+                Hold::Drained,
+                true,
+                overloaded(unreachable),
+                held("GOAWAY sent", stale.clone()),
+            ),
             (
                 "held while degraded",
+                Hold::Drained,
                 true,
                 booted(Standing::Degraded(Down::NoValidatorReachable), None, None),
-                held(stale.clone()),
+                held("GOAWAY sent", stale.clone()),
             ),
             (
                 "held with a stalled runtime",
+                Hold::Draining,
                 false,
                 booted(Standing::Syncing, None, None),
-                held(stale.clone()),
+                held("GOAWAY pending", stale.clone()),
             ),
             (
                 "held while booting, no validator",
+                Hold::Drained,
                 true,
                 starting(None, true),
-                held(serde_json::json!([])),
+                held("GOAWAY sent", serde_json::json!([])),
             ),
         ];
-        for (case, live, stage, expected) in held_cases {
-            let readiness = readiness(true, live, stage);
+        for (case, hold, live, stage, expected) in held_cases {
+            let readiness = readiness(hold, live, stage);
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
             assert!(!readiness.ready(), "{case}: never ready");
         }
@@ -670,7 +683,7 @@ mod tests {
     fn the_public_status_projects_readiness_and_counts_only() {
         let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
         let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
-        let readiness = |stage| readiness(false, true, stage);
+        let readiness = |stage| readiness(Hold::Off, true, stage);
         let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 5 });
         let version = env!("CARGO_PKG_VERSION");
 

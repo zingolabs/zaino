@@ -1,7 +1,8 @@
 //! zainod daemon config: the one operator surface
 //!
-//! - Runtime crates ([`zaino_sync`], [`zaino_grpc`], source adapters) take typed params, no config
-//!   (→ [`crate::indexer::start_indexer`] translates at boot)
+//! - A table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
+//!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`]); the rest translated
+//!   at boot ([`crate::indexer::start_indexer`])
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
 use std::net::SocketAddr;
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use zaino_chainview::SubmitPolicy;
 use zaino_grpc::{GrpcLimits, TlsFiles};
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,9 @@ use tracing::info;
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
 use zaino_persistence::{manifest_fits, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
-use zaino_source::{ResponseSizeCap, ZebraIndexerTls};
+use zaino_primitives::serde_secs;
+use zaino_source::{LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
+use zaino_traffic::{Limits, TrustedValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::error::IndexerError;
@@ -60,11 +64,13 @@ pub(crate) struct TrustedValidatorConfig {
     pub(crate) cookie_path: Option<PathBuf>,
     pub(crate) user: Option<String>,
     pub(crate) password: Option<String>,
-    pub(crate) connect_timeout_secs: NonZeroU64,
+    #[serde(rename = "connect_timeout_secs", with = "serde_secs::nonzero")]
+    pub(crate) connect_timeout: Duration,
     /// Silence, not total duration (a multi-MB block over a slow link takes as long as it takes)
-    pub(crate) read_timeout_secs: NonZeroU64,
-    /// >= 5: poll + one per lane + one shared (zebrad admits 100 across every instance)
-    pub(crate) max_connections: NonZeroU32,
+    #[serde(rename = "read_timeout_secs", with = "serde_secs::nonzero")]
+    pub(crate) read_timeout: Duration,
+    /// The balancer's budget = the transport's pool (>= 5: poll + one per lane + one shared)
+    pub(crate) max_connections: Limits,
     /// Unset = unlimited (set for a remote/shared validator)
     pub(crate) max_mib_per_sec: Option<NonZeroU32>,
     /// Largest JSON-RPC reply read: 4 (one full block) ..= 32 (batches split to fit)
@@ -79,17 +85,17 @@ pub(crate) struct TrustedValidatorConfig {
 
 impl Default for TrustedValidatorConfig {
     fn default() -> Self {
-        let limits = zaino_source::LinkLimits::default();
+        let timeouts = Timeouts::default();
         Self {
             jsonrpc_address: "127.0.0.1:8232".to_string(),
             cookie_path: None,
             user: None,
             password: None,
-            connect_timeout_secs: const { whole_secs(zaino_source::Timeouts::DEFAULT.connect) },
-            read_timeout_secs: const { whole_secs(zaino_source::Timeouts::DEFAULT.read) },
-            max_connections: limits.max_connections,
+            connect_timeout: timeouts.connect,
+            read_timeout: timeouts.read,
+            max_connections: Limits::default(),
             max_mib_per_sec: None,
-            max_response_mib: ResponseMib(limits.response_size_cap),
+            max_response_mib: ResponseMib(LinkLimits::default().response_size_cap),
             indexer_address: None,
             indexer_tls: None,
             priority: 0,
@@ -106,7 +112,8 @@ impl TryFrom<u32> for ResponseMib {
     type Error = String;
 
     fn try_from(mib: u32) -> Result<Self, String> {
-        let cap = ResponseSizeCap::new((mib as usize) << 20);
+        let bytes = NonZeroU32::new(mib).and_then(|mib| usize::try_from(bytes(mib).get()).ok());
+        let cap = bytes.and_then(ResponseSizeCap::new);
         cap.map(Self).ok_or_else(|| format!("max_response_mib = {mib}: must be 4 ..= 32"))
     }
 }
@@ -118,30 +125,18 @@ impl From<ResponseMib> for u32 {
 }
 
 impl TrustedValidatorConfig {
-    /// The balancer's budget; `None` = `max_connections` below
-    /// [`Limits::MIN_CONNECTIONS`](zaino_traffic::Limits) (refused by [`DaemonConfig::validate`])
-    pub(crate) fn limits(&self) -> Option<zaino_traffic::Limits> {
-        zaino_traffic::Limits::new(self.max_connections.get())
-    }
-
     /// The transport's: connection pool + response bytes paced as read
-    pub(crate) fn link(&self) -> zaino_source::LinkLimits {
-        let mib = const { NonZeroU32::new(1 << 20).expect("2^20 is non-zero") };
-        let max_bytes_per_sec = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
-        zaino_source::LinkLimits {
-            max_connections: self.max_connections,
-            max_bytes_per_sec,
+    pub(crate) fn link(&self) -> LinkLimits {
+        let per_sec = |mib| NonZeroU32::try_from(bytes(mib)).unwrap_or(NonZeroU32::MAX);
+        LinkLimits {
+            max_connections: self.max_connections.max_connections(),
+            max_bytes_per_sec: self.max_mib_per_sec.map(per_sec),
             response_size_cap: self.max_response_mib.0,
         }
     }
-}
 
-impl From<&TrustedValidatorConfig> for zaino_source::Timeouts {
-    fn from(config: &TrustedValidatorConfig) -> Self {
-        Self {
-            connect: Duration::from_secs(config.connect_timeout_secs.get()),
-            read: Duration::from_secs(config.read_timeout_secs.get()),
-        }
+    pub(crate) fn timeouts(&self) -> Timeouts {
+        Timeouts { connect: self.connect_timeout, read: self.read_timeout }
     }
 }
 
@@ -156,8 +151,9 @@ pub(crate) struct IndexConfig {
 /// `[index.*]`: which indexes this daemon builds and serves, one directory each
 ///
 /// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and utxo_set)
+/// - defaults name every path (`generate-config` prints them); a table without one = `None`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(from = "IndexesToml")]
+#[serde(deny_unknown_fields, default)]
 pub(crate) struct Indexes {
     compact_block: IndexTable,
     block_hash: IndexTable,
@@ -167,69 +163,36 @@ pub(crate) struct Indexes {
 
 impl Default for Indexes {
     fn default() -> Self {
-        IndexesToml::default().into()
+        let table =
+            |kind| IndexTable { path: Some(crate::paths::default_index(kind)), enabled: true };
+        Self {
+            compact_block: table(IndexKind::CompactBlock),
+            block_hash: table(IndexKind::BlockHash),
+            tree_state: table(IndexKind::TreeState),
+            transparent_address: table(IndexKind::TransparentAddress),
+        }
     }
 }
 
-/// One `[index.<name>]` table (`path` created if absent)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One `[index.<name>]` table (`path` created if absent; `None` = `<cache dir>/zaino/indexes/<name>`)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
 struct IndexTable {
     /// Off = its methods answer `UNIMPLEMENTED`
-    enabled: bool,
-    path: PathBuf,
-}
-
-/// `[index.*]` as written (omitted `path` = `<cache dir>/zaino/indexes/<kind.name()>`)
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-struct IndexesToml {
-    compact_block: IndexTableToml,
-    block_hash: IndexTableToml,
-    tree_state: IndexTableToml,
-    transparent_address: IndexTableToml,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, default)]
-struct IndexTableToml {
     enabled: bool,
     path: Option<PathBuf>,
 }
 
-impl Default for IndexTableToml {
+impl Default for IndexTable {
     fn default() -> Self {
         Self { enabled: true, path: None }
     }
 }
 
-impl IndexTableToml {
-    fn resolve(self, kind: IndexKind) -> IndexTable {
-        let path = self.path.unwrap_or_else(|| crate::paths::default_index(kind));
-        IndexTable { enabled: self.enabled, path }
-    }
-}
-
-impl From<IndexesToml> for Indexes {
-    fn from(toml: IndexesToml) -> Self {
-        Self {
-            compact_block: toml.compact_block.resolve(IndexKind::CompactBlock),
-            block_hash: toml.block_hash.resolve(IndexKind::BlockHash),
-            tree_state: toml.tree_state.resolve(IndexKind::TreeState),
-            transparent_address: toml.transparent_address.resolve(IndexKind::TransparentAddress),
-        }
-    }
-}
-
-/// A MiB knob in bytes (saturating: past `usize` = no limit anyway)
-fn mib(value: NonZeroU32) -> NonZeroUsize {
-    let mib = const { NonZeroUsize::new(1 << 20).expect("2^20 is non-zero") };
-    NonZeroUsize::try_from(value).map_or(NonZeroUsize::MAX, |value| value.saturating_mul(mib))
-}
-
-/// A config default in whole, non-zero seconds (anything else = a compile error)
-const fn whole_secs(duration: Duration) -> NonZeroU64 {
-    assert!(duration.subsec_nanos() == 0, "a config default is whole seconds");
-    NonZeroU64::new(duration.as_secs()).expect("a config default is non-zero")
+/// A MiB knob in bytes
+fn bytes(mib: NonZeroU32) -> NonZeroU64 {
+    let mib_bytes = const { NonZeroU64::new(1 << 20).expect("2^20 is non-zero") };
+    NonZeroU64::from(mib).saturating_mul(mib_bytes)
 }
 
 /// Wallet-facing gRPC server
@@ -245,7 +208,8 @@ pub(crate) struct ServeConfig {
     /// Kept across restarts (`zainod hold` writes its marker here)
     pub(crate) state_dir: PathBuf,
     /// >= load balancer's mark-down time + DNS TTL
-    pub(crate) hold_goaway_delay_secs: u64,
+    #[serde(rename = "hold_goaway_delay_secs", with = "serde_secs::any")]
+    pub(crate) hold_goaway_delay: Duration,
 }
 
 impl Default for ServeConfig {
@@ -255,106 +219,9 @@ impl Default for ServeConfig {
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
             tls: None,
             state_dir: crate::paths::default_state(),
-            hold_goaway_delay_secs: 0,
+            hold_goaway_delay: Duration::ZERO,
         }
     }
-}
-
-impl ServeConfig {
-    pub(crate) fn hold_goaway_delay(&self) -> std::time::Duration {
-        Duration::from_secs(self.hold_goaway_delay_secs)
-    }
-}
-
-/// gRPC caps: refuse, never queue (over a cap: connection closed at accept, stream `UNAVAILABLE`
-/// + retry hint; read lanes excepted: a read waits for its lane's permit)
-///
-/// - Omitted key = `zaino_grpc::GrpcLimits::default()`'s value
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub(crate) struct GrpcConfig {
-    /// One fd each (must fit the open-file limit, else zainod refuses to start)
-    pub(crate) max_connections: NonZeroUsize,
-    /// Client = peer address, or the PROXY header's behind a `trusted_proxies` entry
-    pub(crate) max_connections_per_ip: NonZeroUsize,
-    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` (every stream, health included)
-    pub(crate) max_streams_per_connection: NonZeroU32,
-    /// Every method but `GetMempoolStream`, across all connections
-    pub(crate) max_work_streams: NonZeroUsize,
-    /// `GetMempoolStream`, apart from `max_work_streams` (idle until the next block)
-    pub(crate) max_subscriptions: NonZeroUsize,
-    /// Block, tree state, subtree roots on the blocking pool (warm = CPU-bound: ~core count)
-    pub(crate) max_point_reads: NonZeroUsize,
-    /// `GetBlockRange` windows, <= 1 MiB each (= device queue depth)
-    pub(crate) max_range_reads: NonZeroUsize,
-    /// Transparent-address history scans (few: each walks a whole history)
-    pub(crate) max_scan_reads: NonZeroUsize,
-    /// Data its client leaves unread this long → connection closed
-    pub(crate) unread_timeout_secs: NonZeroU64,
-    /// Nothing to send this long → stream `UNAVAILABLE` (`GetMempoolStream` exempt)
-    pub(crate) silent_timeout_secs: NonZeroU64,
-    /// 0 = never (±10% each, then GOAWAY → client reconnects + re-resolves DNS, gRPC A9)
-    pub(crate) max_connection_age_secs: u64,
-    pub(crate) max_connection_age_grace_secs: u64,
-    /// 0 = never (no open stream that long → GOAWAY, per-client slot freed)
-    pub(crate) max_connection_idle_secs: u64,
-    /// Gradient2 limit under `max_work_streams` (`false` = always `max_work_streams`)
-    pub(crate) adaptive_work_streams: bool,
-    /// Each connection from one opens with a PROXY v1/v2 header (none = closed, empty = no proxy)
-    pub(crate) trusted_proxies: Vec<ipnet::IpNet>,
-    /// After SIGTERM / SIGINT (idle `GetMempoolStream` dropped at the deadline)
-    pub(crate) shutdown_grace_secs: u64,
-}
-
-impl Default for GrpcConfig {
-    fn default() -> Self {
-        let limits = GrpcLimits::default();
-        Self {
-            max_connections: limits.max_connections,
-            max_connections_per_ip: limits.max_connections_per_ip,
-            max_streams_per_connection: limits.max_streams_per_connection,
-            max_work_streams: limits.max_work_streams,
-            max_subscriptions: limits.max_subscriptions,
-            max_point_reads: limits.max_point_reads,
-            max_range_reads: limits.max_range_reads,
-            max_scan_reads: limits.max_scan_reads,
-            unread_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.unread_timeout) },
-            silent_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.silent_timeout) },
-            max_connection_age_secs: limits.max_connection_age.map_or(0, |age| age.as_secs()),
-            max_connection_age_grace_secs: limits.max_connection_age_grace.as_secs(),
-            max_connection_idle_secs: limits.max_connection_idle.map_or(0, |idle| idle.as_secs()),
-            adaptive_work_streams: limits.adaptive_work_streams,
-            trusted_proxies: Vec::new(),
-            shutdown_grace_secs: limits.drain_timeout.as_secs(),
-        }
-    }
-}
-
-impl From<&GrpcConfig> for GrpcLimits {
-    fn from(config: &GrpcConfig) -> Self {
-        Self {
-            max_connections: config.max_connections,
-            max_connections_per_ip: config.max_connections_per_ip,
-            max_streams_per_connection: config.max_streams_per_connection,
-            max_work_streams: config.max_work_streams,
-            max_subscriptions: config.max_subscriptions,
-            max_point_reads: config.max_point_reads,
-            max_range_reads: config.max_range_reads,
-            max_scan_reads: config.max_scan_reads,
-            unread_timeout: Duration::from_secs(config.unread_timeout_secs.get()),
-            silent_timeout: Duration::from_secs(config.silent_timeout_secs.get()),
-            drain_timeout: Duration::from_secs(config.shutdown_grace_secs),
-            max_connection_age: secs_or_never(config.max_connection_age_secs),
-            max_connection_age_grace: Duration::from_secs(config.max_connection_age_grace_secs),
-            max_connection_idle: secs_or_never(config.max_connection_idle_secs),
-            adaptive_work_streams: config.adaptive_work_streams,
-        }
-    }
-}
-
-/// 0 = `None` (never)
-fn secs_or_never(secs: u64) -> Option<std::time::Duration> {
-    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// `[sync]`: the one block-fetch pipeline + the budgets every index shares
@@ -384,18 +251,6 @@ impl Default for SyncConfig {
             lsm_store: LsmConfig::default(),
         }
     }
-}
-
-/// `SendTransaction` → network: a trusted `checkadmission` first, then one relay per attempt
-/// (through the peers with `[p2p]` on, else a random trusted validator), again when not spread in
-/// time
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub(crate) struct SubmissionConfig {
-    /// Unseen beyond the nodes relayed to this long → relay again
-    pub(crate) propagation_threshold_secs: NonZeroU64,
-    /// With peers: then one trusted validator relays it, when still unspread
-    pub(crate) max_attempts: std::num::NonZeroU8,
 }
 
 /// Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their word
@@ -434,27 +289,6 @@ impl P2pConfig {
             initial_peers: (!self.initial_peers.is_empty()).then(|| self.initial_peers.clone()),
             cache_dir: Some(self.cache_dir.clone()),
             ..zaino_peers::PeerConfig::new(network)
-        }
-    }
-}
-
-impl Default for SubmissionConfig {
-    fn default() -> Self {
-        let policy = zaino_chainview::SubmitPolicy::default();
-        Self {
-            propagation_threshold_secs: const {
-                whole_secs(zaino_chainview::SubmitPolicy::DEFAULT.propagation_threshold)
-            },
-            max_attempts: policy.max_attempts,
-        }
-    }
-}
-
-impl From<&SubmissionConfig> for zaino_chainview::SubmitPolicy {
-    fn from(config: &SubmissionConfig) -> Self {
-        Self {
-            propagation_threshold: Duration::from_secs(config.propagation_threshold_secs.get()),
-            max_attempts: config.max_attempts,
         }
     }
 }
@@ -506,8 +340,8 @@ pub(crate) struct DaemonConfig {
     /// >= 1 (two = first set surviving a failure)
     pub(crate) trusted_validators: Vec<TrustedValidatorConfig>,
     pub(crate) serve: ServeConfig,
-    pub(crate) grpc: GrpcConfig,
-    pub(crate) submission: SubmissionConfig,
+    pub(crate) grpc: GrpcLimits,
+    pub(crate) submission: SubmitPolicy,
     pub(crate) p2p: P2pConfig,
     pub(crate) sync: SyncConfig,
     pub(crate) index: Indexes,
@@ -525,8 +359,8 @@ impl Default for DaemonConfig {
             metrics: MetricsConfig::default(),
             trusted_validators: vec![TrustedValidatorConfig::default()],
             serve: ServeConfig::default(),
-            grpc: GrpcConfig::default(),
-            submission: SubmissionConfig::default(),
+            grpc: GrpcLimits::default(),
+            submission: SubmitPolicy::default(),
             p2p: P2pConfig::default(),
             sync: SyncConfig::default(),
             index: Indexes::default(),
@@ -541,18 +375,24 @@ impl DaemonConfig {
     /// - utxo_set = compact_block's fee index: on with it, `utxo_set` beside its `path`
     pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
         let index = &self.index;
-        let table = |table: &IndexTable| (table.enabled, table.path.clone());
-        let (enabled, path) = match kind {
-            IndexKind::CompactBlock => table(&index.compact_block),
-            IndexKind::UtxoSet => {
-                let compact_block = &index.compact_block;
-                (compact_block.enabled, compact_block.path.with_file_name(kind.name()))
-            }
-            IndexKind::BlockHash => table(&index.block_hash),
-            IndexKind::TreeState => table(&index.tree_state),
-            IndexKind::TransparentAddress => table(&index.transparent_address),
+        let table = |table: &IndexTable, of: IndexKind| {
+            let path = table.path.clone().unwrap_or_else(|| crate::paths::default_index(of));
+            (table.enabled, path)
         };
-        enabled.then(|| IndexConfig { path, queue_bytes: mib(self.sync.queue_mib) })
+        let (enabled, path) = match kind {
+            IndexKind::CompactBlock => table(&index.compact_block, kind),
+            IndexKind::UtxoSet => {
+                let (enabled, beside) = table(&index.compact_block, IndexKind::CompactBlock);
+                (enabled, beside.with_file_name(kind.name()))
+            }
+            IndexKind::BlockHash => table(&index.block_hash, kind),
+            IndexKind::TreeState => table(&index.tree_state, kind),
+            IndexKind::TransparentAddress => table(&index.transparent_address, kind),
+        };
+        // past `usize` = no limit anyway
+        let queue_bytes = NonZeroUsize::try_from(bytes(self.sync.queue_mib));
+        let queue_bytes = queue_bytes.unwrap_or(NonZeroUsize::MAX);
+        enabled.then_some(IndexConfig { path, queue_bytes })
     }
 
     /// `(compact_block, utxo_set)` when compact_block is enabled (its fees need the other)
@@ -607,22 +447,21 @@ impl DaemonConfig {
     }
 
     fn validate_validators(&self) -> Result<(), IndexerError> {
-        if self.trusted_validators.is_empty() {
+        let count = self.trusted_validators.len();
+        if count == 0 {
             return Err(IndexerError::Config(
                 "no [[trusted_validators]]: at least one validator is needed".to_string(),
             ));
         }
+        if count > TrustedValidatorId::MAX {
+            return Err(IndexerError::Config(format!(
+                "{count} [[trusted_validators]]: at most {} are supported",
+                TrustedValidatorId::MAX
+            )));
+        }
         let mut addresses = std::collections::HashSet::new();
         for validator in &self.trusted_validators {
             let address = &validator.jsonrpc_address;
-            if validator.limits().is_none() {
-                return Err(IndexerError::Config(format!(
-                    "[[trusted_validators]] {address}: max_connections = {} is below {} (one for \
-                     the poll, one reserved per lane + one shared)",
-                    validator.max_connections,
-                    zaino_traffic::Limits::MIN_CONNECTIONS
-                )));
-            }
             if !addresses.insert(address) {
                 return Err(IndexerError::Config(format!(
                     "[[trusted_validators]] lists {address} twice: one validator counted as two"
@@ -631,13 +470,6 @@ impl DaemonConfig {
             if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
                 return Err(IndexerError::Config(format!(
                     "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
-                )));
-            }
-            if self.validator_client == ValidatorClient::Grpc && validator.indexer_address.is_none()
-            {
-                return Err(IndexerError::Config(format!(
-                    "validator_client = \"grpc\" but [[trusted_validators]] {address} has no \
-                     indexer_address (zebrad's indexer_listen_addr)"
                 )));
             }
         }
@@ -820,7 +652,15 @@ enabled = false
     #[test]
     fn validate_refuses_every_config_no_pipeline_composes_from() {
         type Edit = fn(&mut DaemonConfig);
-        let cases: [(&str, Edit, Option<&str>); 18] = [
+        fn validators(count: u16) -> Vec<TrustedValidatorConfig> {
+            let at = |port| format!("10.0.0.1:{port}");
+            let validator = |port| TrustedValidatorConfig {
+                jsonrpc_address: at(port),
+                ..TrustedValidatorConfig::default()
+            };
+            (0..count).map(validator).collect()
+        }
+        let cases: [(&str, Edit, Option<&str>); 17] = [
             ("defaults", |_| {}, None),
             (
                 "fanout whose segment lists outgrow a manifest slot",
@@ -844,7 +684,7 @@ enabled = false
             ),
             (
                 "no sibling for utxo_set",
-                |c| c.index.compact_block.path = "/".into(),
+                |c| c.index.compact_block.path = Some("/".into()),
                 Some("index.compact_block.path = /"),
             ),
             (
@@ -875,9 +715,14 @@ enabled = false
                 Some("lists 127.0.0.1:8232 twice"),
             ),
             (
-                "fewer connections than poll + lanes + 1",
-                |c| c.trusted_validators[0].max_connections = NonZeroU32::new(4).expect("4"),
-                Some("max_connections = 4 is below 5"),
+                "64 validators, the balancer's every member id",
+                |c| c.trusted_validators = validators(64),
+                None,
+            ),
+            (
+                "65 validators, past TrustedValidatorId::MAX",
+                |c| c.trusted_validators = validators(65),
+                Some("65 [[trusted_validators]]: at most 64 are supported"),
             ),
             (
                 "indexer TLS with no indexer",
@@ -890,19 +735,6 @@ enabled = false
                     })
                 },
                 Some("sets indexer_tls but no indexer_address"),
-            ),
-            (
-                "grpc client, validator without an indexer",
-                |c| c.validator_client = ValidatorClient::Grpc,
-                Some("127.0.0.1:8232 has no indexer_address"),
-            ),
-            (
-                "grpc client, every indexer set",
-                |c| {
-                    c.validator_client = ValidatorClient::Grpc;
-                    c.trusted_validators[0].indexer_address = Some("127.0.0.1:8230".to_owned());
-                },
-                None,
             ),
             (
                 "p2p with fewer peers than lanes",
@@ -1027,8 +859,6 @@ enabled = false
     /// - Zero refused at parse time (else it serves nothing)
     #[test]
     fn grpc_caps_default_per_field_and_reject_a_zero() {
-        assert_eq!(GrpcLimits::from(&GrpcConfig::default()), GrpcLimits::default());
-
         let partial: DaemonConfig = toml::from_str(
             r#"
 [grpc]
@@ -1042,14 +872,13 @@ path = "/tmp/zaino-compact-block"
         )
         .expect("deserialise");
         let max_work_streams = NonZeroUsize::new(64).expect("64 is non-zero");
-        let limits = GrpcLimits::from(&partial.grpc);
         let expected = GrpcLimits {
             max_work_streams,
             unread_timeout: Duration::from_secs(30),
             silent_timeout: Duration::from_secs(45),
             ..GrpcLimits::default()
         };
-        assert_eq!(limits, expected, "what the server is bounded by is what was parsed");
+        assert_eq!(partial.grpc, expected, "what the server is bounded by is what was parsed");
 
         for zeroed in [
             "max_point_reads",
@@ -1067,7 +896,7 @@ path = "/tmp/zaino-compact-block"
              max_connection_idle_secs = 120\nadaptive_work_streams = false\n",
         )
         .expect("deserialise");
-        let limits = GrpcLimits::from(&lifetime.grpc);
+        let limits = &lifetime.grpc;
         let secs = std::time::Duration::from_secs;
         let parsed = (
             limits.max_connection_age,
@@ -1078,20 +907,26 @@ path = "/tmp/zaino-compact-block"
         assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
     }
 
-    /// Stop grace → the gRPC server's drain; hold delay → the hold
+    /// Stop grace → the gRPC server's drain; hold delay → the hold; trusted proxies parsed
     #[test]
-    fn stop_grace_and_hold_delay_reach_the_server_and_the_hold() {
+    fn stop_grace_hold_delay_and_proxies_reach_the_server_and_the_hold() {
         let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml);
         let secs = std::time::Duration::from_secs;
 
         let defaults = parse("");
-        let set =
-            parse("[serve]\nhold_goaway_delay_secs = 155\n[grpc]\nshutdown_grace_secs = 600\n");
-        let read = |config: &DaemonConfig| {
-            (GrpcLimits::from(&config.grpc).drain_timeout, config.serve.hold_goaway_delay())
-        };
+        let set = parse(
+            "[serve]\nhold_goaway_delay_secs = 155\n[grpc]\nshutdown_grace_secs = 600\n\
+             trusted_proxies = [\"10.0.0.0/8\"]\n",
+        );
+        let read =
+            |config: &DaemonConfig| (config.grpc.drain_timeout, config.serve.hold_goaway_delay);
         assert_eq!(read(&defaults), (secs(10), secs(0)), "defaults");
         assert_eq!(read(&set), (secs(600), secs(155)), "set");
+        let proxies = zaino_grpc::TrustedProxies::new(vec!["10.0.0.0/8".parse().expect("net")]);
+        assert_eq!(
+            (&defaults.grpc.trusted_proxies, &set.grpc.trusted_proxies),
+            (&Default::default(), &proxies)
+        );
     }
 
     /// Declared chain: every spelling round-trips, default mainnet, `regtest` its own value (the
@@ -1115,6 +950,17 @@ path = "/tmp/zaino-compact-block"
         }
 
         assert!(toml::from_str::<DaemonConfig>(r#"network = "main""#).is_err());
+    }
+
+    /// Default = `legacy_rpc` (every validator speaks it); `grpc` only when asked
+    #[test]
+    fn validator_client_defaults_to_legacy_rpc_and_grpc_is_opt_in() {
+        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).validator_client;
+        assert_eq!(DaemonConfig::default().validator_client, ValidatorClient::LegacyRpc);
+        assert_eq!(parse(""), ValidatorClient::LegacyRpc, "omitted");
+        assert_eq!(parse("validator_client = \"legacy_rpc\""), ValidatorClient::LegacyRpc);
+        assert_eq!(parse("validator_client = \"grpc\""), ValidatorClient::Grpc);
+        assert!(toml::from_str::<DaemonConfig>("validator_client = \"rpc\"").is_err());
     }
 
     #[test]
@@ -1182,7 +1028,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             jsonrpc_address: "zebra-eu:8232".to_owned(),
             user: Some("zaino".to_owned()),
             password: Some("secret".to_owned()),
-            max_connections: n(8),
+            max_connections: Limits::new(8).expect("8 ≥ MIN_CONNECTIONS"),
             max_mib_per_sec: Some(n(4)),
             max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
@@ -1197,17 +1043,24 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         };
         assert_eq!(config.trusted_validators, [local, eu.clone()]);
 
-        assert_eq!(eu.limits(), zaino_traffic::Limits::new(8), "the balancer's");
-        let link = zaino_source::LinkLimits {
+        let link = LinkLimits {
             max_connections: n(8),
             max_bytes_per_sec: Some(n(4 << 20)),
             response_size_cap: ResponseSizeCap::new(8 << 20).expect("in bounds"),
         };
         assert_eq!(eu.link(), link, "the transport's");
-        for mib in [3, 33] {
-            let toml = format!("[[trusted_validators]]\nmax_response_mib = {mib}\n");
-            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err("out of bounds");
-            assert!(refused.to_string().contains("must be 4 ..= 32"), "{mib}: {refused}");
+        let timeouts = Timeouts { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
+        assert_eq!(eu.timeouts(), timeouts, "defaults");
+        let refusals = [
+            ("max_response_mib = 3", "must be 4 ..= 32"),
+            ("max_response_mib = 33", "must be 4 ..= 32"),
+            ("max_connections = 4", "max_connections = 4 is below 5"),
+            ("read_timeout_secs = 0", "nonzero"),
+        ];
+        for (key, refusal) in refusals {
+            let toml = format!("[[trusted_validators]]\n{key}\n");
+            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err(key).to_string();
+            assert!(refused.contains(refusal), "{key}: {refused}");
         }
     }
 
@@ -1231,8 +1084,8 @@ cache_dir = "/var/cache/zaino/peers"
         )
         .expect("parses");
         assert_eq!(
-            zaino_chainview::SubmitPolicy::from(&config.submission),
-            zaino_chainview::SubmitPolicy {
+            config.submission,
+            SubmitPolicy {
                 propagation_threshold: Duration::from_secs(30),
                 max_attempts: std::num::NonZeroU8::new(6).expect("non-zero"),
             }

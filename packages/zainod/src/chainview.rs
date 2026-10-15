@@ -56,9 +56,12 @@ pub(crate) fn connect<S: ChainDataSource>(
 ) -> Result<Wiring<S>, IndexerError> {
     let validators = &config.trusted_validators;
     let trusted = validators.iter().map(|validator| {
-        let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
         let source = Arc::new(client(validator)?);
-        Ok(TrustedValidator { source, priority: validator.priority, limits })
+        Ok(TrustedValidator {
+            source,
+            priority: validator.priority,
+            limits: validator.max_connections,
+        })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
     let p2p = config.p2p.enabled.then(|| crate::peers::start(config.p2p.peers(config.network)));
@@ -71,7 +74,7 @@ pub(crate) fn connect<S: ChainDataSource>(
         let address = validator.indexer_address.as_ref()?;
         let id = TrustedValidatorId::new(index)?;
         let watch =
-            ZebraIndexerWatch::new(address, validator.indexer_tls.as_ref(), validator.into());
+            ZebraIndexerWatch::new(address, validator.indexer_tls.as_ref(), validator.timeouts());
         Some(watch.map(|watch| (id, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
@@ -91,7 +94,7 @@ pub(crate) fn view<S: ChainDataSource>(
     let depth = FinalityDepth::new(config.sync.finalised_depth);
     let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
     let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule, shutdown)?;
-    let mut view = view.with_submit_policy((&config.submission).into());
+    let mut view = view.with_submit_policy(config.submission);
     let mut starting = None;
     if let Some((port, start)) = p2p {
         view = view.with_peers(port as Arc<dyn PeerSource>);
@@ -107,11 +110,6 @@ pub(crate) fn view<S: ChainDataSource>(
     Ok(Viewed { view: Arc::new(view), merge, header_sync, peers })
 }
 
-/// [`DaemonConfig::validate`] refuses it first
-fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
-    IndexerError::Config(format!("{}: max_connections too low", validator.jsonrpc_address))
-}
-
 /// `validator_client = "legacy_rpc"`: every question over its JSON-RPC
 pub(crate) fn legacy_client(
     validator: &TrustedValidatorConfig,
@@ -121,7 +119,7 @@ pub(crate) fn legacy_client(
         validator.cookie_path.as_deref(),
         validator.user.clone(),
         validator.password.clone(),
-        validator.into(),
+        validator.timeouts(),
         validator.link(),
     )
     .map_err(IndexerError::from)
@@ -129,20 +127,44 @@ pub(crate) fn legacy_client(
 
 /// `validator_client = "grpc"`: blocks over its indexer gRPC, the rest over its JSON-RPC
 ///
-/// - [`DaemonConfig::validate`] refuses a validator without `indexer_address` first
+/// - the one check that every validator names an `indexer_address` ([`connect`] = boot, before
+///   any download)
 pub(crate) fn grpc_client(
     validator: &TrustedValidatorConfig,
 ) -> Result<ZebraIndexerGrpcClient, IndexerError> {
+    let address = &validator.jsonrpc_address;
     let indexer = validator.indexer_address.as_deref().ok_or_else(|| {
-        IndexerError::Config(format!("{}: no indexer_address", validator.jsonrpc_address))
+        IndexerError::Config(format!(
+            "validator_client = \"grpc\" but [[trusted_validators]] {address} has no \
+             indexer_address (zebrad's indexer_listen_addr)"
+        ))
     })?;
     let legacy = legacy_client(validator)?;
     ZebraIndexerGrpcClient::new(
         legacy,
         indexer,
         validator.indexer_tls.as_ref(),
-        validator.into(),
+        validator.timeouts(),
         validator.link(),
     )
     .map_err(IndexerError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No `indexer_address` = refused, naming the validator; one set = a client (unprobed)
+    #[tokio::test]
+    async fn the_grpc_client_needs_each_validators_indexer_address() {
+        let refused = grpc_client(&TrustedValidatorConfig::default()).err().map(|e| e.to_string());
+        let named = "127.0.0.1:8232 has no indexer_address";
+        assert!(refused.as_deref().is_some_and(|refused| refused.contains(named)), "{refused:?}");
+
+        let indexed = TrustedValidatorConfig {
+            indexer_address: Some("127.0.0.1:8230".to_owned()),
+            ..TrustedValidatorConfig::default()
+        };
+        assert!(grpc_client(&indexed).is_ok(), "no validator needed to build one");
+    }
 }

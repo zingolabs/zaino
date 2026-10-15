@@ -1,5 +1,6 @@
 //! One member: identity, health, bench, permits, poll cadence (`usage.md`)
 
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use crate::class::{Lane, PerLane, Permits, LANES, MIN_CONNECTIONS};
@@ -28,10 +29,12 @@ pub enum MemberId {
     Peers,
 }
 
-/// One trusted validator's connection budget
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One trusted validator's connection budget (config: its `max_connections`, refused at parse
+/// below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS))
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "u32", into = "u32")]
 pub struct Limits {
-    max_connections: u32,
+    max_connections: NonZeroU32,
 }
 
 impl Limits {
@@ -40,7 +43,40 @@ impl Limits {
 
     /// `None` below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS)
     pub fn new(max_connections: u32) -> Option<Self> {
-        (max_connections >= MIN_CONNECTIONS).then_some(Self { max_connections })
+        let max_connections = NonZeroU32::new(max_connections)?;
+        (max_connections.get() >= MIN_CONNECTIONS).then_some(Self { max_connections })
+    }
+
+    pub fn max_connections(self) -> NonZeroU32 {
+        self.max_connections
+    }
+}
+
+/// 32 (zebrad admits 100 across every client)
+impl Default for Limits {
+    fn default() -> Self {
+        const DEFAULT: NonZeroU32 = NonZeroU32::new(32).expect("32 is non-zero");
+        const _: () = assert!(DEFAULT.get() >= MIN_CONNECTIONS, "default under MIN_CONNECTIONS");
+        Self { max_connections: DEFAULT }
+    }
+}
+
+impl TryFrom<u32> for Limits {
+    type Error = String;
+
+    fn try_from(max_connections: u32) -> Result<Self, String> {
+        Self::new(max_connections).ok_or_else(|| {
+            format!(
+                "max_connections = {max_connections} is below {MIN_CONNECTIONS} (one for the poll, \
+                 one reserved per lane + one shared)"
+            )
+        })
+    }
+}
+
+impl From<Limits> for u32 {
+    fn from(limits: Limits) -> Self {
+        limits.max_connections.get()
     }
 }
 
@@ -117,7 +153,8 @@ pub(crate) struct Bench {
 
 impl Member {
     pub(crate) fn trusted(priority: u8, limits: Limits) -> Self {
-        let mut member = Self::new(u16::from(priority), Permits::trusted(limits.max_connections));
+        let mut member =
+            Self::new(u16::from(priority), Permits::trusted(limits.max_connections.get()));
         member.poller = Some(Poller::default());
         member
     }

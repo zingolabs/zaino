@@ -106,7 +106,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     let status = Arc::new(DaemonStatus::new(config.network, enabled));
     // Before the index-snapshot bootstrap (a held node reads held from its first answer)
     let (state_dir, goaway_delay) =
-        (config.serve.state_dir.clone(), config.serve.hold_goaway_delay());
+        (config.serve.state_dir.clone(), config.serve.hold_goaway_delay);
     hold::spawn(Arc::clone(&status), state_dir, goaway_delay);
     config.warn_about_metrics_listener();
     // Before the index-snapshot bootstrap (its progress extends systemd's start timeout)

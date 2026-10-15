@@ -13,7 +13,7 @@ use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
 };
-use zaino_traffic::{MemberId, TrafficBalancer, TrustedValidatorId};
+use zaino_traffic::{MemberId, TrafficBalancer};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
@@ -65,12 +65,6 @@ impl<S: ChainDataSource> ChainView<S> {
         schedule: LocalNetwork,
         shutdown: CancellationToken,
     ) -> Result<Self, ConfigError> {
-        if addresses.is_empty() {
-            return Err(ConfigError::NoTrustedValidators);
-        }
-        if addresses.len() > TrustedValidatorId::MAX {
-            return Err(ConfigError::TooManyTrustedValidators { count: addresses.len() });
-        }
         let trusted = (balancer.members().borrow().rows.iter())
             .filter(|row| matches!(row.id, MemberId::TrustedValidator(_)))
             .count();

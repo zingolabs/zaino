@@ -396,7 +396,7 @@ mod peers {
         cancel.cancel();
     }
 
-    /// Headers held from A3 (anchored there), final 8; the trusted validator on B (B3.. off A2),
+    /// Headers held from A3 (anchored there), finalized 8; the trusted validator on B (B3.. off A2),
     /// the peer set on A; lookahead past one by-height batch:
     /// - A0..=A2 by height (below the headers: the validator's, shared by both chains)
     /// - A3..=A8 by hash, checked: the batch stops at A3 (by height they would be B's)
@@ -440,7 +440,7 @@ mod peers {
         let mut sent = Vec::new();
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
-            match step.expect("a final block within a minute") {
+            match step.expect("a finalized block within a minute") {
                 Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => {
                     sent.push(data.block_ref())
                 }

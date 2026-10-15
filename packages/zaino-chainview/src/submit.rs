@@ -16,6 +16,7 @@
 use std::num::NonZeroU8;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
@@ -23,23 +24,21 @@ use zaino_traffic::TrustedValidatorId;
 
 use crate::trusted_validators::TrustedValidatorSet;
 
-/// How hard Zaino pushes one transaction into the network
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How hard Zaino pushes one transaction into the network (zainod's `[submission]`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct SubmitPolicy {
+    #[serde(rename = "propagation_threshold_secs", with = "zaino_primitives::serde_secs::nonzero")]
     pub propagation_threshold: Duration,
     pub max_attempts: NonZeroU8,
 }
 
-impl SubmitPolicy {
-    pub const DEFAULT: Self = Self {
-        propagation_threshold: Duration::from_secs(15),
-        max_attempts: NonZeroU8::new(4).expect("4 is non-zero"),
-    };
-}
-
 impl Default for SubmitPolicy {
     fn default() -> Self {
-        Self::DEFAULT
+        Self {
+            propagation_threshold: Duration::from_secs(15),
+            max_attempts: const { NonZeroU8::new(4).expect("4 is non-zero") },
+        }
     }
 }
 

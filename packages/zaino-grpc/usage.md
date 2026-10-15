@@ -18,9 +18,9 @@ let routes = RouteDeps {
     max_address_rows,                    // receives one t-address request may walk
     indexes,                             // Vec<IndexKind>: the configured ones
 };
-let bound = GrpcService::new(grpc_listen_address, limits)
+let bound = GrpcService::new(grpc_listen_address, limits)  // limits.trusted_proxies included
     .with_routes(routes)
-    .with_trusted_proxies(proxies)
+    .with_retire(retire)                 // the owner's operator hold (zaino_grpc::Retire)
     .with_tls(tls)
     .bind()
     .await?;
@@ -103,8 +103,11 @@ routing.route(routes);
 - `chainName`, the tree state's `network` and the t-address mismatch message spell the
   network as lightwalletd does (`main` / `test` / `regtest`), from one match
   (`network::chain_name`).
-- `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
-  its `[grpc]` config section.
+- `limits: GrpcLimits` (see [Serve stack](#serve-stack)) is zainod's `[grpc]` table as
+  parsed: it derives `Deserialize`/`Serialize` (unknown keys refused, omitted ones at
+  `Default`), durations as whole-second `*_secs` keys (`unread_timeout_secs`,
+  `silent_timeout_secs` non-zero; `max_connection_age_secs`, `max_connection_idle_secs` 0 =
+  never; `drain_timeout` = `shutdown_grace_secs`).
 - `bind().await` takes the socket and returns a `BoundGrpcService`; await it at
   boot so a bind failure is a boot failure (`GrpcServeError::Bind`, the
   `io::Error` as its source); `local_addr()` names the bound address (bind
@@ -210,10 +213,16 @@ Every cap refuses; none queues except the read lanes:
   within ±10%, so connections opened together do not cycle together) or after
   `max_connection_idle` with no open stream, a connection gets an HTTP/2 GOAWAY.
   Its in-flight streams then have `max_connection_age_grace` to finish before it
-  closes. `None` turns either off. `retire()` → `Retire::retire_all()` does the
-  same to every connection open at the call (an operator hold).
+  closes. `None` turns either off.
+- **Operator hold** (`Retire`, the owner's, handed in with `with_retire`, so a
+  hold may start before the server exists). `Retire::hold(delay)`: once `delay`
+  has passed, every connection gets the same GOAWAY + grace, both those open
+  then and every one accepted while still held (GOAWAY'd at once).
+  `Retire::resume()` lifts it; a later `hold` counts its own delay. A repeated
+  `hold` keeps the first deadline. `Retire::state()` = `Hold::Off`, `Draining`
+  (held, deadline not reached) or `Drained`.
   `zaino_grpc_retired_connections_total{reason="age"|"idle"|"retired"}` counts
-  all three.
+  all three reasons.
 - **Adaptive limit.** Work streams admitted at once follow measured latency,
   using Netflix concurrency-limits' Gradient2:
   - A sample is the time the server spent producing one message: from admission
@@ -237,7 +246,8 @@ Every cap refuses; none queues except the read lanes:
   ends or the client disconnects.
 - A mempool subscription idles until the next block, one per connected wallet,
   so it never holds a work slot.
-- `with_trusted_proxies(TrustedProxies::new(cidrs))`: a peer inside one of the
+- `GrpcLimits::trusted_proxies` (`TrustedProxies::new(cidrs)`, a list of CIDRs in
+  config; empty = no proxy): a peer inside one of the
   networks must open with a PROXY header (v1 or v2, read under 5 s, ≤ 4 KiB), and
   the per-client cap counts the address it names. `LOCAL`/`UNKNOWN` headers
   count the proxy itself. A malformed or missing header closes the connection.

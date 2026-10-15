@@ -18,8 +18,9 @@ pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 /// v1 ≤ 107 bytes; v2 = 16 + addresses + the TLVs real proxies add (AWS, Azure: tens of bytes)
 const HEADER_MAX: usize = 4096;
 
-/// Peers whose connections carry a PROXY header naming the real client
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Peers whose connections carry a PROXY header naming the real client (empty = no proxy)
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
 pub struct TrustedProxies(Vec<IpNet>);
 
 impl TrustedProxies {

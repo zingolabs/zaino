@@ -44,7 +44,7 @@ default. In outline:
 | Key or table             | For                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
 | `network`                | `mainnet` (default), `testnet` or `regtest`, declared rather than read off the validator    |
-| `validator_client`       | `legacy_rpc` (default, JSON-RPC for everything) or `grpc` (blocks over `indexer_address`)   |
+| `validator_client`       | `legacy_rpc` (default, JSON-RPC for everything; zebrad or zcashd) or `grpc`: blocks over each validator's indexer gRPC (`indexer_address`, `GetBlock` + `GetBlockRange`), the rest over JSON-RPC. `GetBlockRange` is only in Zaino's zebra fork (`elicbarbieri/zebra` `perf/indexer-block-range`) |
 | `[metrics]`              | the admin listener's `listen_address` (unset = off; see [Network exposure](#network-exposure)) |
 | `[[trusted_validators]]` | one table per validator: address, credentials, timeouts, link budget, `indexer_address` and `[trusted_validators.indexer_tls]`, `priority` tier ([architecture §3](./architecture.md#3-sources-and-what-each-is-trusted-for)) |
 | `[submission]`           | when `SendTransaction` relays again ([architecture §6](./architecture.md#6-submission))    |
@@ -89,14 +89,17 @@ find a damaged index, then delete its directory and let it resync.
 
 ## Stopping and restarts
 
-Boot fails with exit code 1 if the gRPC address cannot be bound (checked first, before any
-index-snapshot download) or an index cannot open. On mainnet and testnet no validator needs to
-answer for boot to finish (regtest reads its upgrade schedule from the first validator that answers),
-and a validator that goes away is retried, never fatal.
+Boot fails with exit code 1 if a `[[trusted_validators]]` entry cannot make a client (checked
+first), the gRPC address cannot be bound (next, before any index-snapshot download) or an index
+cannot open. On mainnet and testnet no validator needs to answer for boot to finish (regtest
+reads its upgrade schedule from the first validator that answers, and refuses one listed out of
+protocol order or without Sapling), and a validator that goes away is retried, never fatal.
 
 SIGINT or SIGTERM closes the gRPC listener at once, sends every open connection an HTTP/2
 GOAWAY, waits up to `[grpc] shutdown_grace_secs` for in-flight streams, lets each index commit
-what it holds, and exits 0. Behind a load balancer that routes by polling `/readyz`, run
+what it holds, and exits 0. The same holds during boot: a signal while an index snapshot
+downloads (aria2c stopped with it) or while regtest waits on its first validator exits 0.
+Behind a load balancer that routes by polling `/readyz`, run
 [`zainod hold`](../packages/zainod/usage.md#operator-hold) first, then stop. Under systemd, use
 [`Type=notify`](../packages/zainod/usage.md#systemd) so a restart waits until zainod serves again.
 

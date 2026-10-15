@@ -66,7 +66,6 @@ pub struct GrpcService<S: ChainDataSource, V> {
     dispatch: Dispatch<S, V>,
     bind: SocketAddr,
     limits: GrpcLimits,
-    proxies: TrustedProxies,
     tls: Option<crate::Tls>,
     admission: Arc<AdmissionState>,
     health: Option<Arc<dyn Health>>,
@@ -85,9 +84,8 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
     pub fn new(bind: SocketAddr, limits: GrpcLimits) -> Self {
         let dispatch = Dispatch::new(&limits);
         let admission = Arc::new(AdmissionState::new(&limits));
-        let proxies = TrustedProxies::default();
         let retire = Retire::default();
-        Self { dispatch, bind, limits, proxies, tls: None, admission, health: None, retire }
+        Self { dispatch, bind, limits, tls: None, admission, health: None, retire }
     }
 
     /// Routes these methods once its owner has them, before or after `run`
@@ -101,9 +99,10 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
         self
     }
 
-    /// GOAWAYs every connection open at the time of each `retire_all` (an operator hold)
-    pub fn retire(&self) -> Retire {
-        self.retire.clone()
+    /// The owner's operator hold: while held, every connection GOAWAY'd at the hold's deadline
+    pub fn with_retire(mut self, retire: Retire) -> Self {
+        self.retire = retire;
+        self
     }
 
     /// Answers `GET /readyz` + `GET /status` on this listener, HTTP/1.1 or h2 (`health.rs`)
@@ -120,15 +119,6 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
     /// Terminates TLS on the listener (else plaintext h2c, for a TLS-terminating proxy in front)
     pub fn with_tls(mut self, tls: crate::Tls) -> Self {
         self.tls = Some(tls);
-        self
-    }
-
-    /// Peers that front this server and name each client in a PROXY header (v1 or v2)
-    ///
-    /// - `max_connections_per_ip` then counts the named client, not the proxy
-    /// - a trusted peer sending no header is dropped
-    pub fn with_trusted_proxies(mut self, proxies: TrustedProxies) -> Self {
-        self.proxies = proxies;
         self
     }
 }
@@ -230,7 +220,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         }
         let shared = Arc::new(Shared {
             caps: ConnectionCaps::new(&server.limits),
-            proxies: server.proxies,
+            proxies: server.limits.trusted_proxies.clone(),
             tls: server.tls.as_ref().map(crate::Tls::acceptor),
             http: http(&server.limits),
             health: server.health,
@@ -503,8 +493,8 @@ mod tests {
     ///   refused), the in-flight one still answered `OK` once its client ends it, then closed
     /// - aged with a stream held past the grace (1 s): closed at age + grace, the stream reset
     /// - no age, idle 1 s, never used: closed at ~1 s
-    /// - no age or idle, `retire_all`: the open connection closes at once (nothing in flight);
-    ///   one opened afterwards stays up
+    /// - no age or idle, held (delay 0): the open connection closes at once (nothing in flight),
+    ///   so does one opened while held; after `resume` a new one stays up
     #[tokio::test(flavor = "multi_thread")]
     async fn connections_retire_at_their_age_or_idleness_and_in_flight_streams_get_the_grace() {
         use std::time::Instant;
@@ -554,7 +544,7 @@ mod tests {
             max_connection_idle: None,
             ..crate::GrpcLimits::default()
         };
-        let bind = serve(aged).await;
+        let bind = serve(aged.clone()).await;
         let (client, closed) = connect(bind).await;
         let mut client = client.ready().await.expect("ready");
         let (response, mut request) = balance_stream(&mut client, bind).expect("opens");
@@ -612,9 +602,9 @@ mod tests {
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
         let routes =
             RouteDeps { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
+        let retire = crate::Retire::default();
         let server = GrpcService::new(ANY_PORT, forever).with_routes(routes);
-        let retire = server.retire();
-        let bound = server.bind().await.expect("binds");
+        let bound = server.with_retire(retire.clone()).bind().await.expect("binds");
         let bind = bound.local_addr().expect("bound");
         tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
         let (client, open) = connect(bind).await;
@@ -622,16 +612,23 @@ mod tests {
         let (response, mut request) = balance_stream(&mut client, bind).expect("opens");
         request.send_data(Bytes::from(framed), true).expect("one message, ended");
         response.await.expect("served before the hold");
-        retire.retire_all();
+        retire.hold(Duration::ZERO);
         let (_, lived) = tokio::time::timeout(Duration::from_secs(2), open)
             .await
             .expect("retired")
             .expect("joins");
         assert!(lived < Duration::from_secs(2), "GOAWAY'd at once: {lived:?}");
+        let (_held_client, during) = connect(bind).await;
+        let (_, lived) = tokio::time::timeout(Duration::from_secs(2), during)
+            .await
+            .expect("opened while held: retired too")
+            .expect("joins");
+        assert!(lived < Duration::from_secs(2), "GOAWAY'd at once: {lived:?}");
+        retire.resume();
         let (client, later) = connect(bind).await;
         let _ready = client.ready().await.expect("a new connection is served");
         tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(!later.is_finished(), "opened after the retire: untouched");
+        assert!(!later.is_finished(), "opened after the resume: untouched");
     }
 
     /// One TLS listener, as a load balancer's HTTPS/1.1 monitor and a wallet each see it:

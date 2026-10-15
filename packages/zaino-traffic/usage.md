@@ -27,8 +27,9 @@ let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
 tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is polled
 ```
 
-- `trusted[i]` is `TrustedValidatorId(i)`: configured order, at most `TrustedValidatorId::MAX`
-  (64).
+- `trusted[i]` is `TrustedValidatorId(i)`: configured order, 1 ..= `TrustedValidatorId::MAX`
+  (64); `TrafficBalancer::new` panics outside that, so a config is refused before (zainod's
+  `validate`).
 - `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in
   production (one type per balancer: zainod's `validator_client`),
   `zaino_source::testing::MockValidator` in tests.
@@ -40,7 +41,9 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 - The peer set answers headers and blocks only and never goes `Down`. `report` on its ticket logs
   and counts but never benches it (one peer's lie must not starve the honest ones).
 - `Limits::new(max_connections)`; `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved
-  per lane + one shared.
+  per lane + one shared. `Limits::default()` = 32. `max_connections()` reads it back (the
+  transport's pool takes the same number). `Limits` (de)serializes as that bare number,
+  refused at parse below 5: zainod's `[[trusted_validators]] max_connections`.
 - Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
   transport. There is no request-rate limit.
 - `TrafficBalancer` is `Clone` (one `Arc`); hand the same one to every consumer.

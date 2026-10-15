@@ -31,9 +31,7 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use crate::config::network_name;
 use zaino_chainview::ChainView;
-use zaino_grpc::{
-    AdmissionState, GrpcLimits, GrpcService, RouteDeps, Routing, Tls, TrustedProxies,
-};
+use zaino_grpc::{AdmissionState, GrpcService, RouteDeps, Routing, Tls};
 use zaino_grpc_snapshot::Publisher;
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
@@ -64,7 +62,9 @@ type TaskExit = (&'static str, Result<(), IndexerError>);
 /// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits; nothing
 /// restarts in-process)
 ///
-/// - gRPC listener first: health answers through the index-snapshot bootstrap, a taken port fails
+/// - signal handlers first: a signal anywhere in boot (bootstrap, regtest schedule wait) = clean stop
+/// - one client per validator next (unprobed: a bad entry fails before any bind or download)
+/// - gRPC listener: health answers through the index-snapshot bootstrap, a taken port fails
 ///   before any download
 /// - then the bootstrap, then boot (no validator needs to answer first)
 pub(crate) async fn start_indexer(
@@ -72,12 +72,15 @@ pub(crate) async fn start_indexer(
     status: Arc<DaemonStatus>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     warn!("In development, not for production mainnet use");
+    let signals = shutdown_signals();
     crate::fd_limit::raise_for(config.grpc.max_connections)?;
     match config.validator_client {
         ValidatorClient::LegacyRpc => {
-            start_over(config, crate::chainview::legacy_client, status).await
+            start_over(config, crate::chainview::legacy_client, status, signals).await
         }
-        ValidatorClient::Grpc => start_over(config, crate::chainview::grpc_client, status).await,
+        ValidatorClient::Grpc => {
+            start_over(config, crate::chainview::grpc_client, status, signals).await
+        }
     }
 }
 
@@ -85,15 +88,35 @@ async fn start_over<S: ChainDataSource>(
     config: DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
     status: Arc<DaemonStatus>,
+    mut signals: mpsc::Receiver<&'static str>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    let wiring = component("ChainView").in_scope(|| crate::chainview::connect(&config, client))?;
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let serving = listen(&config, &status, &cancel, &mut tasks).await?;
-    if let Some(snapshot) = &config.snapshot {
-        let bootstrap = crate::bootstrap::bootstrap(snapshot, &config, &status);
-        bootstrap.instrument(component("IndexSnapshot")).await?;
+    let booting = async {
+        let serving = listen(&config, &status, &cancel, &mut tasks).await?;
+        if let Some(snapshot) = &config.snapshot {
+            let bootstrap = crate::bootstrap::bootstrap(snapshot, &config, &status);
+            bootstrap.instrument(component("IndexSnapshot")).await?;
+        }
+        boot_over(&config, wiring, serving, &status, &cancel, &mut tasks).await
+    };
+    if let Some(signal) = unless_signalled(booting, &mut signals).await? {
+        info!(signal, "Shutdown signal received during boot");
+        cancel.cancel();
     }
-    boot_over(config, client, serving, status, cancel, tasks).await
+    Ok(tokio::spawn(supervise(tasks, cancel, signals)))
+}
+
+/// `boot` to its end, or a signal first (`Some`: `boot` dropped, an aria2c child killed with it)
+async fn unless_signalled(
+    boot: impl Future<Output = Result<(), IndexerError>>,
+    signals: &mut mpsc::Receiver<&'static str>,
+) -> Result<Option<&'static str>, IndexerError> {
+    tokio::select! {
+        booted = boot => booted.map(|()| None),
+        Some(signal) = signals.recv() => Ok(Some(signal)),
+    }
 }
 
 /// Bound gRPC server's handles: where the pipeline's routes go, its admission for `Overloaded`
@@ -110,15 +133,13 @@ async fn listen<S: ChainDataSource>(
     cancel: &CancellationToken,
     tasks: &mut JoinSet<TaskExit>,
 ) -> Result<Serving<S>, IndexerError> {
-    let limits = GrpcLimits::from(&config.grpc);
-    let mut server = GrpcService::new(config.serve.grpc_listen_address, limits)
-        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
+    let mut server = GrpcService::new(config.serve.grpc_listen_address, config.grpc.clone())
+        .with_retire(status.retire().clone())
         .with_health(Arc::clone(status) as Arc<dyn zaino_grpc::Health>);
     if let Some(tls) = &config.serve.tls {
         server = server.with_tls(Tls::load(tls.clone())?);
     }
     let serving = Serving { routing: server.routing(), admission: server.admission() };
-    status.serving(server.retire());
     let server = server.bind().await?;
     let span = component("Grpc");
     let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));
@@ -138,12 +159,9 @@ async fn upgrade_schedule<S: ChainDataSource>(
         return Ok(schedule);
     }
     let listed = regtest_schedule(balancer, validators, status).await;
-    listed.schedule().ok_or_else(|| {
-        let listed = format!("{:?}", listed.activations);
-        IndexerError::Config(format!(
-            "regtest validator lists upgrades out of protocol order: {listed}"
-        ))
-    })
+    let schedule = listed.schedule();
+    schedule
+        .map_err(|refused| IndexerError::Config(format!("regtest validator's schedule: {refused}")))
 }
 
 /// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
@@ -177,33 +195,26 @@ async fn regtest_schedule<S: ChainDataSource>(
     }
 }
 
-/// Chain view over the trusted validators (one `client` each) → pipeline over it, routed into
-/// `serving` → every task spawned beside the gRPC server's
+/// Chain view over the trusted validators ([`crate::chainview::connect`]'s `wiring`) → pipeline
+/// over it, routed into `serving` → every task spawned beside the gRPC server's
 ///
 /// - One balancer over every validator; its driver first (regtest's upgrade schedule is a poll's)
 async fn boot_over<S: ChainDataSource>(
-    config: DaemonConfig,
-    client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
+    config: &DaemonConfig,
+    wiring: crate::chainview::Wiring<S>,
     serving: Serving<S>,
-    status: Arc<DaemonStatus>,
-    cancel: CancellationToken,
-    mut tasks: JoinSet<TaskExit>,
-) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    status: &Arc<DaemonStatus>,
+    cancel: &CancellationToken,
+    tasks: &mut JoinSet<TaskExit>,
+) -> Result<(), IndexerError> {
     let chainview_span = component("ChainView");
-    let wiring = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
     let balancing = wiring.balancing.run(cancel.child_token());
-    spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
+    spawn_infallible(tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
-    let schedule = upgrade_schedule(config.network, &wiring.balancer, validators, &status);
+    let schedule = upgrade_schedule(config.network, &wiring.balancer, validators, status);
     let schedule = schedule.instrument(chainview_span.clone()).await?;
     let viewed = chainview_span.in_scope(|| {
-        crate::chainview::view(
-            &config,
-            &wiring.balancer,
-            wiring.p2p,
-            schedule,
-            cancel.child_token(),
-        )
+        crate::chainview::view(config, &wiring.balancer, wiring.p2p, schedule, cancel.child_token())
     })?;
     let inputs = Inputs {
         fs: RealFs::shared(),
@@ -212,35 +223,34 @@ async fn boot_over<S: ChainDataSource>(
         balancer: wiring.balancer.clone(),
         schedule,
     };
-    let mut tasks = pipeline(&config, inputs, serving, &status, &cancel, tasks)?;
+    pipeline(config, inputs, serving, status, cancel, tasks)?;
 
     let header_sync = match config.p2p.enabled {
         true => viewed.header_sync.with_peers(Params::for_network(config.network, &schedule)),
         false => viewed.header_sync,
     };
     let run = header_sync.run(cancel.child_token());
-    spawn_infallible(&mut tasks, "header-sync", chainview_span.clone(), run);
+    spawn_infallible(tasks, "header-sync", chainview_span.clone(), run);
     if let Some((starting, watch)) = viewed.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
         let token = cancel.child_token();
         let run = async move {
             tokio::join!(token.run_until_cancelled(starting), watch.run(token.clone()));
         };
-        spawn_infallible(&mut tasks, "peers", chainview_span.clone(), run);
+        spawn_infallible(tasks, "peers", chainview_span.clone(), run);
     }
     let merge = viewed.merge.run(cancel.child_token());
-    spawn_infallible(&mut tasks, "chainview", chainview_span.clone(), merge);
+    spawn_infallible(tasks, "chainview", chainview_span.clone(), merge);
     for (member, watch) in wiring.watches {
         let (changed, linked) = (wiring.balancer.clone(), wiring.balancer.clone());
         let on_change = move |_| changed.pushed(member, Push::Changed);
         let on_link = move |up| linked.pushed(member, Push::Link(up));
         let run = watch.run(cancel.child_token(), on_change, on_link);
-        spawn_infallible(&mut tasks, "push-stream", chainview_span.clone(), run);
+        spawn_infallible(tasks, "push-stream", chainview_span.clone(), run);
     }
-    let heartbeat = crate::admin::beat(status, cancel.child_token());
-    spawn(&mut tasks, "heartbeat", component("Metrics"), heartbeat);
-
-    Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals())))
+    let heartbeat = crate::admin::beat(Arc::clone(status), cancel.child_token());
+    spawn(tasks, "heartbeat", component("Metrics"), heartbeat);
+    Ok(())
 }
 
 /// Pipeline inputs (production: header sync + trusted validators on disk; tests: mocks on `SimFs`)
@@ -260,10 +270,11 @@ fn pipeline<S: ChainDataSource>(
     serving: Serving<S>,
     status: &DaemonStatus,
     cancel: &CancellationToken,
-    tasks: JoinSet<TaskExit>,
-) -> Result<JoinSet<TaskExit>, IndexerError> {
+    tasks: &mut JoinSet<TaskExit>,
+) -> Result<(), IndexerError> {
     let indexes = open_indexes(config, &inputs)?;
-    Ok(run_pipeline(config, indexes, inputs, serving, status, cancel, tasks))
+    run_pipeline(config, indexes, inputs, serving, status, cancel, tasks);
+    Ok(())
 }
 
 /// Every enabled index opened, subscribed to the finalized stream, added to the NFS
@@ -335,22 +346,22 @@ fn run_pipeline<S: ChainDataSource>(
     serving: Serving<S>,
     status: &DaemonStatus,
     cancel: &CancellationToken,
-    mut tasks: JoinSet<TaskExit>,
-) -> JoinSet<TaskExit> {
+    tasks: &mut JoinSet<TaskExit>,
+) {
     let network = config.network;
     let depth = FinalityDepth::new(config.sync.finalised_depth);
     let Indexes { follower, nfs, opened, writers, .. } = indexes;
     for (kind, span, writer) in writers {
-        spawn_infallible(&mut tasks, kind.name(), span, writer);
+        spawn_infallible(tasks, kind.name(), span, writer);
     }
     let publisher = Publisher::new(nfs.indexed(), inputs.view.subscriber(), depth);
     let grpc_snapshots = publisher.handle();
 
     // --- run: every gRPC answer off one `GrpcSnapshot` from here on
     let progress = follower.progress();
-    spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
-    spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
-    spawn(&mut tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
+    spawn(tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
+    spawn(tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
+    spawn(tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
     serving.routing.route(RouteDeps {
         grpc_snapshots: grpc_snapshots.clone(),
         submit: Arc::clone(&inputs.view),
@@ -368,7 +379,7 @@ fn run_pipeline<S: ChainDataSource>(
             );
         }
         let run = polling.run(cancel.child_token());
-        spawn_infallible(&mut tasks, "peer-mempool", component("ChainView"), run);
+        spawn_infallible(tasks, "peer-mempool", component("ChainView"), run);
     }
     let (rate, block_rate) = watch::channel(None);
     let reporting = crate::progress::run(
@@ -378,10 +389,10 @@ fn run_pipeline<S: ChainDataSource>(
         rate,
         cancel.child_token(),
     );
-    spawn(&mut tasks, "progress", component("ZainoNFS"), reporting);
+    spawn(tasks, "progress", component("ZainoNFS"), reporting);
     let (egress, egress_windows) = watch::channel(None);
     let measuring = crate::egress::run(egress, cancel.child_token());
-    spawn(&mut tasks, "egress", component("Grpc"), measuring);
+    spawn(tasks, "egress", component("Grpc"), measuring);
     status.publish(crate::status::Sources {
         grpc_snapshots,
         progress,
@@ -389,7 +400,6 @@ fn run_pipeline<S: ChainDataSource>(
         grpc_admission: serving.admission,
         egress: egress_windows,
     });
-    tasks
 }
 
 /// Finalized path + tip overlay + every index opened so far (its writer queued, spawned by
@@ -443,6 +453,8 @@ async fn supervise(
     mut signals: mpsc::Receiver<&'static str>,
 ) -> Result<(), IndexerError> {
     let mut failure = tokio::select! {
+        // in order: a signal, a cancel set during boot (its tasks' ends = no failure), a task's end
+        biased;
         Some(signal) = signals.recv() => {
             info!(signal, "Shutdown signal received");
             None
@@ -610,6 +622,77 @@ mod tests {
         assert!(stopped.load(Ordering::SeqCst), "returned before the task stopped");
     }
 
+    /// Real SIGTERM to this process while boot waits on a regtest validator that never answers:
+    /// - boot returns (no download, no schedule needed), the daemon's handle ends `Ok`
+    /// - the gRPC listener bound during boot is closed by then
+    #[tokio::test]
+    async fn a_shutdown_signal_during_boot_stops_the_daemon_cleanly() {
+        use std::num::NonZeroUsize;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let (grpc, validator) = (probe.local_addr().expect("local addr"), "127.0.0.1:1");
+        drop(probe);
+        let mut config = DaemonConfig {
+            network: NetworkType::Regtest,
+            trusted_validators: vec![TrustedValidatorConfig {
+                jsonrpc_address: validator.to_owned(),
+                ..TrustedValidatorConfig::default()
+            }],
+            ..DaemonConfig::default()
+        };
+        config.serve.grpc_listen_address = grpc;
+        config.serve.state_dir = dir.path().join("state");
+        config.grpc.max_connections = NonZeroUsize::new(16).expect("non-zero");
+        let status = Arc::new(DaemonStatus::new(config.network, []));
+        let booting = tokio::spawn(start_indexer(config, Arc::clone(&status)));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while !status.readiness_json().1.contains("No trusted validator reachable") {
+            assert!(tokio::time::Instant::now() < deadline, "boot never waited on its validator");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(std::net::TcpStream::connect(grpc).is_ok(), "gRPC bound during boot");
+        let this = rustix::process::getpid();
+        rustix::process::kill_process(this, rustix::process::Signal::TERM).expect("SIGTERM sent");
+
+        let booted = tokio::time::timeout(Duration::from_secs(10), booting).await;
+        let running = booted.expect("boot returns on the signal").expect("joins");
+        let stopped = running.expect("no boot failure").await.expect("joins");
+        assert!(stopped.is_ok(), "SIGTERM during boot = clean stop: {stopped:?}");
+        assert!(std::net::TcpStream::connect(grpc).is_err(), "listener closed");
+    }
+
+    /// `boot` raced against the signal channel: boot first = its outcome; a signal first = boot
+    /// dropped mid-await (what it holds released: an aria2c child killed on drop)
+    #[tokio::test]
+    async fn boot_raced_against_a_signal_drops_boot_on_the_signal() {
+        let (signal, mut signals) = mpsc::channel(1);
+        let done = unless_signalled(async { Ok(()) }, &mut signals).await;
+        assert!(matches!(done, Ok(None)), "{done:?}");
+        let failed =
+            unless_signalled(async { Err(IndexerError::Config("x".into())) }, &mut signals);
+        assert!(matches!(failed.await, Err(IndexerError::Config(_))));
+
+        struct Held(Arc<AtomicBool>);
+        impl Drop for Held {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let released = Arc::new(AtomicBool::new(false));
+        let held = Held(Arc::clone(&released));
+        let pending = async move {
+            let _held = held;
+            std::future::pending::<Result<(), IndexerError>>().await
+        };
+        signal.send("SIGINT").await.expect("receiver open");
+        let signalled = unless_signalled(pending, &mut signals).await;
+        assert!(matches!(signalled, Ok(Some("SIGINT"))), "{signalled:?}");
+        assert!(released.load(Ordering::SeqCst), "boot dropped");
+    }
+
     /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3):
     /// - A 0..=8 at once (0..=5 finalized: bulk, committed on idle; 6..=8 folded at the tip)
     /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's, `GetLightdInfo` B8 under
@@ -683,8 +766,7 @@ mod tests {
             listen(&config, &status, &cancel, &mut tasks).await.expect("the gRPC listener binds");
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
         spawn_infallible(&mut tasks, "chainview", Span::none(), merge.run(cancel.child_token()));
-        let mut tasks =
-            pipeline(&config, inputs, serving, &status, &cancel, tasks).expect("pipeline up");
+        pipeline(&config, inputs, serving, &status, &cancel, &mut tasks).expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");

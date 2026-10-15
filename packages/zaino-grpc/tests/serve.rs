@@ -116,15 +116,14 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     use tokio::io::AsyncWriteExt as _;
 
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
-    let limits = GrpcLimits { max_connections_per_ip: non_zero(1), ..GrpcLimits::default() };
-    let server = GrpcService::new(ANY_PORT, limits)
-        .with_routes(routes())
-        .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
-            .parse()
-            .expect("loopback net")]))
-        .bind()
-        .await
-        .expect("binds");
+    let loopback = vec!["127.0.0.0/8".parse().expect("loopback net")];
+    let limits = GrpcLimits {
+        max_connections_per_ip: non_zero(1),
+        trusted_proxies: zaino_grpc::TrustedProxies::new(loopback),
+        ..GrpcLimits::default()
+    };
+    let server =
+        GrpcService::new(ANY_PORT, limits).with_routes(routes()).bind().await.expect("binds");
     let bind = server.local_addr().expect("bound");
 
     let cancel = CancellationToken::new();
@@ -198,15 +197,14 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         ),
     ];
     for (case, silent, drain_timeout, returns) in cases {
-        let limits = GrpcLimits { drain_timeout, ..GrpcLimits::default() };
-        let server = GrpcService::new(ANY_PORT, limits)
-            .with_routes(routes())
-            .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
-                .parse()
-                .expect("loopback net")]))
-            .bind()
-            .await
-            .expect("binds");
+        let loopback = vec!["127.0.0.0/8".parse().expect("loopback net")];
+        let limits = GrpcLimits {
+            drain_timeout,
+            trusted_proxies: zaino_grpc::TrustedProxies::new(loopback),
+            ..GrpcLimits::default()
+        };
+        let server =
+            GrpcService::new(ANY_PORT, limits).with_routes(routes()).bind().await.expect("binds");
         let bind = server.local_addr().expect("bound");
 
         let cancel = CancellationToken::new();

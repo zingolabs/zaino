@@ -2,14 +2,10 @@
 
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
+/// Empty or over-[`TrustedValidatorId::MAX`](zaino_traffic::TrustedValidatorId) lists included
+/// (the balancer refuses both, so neither matches its members)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
-    #[error("no trusted validators configured")]
-    NoTrustedValidators,
-
-    #[error("{count} trusted validators configured, {max} is the ceiling", max = zaino_traffic::TrustedValidatorId::MAX)]
-    TooManyTrustedValidators { count: usize },
-
     #[error("{addresses} trusted validator addresses for {trusted} balancer members")]
     AddressCountMismatch { addresses: usize, trusted: usize },
 }

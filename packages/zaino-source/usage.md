@@ -19,8 +19,8 @@ what its test asks and `unimplemented!()`s the rest.
 
 What a validator reports about itself is this crate's, beside its parser:
 `BlockchainInfo` (tip, network-tip estimate, each known upgrade's activation;
-`schedule()` = those as a `LocalNetwork`, `None` out of protocol order: regtest's
-boot reads it), `NodeRelease` / `EndOfService`, `PeerInfo`. Only fields Zaino reads
+`schedule()` = those as a `LocalNetwork`, or `ScheduleError::OutOfOrder` /
+`NoSapling`: regtest's boot reads it and refuses either), `NodeRelease` / `EndOfService`, `PeerInfo`. Only fields Zaino reads
 are parsed, so an upgrade this build does not know is skipped, never a failed poll.
 
 ## Building a client: one per validator

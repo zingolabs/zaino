@@ -43,9 +43,9 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 
 ## Membership
 
-- `ChainView::new` rejects an empty list (`ConfigError::NoTrustedValidators`) and more than
-  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyTrustedValidators`). One address per trusted
-  member of the balancer (`ConfigError::AddressCountMismatch` otherwise).
+- `ChainView::new` takes one address per trusted member of the balancer
+  (`ConfigError::AddressCountMismatch` otherwise). The balancer itself holds 1 ..=
+  `TrustedValidatorId::MAX` = 64 members; zainod refuses a config outside that before boot.
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
 
@@ -170,8 +170,9 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
   `TrafficBalancer::entries()` (`Live`, not benched), checked = the check admitted it.
 - A trusted entry's own listing counts for acceptance, not for spread.
 - Job end: `spread`, `unconfirmed`, `rejected`, `unreachable`. Nothing ties it to mining or expiry.
-- `SubmitPolicy { propagation_threshold, max_attempts }` = 15 s, 4; zainod sets it from
-  `[submission]`.
+- `SubmitPolicy { propagation_threshold, max_attempts }` = 15 s, 4 by default. It is zainod's
+  `[submission]` table as parsed (`Deserialize`/`Serialize`: `propagation_threshold_secs`,
+  non-zero whole seconds, and `max_attempts`; unknown keys refused).
 
 ## Ports
 
