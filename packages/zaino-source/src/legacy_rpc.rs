@@ -2,6 +2,7 @@
 //!
 //! - blocks = `getblock … 0` hex in JSON: one SIMD hex pass into an exact-size buffer
 
+use std::convert::Infallible;
 use std::path::Path;
 
 use zaino_primitives::types::Block;
@@ -13,10 +14,10 @@ use crate::rpc::{
     RpcClientConfig, RpcError, Timeouts, REPLY_ENVELOPE_BYTES,
 };
 use crate::{
-    decode, parse, BlockLink, BlockLinks, CheckAdmissionError, FailureMode, GetAtHeightError,
-    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
-    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
+    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
+    MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
+    SendRawTransactionError, TransactionResponse,
 };
 
 /// Validator's link
@@ -50,24 +51,44 @@ impl ZcashLegacyRpcClient {
         Ok(Self { rpc })
     }
 
-    /// Call + parse (`classify` = which transport failures are the port's answer)
+    /// Call + parse (`answer` = the method's own verdicts among its errors, [`classify`])
     async fn call_parsed<T, E>(
         &self,
         method: &str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
-        classify: impl FnOnce(RpcError) -> QueryError<E>,
+        answer: impl FnOnce(&NonDomainError) -> Option<E>,
     ) -> Result<T, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call::<serde_json::Value>(method, params).await.map_err(classify)?;
+        let call = self.rpc.call::<serde_json::Value>(method, params).await;
+        let value = call.map_err(|error| classify(error, answer))?;
         parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 }
 
 fn from_parse(e: parse::ParseError) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)
+}
+
+/// JSON-RPC "method not found"
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// Every error as a port reads it: `-32601` = `Unsupported` (whatever the method), else
+/// `answer`'s verdict, else no answer
+fn classify<E>(error: RpcError, answer: impl FnOnce(&NonDomainError) -> Option<E>) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let error: NonDomainError = error.into();
+    if error.mode == FailureMode::RpcError(METHOD_NOT_FOUND) {
+        return QueryError::Unsupported;
+    }
+    match answer(&error) {
+        Some(answer) => QueryError::Domain(answer),
+        None => QueryError::NonDomain(error),
+    }
 }
 
 /// zebrad's "no such object": `-8` on `getblock <height>`, `-5` on hash/txid lookups
@@ -78,26 +99,18 @@ const NOT_FOUND_CODES: [i64; 2] = [-5, -8];
 /// `getblockhash` above the tip: zebrad `-32602` (index past the tip), zcashd `-8` (out of range)
 const ABOVE_TIP_CODES: [i64; 2] = [-8, -32602];
 
-/// JSON-RPC "method not implemented"
-const METHOD_NOT_FOUND: i64 = -32601;
-
-/// Not-found code → the port's absent answer, anything else stays a fetch failure
-fn absent_or_fetch<E>(error: RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
-where
-    E: std::fmt::Debug + std::fmt::Display,
-{
-    absent_on(&NOT_FOUND_CODES, error, absent)
+/// A not-found code = `absent`
+fn not_found<E>(absent: impl FnOnce() -> E) -> impl FnOnce(&NonDomainError) -> Option<E> {
+    absent_on(&NOT_FOUND_CODES, absent)
 }
 
-/// One of `codes` → the port's absent answer, anything else stays a fetch failure
-fn absent_on<E>(codes: &[i64], error: RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
-where
-    E: std::fmt::Debug + std::fmt::Display,
-{
-    let error: NonDomainError = error.into();
-    match error.mode {
-        FailureMode::RpcError(code) if codes.contains(&code) => QueryError::Domain(absent()),
-        _ => QueryError::NonDomain(error),
+/// One of `codes` = `absent`
+fn absent_on<E>(
+    codes: &'static [i64],
+    absent: impl FnOnce() -> E,
+) -> impl FnOnce(&NonDomainError) -> Option<E> {
+    move |error| {
+        matches!(error.mode, FailureMode::RpcError(code) if codes.contains(&code)).then(absent)
     }
 }
 
@@ -129,42 +142,22 @@ fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionErro
     }
 }
 
-/// `checkadmission`'s error
-///
-/// - `-32601` = no such method here (zcashd, stock zebrad) = an answer (never a failure: the
-///   validator stays healthy)
-/// - Else [`submission_rejection`]'s verdicts
-fn admission_check_answer(error: NonDomainError) -> QueryError<CheckAdmissionError> {
-    if error.mode == FailureMode::RpcError(METHOD_NOT_FOUND) {
-        return QueryError::Domain(CheckAdmissionError::Unsupported);
-    }
-    match submission_rejection(&error) {
-        Some(refused) => QueryError::Domain(CheckAdmissionError::Refused(refused)),
-        None => QueryError::NonDomain(error),
-    }
-}
-
 /// zebrad's `-1` on `getrawmempool true` below the network tip
 ///
 /// - `-1` = zebra's catch-all `Misc` (message = only discriminant)
 /// - zebrad/src/components/mempool.rs (`Request::FullTransactions` while disabled)
 const MEMPOOL_INACTIVE: &str = "mempool is not active";
 
-/// `getrawmempool` answers about the node, not transient failures
-///
-/// - `-32601` = no mempool at all
-/// - `-1` + [`MEMPOOL_INACTIVE`] = none until caught up
-fn mempool_unavailable_or_fetch(error: RpcError) -> QueryError<GetMempoolListingError> {
-    let error: NonDomainError = error.into();
-    match error.mode {
-        FailureMode::RpcError(METHOD_NOT_FOUND) => {
-            QueryError::Domain(GetMempoolListingError::Unavailable)
-        }
-        FailureMode::RpcError(-1) if error.message.starts_with(MEMPOOL_INACTIVE) => {
-            QueryError::Domain(GetMempoolListingError::Inactive)
-        }
-        _ => QueryError::NonDomain(error),
-    }
+/// `-1` + [`MEMPOOL_INACTIVE`] = no mempool until caught up (an answer, not a failure)
+fn mempool_inactive(error: &NonDomainError) -> Option<GetMempoolListingError> {
+    let inactive =
+        error.mode == FailureMode::RpcError(-1) && error.message.starts_with(MEMPOOL_INACTIVE);
+    inactive.then_some(GetMempoolListingError::Inactive)
+}
+
+/// No verdict of the method's own (every error but `-32601` = no answer)
+fn no_verdict(_: &NonDomainError) -> Option<Infallible> {
+    None
 }
 
 /// Headers per `getblockheader` batch (~3 KB hex each: ~1.5 MB reply)
@@ -176,11 +169,10 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
         let params = vec![hash.to_string().into(), 0.into()];
-        let parse::HexBytes(raw) = self
-            .rpc
-            .call("getblock", params)
-            .await
-            .map_err(|error| absent_or_fetch(error, || GetBlockByHashError::NotFound(hash)))?;
+        let parse::HexBytes(raw) =
+            self.rpc.call("getblock", params).await.map_err(|error| {
+                classify(error, not_found(|| GetBlockByHashError::NotFound(hash)))
+            })?;
         decode::served_block(&raw)
     }
 
@@ -198,7 +190,8 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
-                let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
+                let parse::HexBytes(raw) =
+                    reply.map_err(|error| classify(error, not_found(absent)))?;
                 blocks.push(decode::served_block(&raw)?);
             }
         }
@@ -220,7 +213,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
                 let link = reply.map(|parse::HexBytes(header)| BlockLink { header });
-                links.push(split(link.map_err(|error| absent_or_fetch(error, absent)))?);
+                links.push(split(link.map_err(|error| classify(error, not_found(absent))))?);
             }
         }
         Ok(links)
@@ -242,25 +235,34 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
         let info = parse::parse_blockchain_info(&next()?).map_err(from_parse)?;
-        let listing = next().map_err(mempool_unavailable_or_fetch).and_then(|listing| {
-            parse::parse_mempool_listing(&listing).map_err(|e| QueryError::NonDomain(from_parse(e)))
-        });
-        let listing = split(listing)?;
+        let listing =
+            next().map_err(|error| classify(error, mempool_inactive)).and_then(|listing| {
+                parse::parse_mempool_listing(&listing)
+                    .map_err(|e| QueryError::NonDomain(from_parse(e)))
+            });
+        let listing = match listing {
+            // no `getrawmempool` = no mempool on this node
+            Err(QueryError::Unsupported) => Err(GetMempoolListingError::Unavailable),
+            listing => split(listing)?,
+        };
         let held = holds
             .iter()
             .map(|height| {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
-                let hash = next().map_err(|error| absent_on(&ABOVE_TIP_CODES, error, absent))?;
+                let hash =
+                    next().map_err(|error| classify(error, absent_on(&ABOVE_TIP_CODES, absent)))?;
                 parse::as_block_hash(&hash).map_err(|e| QueryError::NonDomain(from_parse(e)))
             })
             .collect();
         let metadata = metadata.then(|| {
             let peers = next().map_err(NonDomainError::from);
             let info = next().map_err(NonDomainError::from);
-            let deprecation = match next() {
+            let deprecation = match next().map_err(|error| classify(error, no_verdict)) {
                 Ok(value) => Ok(Some(value)),
-                Err(RpcError::Rpc { code: METHOD_NOT_FOUND, .. }) => Ok(None),
-                Err(other) => Err(NonDomainError::from(other)),
+                // zebrad < 6.3
+                Err(QueryError::Unsupported) => Ok(None),
+                Err(QueryError::NonDomain(error)) => Err(error),
+                Err(QueryError::Domain(never)) => match never {},
             };
             MetadataReading {
                 peers: peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse)),
@@ -291,7 +293,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             for (entry, reply) in batch.iter().zip(replies) {
                 let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
                 let raw = reply.map(|parse::HexBytes(raw)| raw);
-                fetched.push(split(raw.map_err(|error| absent_or_fetch(error, absent)))?);
+                fetched.push(split(raw.map_err(|error| classify(error, not_found(absent))))?);
             }
         }
         Ok(fetched)
@@ -302,41 +304,19 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         transaction: Vec<u8>,
     ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         let params = vec![const_hex::encode(transaction).into()];
-        self.call_parsed("sendrawtransaction", params, parse::as_txid, |error| {
-            let error: NonDomainError = error.into();
-            match submission_rejection(&error) {
-                Some(rejection) => QueryError::Domain(rejection),
-                None => QueryError::NonDomain(error),
-            }
-        })
-        .await
+        self.call_parsed("sendrawtransaction", params, parse::as_txid, submission_rejection).await
     }
 
     async fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TxId, QueryError<CheckAdmissionError>> {
+    ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         let params = vec![const_hex::encode(transaction).into()];
-        self.call_parsed("checkadmission", params, parse::as_txid, |error| {
-            admission_check_answer(error.into())
-        })
-        .await
+        self.call_parsed("checkadmission", params, parse::as_txid, submission_rejection).await
     }
 
-    async fn get_standard_fee(
-        &self,
-    ) -> Result<crate::StandardFee, QueryError<crate::GetStandardFeeError>> {
-        // `-32601` = `Unsupported` (validator predates the RPC), else a fetch failure
-        self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee, |error| {
-            let error: NonDomainError = error.into();
-            match error.mode {
-                FailureMode::RpcError(METHOD_NOT_FOUND) => {
-                    QueryError::Domain(crate::GetStandardFeeError::Unsupported)
-                }
-                _ => QueryError::NonDomain(error),
-            }
-        })
-        .await
+    async fn get_standard_fee(&self) -> Result<crate::StandardFee, QueryError<Infallible>> {
+        self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee, no_verdict).await
     }
 
     /// Verbosity 1: the height places it (mined vs mempool)
@@ -345,14 +325,14 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         txid: TxId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         let params = vec![txid.to_string().into(), serde_json::Value::Number(1.into())];
-        self.call_parsed("getrawtransaction", params, parse::parse_transaction, |error| {
-            absent_or_fetch(error, || GetTransactionError::NotFound(txid))
-        })
-        .await
+        let absent = not_found(|| GetTransactionError::NotFound(txid));
+        self.call_parsed("getrawtransaction", params, parse::parse_transaction, absent).await
     }
 }
 
-/// Port's answer apart from its failure: `Ok(Err(domain))` = the validator's answer
+/// A batch item's answer apart from its failure: `Ok(Err(domain))` = the validator's answer
+///
+/// - `Unsupported` = a failure here (a node without a method it batches = broken)
 fn split<T, E>(result: Result<T, QueryError<E>>) -> Result<Result<T, E>, NonDomainError>
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -360,6 +340,9 @@ where
     match result {
         Ok(value) => Ok(Ok(value)),
         Err(QueryError::Domain(answer)) => Ok(Err(answer)),
+        Err(QueryError::Unsupported) => {
+            Err(NonDomainError::new(FailureMode::RpcError(METHOD_NOT_FOUND), "method not found"))
+        }
         Err(QueryError::NonDomain(cause)) => Err(cause),
     }
 }
@@ -426,15 +409,16 @@ mod tests {
     ///   healthy validator)
     /// - `getblockhash` above the tip likewise, zebrad's `-32602` too (validator behind ≠ failed
     ///   poll)
+    /// - `-32601` = `Unsupported` under every method's verdicts (an older node, never a failure)
     /// - Every other code + every transport failure = failure (outage never reads as empty chain)
     #[test]
-    fn only_not_found_codes_are_absent_answers() {
+    fn only_not_found_codes_are_absent_answers_and_a_missing_method_is_unsupported() {
         let absent = || GetAtHeightError::HeightNotFound(BlockHeight::from(42));
-        let classifiers: [(&str, &[i64]); 2] =
+        let classifiers: [(&str, &'static [i64]); 2] =
             [("not found", &NOT_FOUND_CODES), ("above the tip", &ABOVE_TIP_CODES)];
         for (case, codes) in classifiers {
             for &code in codes {
-                let classified = absent_on(codes, rpc(code, case), absent);
+                let classified = classify(rpc(code, case), absent_on(codes, absent));
                 assert!(matches!(classified, QueryError::Domain(_)), "{case} {code}");
             }
             for error in [-1, -3, -20, -22, -25, -28, -32_600]
@@ -442,11 +426,14 @@ mod tests {
                 .into_iter()
                 .chain([RpcError::Status(503)])
             {
-                let classified = absent_on(codes, error, absent);
+                let classified = classify(error, absent_on(codes, absent));
                 assert!(matches!(classified, QueryError::NonDomain(_)), "{case}: {classified:?}");
             }
+            let missing =
+                classify(rpc(METHOD_NOT_FOUND, "Method not found"), absent_on(codes, absent));
+            assert!(matches!(missing, QueryError::Unsupported), "{case}");
         }
-        let classified = absent_or_fetch(rpc(-32602, "past the tip"), absent);
+        let classified = classify(rpc(-32602, "past the tip"), not_found(absent));
         assert!(
             matches!(classified, QueryError::NonDomain(_)),
             "-32602 absent only for getblockhash"
@@ -485,44 +472,35 @@ mod tests {
         }
     }
 
-    /// `checkadmission` (zebra fork, zcashd + stock zebrad have none)
+    /// `checkadmission` (zebra fork): `sendrawtransaction`'s verdicts
     ///
-    /// - `-32601` = unsupported, an answer (the validator stays healthy)
     /// - `-25` / a `-1` mempool verdict = refused, verbatim
     /// - Any other `-1` (inactive mempool, verifier timeout) = no verdict, a failure
     #[test]
-    fn admission_checks_are_a_missing_method_a_refusal_or_no_verdict() {
-        let missing = admission_check_answer(rpc(METHOD_NOT_FOUND, "Method not found").into());
-        assert!(matches!(missing, QueryError::Domain(CheckAdmissionError::Unsupported)));
+    fn admission_checks_are_a_refusal_or_no_verdict() {
         let bad = "failed to validate tx: bad-txns-inputs-missingorspent";
-        let refused = admission_check_answer(rpc(-25, bad).into());
+        let refused = classify(rpc(-25, bad), submission_rejection);
         let verbatim = SendRawTransactionError::Rejected { code: -25, message: bad.into() };
-        assert!(
-            matches!(&refused, QueryError::Domain(CheckAdmissionError::Refused(r)) if *r == verbatim),
-            "{refused:?}"
-        );
-        let non_standard = admission_check_answer(rpc(-1, "transaction is non-standard").into());
-        assert!(matches!(non_standard, QueryError::Domain(CheckAdmissionError::Refused(_))));
+        assert!(matches!(&refused, QueryError::Domain(r) if *r == verbatim), "{refused:?}");
+        let non_standard = classify(rpc(-1, "transaction is non-standard"), submission_rejection);
+        assert!(matches!(non_standard, QueryError::Domain(_)));
         for message in ["mempool is not active: wait for Zebra to sync to the tip", "timeout"] {
-            let no_verdict = admission_check_answer(rpc(-1, message).into());
+            let no_verdict = classify(rpc(-1, message), submission_rejection);
             assert!(matches!(no_verdict, QueryError::NonDomain(_)), "{message}");
         }
     }
 
-    /// - `-32601` = no mempool on this node (stop asking)
     /// - zebrad's own `-1` below the network tip = inactive
     /// - every other code (bare `-1` included) = failure worth re-polling
     #[test]
-    fn mempool_answers_are_a_missing_method_or_an_inactive_mempool() {
-        let missing = mempool_unavailable_or_fetch(rpc(METHOD_NOT_FOUND, "Method not found"));
-        assert!(matches!(missing, QueryError::Domain(GetMempoolListingError::Unavailable)));
-        let inactive = mempool_unavailable_or_fetch(rpc(
-            -1,
-            "mempool is not active: wait for Zebra to sync to the tip",
-        ));
+    fn an_inactive_mempool_is_zebrads_own_minus_one() {
+        let inactive = classify(
+            rpc(-1, "mempool is not active: wait for Zebra to sync to the tip"),
+            mempool_inactive,
+        );
         assert!(matches!(inactive, QueryError::Domain(GetMempoolListingError::Inactive)));
         for code in [-5, -8, -28, -1, -32603] {
-            let classified = mempool_unavailable_or_fetch(rpc(code, "something else"));
+            let classified = classify(rpc(code, "something else"), mempool_inactive);
             assert!(matches!(classified, QueryError::NonDomain(_)), "code {code}");
         }
     }

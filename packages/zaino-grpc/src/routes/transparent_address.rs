@@ -280,9 +280,8 @@ mod tests {
     async fn a_populated_transparent_index_answers_utxos_and_balances_in_both_shapes() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::{p2pkh, MockChain};
         use zaino_proto::proto::service;
-        use zaino_source::testing::{decoded, raw_transparent, ValidatorViews};
+        use zaino_source::testing::{p2pkh, raw_transparent, MockChain, ValidatorViews};
         use zcash_script::script::Code;
         use zcash_transparent::address::Script;
         use zcash_transparent::bundle::OutPoint;
@@ -299,17 +298,17 @@ mod tests {
         // - 2: alice 500 (vout 0), bob 70 (vout 1), change 300 (vout 2)
         // - 3: the change to alice
         let mut chain = MockChain::regtest().network(crate::testing::MAINNET);
-        chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&miner, 870)));
+        let funded = chain.mine(|b| b.coinbase(|c| c.pay(&miner, 870)));
         let pays = [(&alice, 500), (&bob, 70), (&miner, 300)];
-        let (first, first_raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &pays);
-        chain.mine(|b| b.raw_tx(decoded(first_raw.clone())));
+        let (first, first_raw) = raw_transparent(&[chain.output(funded, 0, 0)], &pays);
+        chain.mine(|b| b.raw_tx(first_raw.clone()));
         let change = OutPoint::new(first.into(), 2);
         let (second, second_raw) = raw_transparent(&[change], &[(&alice, 300)]);
-        let tip = chain.mine(|b| b.raw_tx(decoded(second_raw.clone())));
+        let tip = chain.mine(|b| b.raw_tx(second_raw.clone()));
         let index = indexed(IndexKind::TransparentAddress, &chain, tip);
 
         // the validator serves the same chain the index holds
-        let node = std::sync::Arc::new(chain.validator(tip));
+        let node = chain.validator(tip);
         let (routes, balancing, _) = routes_over(&node);
         let routes =
             RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
@@ -482,8 +481,8 @@ mod tests {
     async fn a_foreign_network_address_is_refused_by_every_transparent_method() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::{p2pkh, MockChain};
         use zaino_proto::proto::service;
+        use zaino_source::testing::{p2pkh, MockChain};
         use zcash_address::ToAddress as _;
         use zcash_protocol::consensus::NetworkType;
 

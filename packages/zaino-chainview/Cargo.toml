@@ -10,7 +10,7 @@ description = "The best chain by proof of work, the mempool and submission, over
 [features]
 # `ChainView::set_verified` (standing in for header sync) + `testing::MockPeers` + a
 # `MockChain` ledger as `UnspentOutputs`
-testing = ["zaino-primitives/testing"]
+testing = ["zaino-source/testing"]
 
 [dependencies]
 arc-swap.workspace = true
@@ -36,7 +36,6 @@ metrics-util = { version = "0.20", default-features = false, features = ["debugg
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-traffic = { workspace = true, features = ["testing"] }
 

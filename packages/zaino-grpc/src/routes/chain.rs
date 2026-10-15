@@ -15,7 +15,7 @@ use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
-use zaino_traffic::TrafficBalancer;
+use zaino_traffic::{TrafficBalancer, Unanswered};
 use zcash_protocol::consensus::{
     BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
 };
@@ -151,20 +151,23 @@ where
     Ok(unary_response(frame(&found)))
 }
 
+/// The fleet's non-answer to a forwarded call: every member asked lacks the method =
+/// `UNIMPLEMENTED`, else `UNAVAILABLE` (a route maps its own domain answers first)
+fn unanswered<E: std::fmt::Debug + std::fmt::Display>(unanswered: &Unanswered<E>) -> Status {
+    match unanswered.last {
+        Some(QueryError::Unsupported) => {
+            Status::unimplemented(format!("every connected validator: {unanswered}"))
+        }
+        _ => Status::unavailable(unanswered.to_string()),
+    }
+}
+
 /// `GetStandardFee`: the ZIP 317 marginal fee from the fleet
-///
-/// - `UNIMPLEMENTED` when every validator asked predates the RPC
-/// - `UNAVAILABLE` when the fleet is unreachable
 pub(crate) async fn standard_fee<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
 ) -> Result<Response<Body>, Status> {
-    let fee = validators.standard_fee().await.map_err(|unanswered| match &unanswered.last {
-        Some(QueryError::Domain(zaino_source::GetStandardFeeError::Unsupported)) => {
-            Status::unimplemented("every connected validator predates getstandardfee")
-        }
-        _ => Status::unavailable(unanswered.to_string()),
-    })?;
-    let fee = fee.value;
+    let fee = validators.lookup(|source| async move { source.get_standard_fee().await });
+    let fee = fee.await.map_err(|failed| unanswered(&failed))?.value;
     let reply = service::StandardFee {
         fee_zat: u64::from(fee.fee_zat),
         estimator_version: fee.estimator_version,
@@ -181,13 +184,13 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
     txid: TxId,
 ) -> Result<RawTransaction, Status> {
-    let found =
-        validators.transaction(txid).await.map_err(|unanswered| match &unanswered.last {
-            Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
-                Status::not_found(format!("transaction not found: {txid}"))
-            }
-            _ => Status::unavailable(unanswered.to_string()),
-        })?;
+    let found = validators.lookup(move |source| async move { source.get_transaction(txid).await });
+    let found = found.await.map_err(|failed| match &failed.last {
+        Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
+            Status::not_found(format!("transaction not found: {txid}"))
+        }
+        _ => unanswered(&failed),
+    })?;
     let found = found.value;
 
     // Orphaned → unmined (one wire "no height", an abandoned branch must not read as confirmed)
@@ -251,9 +254,8 @@ mod tests {
 
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
-    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::BlockRef;
-    use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
+    use zaino_source::testing::{h, raw_transaction, MockChain, ValidatorViews};
 
     use crate::service::Method;
     use crate::testing::{
@@ -360,7 +362,7 @@ mod tests {
     async fn lightd_info_answers_once_served_with_no_validator_holding_the_tip() {
         let mut chain = MockChain::regtest();
         let tip_7 = chain.mine_empty(7);
-        let node = Arc::new(chain.validator(tip_7));
+        let node = chain.validator(tip_7);
         let (mut routes, _balancing, _fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let grpc_snapshots = routes.grpc_snapshots.clone();
@@ -422,11 +424,11 @@ mod tests {
         let tip_10 = chain.mine_empty(10);
         let tip_11 = chain.mine_empty(1);
         let seeded: Vec<TxId> =
-            (1..=5).map(|seed| chain.submit(decoded(raw_transaction(seed, 0).1))).collect();
-        let node = Arc::new(chain.validator(chain.genesis()));
+            (1..=5).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
+        let node = chain.validator(chain.genesis());
         let hear =
             |seeds: &[usize]| seeds.iter().for_each(|seed| node.hear(&chain, seeded[seed - 1]));
-        node.reachable(&Port::ALL, false);
+        node.down(true);
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let (view, grpc_snapshots) = (Arc::clone(&routes.submit), routes.grpc_snapshots.clone());
@@ -449,7 +451,7 @@ mod tests {
 
         node.follow(&chain, tip_10);
         hear(&[1, 2]);
-        node.reachable(&Port::ALL, true);
+        node.down(false);
         verified(tip_10);
         let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
         rounds("both listed", listed).await;
@@ -530,7 +532,8 @@ mod tests {
         cancel.cancel();
     }
 
-    /// Mempool = 3 mainnet txs (block 2,000,000: Orchard, Sapling, transparent):
+    /// Mempool = 3 minted txs on Alice's coinbase: transparent only, + Sapling outputs, + an
+    /// Orchard action
     ///
     /// - each answer: own slots, own pools (tx left empty dropped), no gap for an excluded suffix
     /// - each pool = what the consensus parse found
@@ -539,60 +542,43 @@ mod tests {
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
-        use std::collections::BTreeMap;
         use tower::Service as _;
-        use zaino_primitives::testing::{p2pkh, TxBuilder};
         use zaino_primitives::types::Transaction;
         use zaino_proto::proto::compact_formats::CompactTx;
         use zaino_proto::proto::service;
+        use zaino_source::testing::p2pkh;
         use zcash_protocol::ShieldedPool;
 
-        let block: Vec<(Transaction, Vec<u8>)> =
-            zaino_source::testing::fixtures::transactions(2_000_000)
-                .into_iter()
-                .map(|raw| (zaino_source::decode_transaction(&raw).expect("decodes"), raw))
-                .collect();
-        let pools: [fn(&Transaction) -> bool; 3] = [
-            |tx| !tx.orchard.actions.is_empty(),
-            |tx| !tx.sapling.outputs.is_empty(),
-            |tx| !tx.transparent.inputs.is_empty(),
-        ];
-        let mut chosen: Vec<(Transaction, Vec<u8>)> = Vec::new();
-        for has in pools {
-            let fresh = |(tx, _): &&(Transaction, Vec<u8>)| {
-                has(tx) && !chosen.iter().any(|(held, _)| held.txid == tx.txid)
-            };
-            chosen.push(block.iter().find(fresh).expect("block 2,000,000 has one").clone());
-        }
-        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
-        let txid = |tx: &Transaction| *tx.txid.as_ref();
-
-        // their prevouts: one coinbase per spent txid (1,000 ZEC each vout), shielded pools funded
         let (alice, zec) = (p2pkh([0xaa; 20]), 100_000_000u64);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| {
-            let deposit = -100_000 * zec as i64;
-            b.coinbase(|c| {
-                c.value_balance(ShieldedPool::Sapling, deposit)
-                    .value_balance(ShieldedPool::Orchard, deposit)
-            })
-        });
-        let mut spent: BTreeMap<[u8; 32], u32> = BTreeMap::new();
-        for prevout in chosen.iter().flat_map(|(tx, _)| &tx.transparent.inputs) {
-            let last = spent.entry(*prevout.hash()).or_default();
-            *last = (*last).max(prevout.n());
-        }
-        for (txid, last) in spent {
-            let paid =
-                |c: TxBuilder| (0..=last).fold(c.txid(txid), |c, _| c.pay(&alice, 1_000 * zec));
-            chain.mine(|b| b.coinbase(paid));
-        }
+        let funded =
+            chain.mine(|b| b.coinbase(|c| c.pay(&alice, zec).pay(&alice, zec).pay(&alice, zec)));
         let tip = chain.mine_empty(1);
-        let node = Arc::new(chain.validator(tip));
-        for (tx, raw) in &chosen {
-            chain.submit((tx.clone(), raw.clone()));
-            node.hear(&chain, tx.txid);
+        let node = chain.validator(tip);
+        let [a, b, c] = [0, 1, 2].map(|vout| chain.output(funded, 0, vout));
+        let deposit = -(zec as i64) + 1_000;
+        let submitted = [
+            chain.submit(|t| t.spend(a).pay(&alice, zec - 1_000)),
+            chain.submit(|t| {
+                t.spend(b)
+                    .sapling_output(1)
+                    .sapling_output(2)
+                    .value_balance(ShieldedPool::Sapling, deposit)
+            }),
+            chain.submit(|t| {
+                t.spend(c).orchard_action(1, 1).value_balance(ShieldedPool::Orchard, deposit)
+            }),
+        ];
+        for txid in submitted {
+            node.hear(&chain, txid);
         }
+        let mut chosen: Vec<(Transaction, Vec<u8>)> = chain
+            .mempool()
+            .iter()
+            .map(|unmined| (unmined.tx.clone(), unmined.bytes.clone()))
+            .collect();
+        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
+        let txid = |tx: &Transaction| *tx.txid.as_ref();
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);
         let (reader, grpc_snapshots) = (routes.submit.subscriber(), routes.grpc_snapshots.clone());
@@ -674,7 +660,7 @@ mod tests {
         use tower::Service as _;
 
         let chain = MockChain::regtest();
-        let node = Arc::new(chain.validator(chain.genesis()));
+        let node = chain.validator(chain.genesis());
         let (routes, balancing, _fold) = routes_over(&node);
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(balancing.run(cancel.child_token()));

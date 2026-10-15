@@ -22,9 +22,8 @@ use imbl::Vector;
 use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
-use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
 use zaino_primitives::types::{BlockRef, FinalityDepth, PeerTxId};
-use zaino_source::testing::{raw_transparent, ValidatorViews};
+use zaino_source::testing::{p2pkh, raw_transparent, Ledger, MockChain, ValidatorViews};
 use zaino_traffic::TrustedValidatorId;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
@@ -361,10 +360,11 @@ impl Run {
 fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move>) {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
-    for (n, zats) in [(1u8, 10_000), (2, 10_000), (3, 5_000)] {
-        chain.mine(|b| b.coinbase(|c| c.txid([n; 32]).pay(&alice, zats)));
-    }
-    let funding = |n: u8| OutPoint::new([n; 32], 0);
+    let funded = [10_000, 10_000, 5_000].map(|zats| {
+        let block = chain.mine(|b| b.coinbase(|c| c.pay(&alice, zats)));
+        chain.output(block, 0, 0)
+    });
+    let funding = |n: usize| funded[n - 1].clone();
     let unknown = OutPoint::new([9; 32], 0);
     let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
     let txs = [

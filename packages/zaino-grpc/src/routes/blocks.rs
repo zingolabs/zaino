@@ -282,8 +282,8 @@ mod tests {
     use http::{HeaderValue, Response};
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{h, MockChain};
     use zaino_proto::frame::FRAME_HEADER;
+    use zaino_source::testing::{h, MockChain};
 
     use crate::service::{Method, RouteDeps};
     use crate::testing::{
@@ -413,25 +413,23 @@ mod tests {
     async fn get_block_and_get_block_range_answer_stored_records_in_their_shapes() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::p2pkh;
         use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service;
-        use zcash_transparent::bundle::OutPoint;
+        use zaino_source::testing::p2pkh;
 
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest().network(MAINNET);
-        for at in 1..=5u8 {
-            let leaf = u32::from(at);
+        for at in 1..=5u32 {
             chain.mine(|b| {
-                b.coinbase(|c| c.txid([at; 32]).pay(&alice, 17_345)).tx(|t| {
-                    t.spend(OutPoint::new([at; 32], 0))
+                b.coinbase(|c| c.pay(&alice, 17_345)).tx(|t| {
+                    t.spend_in_block(0, 0)
                         .pay(&alice, 12_345)
                         .fee(5_000)
-                        .sapling_spend([0x30 + at; 32])
-                        .sapling_output(leaf)
-                        .orchard_action([0x70 + at; 32], leaf)
-                        .ironwood_action([0x80 + at; 32], 2 * leaf)
-                        .ironwood_action([0x90 + at; 32], 2 * leaf + 1)
+                        .sapling_spend(0x30 + at)
+                        .sapling_output(at)
+                        .orchard_action(0x70 + at, at)
+                        .ironwood_action(0x80 + at, 2 * at)
+                        .ironwood_action(0x90 + at, 2 * at + 1)
                 })
             });
         }
@@ -508,25 +506,23 @@ mod tests {
     async fn get_block_range_nullifiers_answers_only_each_blocks_nullifiers() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::p2pkh;
         use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service;
-        use zcash_transparent::bundle::OutPoint;
+        use zaino_source::testing::{nullifier, p2pkh};
 
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest().network(MAINNET);
-        for at in 1..=4u8 {
-            let leaf = u32::from(at);
+        for at in 1..=4u32 {
             chain.mine(|b| {
-                b.coinbase(|c| c.txid([at; 32]).pay(&alice, 17_345)).tx(|t| {
-                    t.spend(OutPoint::new([at; 32], 0))
+                b.coinbase(|c| c.pay(&alice, 17_345)).tx(|t| {
+                    t.spend_in_block(0, 0)
                         .pay(&alice, 12_345)
                         .fee(5_000)
-                        .sapling_spend([0x30 + at; 32])
-                        .sapling_output(leaf)
-                        .orchard_action([0x70 + at; 32], leaf)
-                        .ironwood_action([0x80 + at; 32], 2 * leaf)
-                        .ironwood_action([0x90 + at; 32], 2 * leaf + 1)
+                        .sapling_spend(0x30 + at)
+                        .sapling_output(at)
+                        .orchard_action(0x70 + at, at)
+                        .ironwood_action(0x80 + at, 2 * at)
+                        .ironwood_action(0x90 + at, 2 * at + 1)
                 })
             });
         }
@@ -565,15 +561,15 @@ mod tests {
                 (block.height, block.chain_metadata, txs)
             })
             .collect();
-        let nullifier = |seed: u8| compact_formats::CompactOrchardAction {
-            nullifier: vec![seed; 32],
+        let action = |tag: u32| compact_formats::CompactOrchardAction {
+            nullifier: nullifier(tag).0.to_vec(),
             ..Default::default()
         };
-        let expected: Vec<_> = (1..=4u8)
+        let expected: Vec<_> = (1..=4u32)
             .map(|at| {
-                let spends = vec![vec![0x30 + at; 32]];
-                let ironwood = vec![nullifier(0x80 + at), nullifier(0x90 + at)];
-                let tx = (spends, 0, 0, vec![nullifier(0x70 + at)], ironwood);
+                let spends = vec![nullifier(0x30 + at).0.to_vec()];
+                let ironwood = vec![action(0x80 + at), action(0x90 + at)];
+                let tx = (spends, 0, 0, vec![action(0x70 + at)], ironwood);
                 (u64::from(at), Some(compact_formats::ChainMetadata::default()), vec![tx])
             })
             .collect();

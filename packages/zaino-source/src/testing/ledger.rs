@@ -8,7 +8,7 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{Fee, Nullifier, Transaction};
+use zaino_primitives::types::{Fee, Nullifier, Transaction};
 use zcash_protocol::ShieldedPool;
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)

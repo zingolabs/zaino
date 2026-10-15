@@ -3,8 +3,8 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_primitives::testing::{encode_header, MockChain, Work};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
+use zaino_source::testing::{encode_header, MockChain, Work};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::{decode_header, HeaderChain, Params, Rejected, VerifiedChain};
@@ -75,7 +75,7 @@ mod tests {
 
     use proptest::prelude::*;
     use proptest::sample::Index;
-    use zaino_primitives::testing::h;
+    use zaino_source::testing::h;
     use zcash_protocol::BlockHash;
 
     use super::*;

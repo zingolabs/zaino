@@ -27,10 +27,10 @@ pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use node_release::{EndOfService, NodeRelease};
 pub use peer_info::PeerInfo;
 pub use queries::{
-    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
-    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetStandardFeeError, GetTransactionError, MempoolListed, MetadataReading, PollReading,
-    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
+    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
+    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
+    TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};

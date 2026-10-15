@@ -10,16 +10,16 @@ use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 use zaino_grpc::{GrpcLimits, GrpcService, RouteDeps};
 use zaino_persistence::DiskView;
-use zaino_primitives::testing::MockChain;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zaino_source::testing::{MockValidator, ValidatorViews};
+use zaino_source::testing::{MockChain, ValidatorViews};
+use zaino_source::ZcashLegacyRpcClient;
 
 /// Nothing served, chain view never polled → every `GetLightdInfo` = `UNAVAILABLE` (what these
 /// transport tests read back)
-fn routes() -> RouteDeps<MockValidator, DiskView> {
+fn routes() -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let chain = MockChain::regtest();
-    let validator = Arc::new(chain.validator(chain.genesis()));
+    let validator = Arc::new(chain.validator(chain.genesis()).client());
     let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let address = "unpolled:18232".to_owned();
     let trusted =

@@ -105,30 +105,54 @@ mod tests {
     use zcash_transparent::address::Script;
     use zcash_transparent::bundle::OutPoint;
 
+    /// `(height, hash, prev_hash)`, every other field zero
+    fn header(height: u32, hash: u8, prev: u8) -> DecodedHeader {
+        DecodedHeader {
+            hash: BlockHash([hash; 32]),
+            version: 4,
+            prev_hash: BlockHash([prev; 32]),
+            height: BlockHeight::from(height),
+            time: 0,
+            merkle_root: MerkleRoot([0; 32]),
+            block_commitments: BlockCommitments([0; 32]),
+            bits: CompactDifficulty::try_from_bits(0x200f_0f0f).expect("regtest nBits"),
+            nonce: [0; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        }
+    }
+
+    fn tx(txid: u8) -> Transaction {
+        Transaction {
+            txid: TxId::from_bytes([txid; 32]),
+            transparent: TransparentData::default(),
+            sprout: Default::default(),
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        }
+    }
+
     /// Block 1 extends genesis and nothing else: not an empty parent, a sibling, itself, or a gap
     #[test]
     fn a_header_extends_only_its_parent_and_genesis_only_nothing() {
-        use crate::testing::{h, MockChain};
-
-        let mut chain = MockChain::regtest();
-        let two = chain.mine_empty(2);
-        let sibling = chain.fork(h(0)).mine_empty(1).tip();
-        let (genesis, one) = (chain.genesis(), chain.at(h(1)));
-        let header = |at: BlockRef| chain.block(at.hash).header().clone();
+        let (genesis, one, two) =
+            (header(0, 0x10, 0), header(1, 0x11, 0x10), header(2, 0x12, 0x11));
+        let sibling = header(1, 0x21, 0x10);
+        let at = |header: &DecodedHeader| BlockRef { hash: header.hash, height: header.height };
         let cases = [
-            (header(genesis), None, true),
-            (header(genesis), Some(genesis), false),
-            (header(one), Some(genesis), true),
-            (header(one), None, false),
-            (header(one), Some(sibling), false),
-            (header(one), Some(one), false),
-            (header(two), Some(genesis), false),
-            (header(two), Some(one), true),
+            (&genesis, None, true),
+            (&genesis, Some(at(&genesis)), false),
+            (&one, Some(at(&genesis)), true),
+            (&one, None, false),
+            (&one, Some(at(&sibling)), false),
+            (&one, Some(at(&one)), false),
+            (&two, Some(at(&genesis)), false),
+            (&two, Some(at(&one)), true),
         ];
         for (header, parent, expected) in cases {
             assert_eq!(header.extends(parent), expected, "{:?} on {parent:?}", header.height);
         }
-        assert_eq!(chain.block(two.hash).block_ref(), two);
+        assert_eq!(Block::new(two.clone(), vec![tx(0)]).block_ref(), at(&two));
     }
 
     /// Body = what its header commits to
@@ -138,11 +162,13 @@ mod tests {
     /// - repeated last pair keeps the root (CVE-2012-2459) → refused as mutated
     #[test]
     fn a_body_passes_only_when_its_txids_rebuild_its_headers_merkle_root() {
-        let mut chain = crate::testing::MockChain::regtest();
-        let mined = chain.mine(|b| b.tx(|t| t.txid([1; 32])).tx(|t| t.txid([2; 32])));
-        let block = chain.block(mined.hash);
-        let txs = block.transactions().to_vec();
-        let with = |txs: Vec<Transaction>| Block::new(block.header().clone(), txs);
+        let txs = vec![tx(0), tx(1), tx(2)];
+        let txids: Vec<TxId> = txs.iter().map(|tx| tx.txid).collect();
+        let committed = DecodedHeader {
+            merkle_root: MerkleRoot::of_txids(&txids).expect("distinct txids"),
+            ..header(1, 0x11, 0x10)
+        };
+        let with = |txs: Vec<Transaction>| Block::new(committed.clone(), txs);
 
         let added = [txs.clone(), vec![txs[0].clone()]].concat();
         let reordered = vec![txs[0].clone(), txs[2].clone(), txs[1].clone()];
@@ -185,9 +211,7 @@ mod tests {
             orchard: OrchardData { actions: vec![action.clone(); 3], ..OrchardData::default() },
             ironwood: OrchardData { actions: vec![action], ..OrchardData::default() },
         };
-        let chain = crate::testing::MockChain::regtest();
-        let header = chain.block(chain.genesis().hash).header().clone();
-        let block = Block::new(header, vec![tx]);
+        let block = Block::new(header(0, 0x10, 0), vec![tx]);
 
         let expected = size_of::<Block>()
             + size_of::<Transaction>()

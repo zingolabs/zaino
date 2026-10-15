@@ -38,16 +38,15 @@ checked against an independent oracle.
 | `index_files_verify_clean` (both sync profiles, at completion)                                         | `zainod verify` runs in the pod and checks every durable byte of every index against its page checksums.                                                                                                                                                                                                                                                                                                               |
 
 Every in-repo test takes its blocks, headers, verified chains and validators from one builder,
-`zaino_primitives::testing::MockChain` ([guide](../packages/zaino-primitives/usage.md)): every
-block it hands out passes our own checks (real header bytes, linkage, merkle root, spends,
-fees, pool activations), and its mempool holds only transactions its best chain admits. The
-simulated validators are `zaino_source::testing::MockValidator` (`chain.validator(tip)`),
-each following one tip of a shared `MockChain` and answering the way zebrad does: blocks by
-hash and headers by height come from the best chain only, nothing is served above the tip,
-a node lists only what it heard from the chain's mempool or accepted itself, each at the fee
-its bytes leave on its tip, and a mined transaction is served only from the real bytes it was
-mined with. A test that relies on a lookup zebrad would refuse fails here rather than on a
-cluster.
+`zaino_source::testing::MockChain` ([guide](../packages/zaino-source/usage.md#testing-mockchain)):
+every transaction is real consensus bytes written by librustzcash, every block it hands out is
+the production decoder's reading of its own bytes and passes our own checks (linkage, merkle
+root, spends, fees, pool activations), and its mempool holds only transactions its best chain
+admits. The simulated validators are `zaino_source::testing::MockValidator`
+(`chain.validator(tip)`), each following one tip of a shared `MockChain` and answering zebrad's
+JSON-RPC as bytes. Tests reach them through Zaino's own client (`validator.client()`), so the
+request builder, envelope, batching, parsers and error classification run in every test above
+it. A test that relies on a request zebrad would refuse fails here rather than on a cluster.
 
 ### Model tests in bulk
 

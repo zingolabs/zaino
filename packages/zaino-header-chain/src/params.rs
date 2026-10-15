@@ -167,7 +167,7 @@ fn display(hex: &str) -> BlockHash {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::{all_at, h};
+    use zaino_source::testing::{all_at, h};
 
     use super::*;
 

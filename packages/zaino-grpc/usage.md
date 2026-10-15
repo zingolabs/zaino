@@ -51,7 +51,11 @@ routing.route(routes);
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
 | `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
+| `GetTransaction` | `validators.lookup(..get_transaction(txid))` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
+| `GetStandardFee` | `validators.lookup(..get_standard_fee())` |
+
+A forwarded call every member asked lacks (`QueryError::Unsupported`) = `UNIMPLEMENTED`, any
+other unanswered call = `UNAVAILABLE`: one mapping for every forwarding route.
 
 - **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
   the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled

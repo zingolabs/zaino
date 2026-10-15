@@ -10,8 +10,8 @@ use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::FinalityDepth;
 use zaino_source::{
-    prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
-    Prepared, QueryError, SendRawTransactionError,
+    prepare_transaction, ChainDataSource, FailureMode, NonDomainError, Prepared, QueryError,
+    SendRawTransactionError,
 };
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::local_consensus::LocalNetwork;
@@ -162,13 +162,15 @@ impl<S: ChainDataSource> ChainView<S> {
         members.retain(|member| holders.contains(*member));
         fastrand::shuffle(&mut members);
         for member in members {
-            match self.balancer.check_admission(member, raw.to_vec()).await {
+            let check = |source: Arc<S>| {
+                let raw = raw.to_vec();
+                async move { source.check_admission(raw).await }
+            };
+            match self.balancer.submit(member, check).await {
                 Ok(_) => return Ok(true),
                 Err(unanswered) => match unanswered.last {
-                    Some(QueryError::Domain(CheckAdmissionError::Refused(refused))) => {
-                        return Err(refused)
-                    }
-                    Some(QueryError::Domain(CheckAdmissionError::Unsupported)) | None => {}
+                    Some(QueryError::Domain(refused)) => return Err(refused),
+                    Some(QueryError::Unsupported) | None => {}
                     Some(QueryError::NonDomain(cause)) => {
                         debug!(?member, %cause, "Admission check unanswered")
                     }
@@ -268,12 +270,17 @@ impl<S: ChainDataSource> Submission<S> {
     async fn push(&self, entry: Entry) -> Pushed {
         match (entry, &self.peers) {
             (Entry::Trusted(member), _) => {
-                match self.balancer.submit(member, self.raw.to_vec()).await {
+                let send = |source: Arc<S>| {
+                    let raw = self.raw.to_vec();
+                    async move { source.send_raw_transaction(raw).await }
+                };
+                match self.balancer.submit(member, send).await {
                     Ok(_) => Pushed::Accepted,
                     Err(unanswered) => match unanswered.last {
                         Some(QueryError::Domain(rejected)) => Pushed::Rejected(rejected),
                         Some(QueryError::NonDomain(cause)) => Pushed::Unreachable(cause),
-                        None => {
+                        // no `sendrawtransaction` (never a real node) or nobody to ask
+                        Some(QueryError::Unsupported) | None => {
                             let out = NonDomainError::new(
                                 FailureMode::Connection,
                                 unanswered.to_string(),

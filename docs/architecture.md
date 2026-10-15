@@ -328,7 +328,7 @@ double), or one that keeps a dependency out of the crates above it:
 
 | Trait                               | Implementations                                | Why                                      |
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient`, `MockValidator` | JSON-RPC or indexer gRPC; tests control the data |
+| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient` (tests: the legacy client over a `MockValidator`'s JSON-RPC) | JSON-RPC or indexer gRPC; tests control the data, never the client |
 | `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets                  |
 | `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
 | `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, a `MockChain` `Ledger`   | the chain view sits below the indexes    |

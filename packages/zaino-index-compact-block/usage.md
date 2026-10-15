@@ -130,5 +130,5 @@ more both write 0, "not provided", rather than a wrong value.
 ## Testing
 
 There is no `testing` feature. Mine blocks with
-`zaino_primitives::testing::MockChain` and fold them with `fold` and
+`zaino_source::testing::MockChain` and fold them with `fold` and
 `chain.fees(hash)`.

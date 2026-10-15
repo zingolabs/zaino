@@ -40,7 +40,7 @@ impl Transaction {
 
     /// `spent` − Σ outputs + each pool's value balance, negative = overspent (`None`: outputs past
     /// the supply)
-    pub(crate) fn value_left(&self, spent: Zatoshis) -> Option<i64> {
+    pub fn value_left(&self, spent: Zatoshis) -> Option<i64> {
         let outputs = self.transparent.outputs.iter().map(|out| out.value);
         let paid = outputs.sum::<Option<Zatoshis>>()?;
         let signed = |zats: Zatoshis| i64::from(ZatBalance::from(zats));
@@ -49,7 +49,7 @@ impl Transaction {
     }
 
     /// Sprout, Sapling, Orchard, Ironwood (+ = out of that pool)
-    pub(crate) fn pool_balances(&self) -> [i64; 4] {
+    pub fn pool_balances(&self) -> [i64; 4] {
         [
             self.sprout.value_balance,
             self.sapling.value_balance,

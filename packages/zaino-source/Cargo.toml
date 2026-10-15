@@ -29,16 +29,20 @@ tonic = { workspace = true, features = ["tls-ring"] }
 tokio-util.workspace = true
 const-hex.workspace = true
 zcash_transparent.workspace = true
+sapling-crypto = { workspace = true, optional = true }
+redjubjub = { version = "0.9", optional = true }
+nonempty = { version = "0.11", optional = true }
+zcash_script = { workspace = true, optional = true }
 
 [features]
-testing = ["zaino-primitives/testing"]
+# `testing::{MockChain, MockValidator}`: regtest chains of real consensus bytes, served over JSON-RPC
+testing = ["dep:sapling-crypto", "dep:redjubjub", "dep:nonempty", "dep:zcash_script"]
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-util"] }
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 rcgen.workspace = true
 

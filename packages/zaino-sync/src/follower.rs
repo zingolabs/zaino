@@ -194,8 +194,7 @@ fn link(
 #[cfg(test)]
 mod tests {
     use zaino_header_chain::testing::HeaderViews;
-    use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::{within, Lie, ValidatorViews};
+    use zaino_source::testing::{h, within, Lie, MockChain, ValidatorViews};
     use zaino_traffic::{Limits, TrustedValidator};
 
     use super::*;
@@ -216,12 +215,12 @@ mod tests {
         let members = [None, Some(Lie::Poisoned)].map(|lie| {
             let member = chain.validator(a11);
             member.lie(lie);
-            Arc::new(member)
+            member
         });
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = members.iter().enumerate().map(|(index, member)| TrustedValidator {
             address: format!("member{index}"),
-            source: Arc::clone(member),
+            source: Arc::new(member.client()),
             priority: 0,
             limits,
         });
@@ -294,8 +293,8 @@ mod tests {
         let x1 = chain.fork(h(0)).mine_empty(1).tip();
         let b11 = chain.fork(h(4)).mine_empty(7).tip();
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let validator = Arc::new(chain.validator(a7));
-        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let validator = chain.validator(a7);
+        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
         let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let (balancer, balancing) = TrafficBalancer::new(trusted, None);
         let stop_balancing = CancellationToken::new();
@@ -352,8 +351,7 @@ mod peers {
     use std::time::Duration;
 
     use zaino_header_chain::testing::HeaderViews;
-    use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::{Port, ValidatorViews};
+    use zaino_source::testing::{h, MockChain, ValidatorViews};
     use zaino_traffic::testing::MockPeerSet;
     use zaino_traffic::{Limits, Peers, TrustedValidator};
 
@@ -369,10 +367,10 @@ mod peers {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
-        let validator = Arc::new(chain.validator(a11));
-        validator.reachable(&Port::ALL, false);
+        let validator = chain.validator(a11);
+        validator.down(true);
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
         let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
@@ -414,9 +412,9 @@ mod peers {
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
         let b11 = chain.fork(h(2)).mine_empty(9).tip();
-        let validator = Arc::new(chain.validator(b11));
+        let validator = chain.validator(b11);
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
         let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));

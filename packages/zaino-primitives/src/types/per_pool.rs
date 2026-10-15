@@ -59,33 +59,66 @@ impl TreeSizes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::MockChain;
+    use crate::types::{
+        BlockCommitments, CompactCiphertext, CompactDifficulty, DecodedHeader, EphemeralKey,
+        EquihashSolution, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
+        SaplingData, SaplingOutput, Transaction,
+    };
+    use zcash_protocol::{BlockHash, TxId};
+
+    /// A block of txs carrying `(sapling outputs, orchard actions, ironwood actions)` each
+    fn block_of(txs: &[(usize, usize, usize)]) -> Block {
+        let output = SaplingOutput {
+            cmu: NoteCommitment([0; 32]),
+            ephemeral_key: EphemeralKey([0; 32]),
+            enc_ciphertext: CompactCiphertext([0; CompactCiphertext::LENGTH]),
+        };
+        let action = OrchardAction {
+            nullifier: Nullifier([0; 32]),
+            cmx: NoteCommitment([0; 32]),
+            ephemeral_key: EphemeralKey([0; 32]),
+            enc_ciphertext: CompactCiphertext([0; CompactCiphertext::LENGTH]),
+        };
+        let tx = |(sapling, orchard, ironwood): &(usize, usize, usize)| Transaction {
+            txid: TxId::from_bytes([0; 32]),
+            transparent: Default::default(),
+            sprout: Default::default(),
+            sapling: SaplingData { outputs: vec![output.clone(); *sapling], ..Default::default() },
+            orchard: OrchardData { actions: vec![action.clone(); *orchard], ..Default::default() },
+            ironwood: OrchardData {
+                actions: vec![action.clone(); *ironwood],
+                ..Default::default()
+            },
+        };
+        let header = DecodedHeader {
+            hash: BlockHash([0; 32]),
+            version: 4,
+            prev_hash: BlockHash([0; 32]),
+            height: 0.into(),
+            time: 0,
+            merkle_root: MerkleRoot([0; 32]),
+            block_commitments: BlockCommitments([0; 32]),
+            bits: CompactDifficulty::try_from_bits(0x200f_0f0f).expect("regtest nBits"),
+            nonce: [0; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        Block::new(header, txs.iter().map(tx).collect())
+    }
 
     /// Per-pool commitment counts added onto the prior sizes
     #[test]
     fn advance_adds_each_pools_commitments() {
-        let mut chain = MockChain::regtest();
-        let mined = chain.mine(|b| {
-            b.tx(|t| t.sapling_output(1).sapling_output(2).orchard_action([4; 32], 5)).tx(|t| {
-                t.sapling_output(3)
-                    .ironwood_action([6; 32], 7)
-                    .ironwood_action([8; 32], 9)
-                    .ironwood_action([10; 32], 11)
-            })
-        });
-        let block: &Block = chain.block(mined.hash);
+        let block = block_of(&[(0, 0, 0), (2, 1, 0), (1, 0, 3)]);
 
         let prior = PerPool { sapling: 10, orchard: 20, ironwood: 30 }.map(TreeSize::from);
         let expected = PerPool { sapling: 13, orchard: 21, ironwood: 33 }.map(TreeSize::from);
-        assert_eq!(prior.advance(block), expected);
+        assert_eq!(prior.advance(&block), expected);
     }
 
     #[test]
     #[should_panic(expected = "sapling commitment tree past 2^32 leaves")]
     fn a_tree_past_2_32_leaves_panics() {
-        let mut chain = MockChain::regtest();
-        let mined = chain.mine(|b| b.tx(|t| t.sapling_output(1)));
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
-        full.advance(chain.block(mined.hash));
+        full.advance(&block_of(&[(0, 0, 0), (1, 0, 0)]));
     }
 }

@@ -115,7 +115,7 @@ mod tests {
     use zaino_index_utxo_set::UtxoSetIndexWriter;
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{all_at, h, p2pkh, MockChain};
+    use zaino_source::testing::{all_at, h, p2pkh, MockChain};
 
     use zaino_sync::{FeeSink, FinalizedStream, Step};
     use zcash_protocol::consensus::NetworkType;

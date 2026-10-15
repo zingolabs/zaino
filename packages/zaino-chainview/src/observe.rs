@@ -219,7 +219,7 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         match (asked?, held.first()?) {
             (height, Ok(hash)) => Some(BlockRef { hash: *hash, height }),
             (_, Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_)))) => None,
-            (height, Err(QueryError::NonDomain(cause))) => {
+            (height, Err(cause @ (QueryError::NonDomain(_) | QueryError::Unsupported))) => {
                 debug!(validator = self.address, ?height, %cause, "getblockhash unanswered");
                 None
             }

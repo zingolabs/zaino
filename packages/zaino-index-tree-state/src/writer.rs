@@ -281,8 +281,8 @@ mod tests {
     use incrementalmerkletree::frontier::CommitmentTree;
     use proptest::prelude::*;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot};
+    use zaino_source::testing::{h, MockChain};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
         Writer, QUEUE,
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
         let mut mock = MockChain::regtest();
-        // (sapling, orchard, ironwood) leaves per block, nullifier = the leaf byte repeated
+        // (sapling, orchard, ironwood) leaves per block, nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -448,10 +448,8 @@ mod tests {
             mock.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
-                    let t = orchard
-                        .iter()
-                        .fold(t, |t, &leaf| t.orchard_action([leaf; 32], leaf.into()));
-                    ironwood.iter().fold(t, |t, &leaf| t.ironwood_action([leaf; 32], leaf.into()))
+                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action(n.into(), n.into()));
+                    ironwood.iter().fold(t, |t, &n| t.ironwood_action(n.into(), n.into()))
                 })
             });
         }
@@ -564,7 +562,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         // - (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
         //   both parities (forces carries several levels up)
-        // - nullifier = the leaf byte repeated
+        // - nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -577,8 +575,8 @@ mod tests {
             chain.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
-                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action([n; 32], n.into()));
-                    ironwood.iter().fold(t, |t, &n| t.ironwood_action([n; 32], n.into()))
+                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action(n.into(), n.into()));
+                    ironwood.iter().fold(t, |t, &n| t.ironwood_action(n.into(), n.into()))
                 })
             });
         }
@@ -635,7 +633,7 @@ mod tests {
     /// Genesis, then one block per `counts` entry
     ///
     /// - leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
-    /// - nullifier = the leaf, little-endian
+    /// - nullifier tag = the leaf
     async fn random_history(
         counts: Vec<(usize, usize, usize)>,
         moves: Vec<Move>,
@@ -647,11 +645,6 @@ mod tests {
             *from += count as u32;
             taken
         };
-        let nullifier = |leaf: u32| {
-            let mut nullifier = [0u8; 32];
-            nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
-            nullifier
-        };
         let mut mock = MockChain::regtest();
         for &(sapling, orchard, ironwood) in &counts {
             let (sapling, orchard) = (take(sapling, &mut next.0), take(orchard, &mut next.1));
@@ -659,8 +652,8 @@ mod tests {
             mock.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.fold(t, |t, leaf| t.sapling_output(leaf));
-                    let t = orchard.fold(t, |t, leaf| t.orchard_action(nullifier(leaf), leaf));
-                    ironwood.fold(t, |t, leaf| t.ironwood_action(nullifier(leaf), leaf))
+                    let t = orchard.fold(t, |t, leaf| t.orchard_action(leaf, leaf));
+                    ironwood.fold(t, |t, leaf| t.ironwood_action(leaf, leaf))
                 })
             });
         }
@@ -707,7 +700,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         // - orchard leaves (first, count) per height 1..: subtree 0 completes at height 2,
         //   subtree 1 at 4, subtree 2 at 5 (sent after a reopen)
-        // - nullifier = the leaf, little-endian
+        // - nullifier tag = the leaf
         let orchard = [
             (1, HALF),
             (1 + HALF, HALF),
@@ -715,14 +708,13 @@ mod tests {
             (2 + 2 * HALF, 2 * HALF - 1),
             (1 + 4 * HALF, 2 * HALF),
         ];
+        // ≤ 8 192 actions per tx (a tx's proof length = a CompactSize, ≤ 32 MiB)
+        const PER_TX: u32 = 1 << 13;
         for (first, count) in orchard {
             chain.mine(|b| {
-                b.tx(|t| {
-                    (first..first + count).fold(t, |t, leaf| {
-                        let mut nullifier = [0u8; 32];
-                        nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
-                        t.orchard_action(nullifier, leaf)
-                    })
+                (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
+                    let to = (from + PER_TX).min(first + count);
+                    b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
                 })
             });
         }
@@ -782,11 +774,7 @@ mod tests {
         // ironwood-only block: sapling and orchard empty at this height
         let mut chain = MockChain::regtest();
         let one = chain.mine(|b| {
-            b.tx(|t| {
-                t.ironwood_action([1; 32], 201)
-                    .ironwood_action([2; 32], 202)
-                    .ironwood_action([3; 32], 203)
-            })
+            b.tx(|t| t.ironwood_action(1, 201).ironwood_action(2, 202).ironwood_action(3, 203))
         });
         for block in chain.blocks(one) {
             writer.send(step(&block)).await;

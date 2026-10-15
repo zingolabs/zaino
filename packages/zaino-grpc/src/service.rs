@@ -377,7 +377,7 @@ mod tests {
     use http::HeaderValue;
     use tonic::Status;
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_source::testing::{h, MockChain};
 
     use super::{Method, RouteDeps, ROUTES};
     use crate::testing::{

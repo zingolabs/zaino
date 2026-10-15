@@ -25,15 +25,14 @@ use zaino_persistence::{
     fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine,
     SequenceRead, Store, View,
 };
-use zaino_primitives::testing::{p2pkh, MockChain};
 use zaino_primitives::types::{Block, BlockFees};
-use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
+use zaino_source::testing::{p2pkh, Lie, MockChain, ValidatorViews};
+use zaino_source::ZcashLegacyRpcClient;
 use zaino_sync::{FeeSink, FinalizedFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, TrustedValidator};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
-use zcash_transparent::bundle::OutPoint;
 
 use super::*;
 
@@ -197,7 +196,7 @@ impl Pipeline {
         engine: &DiskEngine,
         kinds: &[IndexKind],
         chain: &watch::Receiver<Option<Arc<VerifiedChain>>>,
-        balancer: &TrafficBalancer<MockValidator>,
+        balancer: &TrafficBalancer<ZcashLegacyRpcClient>,
         params: ChainParams,
     ) -> Self {
         let lookahead = NonZeroUsize::new(4).expect("nonzero");
@@ -331,9 +330,7 @@ fn mine(
     for at in 0..count {
         *tag += 1;
         let tag = *tag;
-        let funding = OutPoint::new(blocks.block(tip.hash).transactions()[0].txid.into(), 0);
-        let mut nullifier = [0x0f; 32];
-        nullifier[..4].copy_from_slice(&tag.to_le_bytes());
+        let funding = blocks.output(tip, 0, 0);
         let branch = blocks.branch(tip);
         let branch = if outweigh && at == 0 { branch.outweigh() } else { branch };
         tip = branch
@@ -343,7 +340,7 @@ fn mine(
                         .pay(&miner, 9_000)
                         .fee(1_000)
                         .sapling_output(tag)
-                        .orchard_action(nullifier, tag)
+                        .orchard_action(tag, tag)
                 })
             })
             .tip();
@@ -393,12 +390,12 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
     let members = [None, Some(Lie::Poisoned)].map(|lie| {
         let member = blocks.validator(genesis);
         member.lie(lie);
-        Arc::new(member)
+        member
     });
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = members.iter().enumerate().map(|(index, member)| TrustedValidator {
         address: format!("member{index}"),
-        source: Arc::clone(member),
+        source: Arc::new(member.client()),
         priority: 0,
         limits,
     });
@@ -457,9 +454,9 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let blocks = blocks;
     let mined: Vec<BlockHash> = trunk.iter().map(|block| block.header().hash).collect();
     let mut headers = blocks.header_chain(DEPTH);
-    let member = Arc::new(blocks.validator(genesis));
+    let member = blocks.validator(genesis);
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let (address, source) = ("member".to_owned(), Arc::clone(&member));
+    let (address, source) = ("member".to_owned(), Arc::new(member.client()));
     let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
@@ -522,7 +519,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     insert(&mut headers, &blocks.blocks(a5)).expect("valid headers");
     let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let source = Arc::new(blocks.validator(a5));
+    let source = Arc::new(blocks.validator(a5).client());
     let trusted = TrustedValidator { address: "unpolled".to_owned(), source, priority: 0, limits };
     let (balancer, _never_driven) = TrafficBalancer::new(vec![trusted], None);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());

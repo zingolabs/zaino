@@ -13,9 +13,8 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
-use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
-use zaino_source::testing::{within, ValidatorViews};
+use zaino_source::testing::{h, within, MockChain, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, Limits, TrafficBalancer, TrustedValidator};
 use zcash_protocol::consensus::BlockHeight;
@@ -43,7 +42,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let a3 = builder.mine_empty(3);
     let path = builder.blocks(a3);
     let params = ChainParams::of(&builder);
-    let source = Arc::new(builder.validator(a3));
+    let source = Arc::new(builder.validator(a3).client());
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let address = "10.0.0.1:8232".to_owned();
     let trusted = TrustedValidator { address, source, priority: 0, limits };
@@ -302,7 +301,7 @@ impl Drill {
     fn new() -> Self {
         let mut builder = MockChain::regtest();
         builder.mine_empty(5);
-        let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
+        let a6 = builder.mine(|block| block.tx(|tx| tx));
         let a = builder.blocks(a6);
         let s5 = builder.fork(h(4)).mine_empty(1).tip();
         let chain = Arc::new(builder.verified(a6));
@@ -312,7 +311,8 @@ impl Drill {
         let prev = core.handle().load();
         core.publish(served(&chain, params, a[6].block_ref()), view);
         let next = core.handle().load();
-        Self { a, s5, mined: TxId::from_bytes([0x66; 32]), chain, params, prev, next }
+        let mined = builder.tx(a6, 1).txid;
+        Self { a, s5, mined, chain, params, prev, next }
     }
 
     /// `next`, serving `block`

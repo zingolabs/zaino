@@ -159,9 +159,9 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 - Precheck: undecodable → `Rejected` code −22; once a verified best exists, expired
   (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.
-- Check: `TrafficBalancer::check_admission` on `entries()` ∩ `held_by()`, shuffled; the first
-  `CheckAdmissionError::Refused` = `SubmitError::Rejected` at once (outcome `rejected`, 0
-  attempts), the first `Ok` = the answer; `Unsupported` / no answer = the next.
+- Check: `checkadmission` (a `submit` ask) on `entries()` ∩ `held_by()`, shuffled; the first
+  refusal = `SubmitError::Rejected` at once (outcome `rejected`, 0 attempts), the first `Ok` =
+  the answer; `Unsupported` / no answer = the next.
 - `SubmitError::Rejected` = the precheck's or the check's refusal, else the first trusted rejection;
   `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
   push failure).
@@ -176,7 +176,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 ## Ports
 
 - Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view merges
-  their polls (`observe`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`; header sync
+  their polls (`observe`), asks `bytes(..)` and `submit(validator, ..)` (`checkadmission`,
+  `sendrawtransaction`); header sync
   asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
 - `PeerSource` (`dyn`, given by `with_peers`):

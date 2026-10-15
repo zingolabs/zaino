@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn pool_activations_are_the_schedules_pool_upgrades() {
         use zaino_primitives::protocol::compiled_schedule;
-        use zaino_primitives::testing::{all_at, h};
+        use zaino_source::testing::{all_at, h};
         use zcash_protocol::consensus::NetworkType;
 
         let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");
