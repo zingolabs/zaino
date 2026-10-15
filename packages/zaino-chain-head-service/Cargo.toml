@@ -46,6 +46,7 @@ zaino-service = { version = "0.1.0", path = "../zaino-service" }
 zaino-address = { version = "0.1.0", path = "../zaino-address" }
 zaino-indexes.workspace = true
 zaino-finality.workspace = true
+zaino-async = { version = "0.1.0", path = "../zaino-async" }
 
 [dev-dependencies]
 proptest.workspace = true

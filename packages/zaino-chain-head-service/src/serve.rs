@@ -30,26 +30,45 @@ use zaino_service::{ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, T
 
 use crate::snapshot::MapBackedSnapshot;
 use crate::subscriber::ChainHeadSubscriber;
+use crate::tree_state::WindowFrontiers;
 
 /// A published head window, served as a composable [`ChainSegment`].
 ///
 /// A cheap-to-clone handle onto one published [`MapBackedSnapshot`]: cloning
 /// clones the inner [`Arc`], not the graph. Immutable for the life of the pin,
 /// so every read through one clone sees the same coherent window.
+///
+/// Also carries the chain head's [`WindowFrontiers`], which outlive any one
+/// window: the per-block treestate folds a read caches are found again by the
+/// snapshots published after it.
 #[derive(Clone)]
-pub struct HeadSnapshot(Arc<MapBackedSnapshot>);
+pub struct HeadSnapshot {
+    window: Arc<MapBackedSnapshot>,
+    frontiers: Arc<WindowFrontiers>,
+}
 
 impl HeadSnapshot {
+    /// A view of `window`, sharing the chain head's `frontiers`.
+    pub(crate) fn new(window: Arc<MapBackedSnapshot>, frontiers: Arc<WindowFrontiers>) -> Self {
+        Self { window, frontiers }
+    }
+
     /// The retained window this view is pinned to, for the reads that live in
     /// sibling modules.
     pub(crate) fn window(&self) -> &MapBackedSnapshot {
-        &self.0
+        &self.window
     }
 
-    /// Wrap a window directly, for the sibling reads' own tests.
+    /// The per-block treestate folds shared across this chain head's snapshots.
+    pub(crate) fn frontiers(&self) -> &WindowFrontiers {
+        &self.frontiers
+    }
+
+    /// Wrap a window directly with an empty fold cache, for the sibling reads'
+    /// own tests.
     #[cfg(test)]
     pub(crate) fn over(window: Arc<MapBackedSnapshot>) -> Self {
-        Self(window)
+        Self::new(window, Arc::default())
     }
 }
 
@@ -70,7 +89,7 @@ fn to_compact(block: &ChainHeadBlock) -> CompactBlock {
 impl ChainSegment for HeadSnapshot {
     fn pinned_tip(&self) -> Option<BlockRef> {
         // The head is never empty, so it always has a tip.
-        let tip = self.0.best_tip();
+        let tip = self.window.best_tip();
         Some(BlockRef {
             height: tip.height,
             hash: tip.hash,
@@ -82,9 +101,9 @@ impl ChainSegment for HeadSnapshot {
         // tip. The head is never empty, so this always covers at least the tip;
         // the floor falls back to the tip only in the degenerate single-block
         // window.
-        let end = self.0.best_tip().height;
+        let end = self.window.best_tip().height;
         let start = self
-            .0
+            .window
             .best_chain()
             .next()
             .map(ChainHeadBlock::height)
@@ -101,11 +120,13 @@ impl CompactBlockRead for HeadSnapshot {
         // All lookups are over the best chain of the retained window; a
         // competing block or an out-of-window reference is a domain absence.
         let block = match at {
-            BlockSelector::Height(height) => self.0.best_block_by_height(height).map(to_compact),
+            BlockSelector::Height(height) => {
+                self.window.best_block_by_height(height).map(to_compact)
+            }
             BlockSelector::Hash(hash) => self
-                .0
+                .window
                 .block_by_hash(&hash)
-                .filter(|block| self.0.is_on_best_chain(block.reference))
+                .filter(|block| self.window.is_on_best_chain(block.reference))
                 .map(to_compact),
         };
         std::future::ready(Ok(block))
@@ -119,7 +140,7 @@ impl CompactBlockRead for HeadSnapshot {
         let end = u32::from(range.end);
         let blocks: Vec<Result<CompactBlock, ReadError>> = (start..=end)
             .filter_map(|height| Height::try_from(height).ok())
-            .filter_map(|height| self.0.best_block_by_height(height).map(to_compact))
+            .filter_map(|height| self.window.best_block_by_height(height).map(to_compact))
             .map(Ok)
             .collect();
         stream::iter(blocks).boxed()
@@ -134,10 +155,13 @@ impl HeaderRead for HeadSnapshot {
         // The header projection of the best-chain block at `h`; an out-of-window
         // or off-best-chain height is a domain absence. In-memory, so it never
         // fails.
-        let summary = self.0.best_block_by_height(h).map(|block| HeaderSummary {
-            hash: block.reference.hash,
-            time: block.block.header.time,
-        });
+        let summary = self
+            .window
+            .best_block_by_height(h)
+            .map(|block| HeaderSummary {
+                hash: block.reference.hash,
+                time: block.block.header.time,
+            });
         std::future::ready(Ok(summary))
     }
 }
@@ -148,7 +172,7 @@ impl TakeSnapshot for ChainHeadSubscriber {
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
         // Capturing the current window is a cheap, infallible clone of an
         // already-published immutable snapshot — no I/O round-trip to fail.
-        std::future::ready(Ok(HeadSnapshot(self.current())))
+        std::future::ready(Ok(HeadSnapshot::new(self.current(), self.frontiers())))
     }
 }
 
@@ -224,7 +248,7 @@ mod tests {
         graph
             .extend(head_block(1, 1, 0, 1001))
             .expect("height 1 extends the tip");
-        let head = HeadSnapshot(Arc::new(graph));
+        let head = HeadSnapshot::over(Arc::new(graph));
 
         let summary = head
             .header(height(1))
@@ -237,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn header_above_the_window_is_a_domain_miss() {
-        let head = HeadSnapshot(Arc::new(MapBackedSnapshot::from_initial_block(head_block(
+        let head = HeadSnapshot::over(Arc::new(MapBackedSnapshot::from_initial_block(head_block(
             0, 0, 0xFF, 1000,
         ))));
         assert_eq!(head.header(height(9)).await.expect("read succeeds"), None);

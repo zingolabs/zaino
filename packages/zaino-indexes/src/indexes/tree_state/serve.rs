@@ -126,8 +126,9 @@ pub fn seed_value(seed: Option<&Treestate>) -> Result<TreeStateValue, DecodeErro
 /// treestate by re-walking its blocks onto the finalised frontier. This reuses
 /// the `tree_state` index's own per-block [`extract`](ExtractCumulative::extract)
 /// — the sequential ground truth — so a window value is byte-identical to the one
-/// the store would hold once the same blocks finalise. In-window batches are
-/// small, so the serial fold is fine.
+/// the store would hold once the same blocks finalise. The fold is serial and
+/// hashes every commitment in `blocks`, so a caller folding a whole window
+/// should keep the per-block results rather than repeat it.
 pub fn fold_window(
     seed: &TreeStateValue,
     blocks: &[TreeStateCtx],

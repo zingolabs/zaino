@@ -9,6 +9,7 @@ use zaino_primitives::types::ChainStateEpoch;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::snapshot::MapBackedSnapshot;
+use crate::tree_state::WindowFrontiers;
 
 /// A cheap-to-clone reader for a running ChainHead.
 ///
@@ -38,6 +39,9 @@ pub struct ChainHeadSubscriber {
     /// a snapshot looks identical whether the writer is keeping up or has given
     /// up, so without this the answer is unobtainable from the read side.
     status: NamedAtomicStatus,
+    /// The chain head's per-block treestate folds, shared with every snapshot
+    /// this handle hands out.
+    frontiers: Arc<WindowFrontiers>,
 }
 
 impl std::fmt::Debug for ChainHeadSubscriber {
@@ -54,12 +58,19 @@ impl ChainHeadSubscriber {
         current: Arc<ArcSwap<MapBackedSnapshot>>,
         updates: watch::Receiver<ChainStateEpoch>,
         status: NamedAtomicStatus,
+        frontiers: Arc<WindowFrontiers>,
     ) -> Self {
         Self {
             current,
             updates,
             status,
+            frontiers,
         }
+    }
+
+    /// The per-block treestate folds shared across this chain head's snapshots.
+    pub(crate) fn frontiers(&self) -> Arc<WindowFrontiers> {
+        Arc::clone(&self.frontiers)
     }
 
     /// The epoch of the most recently published snapshot.

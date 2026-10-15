@@ -5943,6 +5943,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-address",
+ "zaino-async",
  "zaino-chain-head",
  "zaino-component",
  "zaino-consensus",

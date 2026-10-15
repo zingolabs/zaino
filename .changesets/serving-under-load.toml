@@ -27,3 +27,14 @@ above its end is served in descending order, as lightwalletd does; it was \
 previously answered empty. `LightServe::get_block_range_nullifiers` returns a \
 stream rather than a `Vec`.
 """
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The window's treestate and subtree-root reads keep each block's fold result, \
+keyed by block hash and shared across snapshots. A read above the watermark \
+folds only the blocks no earlier read has, on the blocking pool, instead of \
+replaying the whole window (about 1.3 s of hashing per read on mainnet). \
+Entries at or below the watermark are dropped as it advances.
+"""

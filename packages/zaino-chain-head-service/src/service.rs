@@ -61,6 +61,7 @@ use crate::{
     graph::ChainGraph,
     snapshot::MapBackedSnapshot,
     subscriber::ChainHeadSubscriber,
+    tree_state::WindowFrontiers,
 };
 
 /// The name this component reports status under.
@@ -92,6 +93,9 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     horizon: std::sync::Mutex<ReorgHorizon>,
     status: NamedAtomicStatus,
     config: ChainHeadConfig,
+    /// Per-block treestate folds, outliving each published snapshot so a read
+    /// near the tip folds only the blocks published since the last one.
+    frontiers: Arc<WindowFrontiers>,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -196,6 +200,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             horizon: std::sync::Mutex::new(horizon),
             status,
             config,
+            frontiers: Arc::default(),
         })
     }
 
@@ -208,6 +213,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             Arc::clone(&self.current),
             self.updates.subscribe(),
             self.status.clone(),
+            Arc::clone(&self.frontiers),
         )
     }
 
