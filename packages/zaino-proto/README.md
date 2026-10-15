@@ -1,17 +1,17 @@
 # zaino-proto
 
-Rust bindings (prost + tonic, server and client) for the
+Rust bindings (prost + tonic) for the
 [lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) gRPC
 surface that `zaino-grpc` serves, and for zebrad's indexer service that the
-chain view subscribes to. Vendored because upstream publishes `.proto` files
-only, and `zcash_client_backend` generates only the client.
+chain view subscribes to. Vendored for the local `service.proto` edits below and
+the `bytes::Bytes` fields.
 
 ## Modules
 
 - `proto::compact_formats` — `CompactBlock`, `CompactTx`, `ChainMetadata`,
   `CompactSaplingSpend`, `CompactSaplingOutput`, `CompactOrchardAction`, …
 - `proto::service` — `CompactTxStreamer` messages plus
-  `compact_tx_streamer_server` / `compact_tx_streamer_client`. Compact-format
+  `compact_tx_streamer_client` (no server stub). Compact-format
   types are mapped onto `proto::compact_formats` rather than duplicated.
   `RawTransaction.data` is `bytes::Bytes`, so fanning one transaction out to
   many streams is a refcount bump.
@@ -36,7 +36,6 @@ lightwallet-protocol/walletrpc/   upstream v0.5.0 protos, with local edits
 proto/compact_formats.proto       → symlink into lightwallet-protocol/
 proto/service.proto               → symlink into lightwallet-protocol/
 proto/zebra_indexer.proto         zebra's indexer.proto + GetBlockRange
-src/proto/*.rs                    generated, committed
 ```
 
 Local edits to upstream `service.proto`: `Ping` / `Duration` / `PingResponse`
@@ -44,13 +43,13 @@ and `GetBlockNullifiers` removed; `GetBlockRangeNullifiers` and
 `GetTaddressTxids` marked deprecated and TODO: REMOVE (served only while
 pepper-sync calls them — see [`docs/rpc_api.md`](../../docs/rpc_api.md)).
 
-## Regenerating
+## Generation
 
-`build.rs` regenerates `src/proto/*.rs` only when `protoc` is available (on
-`PATH` or via `PROTOC`); otherwise the committed files are used as-is. After
-changing a `.proto`, build with `protoc` present and commit the regenerated
-sources.
+`build.rs` generates the bindings into `OUT_DIR` on every build, so building
+needs `protoc` (on `PATH`, or named by `PROTOC`). Nothing generated is
+committed. `CompactTxStreamer` is generated client-only: `zaino-grpc` serves it
+by dispatching on the request path, not through a tonic server.
 
 To move to a new upstream release, replace `lightwallet-protocol/` with that
-tag's contents, re-apply the local edits above, regenerate, and record the
-change in a `.changeset/` file ([RELEASING.md](../../RELEASING.md)).
+tag's contents, re-apply the local edits above, and record the change in a
+`.changeset/` file ([RELEASING.md](../../RELEASING.md)).

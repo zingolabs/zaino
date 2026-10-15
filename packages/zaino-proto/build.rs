@@ -1,13 +1,23 @@
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
-use tonic_prost_build::{compile_protos, configure};
+use std::path::PathBuf;
+use tonic_prost_build::configure;
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 const ZEBRA_INDEXER_PROTO: &str = "proto/zebra_indexer.proto";
 const PROTOCOL_CHANGELOG: &str = "lightwallet-protocol/CHANGELOG.md";
+
+/// Service's compact-format types → `proto::compact_formats` (never generated twice)
+const COMPACT_FORMAT_TYPES: [&str; 6] = [
+    "ChainMetadata",
+    "CompactBlock",
+    "CompactTx",
+    "CompactSaplingSpend",
+    "CompactSaplingOutput",
+    "CompactOrchardAction",
+];
 
 /// Newest released `## [vX.Y.Z]` heading (skips `[Unreleased]`)
 fn vendored_protocol_version(changelog: &str) -> io::Result<String> {
@@ -20,31 +30,15 @@ fn vendored_protocol_version(changelog: &str) -> io::Result<String> {
         })
 }
 
-fn protoc_available() -> bool {
-    env::var_os("PROTOC").is_some() || which::which("protoc").is_ok()
-}
-
-/// Generated file → source tree, mode 0644 (no working-tree drift)
-///
-/// - byte-identical = no write (mtime kept, crate not re-invalidated)
-fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
-    let new = fs::read(src)?;
-    if fs::read(dst).ok().as_deref() == Some(new.as_slice()) {
-        return Ok(());
-    }
-    fs::write(dst, &new)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(dst)?.permissions();
-        perms.set_mode(0o644);
-        fs::set_permissions(dst, perms)?;
-    }
-    Ok(())
+/// `OUT_DIR/<module>`, created (compact formats + service share one package = one file name)
+fn module_dir(module: &str) -> io::Result<PathBuf> {
+    let out = env::var_os("OUT_DIR").ok_or_else(|| io::Error::other("cargo sets OUT_DIR"))?;
+    let dir = PathBuf::from(out).join(module);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 fn main() -> io::Result<()> {
-    // Explicit list (cargo's default = any package file, incl. the src/proto/*.rs written here)
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
@@ -54,36 +48,18 @@ fn main() -> io::Result<()> {
     let version = vendored_protocol_version(&fs::read_to_string(PROTOCOL_CHANGELOG)?)?;
     println!("cargo:rustc-env=LIGHTWALLET_PROTOCOL_VERSION={version}");
 
-    if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
-        build()?;
-    }
+    configure()
+        .out_dir(module_dir("compact_formats")?)
+        .compile_protos(&[COMPACT_FORMATS_PROTO], &["proto/"])?;
 
-    Ok(())
-}
-
-fn build() -> io::Result<()> {
-    let out: PathBuf =
-        env::var_os("OUT_DIR").expect("Cannot find OUT_DIR environment variable").into();
-
-    compile_protos(COMPACT_FORMATS_PROTO)?;
-    copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/compact_formats.rs")?;
-
-    // Service's compact-format types → the module compiled above
-    const COMPACT_FORMAT_TYPES: [&str; 6] = [
-        "ChainMetadata",
-        "CompactBlock",
-        "CompactTx",
-        "CompactSaplingSpend",
-        "CompactSaplingOutput",
-        "CompactOrchardAction",
-    ];
+    // - client only (zaino-grpc dispatches by path, no tonic server)
+    // - `Bytes`: one tx to many streams = refcount bump, not a copy per client
     COMPACT_FORMAT_TYPES
         .iter()
         .fold(
             configure()
-                .build_server(true)
-                // - `Bytes`: one tx to many streams = refcount bump, not a copy per client
-                // - this field only (the one payload large + fanned out enough to matter)
+                .build_server(false)
+                .out_dir(module_dir("service")?)
                 .bytes(".cash.z.wallet.sdk.rpc.RawTransaction.data"),
             |builder, name| {
                 builder.extern_path(
@@ -97,13 +73,9 @@ fn build() -> io::Result<()> {
     // zebrad's push streams + block fetch: Zaino is a client; the server half = tests' fake zebrad
     // - `Bytes`: a block's payload = a slice of the received frame, never copied out of it
     configure()
-        .build_server(true)
+        .out_dir(module_dir("zebra_indexer")?)
         .bytes(".zebra.indexer.rpc.BlockAndHash.data")
         .compile_protos(&[ZEBRA_INDEXER_PROTO], &["proto/"])?;
-    copy_generated(&out.join("zebra.indexer.rpc.rs"), "src/proto/zebra_indexer.rs")?;
-
-    // Same package name as compact formats → same file name; holds the service types only
-    copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/service.rs")?;
 
     Ok(())
 }

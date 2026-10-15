@@ -1,11 +1,14 @@
 //! Tonic-generated lightwallet service RPCs + compact formats, zebrad's indexer service
 
 #[allow(clippy::all)]
-#[rustfmt::skip]
-pub mod compact_formats;
+pub mod compact_formats {
+    include!(concat!(env!("OUT_DIR"), "/compact_formats/cash.z.wallet.sdk.rpc.rs"));
+}
 #[allow(clippy::all)]
-#[rustfmt::skip]
-pub mod service;
+pub mod service {
+    include!(concat!(env!("OUT_DIR"), "/service/cash.z.wallet.sdk.rpc.rs"));
+}
 #[allow(clippy::all)]
-#[rustfmt::skip]
-pub mod zebra_indexer;
+pub mod zebra_indexer {
+    include!(concat!(env!("OUT_DIR"), "/zebra_indexer/zebra.indexer.rpc.rs"));
+}
