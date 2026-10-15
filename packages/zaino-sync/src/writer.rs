@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use zaino_persistence::{BlockChanges, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, BlockRef};
-use zcash_protocol::consensus::BlockHeight;
 
 use crate::{emit, IndexHandle};
 
@@ -40,9 +39,9 @@ pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChang
     }
 }
 
-/// `height` at or below `store`'s staged tip (a restart resends from the lowest durable tip)
-pub fn held<S: Store>(store: &S, height: BlockHeight) -> bool {
-    Some(height) <= store.applied().tip().map(|tip| tip.height)
+/// `block` at or below `store`'s applied tip (a restart resends from the lowest durable tip)
+pub fn held<S: Store>(store: &S, block: &Block) -> bool {
+    Some(block.header().height) <= store.applied().tip().map(|tip| tip.height)
 }
 
 /// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`); time it took (an

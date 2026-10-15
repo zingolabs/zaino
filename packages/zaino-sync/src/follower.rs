@@ -156,8 +156,8 @@ async fn follow<S: ChainDataSource>(
                     let finalized_tip =
                         chain.borrow().as_ref().map(|chain| chain.finalized_tip().height);
                     let step = match Some(height) == finalized_tip {
-                        true => Step::FinalizedTip { height, data: block },
-                        false => Step::Apply { height, data: block },
+                        true => Step::FinalizedTip(block),
+                        false => Step::Apply(block),
                     };
                     sink.send(step).await;
                 }
@@ -240,12 +240,11 @@ mod tests {
         let sent = async |queue: &mut Subscription<Block>, count: usize| {
             let mut sent = Vec::new();
             for _ in 0..count {
-                let (height, data, finalized) = match within("a step", queue.next()).await {
-                    Step::Apply { height, data } => (height, data, false),
-                    Step::FinalizedTip { height, data } => (height, data, true),
+                let (data, finalized) = match within("a step", queue.next()).await {
+                    Step::Apply(data) => (data, false),
+                    Step::FinalizedTip(data) => (data, true),
                     Step::Shutdown => panic!("Shutdown early"),
                 };
-                assert_eq!(data.header().height, height, "step height = its block's");
                 sent.push((data.block_ref(), finalized));
             }
             sent
@@ -326,7 +325,7 @@ mod tests {
         let mut sent = Vec::new();
         for _ in 0..=5 {
             let data = match within("a step", fresh.next()).await {
-                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => data,
+                Step::Apply(data) | Step::FinalizedTip(data) => data,
                 Step::Shutdown => panic!("Shutdown early"),
             };
             sent.push(data.block_ref());
@@ -385,9 +384,7 @@ mod peers {
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
             match step.expect("a finalized block within a minute") {
-                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => {
-                    sent.push(data.block_ref())
-                }
+                Step::Apply(data) | Step::FinalizedTip(data) => sent.push(data.block_ref()),
                 Step::Shutdown => panic!("Shutdown early"),
             }
         }
@@ -441,9 +438,7 @@ mod peers {
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
             match step.expect("a finalized block within a minute") {
-                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => {
-                    sent.push(data.block_ref())
-                }
+                Step::Apply(data) | Step::FinalizedTip(data) => sent.push(data.block_ref()),
                 Step::Shutdown => panic!("Shutdown early"),
             }
         }

@@ -177,8 +177,7 @@ mod tests {
         loops.spawn(tree_state.run(tree_blocks));
         loops.spawn(transparent_address.run(transparent_blocks));
         for block in &blocks {
-            let (height, data) = (block.header().height, Arc::clone(block));
-            block_sink.send(Step::Apply { height, data }).await;
+            block_sink.send(Step::Apply(Arc::clone(block))).await;
         }
         block_sink.shutdown();
         while let Some(indexed) = loops.join_next().await {

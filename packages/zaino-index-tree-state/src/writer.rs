@@ -66,8 +66,8 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
             let write;
             (store, write) = blocking(move || {
                 let mut write = Duration::ZERO;
-                let fresh = run.blocks.iter().filter(|(height, _)| !held(&store, *height));
-                let fresh: Vec<&Block> = fresh.map(|(_, block)| &**block).collect();
+                let fresh = run.blocks.iter().filter(|block| !held(&store, block));
+                let fresh: Vec<&Block> = fresh.map(|block| &**block).collect();
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.block_ref())).collect();
                 let folded = fold_run(&TreeStateReader::new(store.applied()), &fresh, &mut out);

@@ -56,10 +56,8 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
             let (paid, write);
             (store, paid, write) = blocking(move || {
                 let mut write = Duration::ZERO;
-                let (resent, fresh): (Vec<_>, Vec<_>) =
-                    run.blocks.iter().partition(|(height, _)| held(&store, *height));
-                let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
-                let fresh: Vec<&Block> = fresh.into_iter().map(|(_, block)| &**block).collect();
+                let (resent, fresh): (Vec<&Block>, Vec<&Block>) =
+                    run.blocks.iter().map(|block| &**block).partition(|block| held(&store, block));
                 let held = UtxoSetReader::new(store.applied());
                 let stored = resent.iter().map(|block| held.block_fees(block));
                 let stored = stored.collect::<Result<Vec<_>, _>>();
@@ -79,8 +77,7 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
             .await;
             publisher.publish(&store);
             for block_fees in paid {
-                sink.send(Step::Apply { height: block_fees.height, data: Arc::new(block_fees) })
-                    .await;
+                sink.send(Step::Apply(Arc::new(block_fees))).await;
             }
             ran(&store, started, write);
         }
@@ -454,8 +451,7 @@ mod tests {
     /// Every fee step through `Shutdown`
     async fn drained(consumer: &mut Subscription<BlockFees>) -> Vec<BlockFees> {
         let mut out = Vec::new();
-        while let Step::Apply { height, data } = consumer.next().await {
-            assert_eq!(height, data.height, "step height = its fees' height");
+        while let Step::Apply(data) = consumer.next().await {
             out.push(BlockFees::clone(&data));
         }
         out

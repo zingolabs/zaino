@@ -41,8 +41,8 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
             let write;
             (store, write) = blocking(move || {
                 let mut write = Duration::ZERO;
-                for (height, block) in &run.blocks {
-                    if !held(&store, *height) {
+                for block in &run.blocks {
+                    if !held(&store, block) {
                         let mut changes = store.changes(block.block_ref());
                         fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
                         write += apply(&mut store, changes);

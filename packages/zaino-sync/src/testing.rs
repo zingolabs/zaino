@@ -30,12 +30,12 @@ pub fn open(fs: &Arc<SimFs>, schema: &Schema, write_buffer: NonZeroUsize) -> Dis
 }
 
 pub fn step(block: &Arc<Block>) -> Step<Block> {
-    Step::Apply { height: block.header().height, data: Arc::clone(block) }
+    Step::Apply(Arc::clone(block))
 }
 
 /// `block` as the chain's finalized tip (the writer commits after it)
 pub fn finalized(block: &Arc<Block>) -> Step<Block> {
-    Step::FinalizedTip { height: block.header().height, data: Arc::clone(block) }
+    Step::FinalizedTip(Arc::clone(block))
 }
 
 /// Writer task on its own finalized stream, read through its handle

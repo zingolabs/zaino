@@ -37,8 +37,8 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
             store = blocking(move || {
-                for (height, block) in &run.blocks {
-                    if !held(&store, *height) {
+                for block in &run.blocks {
+                    if !held(&store, block) {
                         let mut changes = store.changes(block.block_ref());
                         fold(&MyReader::new(store.applied()), block, &mut changes);
                         apply(&mut store, changes);     // full buffer = the store commits
@@ -101,12 +101,14 @@ not), `changed()` (after each commit; `false` = writer gone).
 - `Subscription::next()`; `next_run()` → `Some(Run)` = next step + every `Apply` already
   queued, to the queue's budget (one batch of work, no wait past the first step) | `None` at
   `Shutdown`.
-- `Run { blocks, ends_at_finalized_tip }`: `ends_at_finalized_tip` = its last block = `Step::FinalizedTip` (the
-  chain's finalized tip; ends the run).
+- `Step::{Apply, FinalizedTip}(Arc<T>)`: the payload carries its own height (no second copy).
+- `Run { blocks, ends_at_finalized_tip }`: `blocks` = the payloads in height order;
+  `ends_at_finalized_tip` = its last block = `Step::FinalizedTip` (the chain's finalized tip,
+  which ends the run).
 
 ## Writer loop
 
-- `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable
+- `held(store, block)`: `block` at or below the applied tip (a restart resends from the lowest durable
   tip).
 - `apply` / `commit` return the time spent in the store; `ran(&store, started, write)` after each
   run records `zaino_index_run_seconds` (taken off the queue → published, waits included) and

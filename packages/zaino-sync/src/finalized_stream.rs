@@ -6,7 +6,6 @@
 //!
 //! ```
 //! use std::{num::NonZeroUsize, sync::Arc};
-//! use zcash_protocol::consensus::BlockHeight;
 //! use zaino_sync::{FinalizedStream, Step, Weight};
 //!
 //! struct Blob;
@@ -21,12 +20,11 @@
 //! let mut first = sink.subscribe("first", budget);
 //! let mut second = sink.subscribe("second", budget);
 //!
-//! let height = BlockHeight::from(7);
-//! sink.send(Step::Apply { height, data: Arc::new(Blob) }).await;
+//! sink.send(Step::Apply(Arc::new(Blob))).await;
 //! sink.shutdown();
 //!
 //! for queue in [&mut first, &mut second] {
-//!     assert!(matches!(queue.next().await, Step::Apply { .. }));
+//!     assert!(matches!(queue.next().await, Step::Apply(_)));
 //!     assert!(matches!(queue.next().await, Step::Shutdown));
 //! }
 //! # }
@@ -35,8 +33,6 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
-
-use zcash_protocol::consensus::BlockHeight;
 
 /// Bytes an item holds in memory, heap included: the unit a subscriber's queue budget counts
 pub trait Weight {
@@ -49,8 +45,8 @@ pub trait Weight {
 /// - `Shutdown` last: commit what is held, stop
 #[derive(Debug)]
 pub enum Step<T> {
-    Apply { height: BlockHeight, data: Arc<T> },
-    FinalizedTip { height: BlockHeight, data: Arc<T> },
+    Apply(Arc<T>),
+    FinalizedTip(Arc<T>),
     Shutdown,
 }
 
@@ -58,7 +54,7 @@ impl<T: Weight> Weight for Step<T> {
     fn weight(&self) -> usize {
         size_of::<Self>()
             + match self {
-                Self::Apply { data, .. } | Self::FinalizedTip { data, .. } => data.weight(),
+                Self::Apply(data) | Self::FinalizedTip(data) => data.weight(),
                 Self::Shutdown => 0,
             }
     }
@@ -67,10 +63,8 @@ impl<T: Weight> Weight for Step<T> {
 impl<T> Clone for Step<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Apply { height, data } => Self::Apply { height: *height, data: Arc::clone(data) },
-            Self::FinalizedTip { height, data } => {
-                Self::FinalizedTip { height: *height, data: Arc::clone(data) }
-            }
+            Self::Apply(data) => Self::Apply(Arc::clone(data)),
+            Self::FinalizedTip(data) => Self::FinalizedTip(Arc::clone(data)),
             Self::Shutdown => Self::Shutdown,
         }
     }
@@ -87,7 +81,7 @@ pub(crate) struct Queued<T> {
 ///
 /// - `ends_at_finalized_tip` = its last block = `Step::FinalizedTip` (the chain's finalized tip)
 pub struct Run<T> {
-    pub blocks: Vec<(BlockHeight, Arc<T>)>,
+    pub blocks: Vec<Arc<T>>,
     pub ends_at_finalized_tip: bool,
 }
 
@@ -143,12 +137,12 @@ impl<T: Weight> Subscription<T> {
         let mut step = Some(first);
         while let Some(next) = step.take() {
             match next {
-                Step::Apply { height, data } => {
+                Step::Apply(data) => {
                     bytes = bytes.saturating_add(data.weight());
-                    run.blocks.push((height, data));
+                    run.blocks.push(data);
                 }
-                Step::FinalizedTip { height, data } => {
-                    run.blocks.push((height, data));
+                Step::FinalizedTip(data) => {
+                    run.blocks.push(data);
                     run.ends_at_finalized_tip = true;
                     break;
                 }
@@ -244,25 +238,33 @@ impl<T: Weight> FinalizedStream<T> {
 #[cfg(test)]
 mod tests {
     use zaino_primitives::testing::h;
+    use zcash_protocol::consensus::BlockHeight;
 
     use super::*;
 
-    struct Blob(usize);
+    struct Blob {
+        height: BlockHeight,
+        bytes: usize,
+    }
 
     impl Weight for Blob {
         fn weight(&self) -> usize {
-            self.0
+            self.bytes
         }
     }
 
-    fn apply(height: u32, weight: usize) -> Step<Blob> {
-        Step::Apply { height: h(height), data: Arc::new(Blob(weight)) }
+    fn blob(height: u32, bytes: usize) -> Arc<Blob> {
+        Arc::new(Blob { height: h(height), bytes })
+    }
+
+    fn apply(height: u32, bytes: usize) -> Step<Blob> {
+        Step::Apply(blob(height, bytes))
     }
 
     fn popped(step: Step<Blob>) -> BlockHeight {
         match step {
-            Step::Apply { height, .. } => height,
-            Step::FinalizedTip { .. } | Step::Shutdown => panic!("expected an apply"),
+            Step::Apply(blob) => blob.height,
+            Step::FinalizedTip(_) | Step::Shutdown => panic!("expected an apply"),
         }
     }
 
@@ -302,13 +304,13 @@ mod tests {
         for height in 0..5 {
             sink.send(apply(height, 10)).await;
         }
-        sink.send(Step::FinalizedTip { height: h(5), data: Arc::new(Blob(10)) }).await;
-        sink.send(Step::FinalizedTip { height: h(6), data: Arc::new(Blob(10)) }).await;
+        sink.send(Step::FinalizedTip(blob(5, 10))).await;
+        sink.send(Step::FinalizedTip(blob(6, 10))).await;
         sink.send(apply(7, 10)).await;
         sink.shutdown();
         let heights = |run: Run<Blob>| -> (Vec<u32>, bool) {
             (
-                run.blocks.into_iter().map(|(height, _)| u32::from(height)).collect(),
+                run.blocks.into_iter().map(|blob| u32::from(blob.height)).collect(),
                 run.ends_at_finalized_tip,
             )
         };

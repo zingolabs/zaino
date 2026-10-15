@@ -45,14 +45,14 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         while let Some(run) = blocks.next_run().await {
             let started = Instant::now();
             let mut paid = Vec::with_capacity(run.blocks.len());
-            for (_, block) in &run.blocks {
+            for block in &run.blocks {
                 paid.push(next_fees(&mut fees, block).await);
             }
             let write;
             (store, write) = blocking(move || {
                 let mut write = Duration::ZERO;
-                for ((height, block), fees) in run.blocks.iter().zip(&paid) {
-                    if !held(&store, *height) {
+                for (block, fees) in run.blocks.iter().zip(&paid) {
+                    if !held(&store, block) {
                         let mut changes = store.changes(block.block_ref());
                         let parent = CompactBlockReader::new(store.applied());
                         fold(&parent, block, fees, &mut changes);
@@ -81,11 +81,11 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
 
 /// Utxo-set's fees for `block`
 async fn next_fees(fees: &mut Subscription<BlockFees>, block: &Block) -> Arc<BlockFees> {
-    let Step::Apply { height, data } = fees.next().await else {
+    let Step::Apply(fees) = fees.next().await else {
         panic!("{NAME}: fees ended before the blocks");
     };
-    assert!(data.belongs_to(block), "{NAME}: fees at {height} for another block");
-    data
+    assert!(fees.belongs_to(block), "{NAME}: fees at {} for another block", fees.height);
+    fees
 }
 
 /// `block` + its `fees` onto `parent`: its one record
@@ -205,11 +205,11 @@ mod tests {
 
         /// `step` behind its block's fees (as utxo-set sends them)
         async fn send(&self, step: Step<Block>) {
-            let (Step::Apply { height, .. } | Step::FinalizedTip { height, .. }) = step else {
+            let (Step::Apply(block) | Step::FinalizedTip(block)) = &step else {
                 panic!("Shutdown = `stop`");
             };
-            let fees = Arc::new(self.fees[u32::from(height) as usize].clone());
-            self.fee_sink.send(Step::Apply { height, data: fees }).await;
+            let fees = Arc::new(self.fees[u32::from(block.header().height) as usize].clone());
+            self.fee_sink.send(Step::Apply(fees)).await;
             self.writer.send(step).await;
         }
 
