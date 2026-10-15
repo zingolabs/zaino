@@ -467,7 +467,7 @@ pub(crate) struct MetricsConfig {
     pub(crate) listen_address: Option<SocketAddr>,
 }
 
-/// Empty index ← published index snapshot (`snapshot` feature, `aria2c` on PATH)
+/// Empty index ← published index snapshot (`aria2c` on PATH)
 ///
 /// - Only a missing or empty directory filled; one holding data never touched
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -667,12 +667,6 @@ impl DaemonConfig {
 
     fn validate_snapshot(&self) -> Result<(), IndexerError> {
         let Some(snapshot) = &self.snapshot else { return Ok(()) };
-        if !cfg!(feature = "snapshot") {
-            return Err(IndexerError::Config(
-                "[snapshot] is set, but zainod was built without the `snapshot` feature"
-                    .to_string(),
-            ));
-        }
         if snapshot.connections.get() > 16 {
             return Err(IndexerError::Config(format!(
                 "snapshot.connections = {}: aria2c allows at most 16 per server",
@@ -826,10 +820,6 @@ enabled = false
     #[test]
     fn validate_refuses_every_config_no_pipeline_composes_from() {
         type Edit = fn(&mut DaemonConfig);
-        let snapshot_refusal = match cfg!(feature = "snapshot") {
-            true => "snapshot.connections = 17: aria2c allows at most 16",
-            false => "built without the `snapshot` feature",
-        };
         let cases: [(&str, Edit, Option<&str>); 18] = [
             ("defaults", |_| {}, None),
             (
@@ -938,7 +928,7 @@ enabled = false
                         connections: NonZeroU32::new(17).expect("17"),
                     })
                 },
-                Some(snapshot_refusal),
+                Some("snapshot.connections = 17: aria2c allows at most 16"),
             ),
             (
                 "p2p off ignores its peer target",

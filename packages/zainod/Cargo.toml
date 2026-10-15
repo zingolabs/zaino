@@ -67,11 +67,11 @@ unicode-ellipsis.workspace = true
 rlimit = "0.11"
 ipnet = { version = "2.12", features = ["serde"] }
 
-# Index snapshot bootstrap (`snapshot` feature): aria2c JSON-RPC, free space, unpack
-reqwest = { workspace = true, optional = true }
+# Index snapshot bootstrap: aria2c JSON-RPC, free space, unpack
+reqwest = { workspace = true }
 rustix = { version = "1.1", features = ["fs"] }
-zstd = { version = "0.14.0", optional = true }
-tar = { version = "0.4.46", optional = true }
+zstd = { version = "0.14.0" }
+tar = { version = "0.4.46" }
 zaino-header-chain.workspace = true
 zaino-peers.workspace = true
 futures.workspace = true
@@ -92,10 +92,6 @@ tonic.workspace = true
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-chainview = { workspace = true, features = ["testing"] }
 sha2 = "0.10"
-
-[features]
-# `[snapshot]` bootstrap: an empty index downloads a published snapshot (needs `aria2c` on PATH)
-snapshot = ["dep:reqwest", "dep:zstd", "dep:tar"]
 
 [target."cfg(unix)".dependencies]
 sd-notify = "0.5"

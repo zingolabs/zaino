@@ -12,7 +12,6 @@ use crate::status::DaemonStatus;
 use tracing::{error, info, Instrument as _};
 
 mod admin;
-#[cfg(feature = "snapshot")]
 mod bootstrap;
 mod chainview;
 pub mod cli;

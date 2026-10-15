@@ -89,7 +89,6 @@ async fn start_over<S: ChainDataSource>(
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
     let serving = listen(&config, &status, &cancel, &mut tasks).await?;
-    #[cfg(feature = "snapshot")]
     if let Some(snapshot) = &config.snapshot {
         let bootstrap = crate::bootstrap::bootstrap(snapshot, &config, &status);
         bootstrap.instrument(component("IndexSnapshot")).await?;

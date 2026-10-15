@@ -2,8 +2,8 @@
 , craneLib
 , protobuf
 , pkg-config
-  # zainod cargo features, e.g. [ "snapshot" ] (`[snapshot]` bootstrap; aria2c on PATH at runtime)
-, features ? [ ]
+, makeWrapper
+, aria2
 }:
 
 let
@@ -31,9 +31,7 @@ let
 
     strictDeps = true;
     doCheck = false;
-    # deps built with the same features (else the deps-only cache misses them)
-    cargoExtraArgs = "--locked --package zainod"
-      + lib.optionalString (features != [ ]) " --features ${lib.concatStringsSep "," features}";
+    cargoExtraArgs = "--locked --package zainod";
 
     nativeBuildInputs = [
       protobuf
@@ -52,6 +50,12 @@ craneLib.buildPackage (commonArgs // {
   inherit cargoArtifacts;
 
   cargoExtraArgs = "${commonArgs.cargoExtraArgs} --bin zainod";
+
+  # aria2c = the `[snapshot]` bootstrap's downloader
+  nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ makeWrapper ];
+  postInstall = ''
+    wrapProgram $out/bin/zainod --prefix PATH : ${lib.makeBinPath [ aria2 ]}
+  '';
 
   passthru = {
     inherit commonArgs;

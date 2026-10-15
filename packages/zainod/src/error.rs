@@ -40,7 +40,6 @@ pub enum IndexerError {
     Join(#[from] tokio::task::JoinError),
     #[error("metrics error: {0}")]
     Metrics(String),
-    #[cfg(feature = "snapshot")]
     #[error("index snapshot: {0}")]
     Bootstrap(String),
     #[error("{task} task ended before shutdown")]

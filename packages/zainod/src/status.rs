@@ -30,7 +30,6 @@ pub(crate) struct DaemonStatus {
     heartbeat: Heartbeat,
     held: AtomicBool,
     awaiting_validator: AtomicBool,
-    #[cfg(feature = "snapshot")]
     bootstrap: std::sync::Mutex<Option<Bootstrap>>,
     retire: OnceLock<zaino_grpc::Retire>,
     sources: OnceLock<Sources>,
@@ -73,7 +72,6 @@ pub(crate) struct Progress {
 #[serde(rename_all = "snake_case")]
 enum Unit {
     Block,
-    #[cfg(feature = "snapshot")]
     Byte,
 }
 
@@ -187,7 +185,6 @@ impl DaemonStatus {
             heartbeat: Heartbeat::default(),
             held: AtomicBool::new(false),
             awaiting_validator: AtomicBool::new(false),
-            #[cfg(feature = "snapshot")]
             bootstrap: std::sync::Mutex::new(None),
             retire: OnceLock::new(),
             sources: OnceLock::new(),
@@ -282,42 +279,34 @@ impl DaemonStatus {
     }
 
     /// `None` = bootstrap over (the indexer's own status takes over)
-    #[cfg(feature = "snapshot")]
     pub(crate) fn bootstrap(&self, progress: Option<Bootstrap>) {
         *self.bootstrap_lock() = progress;
     }
 
     /// Poison-tolerant: the lock only guards a value swap
-    #[cfg(feature = "snapshot")]
     fn bootstrap_lock(&self) -> std::sync::MutexGuard<'_, Option<Bootstrap>> {
         self.bootstrap.lock().expect("bootstrap progress mutex poisoned")
     }
 
-    #[cfg(feature = "snapshot")]
     pub(crate) fn current_bootstrap(&self) -> Option<Bootstrap> {
         self.bootstrap_lock().clone()
     }
 
     /// While a bootstrap runs: its bytes (`rate` downloading only)
     fn bootstrap_bytes(&self) -> Option<Progress> {
-        #[cfg(feature = "snapshot")]
-        if let Some(bootstrap) = self.current_bootstrap() {
-            return Some(Progress {
-                done: bootstrap.done,
-                total: bootstrap.total,
-                unit: Unit::Byte,
-                rate: bootstrap.rate.map(|rate| rate as f64),
-            });
-        }
-        None
+        self.current_bootstrap().map(|bootstrap| Progress {
+            done: bootstrap.done,
+            total: bootstrap.total,
+            unit: Unit::Byte,
+            rate: bootstrap.rate.map(|rate| rate as f64),
+        })
     }
 
     fn bootstrap_progress(&self) -> Vec<Option<u64>> {
-        #[cfg(feature = "snapshot")]
-        if let Some(bootstrap) = self.current_bootstrap() {
-            return vec![Some(bootstrap.phase as u64), Some(bootstrap.done)];
-        }
-        Vec::new()
+        let progress = self.current_bootstrap();
+        progress.map_or_else(Vec::new, |bootstrap| {
+            vec![Some(bootstrap.phase as u64), Some(bootstrap.done)]
+        })
     }
 }
 
@@ -337,7 +326,6 @@ impl zaino_grpc::Health for DaemonStatus {
 /// - `source` = archive host; `indexes` archives fetched, `total` = Σ their bytes
 /// - `phase` = slowest archive's, `done` = its bytes (archives past it whole); `rate` = bytes/s
 ///   (`downloading` only)
-#[cfg(feature = "snapshot")]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bootstrap {
     pub(crate) phase: Phase,
@@ -350,7 +338,6 @@ pub(crate) struct Bootstrap {
 }
 
 /// Declared in pipeline order (`Ord`: earliest = slowest)
-#[cfg(feature = "snapshot")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Phase {
     Downloading,
@@ -615,20 +602,19 @@ mod tests {
                 booted(Standing::Serving, Some(3_514_194), Some(1.0)),
                 serde_json::json!({ "state": "serving", "progress": null, "detail": null, "notes": stale }),
             ),
-        ];
-        #[cfg(feature = "snapshot")]
-        let cases = cases.into_iter().chain([(
-            "bootstrap downloading",
-            true,
-            starting(
-                Some(Progress { done: 4 << 30, total: 9 << 30, unit: Unit::Byte, rate: Some(5e7) }),
-                false,
+            (
+                "bootstrap downloading",
+                true,
+                starting(
+                    Some(Progress { done: 4 << 30, total: 9 << 30, unit: Unit::Byte, rate: Some(5e7) }),
+                    false,
+                ),
+                serde_json::json!({
+                    "state": "provisioning", "detail": null, "notes": [],
+                    "progress": { "done": 4u64 << 30, "total": 9u64 << 30, "unit": "byte", "rate": 5e7 },
+                }),
             ),
-            serde_json::json!({
-                "state": "provisioning", "detail": null, "notes": [],
-                "progress": { "done": 4u64 << 30, "total": 9u64 << 30, "unit": "byte", "rate": 5e7 },
-            }),
-        )]);
+        ];
         for (case, live, stage, expected) in cases {
             let readiness = readiness(false, live, stage);
             let state = readiness.state;

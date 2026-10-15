@@ -5,8 +5,6 @@ ARG UID=1000
 ARG GID=1000
 ARG USER=container_user
 ARG HOME=/home/container_user
-# zainod cargo features, comma-separated (`snapshot` also installs aria2c at runtime)
-ARG CARGO_FEATURES=""
 
 ############################
 # Builder
@@ -18,7 +16,6 @@ WORKDIR /app
 
 # `release` or `profiling` (adds line tables + frame pointers, set below)
 ARG CARGO_PROFILE=release
-ARG CARGO_FEATURES
 
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
@@ -43,7 +40,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       export RUSTFLAGS="-C force-frame-pointers=yes"; \
     fi; \
     cargo install --locked --path packages/zainod --bin zainod --root /out \
-      --profile "${CARGO_PROFILE}" ${CARGO_FEATURES:+--features "${CARGO_FEATURES}"}
+      --profile "${CARGO_PROFILE}"
 
 ############################
 # Runtime
@@ -55,23 +52,16 @@ ARG UID
 ARG GID
 ARG USER
 ARG HOME
-ARG CARGO_FEATURES
 
-# Runtime deps
+# Runtime deps (aria2c = the `[snapshot]` bootstrap's downloader)
 # Versions pinned (DL3008) to the candidates in
 # docker.io/library/debian:bookworm-slim; bump together with the base image.
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
       ca-certificates=20250419~deb12u1 \
       libgcc-s1=12.2.0-14+deb12u1 \
+      aria2=1.36.0-1 \
     && rm -rf /var/lib/apt/lists/*
-
-# aria2c: the `snapshot` feature's downloader (`[snapshot]` bootstrap)
-RUN if [[ ",${CARGO_FEATURES}," == *",snapshot,"* ]]; then \
-      apt-get -qq update && \
-      apt-get -qq install -y --no-install-recommends aria2=1.36.0-1 && \
-      rm -rf /var/lib/apt/lists/*; \
-    fi
 
 # Create non-root user
 RUN addgroup --gid "${GID}" "${USER}" && \

@@ -94,7 +94,7 @@
             cargo-deny
             code-dupes
 
-            # zainod `snapshot` bootstrap + its e2e test (`--all-features`)
+            # zainod `[snapshot]` bootstrap + its e2e test
             aria2
 
             # Integration tests

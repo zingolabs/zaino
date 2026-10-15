@@ -53,7 +53,7 @@ default. In outline:
 | `[grpc]`                 | connection, stream and read caps, connection lifetimes, `trusted_proxies`, `shutdown_grace_secs` |
 | `[sync]`                 | the shared block-fetch pipeline; `[sync.lsm_store]` = the disk engine's merge budget       |
 | `[index.<name>]`         | `compact_block`, `block_hash`, `tree_state`, `transparent_address`: `enabled`, `path` (at least one on; `utxo_set` comes with `compact_block`, beside its `path`) |
-| `[snapshot]`             | `snapshot` builds only: fill empty indexes from an [index snapshot](../packages/zainod/usage.md#index-snapshot) |
+| `[snapshot]`             | fill empty indexes from an [index snapshot](../packages/zainod/usage.md#index-snapshot) (`aria2c` on `PATH`) |
 
 There is no vote among trusted validators: each one added adds failover, so two is the
 first set that survives one being down.

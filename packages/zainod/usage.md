@@ -216,9 +216,8 @@ cover both. To take a node out of rotation before a stop, hold it first (see
 
 ## Index snapshot
 
-Built with the `snapshot` feature (`cargo build --features snapshot`, Nix
-`zainod.override { features = [ "snapshot" ]; }`, Docker `--build-arg CARGO_FEATURES=snapshot`)
-and `aria2c` on `PATH`, zainod fills empty indexes from a published index snapshot before it boots:
+With `aria2c` on `PATH` (the Docker image and the Nix package ship it), zainod fills empty
+indexes from a published index snapshot before it boots:
 
 ```toml
 [snapshot]
