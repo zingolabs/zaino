@@ -1,6 +1,6 @@
 [[ignore]]
-fingerprint = "343cd8d5ebaf4754"
-reason = "Index writer run loop: each index crate owns its writer (fold + run loop) on purpose; reviewed 2026-10-13"
+fingerprint = "b9d458926ef36745"
+reason = "Per-index writer loops stay inline by decision"
 members = [
     "TransparentAddressIndexWriter::run (zaino-index-transparent-address/src/writer.rs)",
     "BlockHashIndexWriter::run (zaino-internal-block-hash-to-height/src/writer.rs)",
