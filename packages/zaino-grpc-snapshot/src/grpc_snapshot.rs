@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
-use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet};
+use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet, STALE_TIP_BLOCKS};
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
 use zaino_traffic::Health;
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{target_spacing, BlockHeight};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
 
@@ -63,9 +63,6 @@ pub enum Down {
     NoValidatorReachable,
     TipNotHeld,
 }
-
-/// Best block time this far behind the clock = stale (24 spacings: P(natural gap) ≈ e^-24)
-const STALE_TIP_SECS: i64 = 24 * 75;
 
 impl Down {
     /// `/readyz` + `/status` `detail`
@@ -176,10 +173,15 @@ impl<V> GrpcSnapshot<V> {
         }
     }
 
-    /// Best block's time within [`STALE_TIP_SECS`] of `now_unix`
+    /// Best block's time within [`STALE_TIP_BLOCKS`] target spacings of `now_unix` (nothing served
+    /// = not fresh)
     fn fresh(&self, now_unix: i64) -> bool {
-        let best = self.tips.best.and_then(|best| self.chain()?.header_at(best.height));
-        best.is_some_and(|best| now_unix - i64::from(best.time) < STALE_TIP_SECS)
+        let (Some(best), Ok(served)) = (self.tips.best, self.served()) else { return false };
+        let Some(header) = self.chain().and_then(|chain| chain.header_at(best.height)) else {
+            return false;
+        };
+        let spacing = target_spacing(&served.params().schedule, best.height);
+        now_unix - i64::from(header.time) < i64::from(STALE_TIP_BLOCKS * spacing)
     }
 
     /// Best's height, or above it the clock estimate of a validator still catching up
