@@ -229,7 +229,7 @@ pub(crate) fn stream_finished(
     messages: u64,
     sent: u64,
 ) {
-    report::finished(method, code, latency, sent);
+    report::finished(method, code, latency);
     let slot = slot(method);
     let series = series(slot);
     // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)

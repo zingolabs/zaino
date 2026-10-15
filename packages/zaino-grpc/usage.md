@@ -306,19 +306,16 @@ for that one computation, then every later ask is answered inline.
 tasks inherit it too), built from the same close-outs the metrics count:
 
 ```text
-INFO  … Grpc:  Serving    rps=42.1 p99=38.4ms out=3.25MB/s conns=17
-WARN  … Grpc:  Serving    rps=14.7 p99=… failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
-WARN  … Grpc:  High load  rps=412 p99=1.20s out=6.04MB/s conns=1,203/4,096 work=640/2,048
+INFO  … Grpc:  Serving    rps=42.1 conns=17
+WARN  … Grpc:  Serving    rps=14.7 conns=9 failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
+WARN  … Grpc:  High load  rps=412 conns=1,203/4,096 work=640/2,048
 ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 ```
 
-- **Rate** = streams finished in the window, per second. **Latency** = time to
-  the first message of each `OK` work request (a unary answer, or a stream's
-  first item; `GetMempoolStream` is never timed), p50 / p99 from log-linear
-  buckets ≤ 12.5 % wide, never above `max`, which is exact. **out** = response
-  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **conns** =
-  connections held at the summary; **work** / **subs** (and **conns** as
-  `used/max`) appear only under `High load`.
+- **Rate** = streams finished in the window, per second. **conns** = connections
+  held at the summary; **work** / **subs** (and **conns** as `used/max`) appear
+  only under `High load`. Latency and bytes out: `zaino.grpc.first_message_seconds`
+  and `zaino.grpc.sent_bytes_total`.
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
   nothing served yet, validator unreachable; `at_capacity` = the admission share);
@@ -326,7 +323,7 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   per method at DEBUG only.
 - The summary is WARN once the window holds a failure, a refusal, a request
   slower than 1 s to its first message (`slow`, `slowest` = the method with the
-  longest), a stalled connection closed (`stalled`) or a connection refused at a
+  most), a stalled connection closed (`stalled`) or a connection refused at a
   cap (`conns_refused`); problem fields appear only when non-zero. Nothing
   served and nothing held = no line.
 - While more than 25% of the work-stream, subscription or connection cap is held, the
@@ -335,9 +332,9 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   `method`, `code`, the `error` message the client got), and its first
   refusal other than admission (WARN `Request unavailable`); the rest are only
   counted, so an outage costs two lines a minute, not one per request.
-- DEBUG adds `Method served` per method with traffic: `requests`, `p50`, `p99`,
-  `out`, `client`, `refused`, `failed`.
-- Cost: a few relaxed atomic adds per request into fixed per-method counters,
+- DEBUG adds `Method served` per method with traffic: `requests`, `client`,
+  `refused`, `failed`, `slow`.
+- Cost: one or two relaxed atomic adds per request into fixed per-method counters,
   swapped to zero once a minute on the accept loop; no lock, no allocation per
   request.
 

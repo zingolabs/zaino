@@ -1,27 +1,22 @@
-//! Serving summary every [`INTERVAL`], from counters every request feeds (rate, errors,
-//! latency, saturation)
+//! Serving summary every [`INTERVAL`], from status-code tallies every request feeds (latency and
+//! bytes out = the `zaino.grpc.*` metrics)
 //!
-//! - `Serving`: rate, p99 time to first message, bytes out per second, connections held, then
-//!   the window's problems by count; WARN once any request failed, was refused, stalled or ran
-//!   slow, INFO otherwise; silent while nothing is served or held
+//! - `Serving`: rate, connections held, then the window's problems by count; WARN once any
+//!   request failed, was refused, stalled or ran slow, INFO otherwise; silent while nothing is
+//!   served or held
 //! - `High load` (WARN) instead while any cap is past [`HIGH_LOAD`]: those caps as `used/max`
 //! - `Method served` (DEBUG): the same, per method with traffic
 //! - First server fault (ERROR, `Request failed`) and first unavailable answer (WARN, `Request
 //!   unavailable`) of a window logged as they happen, the rest only counted
-//! - Counters = relaxed atomics, swapped to zero per summary: a request costs a handful of
-//!   `fetch_add`s, a summary a few thousand swaps
+//! - Counters = relaxed atomics, swapped to zero per summary: a request costs a `fetch_add` or
+//!   two, a summary a few hundred swaps
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tonic::Code;
-use tracing::{
-    debug, error,
-    field::{display, DisplayValue},
-    info, warn,
-};
-use zaino_primitives::display::ByteSize;
+use tracing::{debug, error, field::display, info, warn};
 
 use crate::emit::{label, slot, CODES, LABELS};
 use crate::service::Method;
@@ -33,34 +28,6 @@ const SLOW: Duration = Duration::from_secs(1);
 
 /// Share of a cap (work streams, subscriptions, connections) held that logs `High load`
 const HIGH_LOAD: f64 = 0.25;
-
-/// Latency buckets: `2^SUB_BITS` per power of two of µs (each ≤ 12.5% wide), exact below that
-const SUB_BITS: u32 = 3;
-/// Longest latency told apart (~38 h); anything longer shares the top bucket
-const MAX_US: u64 = (1 << 37) - 1;
-const BUCKETS: usize = bucket(MAX_US) + 1;
-
-/// `us`'s latency bucket
-const fn bucket(us: u64) -> usize {
-    let us = if us > MAX_US { MAX_US } else { us };
-    if us < 1 << SUB_BITS {
-        return us as usize;
-    }
-    let exp = 63 - us.leading_zeros();
-    let mantissa = (us >> (exp - SUB_BITS)) & ((1 << SUB_BITS) - 1);
-    (((exp - SUB_BITS + 1) as usize) << SUB_BITS) + mantissa as usize
-}
-
-/// Largest µs `index`'s bucket holds
-fn ceiling(index: usize) -> u64 {
-    let sub = 1 << SUB_BITS;
-    if index < sub {
-        return index as u64;
-    }
-    let shift = (index >> SUB_BITS) as u32 - 1;
-    let mantissa = (index & (sub - 1)) as u64;
-    ((sub as u64 + mantissa) << shift) + (1 << shift) - 1
-}
 
 /// Who a status code blames: `Client` = request / client gone (4xx-like), `Refused` = not now
 /// (capacity, nothing served yet, validator down), `Failed` = this server (5xx-like)
@@ -86,21 +53,12 @@ impl Outcome {
 /// One method's counters for the current window
 struct MethodWindow {
     codes: [AtomicU64; CODES.len()],
-    latency: [AtomicU64; BUCKETS],
-    sent: AtomicU64,
-    max_us: AtomicU64,
     slow: AtomicU64,
 }
 
 impl MethodWindow {
     const fn new() -> Self {
-        Self {
-            codes: [const { AtomicU64::new(0) }; CODES.len()],
-            latency: [const { AtomicU64::new(0) }; BUCKETS],
-            sent: AtomicU64::new(0),
-            max_us: AtomicU64::new(0),
-            slow: AtomicU64::new(0),
-        }
+        Self { codes: [const { AtomicU64::new(0) }; CODES.len()], slow: AtomicU64::new(0) }
     }
 }
 
@@ -124,17 +82,11 @@ impl Window {
         }
     }
 
-    fn finished(&self, method: Option<Method>, code: Code, latency: Option<Duration>, sent: u64) {
+    fn finished(&self, method: Option<Method>, code: Code, latency: Option<Duration>) {
         let counters = &self.methods[slot(method)];
         counters.codes[code as usize].fetch_add(1, Ordering::Relaxed);
-        counters.sent.fetch_add(sent, Ordering::Relaxed);
-        if let Some(latency) = latency {
-            let us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
-            counters.latency[bucket(us)].fetch_add(1, Ordering::Relaxed);
-            counters.max_us.fetch_max(us, Ordering::Relaxed);
-            if latency > SLOW {
-                counters.slow.fetch_add(1, Ordering::Relaxed);
-            }
+        if latency.is_some_and(|latency| latency > SLOW) {
+            counters.slow.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -149,9 +101,6 @@ impl Window {
                 .iter()
                 .map(|method| MethodTotals {
                     codes: std::array::from_fn(|at| take(&method.codes[at])),
-                    latency: method.latency.iter().map(take).collect(),
-                    sent: take(&method.sent),
-                    max_us: take(&method.max_us),
                     slow: take(&method.slow),
                 })
                 .collect(),
@@ -164,8 +113,8 @@ impl Window {
 static WINDOW: Window = Window::new();
 
 /// A stream's close-out; `latency` = time to its first message, for an answered work request
-pub(crate) fn finished(method: Option<Method>, code: Code, latency: Option<Duration>, sent: u64) {
-    WINDOW.finished(method, code, latency, sent);
+pub(crate) fn finished(method: Option<Method>, code: Code, latency: Option<Duration>) {
+    WINDOW.finished(method, code, latency);
 }
 
 pub(crate) fn connection_refused() {
@@ -208,9 +157,6 @@ struct WindowCounts {
 
 struct MethodTotals {
     codes: [u64; CODES.len()],
-    latency: Vec<u64>,
-    sent: u64,
-    max_us: u64,
     slow: u64,
 }
 
@@ -241,28 +187,13 @@ impl Tally {
     }
 }
 
-/// Latency at quantile `q` (µs, never above `max_us`); `None` = nothing timed
-fn quantile(buckets: &[u64], max_us: u64, q: f64) -> Option<u64> {
-    let timed: u64 = buckets.iter().sum();
-    let rank = ((q * timed as f64).ceil() as u64).max(1);
-    let mut seen = 0;
-    for (index, &count) in buckets.iter().enumerate() {
-        seen += count;
-        if seen >= rank {
-            return Some(ceiling(index).min(max_us));
-        }
-    }
-    None
-}
-
 /// Logs the window since the last call (`elapsed` long, `at_capacity` admission refusals) and
 /// starts the next
 pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
     let counts = WINDOW.take();
     let secs = elapsed.as_secs_f64().max(f64::EPSILON);
-    let mut latency = vec![0; BUCKETS];
-    let (mut total, mut sent, mut max_us, mut slow) = (Tally::default(), 0, 0, 0);
-    let mut slowest = None;
+    let (mut total, mut slow, mut slowest) = (Tally::default(), 0, None);
+    let mut most_slow = 0;
 
     for (at, method) in counts.methods.iter().enumerate() {
         let tally = Tally::of(&method.codes);
@@ -270,33 +201,23 @@ pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
             continue;
         }
         let name = label(at);
-        let (p50, p99) = (
-            quantile(&method.latency, method.max_us, 0.5),
-            quantile(&method.latency, method.max_us, 0.99),
-        );
         debug!(
             method = name,
             requests = tally.requests,
-            p50 = timed(p50),
-            p99 = timed(p99),
-            out = byte_rate(method.sent, secs),
             client = tally.client,
             refused = tally.refused,
             failed = tally.failed,
+            slow = method.slow,
             "Method served"
         );
-        for (sum, count) in latency.iter_mut().zip(&method.latency) {
-            *sum += count;
-        }
         total.requests += tally.requests;
         total.ok += tally.ok;
         total.client += tally.client;
         total.refused += tally.refused;
         total.failed += tally.failed;
-        sent += method.sent;
         slow += method.slow;
-        if method.max_us > max_us {
-            (max_us, slowest) = (method.max_us, Some(name));
+        if method.slow > most_slow {
+            (most_slow, slowest) = (method.slow, Some(name));
         }
     }
 
@@ -307,7 +228,6 @@ pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
         return;
     }
     let nonzero = |count: u64| (count > 0).then_some(count);
-    let p99 = quantile(&latency, max_us, 0.99);
     let high = |(used, cap): (usize, usize)| used as f64 > cap as f64 * HIGH_LOAD;
     let over = |in_use: (usize, usize)| high(in_use).then(|| display(Used(in_use)));
     let busy = high(caps.work_streams) || high(caps.subscriptions) || high(caps.connections);
@@ -320,8 +240,6 @@ pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
         ($level:ident, $message:literal) => {
             $level!(
                 rps = %Rate(total.requests as f64 / secs),
-                p99 = timed(p99),
-                out = byte_rate(sent, secs),
                 conns = %conns,
                 work = over(caps.work_streams),
                 subs = over(caps.subscriptions),
@@ -329,7 +247,7 @@ pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
                 refused = nonzero(total.refused),
                 at_capacity = nonzero(at_capacity),
                 slow = nonzero(slow),
-                slowest = (slow > 0).then_some(slowest).flatten(),
+                slowest,
                 stalled = nonzero(counts.stalled),
                 conns_refused = nonzero(counts.connections_refused),
                 $message
@@ -341,11 +259,6 @@ pub(crate) fn summarise(elapsed: Duration, caps: CapsInUse, at_capacity: u64) {
         (false, 0) => summary!(info, "Serving"),
         (false, _) => summary!(warn, "Serving"),
     }
-}
-
-/// A latency field; `None` = nothing timed, the field left out
-fn timed(us: Option<u64>) -> Option<DisplayValue<Latency>> {
-    us.map(|us| display(Latency(us)))
 }
 
 /// `2,048` from 1,000 up
@@ -377,27 +290,6 @@ impl fmt::Display for Rate {
     }
 }
 
-/// µs as `850µs`, `4.25ms`, `38.4ms`, `412ms`, `2.31s`
-struct Latency(u64);
-
-impl fmt::Display for Latency {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ms = self.0 as f64 / 1e3;
-        match self.0 {
-            us if us < 1_000 => write!(f, "{us}µs"),
-            us if us < 10_000 => write!(f, "{ms:.2}ms"),
-            us if us < 100_000 => write!(f, "{ms:.1}ms"),
-            us if us < 1_000_000 => write!(f, "{ms:.0}ms"),
-            _ => write!(f, "{:.2}s", ms / 1e3),
-        }
-    }
-}
-
-/// `bytes` over `secs` as [`ByteSize`] per second: `0B/s`, `3.10MB/s`
-fn byte_rate(bytes: u64, secs: f64) -> String {
-    format!("{}/s", ByteSize((bytes as f64 / secs).round() as u64))
-}
-
 /// Held of its cap: `4/2,048`
 struct Used((usize, usize));
 
@@ -412,56 +304,31 @@ impl fmt::Display for Used {
 mod tests {
     use super::*;
 
-    /// Every latency lands in a bucket whose ceiling covers it within 12.5%, buckets ascend
-    /// without gaps, and past the top everything shares the last bucket
+    /// Codes split by who they blame; slow = past [`SLOW`] to the first message
     #[test]
-    fn buckets_cover_every_latency_within_an_eighth() {
-        for us in (0..5_000).chain((1..37).flat_map(|exp| {
-            let base = 1u64 << exp;
-            [base - 1, base, base + 1, base + base / 3]
-        })) {
-            let at = bucket(us);
-            let top = ceiling(at);
-            assert!(top >= us, "{us} above its ceiling {top}");
-            assert!((top - us) as f64 <= us as f64 / 8.0 + 1.0, "{us} → {top}");
-            assert!(at == 0 || ceiling(at - 1) < us, "{us} fits the bucket below");
-        }
-        assert_eq!(bucket(u64::MAX), BUCKETS - 1);
-        assert_eq!(ceiling(BUCKETS - 1), MAX_US);
-    }
-
-    /// Codes split by who they blame; quantiles read off the buckets, capped at the max seen
-    #[test]
-    fn a_window_tallies_outcomes_and_reads_quantiles() {
+    fn a_window_tallies_outcomes_and_slow_requests() {
         let window = Window::new();
         let method = Some(Method::GetBlock);
         let ms = Duration::from_millis;
         for latency in 1..=100 {
-            window.finished(method, Code::Ok, Some(ms(latency)), 1_000);
+            window.finished(method, Code::Ok, Some(ms(latency)));
         }
-        window.finished(method, Code::Ok, Some(ms(1_500)), 0);
+        window.finished(method, Code::Ok, Some(ms(1_500)));
         for code in [Code::NotFound, Code::Cancelled, Code::Unavailable, Code::Internal] {
-            window.finished(method, code, None, 0);
+            window.finished(method, code, None);
         }
 
         let counts = window.take();
         let totals = &counts.methods[slot(method)];
-        let tally = Tally::of(&totals.codes);
         assert_eq!(
-            tally,
-            Tally { requests: 105, ok: 101, client: 2, refused: 1, failed: 1 },
-            "NotFound and Cancelled blame the client"
+            (Tally::of(&totals.codes), totals.slow),
+            (Tally { requests: 105, ok: 101, client: 2, refused: 1, failed: 1 }, 1),
+            "NotFound and Cancelled blame the client; one past 1 s"
         );
-        assert_eq!((totals.sent, totals.slow, totals.max_us), (100_000, 1, 1_500_000));
-        let p50 = quantile(&totals.latency, totals.max_us, 0.5).expect("timed");
-        assert!((51_000..=57_000).contains(&p50), "p50 {p50}");
-        let p99 = quantile(&totals.latency, totals.max_us, 0.99).expect("timed");
-        assert!((100_000..=112_500).contains(&p99), "p99 {p99}");
-        assert_eq!(quantile(&totals.latency, totals.max_us, 1.0), Some(1_500_000), "max caps");
-        assert_eq!(quantile(&[0; 4], 0, 0.5), None);
 
         let drained = window.take();
-        assert_eq!(Tally::of(&drained.methods[slot(method)].codes), Tally::default());
+        let drained = &drained.methods[slot(method)];
+        assert_eq!((Tally::of(&drained.codes), drained.slow), (Tally::default(), 0));
     }
 
     #[test]
@@ -472,13 +339,6 @@ mod tests {
         assert_eq!(shown(&Rate(0.35)), "0.35");
         assert_eq!(shown(&Rate(42.14)), "42.1");
         assert_eq!(shown(&Rate(1_204.4)), "1,204");
-        assert_eq!(shown(&Latency(850)), "850µs");
-        assert_eq!(shown(&Latency(4_250)), "4.25ms");
-        assert_eq!(shown(&Latency(38_420)), "38.4ms");
-        assert_eq!(shown(&Latency(412_300)), "412ms");
-        assert_eq!(shown(&Latency(2_310_000)), "2.31s");
-        assert_eq!(byte_rate(0, 1.0), "0B/s");
-        assert_eq!(byte_rate(6_200_000, 2.0), "3.10MB/s");
         assert_eq!(shown(&Used((4, 2_048))), "4/2,048");
     }
 }
