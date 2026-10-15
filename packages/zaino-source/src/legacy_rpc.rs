@@ -128,14 +128,6 @@ fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionErro
     }
 }
 
-/// `getstandardfee`: `-32601` = `Unsupported` (validator predates the RPC), else a fetch failure
-fn standard_fee_answer(error: NonDomainError) -> QueryError<crate::GetStandardFeeError> {
-    if error.mode == FailureMode::RpcError(METHOD_NOT_FOUND) {
-        return QueryError::Domain(crate::GetStandardFeeError::Unsupported);
-    }
-    QueryError::NonDomain(error)
-}
-
 /// `checkadmission`'s error: `-32601` = no such method here (zcashd, stock zebrad), an answer
 /// (never a failure: the validator stays healthy); else [`submission_rejection`]'s verdicts
 fn admission_check_answer(error: NonDomainError) -> QueryError<CheckAdmissionError> {
@@ -329,8 +321,15 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     async fn get_standard_fee(
         &self,
     ) -> Result<crate::StandardFee, QueryError<crate::GetStandardFeeError>> {
+        // `-32601` = `Unsupported` (validator predates the RPC), else a fetch failure
         self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee, |error| {
-            standard_fee_answer(error.into())
+            let error: NonDomainError = error.into();
+            match error.mode {
+                FailureMode::RpcError(METHOD_NOT_FOUND) => {
+                    QueryError::Domain(crate::GetStandardFeeError::Unsupported)
+                }
+                _ => QueryError::NonDomain(error),
+            }
         })
         .await
     }
