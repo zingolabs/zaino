@@ -13,7 +13,7 @@ use crate::{
     DEFAULT_MAX_ADDRESS_ROWS, RECEIVES, SPENT,
 };
 
-/// One state of both maps, read as of `tip` (a snapshot's served tip: rows above it unseen)
+/// One state of both maps, read as of `tip` (a served tip: rows above it unseen)
 ///
 /// - `max_rows` = receives one request may walk, across all its addresses
 #[derive(Clone)]
@@ -37,7 +37,7 @@ impl<V: View> TransparentAddressReader<V> {
         Self { view, tip, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
     }
 
-    /// Rows above `tip` unseen (a view ahead of the snapshot it serves)
+    /// Rows above `tip` unseen (a view ahead of the tip it serves)
     pub fn as_of(mut self, tip: BlockHeight) -> Self {
         self.tip = self.tip.min(Some(tip));
         self

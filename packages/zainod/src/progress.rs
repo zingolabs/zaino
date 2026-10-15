@@ -1,4 +1,4 @@
-//! One progress task: every [`REPORT_INTERVAL`], read from the global snapshot + `SyncProgress`
+//! One progress task: every [`REPORT_INTERVAL`], read from the `GrpcSnapshot` + `SyncProgress`
 //!
 //! - one line per tick for the [`Phase`] still outstanding: `Syncing blocks` (final, to the
 //!   writers), then `Fetching non-finalized blocks` (the NFS window up to best); a stall warning

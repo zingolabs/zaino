@@ -1,4 +1,4 @@
-//! `/readyz`, public `/status` + the `/metrics` gauges: each from one snapshot load (G9)
+//! `/readyz`, public `/status` + the `/metrics` gauges: each from one `GrpcSnapshot` load (G9)
 //!
 //! - [`DaemonStatus`] built once by `daemon()`, `Arc`-shared with every reader and writer
 //! - `ready` ⇔ `state` = serving or degraded ⇔ `/readyz` 200 (degraded = a fresh peer-verified
@@ -48,7 +48,7 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set; first match: held, not booted, runtime stalled, the snapshot's [`Standing`]
+/// Closed set; first match: held, not booted, runtime stalled, the `GrpcSnapshot`'s [`Standing`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -101,7 +101,7 @@ const RUNTIME_STALLED: &str = "Runtime stalled";
 /// `zaino_grpc::AdmissionReport::overloaded`
 const OVERLOADED: &str = "Overloaded";
 
-/// Where the process is: before boot (snapshot bootstrap, first validator answer) or booted
+/// Where the process is: before boot (index-snapshot bootstrap, first validator answer) or booted
 enum Stage {
     Starting { bootstrap: Option<Progress>, awaiting_validator: bool },
     Booted(Booted),
@@ -255,7 +255,7 @@ impl DaemonStatus {
         serde_json::to_string(&status).unwrap_or_default()
     }
 
-    /// Every snapshot gauge, set just before a scrape renders (nothing before boot)
+    /// Every `GrpcSnapshot` gauge, set just before a scrape renders (nothing before boot)
     pub(crate) fn emit_gauges(&self) {
         if let Some(sources) = self.sources.get() {
             zaino_snapshot::emit_gauges(&sources.snapshots.load(), &sources.progress);

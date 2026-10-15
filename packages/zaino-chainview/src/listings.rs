@@ -25,7 +25,7 @@ pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
 /// Listing counted this long after it was read (three rounds)
 pub(crate) const LISTING_FRESH: Duration = Duration::from_secs(15);
 
-/// Each live peer's latest listing; `imbl` (published with the snapshot)
+/// Each live peer's latest listing; `imbl` (published with the `ChainViewSnapshot`)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Listings {
     by_peer: OrdMap<SocketAddr, Listed>,

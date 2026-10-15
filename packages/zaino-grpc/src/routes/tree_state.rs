@@ -1,5 +1,5 @@
 //! Tree-state methods (framed once per NFS publish): `GetTreeState` at heights `<=`
-//! [`At::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the snapshot's tip
+//! [`At::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the served tip
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use crate::wire::{self, streamed_response, unary_response};
 /// Framed answers per NFS publish: the layer heights every synced wallet asks (the tip among
 /// them), and each pool's root list as of the tip (sliced per request)
 ///
-/// - keyed on the `Indexed` publish, not the global snapshot (that one moves per chain-view fold)
+/// - keyed on the `Indexed` publish, not the `GrpcSnapshot` (that one moves per chain-view fold)
 pub(crate) struct Memos<V> {
     states: Memo<V, BlockHeight, Result<Bytes, Status>>,
     roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
@@ -147,7 +147,7 @@ pub(crate) async fn latest<V: DurableView>(
 
 /// - Hash wins when given (one block across a reorg): block-hash index locates, this index
 ///   answers only if it holds that same block
-/// - by height, in the snapshot's layer (the synced wallets' tip asks): once per snapshot
+/// - by height, in the NFS layer (the synced wallets' tip asks): once per NFS publish
 pub(crate) async fn treestate<V, B>(
     answering: &Answering<V>,
     body: B,
@@ -215,7 +215,7 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     })
 }
 
-/// Every root of the pool completed at or below the tip, framed once per snapshot; a request =
+/// Every root of the pool completed at or below the tip, framed once per NFS publish; a request =
 /// one slice of it, whole or refused before the first byte (iOS keeps a partial prefix)
 ///
 /// - unknown pool = `UNIMPLEMENTED` (the one non-Sapling refusal the Android SDK survives with its
@@ -283,7 +283,7 @@ mod tests {
 
     use crate::service::{Method, Routes};
     use crate::testing::{
-        decode_frames, dispatch, framed_request, indexed, routes, snapshot, MAINNET,
+        decode_frames, dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET,
     };
 
     /// - `start..start + max` of the pre-framed list = exactly those roots, one frame each
@@ -336,8 +336,10 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.sapling_output(1)));
         let genesis = chain.genesis();
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
-        let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, genesis, vec![trees]), ..routes() });
+        let mut router = dispatch(Routes {
+            snapshots: grpc_snapshots(&chain, genesis, vec![trees]),
+            ..routes()
+        });
 
         let (sapling, orchard, ironwood) = (0, 1, 2);
         let ok = || (None, Some("0".to_owned()), 0);
@@ -392,7 +394,7 @@ mod tests {
         let tip = chain.tip();
         let trees = indexed(IndexKind::TreeState, &chain, tip);
         let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![trees]), ..routes() });
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![trees]), ..routes() });
 
         let mut ask = |method: Method, body: Vec<u8>| {
             let request = framed_request(method, body.into());
@@ -450,7 +452,7 @@ mod tests {
         let hash = genesis.hash.0;
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
         let mut router = dispatch(Routes {
-            snapshots: snapshot(&chain, genesis, vec![trees.clone()]),
+            snapshots: grpc_snapshots(&chain, genesis, vec![trees.clone()]),
             ..routes()
         });
 
@@ -482,7 +484,7 @@ mod tests {
         assert_eq!(state.orchard_tree, "000000", "a real empty tree, not \"\"");
         assert_eq!(state.ironwood_tree, "000000");
 
-        // Tip = same answer; framed once per snapshot (second ask = same allocation)
+        // Tip = same answer; framed once per NFS publish (second ask = same allocation)
         let latest = || async {
             use http_body_util::BodyExt as _;
             let response = router
@@ -495,7 +497,7 @@ mod tests {
         };
         let (first, second) = (latest().await, latest().await);
         assert_eq!(service::TreeState::decode(&first[FRAME_HEADER..]).expect("decodes"), state);
-        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per snapshot, shared");
+        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per NFS publish, shared");
 
         // By hash: resolved through the block-hash index, so without it, unimplemented
         let by_hash = |hash: [u8; 32]| {
@@ -516,7 +518,7 @@ mod tests {
         let located_by = |locator: &MockChain| {
             let views =
                 vec![trees.clone(), indexed(IndexKind::BlockHash, locator, locator.genesis())];
-            dispatch(Routes { snapshots: snapshot(&chain, genesis, views), ..routes() })
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, genesis, views), ..routes() })
         };
         let mut linked = located_by(&chain);
         let response = linked.call(by_hash(hash)).await.expect("answers");

@@ -156,7 +156,7 @@ impl HeaderChain {
         Some(BlockRef { hash: record.hash, height: *height })
     }
 
-    /// Immutable snapshot of the best chain (`None` = no anchor yet)
+    /// Immutable view of the best chain (`None` = no anchor yet)
     pub fn verified(&self) -> Option<VerifiedChain> {
         let best = self.best()?;
         let (above, finals) = (self.best_path.clone(), self.finals.clone());

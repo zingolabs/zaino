@@ -25,11 +25,11 @@ release turns them into the version bump, the changelog and the `vX.Y.Z` tag wit
 packages/                          Cargo workspace members
   zainod/                            Daemon binary: config → boot (one task per stage), logging, verify
   # serving
-  zaino-grpc/                        Lightwalletd-compatible gRPC over snapshots, chain view, validators
+  zaino-grpc/                        Lightwalletd-compatible gRPC over GrpcSnapshots, chain view, validators
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
-  zaino-snapshot/                    One published snapshot of everything served, /status report
+  zaino-snapshot/                    One GrpcSnapshot of everything served, /status report
   # indexing
-  zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, snapshots
+  zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, publications
   zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
   zaino-sync/                        Final stream (sink + queues) + the writers' apply / commit / publish
   zaino-index-compact-block/         Height → gRPC-framed compact block (one sequence)
@@ -49,7 +49,7 @@ packages/                          Cargo workspace members
 live-tests/                        Standalone workspace, run on the ztest Kubernetes harness
   clientless/                        Zaino against a live validator, no wallet
   e2e/                               Wallet → Zaino → validator
-  non-finalized-state/               Reorgs, the served snapshot tip, every tip-dependent RPC
+  non-finalized-state/               Reorgs, the served tip, every tip-dependent RPC
   zaino-testutils/                   Shared test utilities
   sync/                              Mainnet sync profiles (own workspace, `ztest sync`)
 
@@ -92,7 +92,7 @@ Operating it:
 - [Cargo docs](https://zingolabs.github.io/zaino/).
 
 How it is built, and why:
-- [Architecture](./docs/architecture.md): **start here.** Who owns what, the map, what each source is trusted for, the best chain and finality, the mempool, submission, indexing, serving from one snapshot, failure modes.
+- [Architecture](./docs/architecture.md): **start here.** Who owns what, the map, what each source is trusted for, the best chain and finality, the mempool, submission, indexing, serving from one `GrpcSnapshot`, failure modes.
 - [Storage](./packages/zaino-persistence/usage.md): the port every index stores through, the on-disk layout, the commit and crash contract, and why it is append-only files and mmap. Each index's own guide (below) covers what it keeps.
 - [What the clients actually call](./docs/client-requirements.md): an audit of the two wallet sync engines.
 

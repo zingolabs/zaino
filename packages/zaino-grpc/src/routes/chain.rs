@@ -1,6 +1,6 @@
 //! Methods no index backs: `SendTransaction` (chain view), mempool methods + `GetLightdInfo`
-//! (the snapshot's chain view half), `GetTransaction` (forwarded: consensus bytes, usage.md "Why
-//! `GetTransaction` forwards")
+//! (the `GrpcSnapshot`'s chain view half), `GetTransaction` (forwarded: consensus bytes,
+//! usage.md "Why `GetTransaction` forwards")
 //!
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = verified best tip, no validator call ("how far behind")
@@ -176,7 +176,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
-/// Serving metadata from one snapshot: no validator read (served degraded too)
+/// Serving metadata from one `GrpcSnapshot`: no validator read (served degraded too)
 ///
 /// - `blockHeight` = the served tip `GetLatestBlock` serves; `estimatedHeight` = the verified
 ///   best (the network's tip as far as the header chain knows)

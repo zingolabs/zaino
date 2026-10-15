@@ -27,8 +27,8 @@ let bound = GrpcService::new(grpc_listen_address, limits)
 tokio::spawn(bound.run(cancel.child_token()));
 ```
 
-A server can bind and run before its routes exist (an owner still booting or downloading a
-snapshot): `GrpcService::new` alone answers health from the start and every method
+A server can bind and run before its routes exist (an owner still booting or downloading an
+index snapshot): `GrpcService::new` alone answers health from the start and every method
 `UNAVAILABLE` (`starting: not routed yet`). Take its `routing()` handle before `bind()` and
 call `route(routes)` once they exist. Routing twice panics.
 
@@ -40,7 +40,7 @@ tokio::spawn(server.bind().await?.run(cancel.child_token()));
 routing.route(routes);
 ```
 
-| Method | Answered by (one snapshot) |
+| Method | Answered by (one `GrpcSnapshot`) |
 |---|---|
 | `GetLatestBlock` | `served()?` tip itself (height + hash, no read) |
 | `GetBlock`, `GetBlockRange[Nullifiers]` | `served()?`'s `compact_block` (stored records, never re-encoded) |
@@ -50,10 +50,10 @@ routing.route(routes);
 | `GetMempoolTx` | `mempool()?` (the servable mempool) |
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?`: the served height, the verified best as `estimatedHeight`, the branch and next upgrade from the upgrade schedule at the served height; `network` as configured |
-| `SendTransaction` | `submit` (chain view submission; no snapshot) |
+| `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
-- **One snapshot per request** (`snapshots.load()`, pinned for the request or
+- **One `GrpcSnapshot` per request** (`snapshots.load()`, pinned for the request or
   the whole stream, [G1](../zaino-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
   index holds: `GetLatestBlock`, `GetLatestTreeState`,
   `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
@@ -75,24 +75,24 @@ routing.route(routes);
   answers the new tip.
 - An index missing from `Routes::indexes` = disabled: its methods are
   `UNIMPLEMENTED` from routing on, served or not, naming the index
-  (`GetTreeState needs the tree_state index, which is not enabled`). A snapshot
+  (`GetTreeState needs the tree_state index, which is not enabled`). An NFS publication
   lacking a configured index's view answers the same. Compact-block is optional
   like the rest. An unknown path is `UNIMPLEMENTED`.
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
 - `V` = the indexes' `zaino_persistence::DurableView` (zainod: `DiskView`): every read = an
-  index's reader over a committed snapshot + the NFS's layers, on a read lane (any thread).
+  index's reader over its durable view + the NFS's layers, on a read lane (any thread).
   Any engine's durable view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
-  snapshot's `block_hash` view: `height_of(hash)` names the height (above the
+  `GrpcSnapshot`'s `block_hash` view: `height_of(hash)` names the height (above the
   tip = `NOT_FOUND`), and the answering index must hold the same hash there
   (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
-- Route tests build a snapshot with `zaino_snapshot::GrpcSnapshots::fixed` over
+- Route tests build a `GrpcSnapshot` with `zaino_snapshot::GrpcSnapshots::fixed` over
   `Indexed::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
-- `GetLightdInfo` never calls a validator: one snapshot load (`lightd()`), so it
+- `GetLightdInfo` never calls a validator: one `GrpcSnapshot` load (`lightd()`), so it
   answers while no trusted validator vouches (degraded) too; nothing served =
   `UNAVAILABLE`.
 - `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
@@ -182,7 +182,7 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   logged while the previous pair keeps serving. A handshake not done within 10 s closes the
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
-- `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a snapshot, `version` the
+- `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a `GrpcSnapshot`, `version` the
   daemon's (`None` = `UNAVAILABLE`).
 
 Every cap refuses; none queues except the read lanes:
@@ -282,7 +282,7 @@ touches index files on the blocking pool, under a permit of its lane, never on
 a runtime worker:
 
 - **point**: block by height or hash, tree state, subtree roots
-- **range**: each `GetBlockRange` window below the snapshot's layer/committed seam
+- **range**: each `GetBlockRange` window below the NFS layer/durable seam
 - **scan**: address UTXOs, balances and transactions
 
 A heavy scan queues behind the other scans, never behind or ahead of a tip read.
@@ -294,15 +294,15 @@ The answers every synced wallet asks for right after each block never queue:
 
 | Answer | Why it needs no read |
 |---|---|
-| `GetLatestBlock` | the snapshot's tip |
-| `GetBlock` by height, in the snapshot's layer | RAM record |
+| `GetLatestBlock` | the served tip |
+| `GetBlock` by height, in the NFS layer | RAM record |
 | `GetBlockRange`, in the layer | one RAM record per chunk, projected on read |
 | `GetMempoolStream` opening | framed once per served-tip epoch |
 | `GetTreeState` (layer heights), `GetLatestTreeState` | framed once per NFS publish |
 | `GetSubtreeRoots` | each pool's list framed once per NFS publish; a request = one slice |
 
 The tree-state memos (`memo::PerView`) are keyed on the NFS publish (the
-`Indexed` `Arc`), not the global snapshot, which moves on every chain-view fold.
+`Indexed` `Arc`), not the `GrpcSnapshot`, which moves on every chain-view fold.
 A new publish starts empty, so there is no invalidation rule. The first ask per
 publish computes on the point lane, single-flight: the rest of the herd waits
 for that one computation, then every later ask is answered inline.

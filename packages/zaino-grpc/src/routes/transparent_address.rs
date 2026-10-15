@@ -1,5 +1,5 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
-//! (index names the txids, a validator supplies the bytes), all as of the snapshot's tip
+//! (index names the txids, a validator supplies the bytes), all as of the served tip
 
 use crate::network::chain_name;
 use bytes::Bytes;
@@ -22,7 +22,7 @@ use crate::limits::Lane;
 use crate::limits::ReadLanes;
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
-/// One request's index: the snapshot's reader (as of its tip, row-capped) + the network its
+/// One request's index: the `GrpcSnapshot`'s reader (as of its tip, row-capped) + the network its
 /// addresses parse in
 pub(crate) struct Addresses<V> {
     pub(crate) reader: TransparentAddressReader<OverlayView<V>>,
@@ -269,7 +269,8 @@ mod tests {
 
     use crate::service::{Method, Routes};
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, indexed, routes, routes_over, snapshot,
+        decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes,
+        routes_over,
     };
 
     /// - All four methods off the same rows: utxo shapes agree, balance shapes agree
@@ -308,7 +309,7 @@ mod tests {
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(chain.validator(tip));
         let (routes, balancing, _) = routes_over(&node);
-        let routes = Routes { snapshots: snapshot(&chain, tip, vec![index]), ..routes };
+        let routes = Routes { snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
@@ -489,7 +490,7 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.pay(&alice, 500)));
         let genesis = chain.genesis();
         let index = indexed(IndexKind::TransparentAddress, &chain, genesis);
-        let snapshots = snapshot(&chain, genesis, vec![index]);
+        let snapshots = grpc_snapshots(&chain, genesis, vec![index]);
         let mut router = dispatch(Routes { snapshots, ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";

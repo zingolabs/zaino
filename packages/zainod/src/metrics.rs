@@ -1,7 +1,8 @@
 //! Prometheus `/metrics` endpoint
 //!
 //! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
-//!   `zaino-snapshot`'s, set from one snapshot load per scrape ([`DaemonStatus::emit_gauges`])
+//!   `zaino-snapshot`'s, set from one `GrpcSnapshot` load per scrape
+//!   ([`DaemonStatus::emit_gauges`])
 //! - Events emitted where they happen (`zaino-nfs` / `zaino-sync` / `zaino-grpc` /
 //!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), registered here via their
 //!   `describe_metrics` / `METRIC_BUCKETS`
@@ -41,7 +42,7 @@ pub(crate) fn init(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<()
     Ok(())
 }
 
-/// One scrape: snapshot gauges + process sample set, then rendered (blocking: walks every handle)
+/// One scrape: `GrpcSnapshot` gauges + process sample set, rendered (blocking: walks every handle)
 pub(crate) fn scrape(handle: &PrometheusHandle, status: &DaemonStatus) -> String {
     status.emit_gauges();
     collect_process_metrics();

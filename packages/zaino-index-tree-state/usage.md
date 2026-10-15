@@ -100,18 +100,18 @@ fold(&parent, &block, &mut out)?;          // block = next above parent's tip
 
 ## Serving
 
-Routes read through one snapshot per request (`snap.views().tree_state()`,
+Routes read through one `GrpcSnapshot` per request (`snap.views().tree_state()`,
 `None` = disabled), at heights `≤ snap.tip()`:
 
 | Reader method | Returns |
 |---|---|
 | `treestate(height)` | `Treestate` with all three pools; `NotFound` with no record, `Inconsistent` if stored nodes will not rebuild |
 | `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>`; `max_entries == 0` = to the end, `start_index == count` = empty |
-| `is_non_finalized(height)` | `height` is in the snapshot's layer above the committed files |
+| `is_non_finalized(height)` | `height` is in the NFS layer above the durable files |
 
 `zaino-grpc` adds what the reader does not know:
 
-- Past the snapshot tip is `NOT_FOUND`. Below Sapling activation every pool is
+- Past the served tip is `NOT_FOUND`. Below Sapling activation every pool is
   `""`, where lightwalletd errors: the Android SDK asks for the height just
   below activation (ZA#1422).
 - `GetLatestTreeState` = `treestate(snap.tip())`. Subtree roots completing
@@ -126,11 +126,11 @@ Routes read through one snapshot per request (`snap.views().tree_state()`,
   ([`zaino-internal-block-hash-to-height`](../zaino-internal-block-hash-to-height/usage.md))
   names a height, and the route checks `Treestate.block_hash` matches.
 - `is_non_finalized` marks the ~1000 heights every synced wallet asks about.
-  `zaino-grpc` memoizes those answers per snapshot, not per wallet.
+  `zaino-grpc` memoizes those answers per NFS publish, not per wallet.
 
 Blocks above the durable tip are `zaino-nfs` layers, keyed exactly as the
 files and read through the same `TreeStateReader` over an `OverlayView`. A
-reorg moves the snapshot to another layer, so nothing reorgable ever reaches
+reorg moves the served tip to another layer, so nothing reorgable ever reaches
 disk.
 
 ## Storage

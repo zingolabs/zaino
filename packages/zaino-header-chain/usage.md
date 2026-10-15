@@ -84,7 +84,7 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 
 ## `VerifiedChain`
 
-`HeaderChain::verified()` is an immutable snapshot (clone = refcounts: `imbl` throughout). A
+`HeaderChain::verified()` is an immutable value (clone = refcounts: `imbl` throughout). A
 holder's answers never change (H5).
 
 | Method | Answer |

@@ -46,13 +46,13 @@ impl<V: View> TreeStateReader<V> {
     }
 }
 
-/// Snapshot's seam: its layer above the committed files
+/// NFS publication's seam: its layer above the durable files
 impl<V: View> TreeStateReader<OverlayView<V>> {
-    /// `at` in the layer above the committed files: among the ~1000 heights every synced wallet
-    /// asks about (bounded: a per-snapshot memo keyed on these stays small)
+    /// `at` in the layer above the durable files: among the ~1000 heights every synced wallet
+    /// asks about (bounded: a per-publication memo keyed on these stays small)
     pub fn is_non_finalized(&self, at: BlockHeight) -> bool {
-        let committed = self.view.durable().tip().map(|tip| tip.height);
-        Some(at) <= self.tip() && Some(at) > committed
+        let durable = self.view.durable().tip().map(|tip| tip.height);
+        Some(at) <= self.tip() && Some(at) > durable
     }
 }
 

@@ -10,7 +10,7 @@ use zaino_proto::frame::{frame_into, split_frame, FRAME_HEADER};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-/// No answer from this snapshot: retry (`UNAVAILABLE`, the reason as its message)
+/// No answer from this `GrpcSnapshot`: retry (`UNAVAILABLE`, the reason as its message)
 pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
     Status::unavailable(why.to_string())
 }
@@ -261,7 +261,7 @@ mod tests {
 
     use super::request_limit;
     use crate::service::{Method, Routes};
-    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
+    use crate::testing::{dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET};
 
     /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
     /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
@@ -307,7 +307,7 @@ mod tests {
         let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let snapshots = snapshot(&chain, genesis, vec![compact]);
+        let snapshots = grpc_snapshots(&chain, genesis, vec![compact]);
         let mut router = dispatch(Routes { snapshots, ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload

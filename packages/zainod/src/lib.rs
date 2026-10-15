@@ -53,19 +53,19 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     let enabled = zaino_persistence::IndexKind::ALL.into_iter();
     let enabled = enabled.filter(|kind| config.enabled(*kind).is_some());
     let status = Arc::new(DaemonStatus::new(config.network, enabled));
-    // Before the snapshot bootstrap (a held node reads held from its first answer)
+    // Before the index-snapshot bootstrap (a held node reads held from its first answer)
     let (state_dir, goaway_delay) =
         (config.serve.state_dir.clone(), config.serve.hold_goaway_delay());
     crate::hold::spawn(Arc::clone(&status), state_dir, goaway_delay);
     config.warn_about_metrics_listener();
-    // Before the snapshot bootstrap (its progress extends systemd's start timeout)
+    // Before the index-snapshot bootstrap (its progress extends systemd's start timeout)
     crate::notify::spawn(Arc::clone(&status));
 
     if let Some(endpoint) = config.metrics.listen_address {
         let status = Arc::clone(&status);
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint, status))?;
     }
-    // After the admin listener (`/readyz` reports the snapshot bootstrap inside)
+    // After the admin listener (`/readyz` reports the index-snapshot bootstrap inside)
     let running = start_indexer(config, status).await.inspect_err(|error| {
         error!(%error, "Startup failed");
     })?;

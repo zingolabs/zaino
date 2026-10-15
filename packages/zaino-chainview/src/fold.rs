@@ -1,4 +1,4 @@
-//! The fold: per-endpoint deltas in, one published snapshot out
+//! The fold: per-endpoint deltas in, one published `ChainViewSnapshot` out
 //!
 //! - Store, then signal (a woken reader must find what woke it)
 

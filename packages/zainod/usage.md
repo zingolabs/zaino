@@ -26,7 +26,7 @@ moments.
 | `state`        | When                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                      |
-| `provisioning` | not booted yet: a snapshot bootstrap, or plain startup                                   |
+| `provisioning` | not booted yet: an index-snapshot bootstrap, or plain startup                            |
 | `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or no trusted validator vouching (every one down, or none holding the verified tip) while not `degraded` |
 | `degraded`     | no trusted validator vouching, but synced to a fresh verified best (its block time within 30 min of the clock: p2p peers carried the tip) |
 | `syncing`      | booted, but the served tip is not the verified best yet, or every validator holding the best is still catching up to the network |
@@ -120,7 +120,7 @@ limits and status codes: [zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-
 | `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving` or `degraded`, else `503` |
 | `/status` | the public projection below, always `200` |
 
-The listener binds at process start, before a snapshot bootstrap or boot, so these paths
+The listener binds at process start, before an index-snapshot bootstrap or boot, so these paths
 answer `provisioning` (with progress) or `down` from the first second. Until boot finishes,
 every gRPC method answers `UNAVAILABLE`. A port already in use fails startup at once.
 
@@ -201,12 +201,12 @@ TimeoutStartSec=15min
 | Message | When |
 |---|---|
 | `READY=1` | the first time `/readyz` passes (serving at the verified tip) or the node is held; nothing is sent after it |
-| `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height, the served height or an index height moved |
+| `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: index-snapshot bytes, the fetch height, the served height or an index height moved |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
   that restarts it (`nixos-rebuild switch`, deploy-rs) sees an upgrade that cannot catch up as
   a failed unit.
-- A fresh sync or snapshot bootstrap keeps extending its start for as long as it moves, so
+- A fresh sync or index-snapshot bootstrap keeps extending its start for as long as it moves, so
   `TimeoutStartSec` bounds only a stalled start (5 minutes without progress, once past it).
   Units ordered after zainod, and `multi-user.target` at boot, wait for that start; use
   `systemctl start --no-block` to return at once.
@@ -221,7 +221,7 @@ cover both. To take a node out of rotation before a stop, hold it first (see
 
 Built with the `snapshot` feature (`cargo build --features snapshot`, Nix
 `zainod.override { features = [ "snapshot" ]; }`, Docker `--build-arg CARGO_FEATURES=snapshot`)
-and `aria2c` on `PATH`, zainod fills empty indexes from a published snapshot before it boots:
+and `aria2c` on `PATH`, zainod fills empty indexes from a published index snapshot before it boots:
 
 ```toml
 [snapshot]

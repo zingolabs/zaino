@@ -1,5 +1,5 @@
 //! Shared route-test infra: `Routes` over a `MockValidator`, request builders, indexes folded
-//! from a `MockChain`'s genesis and served through one fixed snapshot
+//! from a `MockChain`'s genesis and served through one fixed `GrpcSnapshot`
 
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -91,8 +91,8 @@ pub(super) fn indexed_at(
     Indexed::fixed(Arc::new(chain.verified(tip)), tip, params, views)
 }
 
-/// One snapshot for good: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
-pub(super) fn snapshot_held(
+/// Fixed `GrpcSnapshot`: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
+pub(super) fn grpc_snapshots_held(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
@@ -104,13 +104,13 @@ pub(super) fn snapshot_held(
     GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
 
-/// [`snapshot_held`] by no validator, empty mempool (index methods only)
-pub(super) fn snapshot(
+/// [`grpc_snapshots_held`] by no validator, empty mempool (index methods only)
+pub(super) fn grpc_snapshots(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
 ) -> GrpcSnapshots<DiskView> {
-    snapshot_held(chain, tip, views, TrustedValidatorSet::default(), &[])
+    grpc_snapshots_held(chain, tip, views, TrustedValidatorSet::default(), &[])
 }
 
 /// Routes over `node`, every index configured (the balancer's driver + the view's poll fold back,

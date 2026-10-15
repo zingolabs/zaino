@@ -36,7 +36,7 @@ pub struct MempoolEntry {
     pub projection: Projection,
 }
 
-/// Serving layer's encoding of one (`raw`, `fee`), rendered once and shared by every snapshot
+/// Serving layer's encoding of one (`raw`, `fee`): rendered once, shared per `ChainViewSnapshot`
 /// holding the sighting (`GetMempoolTx` = consensus parse per tx otherwise, per request)
 ///
 /// - cache, never identity: always equal
@@ -434,7 +434,7 @@ impl ChainViewSnapshot {
     }
 }
 
-/// The mempool of a snapshot a trusted validator or a peer quorum reads
+/// Mempool of a `ChainViewSnapshot` a trusted validator or a peer quorum reads
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolView<'a>(&'a ChainViewSnapshot);
 

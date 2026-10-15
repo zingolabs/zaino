@@ -79,7 +79,7 @@ pub(crate) const ROUTES: [Route; 18] = {
     use Method::*;
 
     [
-        // the snapshot's tip itself
+        // served tip itself
         row(GetLatestBlock, "GetLatestBlock", Work, None),
         row(GetBlock, "GetBlock", Work, Some(CompactBlock)),
         row(GetBlockRange, "GetBlockRange", Work, Some(CompactBlock)),
@@ -249,7 +249,7 @@ impl<S: ChainDataSource, V: DurableView> Wired<S, V> {
 }
 
 impl<S: ChainDataSource, V: DurableView> Routed<S, V> {
-    /// The registry's handler column: one arm per [`Method`], off one snapshot
+    /// The registry's handler column: one arm per [`Method`], off one `GrpcSnapshot`
     async fn handle<B>(
         &self,
         method: Method,
@@ -318,7 +318,7 @@ impl<S: ChainDataSource, V: DurableView> Routed<S, V> {
     }
 }
 
-/// A configured index's view, absent = disabled (a snapshot built without it)
+/// A configured index's view, absent = disabled (an NFS publish built without it)
 fn view<T>(view: Option<T>, method: Method, index: IndexKind) -> Result<T, Status> {
     view.ok_or_else(|| disabled(method, index))
 }
@@ -373,8 +373,8 @@ mod tests {
 
     use super::{Method, Routes, ROUTES};
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, indexed, request_at, routes, snapshot,
-        snapshot_held, MAINNET,
+        decode_frames, dispatch, drained, framed_request, grpc_snapshots, grpc_snapshots_held,
+        indexed, request_at, routes, MAINNET,
     };
 
     /// Each row's path names its own method; any other path (another service, a typo) none
@@ -428,16 +428,16 @@ mod tests {
         assert_eq!(answered, cases.map(|(_, expected)| expected));
     }
 
-    /// G1, zingolib #2835: no height named = snapshot's tip; height named = that index's durable
-    /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip);
+    /// G1, zingolib #2835: no height named = served tip; height named = that index's durable
+    /// - Views hold 0..=3, served tip 2 (root publication in bulk sync: views ahead of its tip);
     ///   validator 0 holds 2, one tx of ours relayed
     /// - `GetLatestBlock`, `GetLatestTreeState`, `GetLightdInfo.blockHeight` = 2
     /// - `GetBlockRange` 0..=9 = 0..=3 then `OUT_OF_RANGE`; `GetTreeState` / `GetBlock` 3 answered
     ///   (block hash = its tree state's), 4 = a miss
     /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
-    ///   fixed snapshot never moves on)
+    ///   fixed `GrpcSnapshot` never moves on)
     #[tokio::test]
-    async fn latest_rpcs_share_the_snapshot_tip_and_each_index_answers_its_own_durable() {
+    async fn latest_rpcs_share_the_served_tip_and_each_index_answers_its_own_durable() {
         use http::HeaderMap;
         use prost::Message as _;
         use tower::Service as _;
@@ -457,7 +457,8 @@ mod tests {
         let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
         let two = chain.at(h(2));
-        let snapshots = snapshot_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
+        let snapshots =
+            grpc_snapshots_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
         let mut router = dispatch(Routes { snapshots, ..routes() });
         let mut call = |method: Method, message: Vec<u8>| {
             let response = router.call(framed_request(method, message.into()));
@@ -477,7 +478,7 @@ mod tests {
         let (_, latest, _) = call(GetLatestBlock, Vec::new()).await;
         let latest = service::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
         let tip_hash = two.hash.0.to_vec();
-        assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the snapshot's tip");
+        assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the served tip");
 
         let range =
             service::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
@@ -490,7 +491,10 @@ mod tests {
             .collect();
         let expected: Vec<_> =
             (0..=3u32).map(|at| (u64::from(at), chain.at(h(at)).hash.0.to_vec())).collect();
-        assert_eq!(served, expected, "through the compact-block index's durable, not the snapshot");
+        assert_eq!(
+            served, expected,
+            "through the compact-block index's durable, not the served tip"
+        );
 
         let (_, state, _) = call(GetLatestTreeState, Vec::new()).await;
         let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
@@ -554,7 +558,8 @@ mod tests {
         let tip = chain.mine_empty(1);
         let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
         let views = kinds.into_iter().map(|kind| indexed(kind, &chain, tip)).collect();
-        let mut router = dispatch(Routes { snapshots: snapshot(&chain, tip, views), ..routes() });
+        let mut router =
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
         let range = service::BlockRange {

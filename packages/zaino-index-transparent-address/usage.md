@@ -98,7 +98,7 @@ let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>
 - Queries take librustzcash's `TransparentAddress`. Its `script()` is the exact
   locking script the rows were stored under.
 - `as_of(tip)` hides rows above `tip`: a receive above it is unseen, and a
-  spend above it leaves the output unspent. A snapshot's view can sit above its
+  spend above it leaves the output unspent. An NFS publication's view can sit above its
   tip during bulk sync.
 - `utxos_of` scans from `start` to the tip. `balances` and `transactions` scan
   all of history: a spend in range can consume an output received at any

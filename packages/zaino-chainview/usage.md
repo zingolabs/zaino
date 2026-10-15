@@ -57,7 +57,7 @@ ObservationFold        each member's poll (TrafficBalancer::observe): claim + ge
       │                then the listing diff (bytes(..) fetched between)
 PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer finality)
 ChainViewCore          folds all of it into one ChainViewSnapshot via ArcSwap
-ChainViewSubscriber    readers pin one snapshot per request
+ChainViewSubscriber    readers pin one `ChainViewSnapshot` per request
 ```
 
 The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferred. Each

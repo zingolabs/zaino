@@ -18,7 +18,7 @@ consensus objects are forwarded to the validator.
 
 | Method                                                  | Answered by                                                                                                                                    |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GetLatestBlock`                                        | the served snapshot's tip (no index read)                                                                                                      |
+| `GetLatestBlock`                                        | the served tip (no index read)                                                                                                                 |
 | `GetBlock`, `GetBlockRange`                             | compact-block index                                                                                                                            |
 | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                                                                                                                               |
 | `GetAddressUtxos`, `GetAddressUtxosStream`              | transparent-address index                                                                                                                      |
@@ -27,7 +27,7 @@ consensus objects are forwarded to the validator.
 | `GetTransaction`                                        | validator                                                                                                                                      |
 | `SendTransaction`                                       | chain view [submission](./architecture.md#6-submission): a trusted `checkadmission` answers, then relayed through the peers                    |
 | `GetMempoolTx`, `GetMempoolStream`                      | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |
-| `GetLightdInfo`                                         | the served snapshot: its tip, the verified best, the upgrade schedule (no validator call)                                                      |
+| `GetLightdInfo`                                         | the served `GrpcSnapshot`: its tip, the verified best, the upgrade schedule (no validator call)                                                |
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                                                                                |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)*         | as `GetTaddressTransactions`                                                                                                                   |
 
@@ -49,15 +49,15 @@ own. A disabled index's methods answer `UNIMPLEMENTED` (for the block-hash
 index, only the by-hash form of `GetBlock` and `GetTreeState`). Nothing falls
 back to the validator.
 
-Every index method reads one snapshot of every index, pinned for the request or
-stream. A method naming no height answers at the snapshot's tip, which every
+Every index method reads one `GrpcSnapshot` of every index, pinned for the request or
+stream. A method naming no height answers at the served tip, which every
 enabled index holds: `GetLatestBlock`, `GetLatestTreeState`, `GetSubtreeRoots`,
 `GetLightdInfo.blockHeight`, and the address methods (a `GetTaddressTxids` range
 included). A block or tree-state method naming a height
 (`GetBlock`, `GetBlockRange`, `GetTreeState`) answers up to its own index's
-tip, which during sync may be above the snapshot's.
+tip, which during sync may be above the served tip.
 
-`GetLightdInfo` never calls a validator. `blockHeight` is the served snapshot tip (a wallet gates
+`GetLightdInfo` never calls a validator. `blockHeight` is the served tip (a wallet gates
 its sync on it), `estimatedHeight` the verified best, `chainName` the configured network, and the
 branch and next upgrade come from the upgrade schedule at the served tip. `version` is zainod's.
 `lightwalletProtocolVersion` is the vendored protos' release (`v0.5.0`), which pepper-sync requires
@@ -120,11 +120,11 @@ no progress (see [running.md](./running.md#stream-time-limits)).
 | request body not complete within 30 s                                                               | `DEADLINE_EXCEEDED`  | resend                                                                 |
 | stored record will not walk                                                                         | `INTERNAL`           | the server is broken                                                   |
 
-While Zaino syncs, the snapshot's tip trails the chain: it is the lowest tip
+While Zaino syncs, the served tip trails the chain: it is the lowest tip
 across the enabled indexes, and `GetLatestBlock` / `GetLightdInfo.blockHeight`
 report it, so a wallet gating on them never asks past what every index holds.
 Before
-the first snapshot (indexes opening at boot) every index method is
+the first `GrpcSnapshot` (indexes opening at boot) every index method is
 `UNAVAILABLE`.
 
 ## Pool filtering

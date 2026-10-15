@@ -84,7 +84,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
 
 ## Serving
 
-Routes read through one snapshot per request (`snap.views().compact_block()`,
+Routes read through one `GrpcSnapshot` per request (`snap.views().compact_block()`,
 `None` = disabled), at heights `≤ snap.tip()`. `CompactBlockReader<V>` works
 over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
 `OverlayView` with non-final blocks layered on top.
@@ -93,7 +93,7 @@ over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
 - `block_at(h, hash)` = `GetBlock` by hash, with `h` found by the block-hash
   index. It returns the record only if its `hash` field matches, else
   `ServeError::HashNotFound` (`Malformed` if the record will not walk).
-- `resident_block(h)` returns the record when `h` sits in the snapshot's
+- `resident_block(h)` returns the record when `h` sits in the NFS
   in-memory layer, so a transport can answer inline. `None` = ask `block`.
 - `RangeCursor::new(reader, start, end, tip, pools)` = `GetBlockRange` from
   `start` to `end`, both inclusive. `start > end` walks downward. The top is
@@ -116,7 +116,7 @@ the cache.
 
 - `GetTransaction`: compact records drop most of a transaction, so full
   transactions come from the validator (`zaino-grpc`).
-- `GetLatestBlock` reads nothing here: it is the snapshot's tip.
+- `GetLatestBlock` reads nothing here: it is the served tip.
 
 ## Mempool rendering
 

@@ -76,9 +76,9 @@ zainod then serves gRPC on `127.0.0.1:8137`.
 ## First launch
 
 Each index syncs from genesis (or from an [index snapshot](../packages/zainod/usage.md#index-snapshot)),
-so a first run on Mainnet or Testnet takes a long time, and resumes from its own committed height
+so a first run on Mainnet or Testnet takes a long time, and resumes from its own durable height
 on restart. While it syncs, every request answers at the served tip, the lowest tip across the
-enabled indexes; only before the first snapshot is published do index methods answer
+enabled indexes; only before the first `GrpcSnapshot` is published do index methods answer
 `UNAVAILABLE` ([status codes](./rpc_api.md#status-codes-a-client-must-distinguish)).
 
 ## Disk
@@ -90,7 +90,7 @@ find a damaged index, then delete its directory and let it resync.
 ## Stopping and restarts
 
 Boot fails with exit code 1 if the gRPC address cannot be bound (checked first, before any
-snapshot download) or an index cannot open. No validator needs to answer for boot to finish,
+index-snapshot download) or an index cannot open. No validator needs to answer for boot to finish,
 and a validator that goes away is retried, never fatal.
 
 SIGINT or SIGTERM closes the gRPC listener at once, sends every open connection an HTTP/2
@@ -108,7 +108,7 @@ non-finalized window again (logged as `Fetching non-finalized blocks`).
 ## Status
 
 The admin listener's `/livez` and `/readyz`, and the public `/readyz` and `/status` on the
-gRPC listener, all read one published snapshot of what zainod serves
+gRPC listener, all read one published `GrpcSnapshot` of what zainod serves
 ([architecture §8](./architecture.md#8-serving-one-grpcsnapshot)). States, readiness rules and every
 field: [zainod: the admin listener](../packages/zainod/usage.md#the-admin-listener).
 

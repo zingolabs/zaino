@@ -2,7 +2,8 @@
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` + `/metrics`' gauges = [`DaemonStatus`] (one snapshot load each; `/readyz` inline)
+//! - `/readyz` + `/metrics`' gauges = [`DaemonStatus`] (one `GrpcSnapshot` load each; `/readyz`
+//!   inline)
 
 use std::{
     convert::Infallible,

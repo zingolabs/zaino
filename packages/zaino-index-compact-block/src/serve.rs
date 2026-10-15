@@ -1,9 +1,9 @@
-//! Reads `GetBlock` and `GetBlockRange` answer with, over one reader (one snapshot's)
+//! Reads `GetBlock` and `GetBlockRange` answer with, over one reader (one `GrpcSnapshot`'s)
 //!
 //! - answers in stored bytes, never decoded or re-encoded
 //! - block / range = zero-copy [`Bytes`] slices of the mapping (range walked per [`WINDOW_BYTES`]
 //!   window), pool pruning = framing walk
-//! - layer/committed seam = the reader's: a commit landing mid-stream cannot move it
+//! - layer/durable seam = the reader's: a commit landing mid-stream cannot move it
 
 use bytes::Bytes;
 use zaino_persistence::{OverlayView, SequenceRead, View};
@@ -45,14 +45,14 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     }
 }
 
-/// Snapshot's seam: its layer above the committed records
+/// NFS publication's seam: its layer above the durable records
 impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
-    /// Last committed height, inclusive (`None` = nothing committed)
+    /// Last durable height, inclusive (`None` = nothing durable)
     fn durable(&self) -> Option<BlockHeight> {
         self.view().durable().tip().map(|tip| tip.height)
     }
 
-    /// In the layer above the committed records: RAM, no page touched (`None` = ask `block`)
+    /// In the layer above the durable records: RAM, no page touched (`None` = ask `block`)
     pub fn resident_block(&self, height: BlockHeight) -> Option<Bytes> {
         (Some(height) > self.durable()).then(|| self.block(height)).flatten()
     }
@@ -61,7 +61,7 @@ impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
 /// `GetBlockRange` one chunk at a time, either direction: file window below the seam, layer record
 /// above it
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
-/// - `reader` held for the whole stream: committed records, layer and seam frozen
+/// - `reader` held for the whole stream: durable records, layer and seam frozen
 /// - `next` `None` = spent; `last` = final height served, inclusive
 pub struct RangeCursor<V> {
     reader: CompactBlockReader<OverlayView<V>>,
@@ -85,7 +85,7 @@ impl<V: View> std::fmt::Debug for RangeCursor<V> {
 }
 
 impl<V: SequenceRead> RangeCursor<V> {
-    /// Heights `start` to `end`, both inclusive, served no higher than `tip` (the snapshot's)
+    /// Heights `start` to `end`, both inclusive, served no higher than `tip` (the served tip)
     ///
     /// - `start > end` = descending, top down (proto: "decreasing height order")
     /// - top past `tip` = clamped, never refused (a wallet asking past the tip wants what exists)
@@ -224,7 +224,7 @@ mod tests {
         store
     }
 
-    /// `chain` committed whole, read as a snapshot reads it (nothing above)
+    /// `chain` committed whole, read as an NFS publication reads it (nothing above)
     fn reader(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
         let count = u32::from(chain.tip().height) + 1;
         let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
@@ -352,14 +352,14 @@ mod tests {
         assert_eq!(heights(&drain(narrow.expect("narrow"))), [6, 5, 4, 3, 2, 1]);
     }
 
-    /// Bounds over 0..=6 held (0..=3 committed): top past the snapshot tip = clamped, either
-    /// direction; bottom past it = a miss (snapshot tip 4 = a root snapshot behind its reader)
+    /// Bounds over 0..=6 held (0..=3 committed): top past the served tip = clamped, either
+    /// direction; bottom past it = a miss (served tip 4 = a root publication behind its reader)
     #[test]
-    fn a_range_clamps_its_top_to_the_snapshot_tip_and_misses_past_it() {
+    fn a_range_clamps_its_top_to_the_served_tip_and_misses_past_it() {
         let reader = four_committed_three_above(&chain(7));
         let served = |heights: &[u64]| Ok(heights.to_vec());
         let missed = |height| Err(ServeError::NotFound { height: h(height) });
-        // (start, end, snapshot tip) → heights in walk order
+        // (start, end, served tip) → heights in walk order
         #[rustfmt::skip]
         let cases = [
             ((1, 4, 6),  served(&[1, 2, 3, 4])),

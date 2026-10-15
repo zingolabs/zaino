@@ -1,4 +1,4 @@
-//! Compact-block methods: `GetLatestBlock` (the snapshot's tip), `GetBlock`, `GetBlockRange`
+//! Compact-block methods: `GetLatestBlock` (the served tip), `GetBlock`, `GetBlockRange`
 //! (stored records, sent as the body, at heights `<=` [`At::answers_through`])
 
 use bytes::Bytes;
@@ -17,10 +17,10 @@ use zaino_proto::proto::service;
 
 pub(crate) use deprecated_nullifiers::range_nullifiers;
 
-/// One snapshot's compact-block records
+/// One `GrpcSnapshot`'s compact-block records
 type Blocks<V> = CompactBlockReader<OverlayView<V>>;
 
-/// The served snapshot + its compact-block records
+/// Served `GrpcSnapshot` + its compact-block records
 pub(crate) type Compact<'a, V> = (&'a At<V>, Blocks<V>);
 
 /// Kinds kept distinct (miss != bad request != corruption)
@@ -85,7 +85,7 @@ fn range_response<V: DurableView>(
     wire::streaming(frames)
 }
 
-/// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)
+/// `GetLatestBlock` answers a `BlockID`, not a block: the served tip (no read at all)
 pub(crate) fn latest<V>(at: &At<V>) -> Response<Body> {
     let tip = at.tip();
     let hash = tip.hash.0.to_vec();
@@ -135,7 +135,7 @@ where
     if height > at.answers_through(IndexKind::CompactBlock) {
         return Err(missing());
     }
-    // the snapshot's layer (pepper-sync's reorg check at the tip): RAM, answered inline
+    // NFS layer (pepper-sync's reorg check at the tip): RAM, answered inline
     if let Some(record) = blocks.resident_block(height) {
         return Ok(record);
     }
@@ -284,7 +284,7 @@ mod tests {
 
     use crate::service::{Method, Routes};
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, indexed, routes, snapshot, MAINNET,
+        decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes, MAINNET,
     };
 
     /// `GetBlock` by hash: the block-hash index locates, the compact index answers only where it
@@ -306,11 +306,11 @@ mod tests {
 
         let compact = indexed(IndexKind::CompactBlock, &chain, two);
         let unlocated = dispatch(Routes {
-            snapshots: snapshot(&chain, two, vec![compact.clone()]),
+            snapshots: grpc_snapshots(&chain, two, vec![compact.clone()]),
             ..routes()
         });
         let mut router = dispatch(Routes {
-            snapshots: snapshot(&chain, two, vec![compact, locator]),
+            snapshots: grpc_snapshots(&chain, two, vec![compact, locator]),
             ..routes()
         });
         let request = |hash: Vec<u8>, height: u64| {
@@ -361,7 +361,7 @@ mod tests {
         let tip = chain.mine_empty(5);
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
         let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
         let past = |h: u32| format!("block%20{h}%20is%20above%20the%20compact-block%20tip%205");
         let (range, nullifiers) = (Method::GetBlockRange, Method::GetBlockRangeNullifiers);
         let cases = [
@@ -427,7 +427,7 @@ mod tests {
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
         let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
 
         let id = service::BlockId { height: 3, hash: Vec::new() };
         let response = router
@@ -520,7 +520,7 @@ mod tests {
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
         let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
+            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
 
         let range = service::BlockRange {
             start: Some(service::BlockId { height: 1, hash: Vec::new() }),
@@ -576,8 +576,10 @@ mod tests {
         let chain = MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let mut router =
-            dispatch(Routes { snapshots: snapshot(&chain, genesis, vec![compact]), ..routes() });
+        let mut router = dispatch(Routes {
+            snapshots: grpc_snapshots(&chain, genesis, vec![compact]),
+            ..routes()
+        });
 
         let at = |height: u64| Some(service::BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {
