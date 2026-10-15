@@ -18,9 +18,9 @@ WORKDIR /app
 ARG CARGO_PROFILE=release
 
 # Build deps incl. protoc for prost-build
-# Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
-# match the candidate versions in docker.io/library/rust:1.96.0-bookworm; bump
-# them together with the base image (query with `apt-cache policy <pkg>`).
+# - versions pinned (DL3008, reproducibility / supply-chain hygiene)
+# - pins = candidate versions in docker.io/library/rust:1.96.0-bookworm
+# - bump together with the base image (query with `apt-cache policy <pkg>`)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
       make=4.3-4.1 \
@@ -54,8 +54,8 @@ ARG USER
 ARG HOME
 
 # Runtime deps (aria2c = the `[snapshot]` bootstrap's downloader)
-# Versions pinned (DL3008) to the candidates in
-# docker.io/library/debian:bookworm-slim; bump together with the base image.
+# - versions pinned (DL3008) to the candidates in docker.io/library/debian:bookworm-slim
+# - bump together with the base image
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
       ca-certificates=20250419~deb12u1 \

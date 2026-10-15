@@ -1,4 +1,5 @@
-# Tools = nix devshell (pinned by flake.lock); `pre-commit install` once
+# - tools = nix devshell (pinned by flake.lock)
+# - `pre-commit install` once
 default_install_hook_types: [pre-commit, pre-push]
 
 repos:

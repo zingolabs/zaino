@@ -10,8 +10,7 @@ edition = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-# Runtime stack (config-agnostic; zainod translates its config into their typed
-# params at boot)
+# Runtime stack (config-agnostic, zainod translates its config into their typed params at boot)
 zaino-sync = { workspace = true }
 zaino-index-compact-block = { workspace = true }
 zaino-index-tree-state = { workspace = true }

@@ -89,7 +89,7 @@ metrics-process = "2.4"
 # Utility
 bytes = "1.12"
 memmap2 = "0.9"
-# sync_file_range (write-behind; no safe wrapper in rustix/nix)
+# sync_file_range (write-behind, no safe wrapper in rustix/nix)
 libc = "0.2"
 crc32fast = "1.4"
 xorf = { version = "0.13", default-features = false, features = ["binary-fuse"] }
@@ -137,7 +137,7 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 # < 1.7 = librustzcash's `test-dependencies` strategies (rand 0.8)
 proptest = "1.6"
 arc-swap = "1.7.1"
-# TLS: ring provider only (both default to aws-lc-rs; deny.toml bans it)
+# TLS: ring provider only (both default to aws-lc-rs, banned in deny.toml)
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 rcgen = "0.14.10"

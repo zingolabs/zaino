@@ -5,7 +5,8 @@ on:
   push:
     branches: [dev]
 
-# PR push supersedes its own run; every dev commit keeps its result
+# - PR push supersedes its own run
+# - every dev commit keeps its result
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -48,7 +49,7 @@ jobs:
 
   features:
     name: Each feature compiles
-    # dev only; each package ≤ 1 feature → --each-feature = --feature-powerset
+    # dev only (each package ≤ 1 feature → --each-feature = --feature-powerset)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

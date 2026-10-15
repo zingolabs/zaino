@@ -18,7 +18,7 @@ version = "0.2.0"
 [workspace.dependencies]
 zaino-testutils = { path = "zaino-testutils" }
 # TODO: back to a crates.io version once ztest releases the rewritten zainod backend (the same
-# unreleased ztest `sync/` builds against; git rev once pushed)
+# unreleased ztest `sync/` builds against, git rev once pushed)
 ztest = { path = "../../ztest" }
 tokio = { version = "1.38", features = ["full"] }
 anyhow = "1.0"

@@ -4,9 +4,9 @@
 # touches it. That is all this file does: approval counts are branch-protection
 # rules, configured separately.
 #
-# The team handles below are PLACEHOLDERS. Replace every `@zingolabs/PLACEHOLDER-*`
-# with a real GitHub team (or user) slug before this file is relied upon; an
-# unresolvable owner silently requests no one.
+# - team handles below = PLACEHOLDERS
+# - replace every `@zingolabs/PLACEHOLDER-*` with a real team (or user) slug before relying on it
+#   (unresolvable owner silently requests no one)
 
 # Default owner for everything in the repo.
 * @zingolabs/PLACEHOLDER-maintainers

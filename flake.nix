@@ -50,10 +50,10 @@
 
         zainod = pkgs.zainod;
 
-        # Build env defined once in nix/package.nix; devShell reuses it via passthru
+        # Build env defined once in nix/package.nix, reused by devShell via passthru
         inherit (zainod.passthru) commonArgs;
 
-        # not in nixpkgs; crates.io tarball + its own Cargo.lock
+        # crates.io tarball + its own Cargo.lock (not in nixpkgs)
         code-dupes = pkgs.rustPlatform.buildRustPackage rec {
           pname = "code-dupes";
           version = "0.2.1";

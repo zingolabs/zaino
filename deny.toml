@@ -8,8 +8,9 @@ multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 
-# TLS = rustls + ring only (gRPC termination in zaino-grpc; plain HTTP to the validator)
-# - ring: the provider librustzcash and zallet use; aws-lc-rs = rustls' default, opted out
+# TLS = rustls + ring only (gRPC termination in zaino-grpc, plain HTTP to the validator)
+# - ring = provider librustzcash and zallet use
+# - aws-lc-rs = rustls' default, opted out
 deny = [
     { crate = "openssl", reason = "No system TLS stack: TLS is rustls + ring" },
     { crate = "openssl-sys", reason = "No system TLS stack: TLS is rustls + ring" },
