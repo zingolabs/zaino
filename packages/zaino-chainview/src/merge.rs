@@ -374,7 +374,6 @@ impl std::fmt::Debug for ChainViewCore {
 fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.block_at_best = reading.block_at_best;
     meta.info = Some(reading.info);
-    meta.observed_at = Some(std::time::Instant::now());
     meta.streaming = reading.streaming;
     if let Some(peers) = reading.peers {
         meta.peers = peers.into_iter().collect();

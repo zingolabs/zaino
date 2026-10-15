@@ -153,7 +153,6 @@ impl MockValidator {
         let release = NodeRelease {
             build: "mock".to_owned(),
             user_agent: "/MockValidator/".to_owned(),
-            protocol_version: 0,
             end_of_service: EndOfService::NotEnforced,
         };
         let state = State {

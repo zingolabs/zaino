@@ -246,7 +246,6 @@ async fn poll_metadata_and_estimate_answer_as_scripted() {
     let release = NodeRelease {
         build: "v6.4.2".to_owned(),
         user_agent: "/Zebra:6.4.2/".to_owned(),
-        protocol_version: 170_140,
         end_of_service: EndOfService::NotEnforced,
     };
 

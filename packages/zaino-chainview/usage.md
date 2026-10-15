@@ -111,7 +111,7 @@ Cheap to clone; cannot drive polling or submit.
 positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
 
 `TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
-last-observed time, peers (every 60 s), release (build, user agent, protocol, end-of-service
+peers (every 60 s), release (build, user agent, end-of-service
 height), push-stream state, `blocks_to_end_of_service()`. Latency and failures are the balancer's
 (`TrafficBalancer::members()`).
 

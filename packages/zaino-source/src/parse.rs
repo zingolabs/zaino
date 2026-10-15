@@ -219,17 +219,12 @@ pub(crate) fn parse_node_release(
         None => EndOfService::Unknown,
         Some(deprecation) => match opt_field(deprecation, "end_of_service") {
             None => EndOfService::NotEnforced,
-            Some(at) => EndOfService::At {
-                height: as_height(field(at, "block_height")?)?,
-                estimated_unix: as_i64(field(at, "estimated_time")?)?,
-            },
+            Some(at) => EndOfService::At { height: as_height(field(at, "block_height")?)? },
         },
     };
-    let protocol = as_u64(field(info, "protocolversion")?)?;
     Ok(NodeRelease {
         build: as_str(field(info, "build")?)?.to_owned(),
         user_agent: as_str(field(info, "subversion")?)?.to_owned(),
-        protocol_version: u32::try_from(protocol).map_err(|_| ParseError::Overflow(protocol))?,
         end_of_service,
     })
 }
@@ -419,19 +414,13 @@ mod tests {
             parse_node_release(&info, deprecation.as_ref()).map(|release| release.end_of_service)
         };
         let mainnet = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
-        let halts = EndOfService::At {
-            height: BlockHeight::from(3_564_960),
-            estimated_unix: 1_790_000_000,
-        };
+        let halts = EndOfService::At { height: BlockHeight::from(3_564_960) };
         assert_eq!(release(Some(mainnet)).expect("mainnet"), halts);
         assert_eq!(release(Some(json!({}))).expect("testnet"), EndOfService::NotEnforced);
         assert_eq!(release(None).expect("zebrad 6.2"), EndOfService::Unknown);
 
         let read = parse_node_release(&info, None).expect("getinfo");
-        assert_eq!(
-            (read.build.as_str(), read.user_agent.as_str(), read.protocol_version),
-            ("v6.4.2", "/Zebra:6.4.2/", 170_140)
-        );
+        assert_eq!((read.build.as_str(), read.user_agent.as_str()), ("v6.4.2", "/Zebra:6.4.2/"));
         let no_height = json!({ "end_of_service": { "estimated_time": 1 } });
         let missing = parse_node_release(&info, Some(&no_height));
         assert!(matches!(missing, Err(ParseError::MissingField("block_height"))));

@@ -1,7 +1,5 @@
 //! Who the trusted validators are, and what the view needs to know about each
 
-use std::time::Instant;
-
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
@@ -114,7 +112,6 @@ pub struct TrustedValidatorMeta {
     pub address: String,
     pub health: Health,
     pub agreement: Agreement,
-    pub observed_at: Option<Instant>,
     pub peers: imbl::Vector<PeerInfo>,
     pub release: Option<NodeRelease>,
     pub streaming: bool,
@@ -128,7 +125,6 @@ impl TrustedValidatorMeta {
             address,
             health: Health::Pending,
             agreement: Agreement::Unknown,
-            observed_at: None,
             peers: imbl::Vector::new(),
             release: None,
             streaming: false,

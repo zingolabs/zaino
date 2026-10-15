@@ -155,7 +155,7 @@ HTTP request, replies matched by `id` (the balancer charges its request rate per
 call).
 
 `NodeRelease` (from `getinfo` + `getdeprecationinfo`) carries the build, user
-agent, protocol version and `EndOfService`: `At { height, estimated_unix }` on
+agent and `EndOfService`: `At { height }` on
 mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
 
 ## Testing: `MockValidator`

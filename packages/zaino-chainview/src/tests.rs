@@ -786,8 +786,7 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     let release = |build: &str, halts: u32| NodeRelease {
         build: build.to_owned(),
         user_agent: format!("/Zebra:{}/", &build[1..]),
-        protocol_version: 170_140,
-        end_of_service: EndOfService::At { height: h(halts), estimated_unix: 1_790_000_000 },
+        end_of_service: EndOfService::At { height: h(halts) },
     };
     let inbound = PeerInfo { addr: "x:1".to_owned(), inbound: true };
     validator.metadata(

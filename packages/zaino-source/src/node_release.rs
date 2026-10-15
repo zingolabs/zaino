@@ -7,18 +7,16 @@ use zcash_protocol::consensus::BlockHeight;
 pub struct NodeRelease {
     pub build: String,
     pub user_agent: String,
-    pub protocol_version: u32,
     pub end_of_service: EndOfService,
 }
 
 /// When this release stops itself (zebrad halts once its tip passes `height`)
 ///
-/// - `estimated_unix` = zebrad's own guess, a day early
-/// - `NotEnforced` = this network (mainnet only); `Unknown` = zebrad < 6.3 (no
-///   `getdeprecationinfo`)
+/// - `NotEnforced` = this network (mainnet only)
+/// - `Unknown` = zebrad < 6.3 (no `getdeprecationinfo`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndOfService {
-    At { height: BlockHeight, estimated_unix: i64 },
+    At { height: BlockHeight },
     NotEnforced,
     Unknown,
 }
