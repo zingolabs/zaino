@@ -10,7 +10,8 @@
 //! `blocks.hex` is one raw block per line (hex, as `getblock <h> 0` returns),
 //! consecutive from the first height. The blocks are indexed through the real
 //! sync engine into an LMDB store, then a block read is timed stage by stage,
-//! mirroring the store's compose-on-read path: the seven index lookups, the
+//! mirroring the store's compose-on-read path: the backend reader handle the
+//! read takes, the seven index lookups, the
 //! format-freshness check each lookup makes, the decodes, the whole store read
 //! (whose remainder over those is assembly), the domain → wire conversion and
 //! the protobuf encoding. Every stage runs over every block, warm, several
@@ -156,6 +157,9 @@ async fn bench_compact_block() {
         );
     }
 
+    let reader_handles = per_block(&heights, |_| {
+        std::hint::black_box(backend.reader().expect("a reader"));
+    });
     let lookups = per_block(&heights, |height| {
         let key = key(height);
         for namespace in namespaces {
@@ -231,13 +235,14 @@ async fn bench_compact_block() {
         raw_bytes / blocks,
         wire_bytes / blocks
     );
+    println!("ns/block  reader handle (1)           {reader_handles:>10.0}");
     println!("ns/block  lookups (7 gets)            {lookups:>10.0}");
     println!("ns/block  freshness checks (7)        {freshness_checks:>10.0}");
     println!("ns/block  decodes (7)                 {decodes:>10.0}");
     println!("ns/block  whole store read            {whole_read:>10.0}");
     println!(
         "ns/block    of which assembly + rest    {:>10.0}",
-        whole_read - lookups - freshness_checks - decodes
+        whole_read - reader_handles - lookups - freshness_checks - decodes
     );
     println!("ns/block  domain -> wire              {to_wire:>10.0}");
     println!("ns/block  protobuf encode             {encode:>10.0}");
