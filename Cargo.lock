@@ -5062,6 +5062,7 @@ dependencies = [
  "prost",
  "rcgen",
  "rustls",
+ "serde",
  "socket2",
  "tempfile",
  "thiserror 2.0.18",

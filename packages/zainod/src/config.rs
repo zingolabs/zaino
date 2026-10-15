@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use zaino_grpc::GrpcLimits;
+use zaino_grpc::{GrpcLimits, TlsFiles};
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
-use zaino_persistence::{manifest_fits, Fanout, IndexKind, LsmConfig};
+use zaino_persistence::{manifest_fits, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
-use zaino_source::ResponseSizeCap;
+use zaino_source::{ResponseSizeCap, ZebraIndexerTls};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::error::IndexerError;
@@ -72,7 +72,7 @@ pub(crate) struct TrustedValidatorConfig {
     /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
     pub(crate) indexer_address: Option<String>,
     /// Unset = plaintext (zakurad requires it off loopback)
-    pub(crate) indexer_tls: Option<ZebraIndexerTlsConfig>,
+    pub(crate) indexer_tls: Option<ZebraIndexerTls>,
     /// Every 0 asked before any 1 (higher tier = overflow + hedges only)
     pub(crate) priority: u8,
 }
@@ -117,20 +117,6 @@ impl From<ResponseMib> for u32 {
     }
 }
 
-/// `[trusted_validators.indexer_tls]`: PEM files for zakurad's `[rpc.indexer_tls]` (its
-/// `client_ca_file` signs `cert_path`), read at boot
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ZebraIndexerTlsConfig {
-    pub(crate) ca_path: PathBuf,
-    /// Leaf first
-    pub(crate) cert_path: PathBuf,
-    /// PKCS#8, PKCS#1 or SEC1
-    pub(crate) key_path: PathBuf,
-    /// Unset = the `indexer_address` host
-    pub(crate) server_name: Option<String>,
-}
-
 impl TrustedValidatorConfig {
     /// The balancer's budget; `None` = `max_connections` below
     /// [`Limits::MIN_CONNECTIONS`](zaino_traffic::Limits) (refused by [`DaemonConfig::validate`])
@@ -147,15 +133,6 @@ impl TrustedValidatorConfig {
             max_bytes_per_sec,
             response_size_cap: self.max_response_mib.0,
         }
-    }
-
-    pub(crate) fn indexer_tls(&self) -> Option<zaino_source::ZebraIndexerTls> {
-        self.indexer_tls.as_ref().map(|tls| zaino_source::ZebraIndexerTls {
-            ca: tls.ca_path.clone(),
-            cert: tls.cert_path.clone(),
-            key: tls.key_path.clone(),
-            server_name: tls.server_name.clone(),
-        })
     }
 }
 
@@ -264,23 +241,11 @@ pub(crate) struct ServeConfig {
     pub(crate) max_address_rows: NonZeroUsize,
     /// Absent = plaintext HTTP/2 (for a TLS-terminating proxy)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tls: Option<TlsConfig>,
+    pub(crate) tls: Option<TlsFiles>,
     /// Kept across restarts (`zainod hold` writes its marker here)
     pub(crate) state_dir: PathBuf,
     /// >= load balancer's mark-down time + DNS TTL
     pub(crate) hold_goaway_delay_secs: u64,
-}
-
-/// PEM pair the gRPC listener terminates TLS with (rustls + ring)
-///
-/// - Re-read within a minute of a change (renewal = no restart); a failing pair keeps the old one
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TlsConfig {
-    /// Leaf first
-    pub(crate) cert_path: PathBuf,
-    /// PKCS#8, PKCS#1 or SEC1
-    pub(crate) key_path: PathBuf,
 }
 
 impl Default for ServeConfig {
@@ -404,7 +369,7 @@ pub(crate) struct SyncConfig {
     pub(crate) concurrency: NonZeroUsize,
     /// Per index: final blocks it may trail the fetch by before the pipeline throttles
     queue_mib: NonZeroU32,
-    pub(crate) lsm_store: LsmStoreConfig,
+    pub(crate) lsm_store: LsmConfig,
 }
 
 impl Default for SyncConfig {
@@ -416,35 +381,8 @@ impl Default for SyncConfig {
             },
             concurrency: const { NonZeroUsize::new(32).expect("32 is non-zero") },
             queue_mib: const { NonZeroU32::new(256).expect("256 is non-zero") },
-            lsm_store: LsmStoreConfig::default(),
+            lsm_store: LsmConfig::default(),
         }
-    }
-}
-
-/// `[sync.lsm_store]`: the disk engine's map tables (one engine per process: every index shares
-/// `merge_slots`)
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub(crate) struct LsmStoreConfig {
-    /// >= 2 (higher = less rewriting, larger merges)
-    pub(crate) fanout: Fanout,
-    /// Rest wait, smallest first
-    pub(crate) merge_slots: NonZeroUsize,
-    /// Every merge together, read + write (commits never paced)
-    pub(crate) merge_mib_per_sec: NonZeroU32,
-}
-
-impl Default for LsmStoreConfig {
-    fn default() -> Self {
-        let LsmConfig { fanout, merge_slots, merge_mib_per_sec } = LsmConfig::default();
-        Self { fanout, merge_slots, merge_mib_per_sec }
-    }
-}
-
-impl From<&LsmStoreConfig> for LsmConfig {
-    fn from(config: &LsmStoreConfig) -> Self {
-        let (fanout, merge_slots) = (config.fanout, config.merge_slots);
-        Self { fanout, merge_slots, merge_mib_per_sec: config.merge_mib_per_sec }
     }
 }
 
@@ -529,7 +467,7 @@ pub(crate) struct MetricsConfig {
     pub(crate) listen_address: Option<SocketAddr>,
 }
 
-/// Empty index ← published snapshot (`snapshot` feature, `aria2c` on PATH)
+/// Empty index ← published index snapshot (`snapshot` feature, `aria2c` on PATH)
 ///
 /// - Only a missing or empty directory filled; one holding data never touched
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -810,6 +748,8 @@ pub(crate) fn load_config(file_path: &Path) -> Result<DaemonConfig, IndexerError
 
 #[cfg(test)]
 mod tests {
+    use zaino_persistence::Fanout;
+
     use super::*;
 
     fn write(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
@@ -952,7 +892,7 @@ enabled = false
             (
                 "indexer TLS with no indexer",
                 |c| {
-                    c.trusted_validators[0].indexer_tls = Some(ZebraIndexerTlsConfig {
+                    c.trusted_validators[0].indexer_tls = Some(ZebraIndexerTls {
                         ca_path: "/ca.pem".into(),
                         cert_path: "/cert.pem".into(),
                         key_path: "/key.pem".into(),
@@ -1200,7 +1140,7 @@ path = "/tmp/zaino-compact-block"
         let merge_mib_per_sec = NonZeroU32::new(300).expect("non-zero");
         let fanout = Fanout::new(4).expect(">= 2");
         let expected = LsmConfig { fanout, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
-        assert_eq!(LsmConfig::from(&config.sync.lsm_store), expected);
+        assert_eq!(config.sync.lsm_store, expected);
 
         let refused = parsed("fanout = 1\n").expect_err("fanout 1");
         assert!(refused.to_string().contains("fanout 1: a merge needs 2 segments"), "{refused}");
@@ -1213,14 +1153,14 @@ path = "/tmp/zaino-compact-block"
         let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).serve.tls;
         assert_eq!(parse("[serve]\n"), None, "absent = plaintext");
         let tls = parse("[serve.tls]\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n");
-        let expected = TlsConfig { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
+        let expected = TlsFiles { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
         assert_eq!(tls, Some(expected));
     }
 
     /// Entries parsed as written (auth + limits + indexer mutual TLS optional), each → the
-    /// balancer's limits, the transport's link, the indexer client's TLS
+    /// balancer's limits, the transport's link
     #[test]
-    fn trusted_validators_convert_into_limits_link_and_indexer_tls() {
+    fn trusted_validators_parse_and_convert_into_limits_and_link() {
         let config: DaemonConfig = toml::from_str(
             r#"
 [[trusted_validators]]
@@ -1256,7 +1196,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             max_mib_per_sec: Some(n(4)),
             max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
-            indexer_tls: Some(ZebraIndexerTlsConfig {
+            indexer_tls: Some(ZebraIndexerTls {
                 ca_path: "/etc/zaino/indexer-ca.pem".into(),
                 cert_path: "/etc/zaino/indexer-client.pem".into(),
                 key_path: "/etc/zaino/indexer-client-key.pem".into(),
@@ -1265,7 +1205,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             priority: 1,
             ..TrustedValidatorConfig::default()
         };
-        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
+        assert_eq!(config.trusted_validators, [local, eu.clone()]);
 
         assert_eq!(eu.limits(), zaino_traffic::Limits::new(8), "the balancer's");
         let link = zaino_source::LinkLimits {
@@ -1279,14 +1219,6 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             let refused = toml::from_str::<DaemonConfig>(&toml).expect_err("out of bounds");
             assert!(refused.to_string().contains("must be 4 ..= 32"), "{mib}: {refused}");
         }
-        let tls = zaino_source::ZebraIndexerTls {
-            ca: "/etc/zaino/indexer-ca.pem".into(),
-            cert: "/etc/zaino/indexer-client.pem".into(),
-            key: "/etc/zaino/indexer-client-key.pem".into(),
-            server_name: None,
-        };
-        assert_eq!(eu.indexer_tls(), Some(tls), "the indexer client's");
-        assert_eq!(local.indexer_tls(), None, "absent = plaintext");
     }
 
     /// `[submission]`, `[p2p]` → policy, peer config (p2p off and DNS-seeded unless asked)

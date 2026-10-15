@@ -50,8 +50,9 @@ Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
 `Option<&ZebraIndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
 zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
 
-- `ca` verifies the server's certificate; `cert` + `key` are this client's, signed by the
-  server's `client_ca_file`.
+- `ca_path` verifies the server's certificate; `cert_path` + `key_path` are this client's,
+  signed by the server's `client_ca_file`. Deserializes from the same keys (zainod's
+  `[trusted_validators.indexer_tls]`).
 - `server_name` = the name on the server's certificate (`None` = the address's host).
 - The PEM files are read in `at`: an unreadable one is `EndpointError::TlsFile`, naming it. A
   rotated file is read on the next restart.

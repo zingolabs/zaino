@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, info, warn};
@@ -34,13 +35,15 @@ pub enum Change {
 
 /// Mutual TLS to a validator's indexer (zakurad refuses plaintext off loopback: `[rpc.indexer_tls]`)
 ///
-/// - `ca` verifies the server; `cert` + `key` = this client, signed by the server's client CA
+/// - `ca_path` verifies the server; `cert_path` (leaf first) + `key_path` (PKCS#8, PKCS#1 or SEC1)
+///   = this client, signed by the server's client CA
 /// - `server_name` = the name on the server's certificate (`None` = the address's host)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZebraIndexerTls {
-    pub ca: PathBuf,
-    pub cert: PathBuf,
-    pub key: PathBuf,
+    pub ca_path: PathBuf,
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
     pub server_name: Option<String>,
 }
 
@@ -68,10 +71,10 @@ pub(crate) fn indexer_endpoint(
             let host = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
             let host = host.trim_start_matches('[').trim_end_matches(']');
             let config = ClientTlsConfig::new()
-                .ca_certificate(Certificate::from_pem(read("CA", &tls.ca)?))
+                .ca_certificate(Certificate::from_pem(read("CA", &tls.ca_path)?))
                 .identity(Identity::from_pem(
-                    read("certificate", &tls.cert)?,
-                    read("key", &tls.key)?,
+                    read("certificate", &tls.cert_path)?,
+                    read("key", &tls.key_path)?,
                 ))
                 .domain_name(tls.server_name.as_deref().unwrap_or(host));
             let endpoint = Endpoint::from_shared(format!("https://{authority}"))
@@ -372,9 +375,9 @@ mod tests {
         tokio::spawn(server);
 
         let client = |cert: &PathBuf, key: &PathBuf| ZebraIndexerTls {
-            ca: ca_path.clone(),
-            cert: cert.clone(),
-            key: key.clone(),
+            ca_path: ca_path.clone(),
+            cert_path: cert.clone(),
+            key_path: key.clone(),
             server_name: Some("localhost".to_owned()),
         };
         let watch = |tls: ZebraIndexerTls| {
@@ -409,7 +412,7 @@ mod tests {
         watching.await.expect("only cancel ends the watch");
 
         let missing = ZebraIndexerTls {
-            ca: dir.path().join("missing.pem"),
+            ca_path: dir.path().join("missing.pem"),
             ..client(&client_cert, &client_key)
         };
         let refused = ZebraIndexerWatch::at(&address, Some(&missing), Timeouts::default());

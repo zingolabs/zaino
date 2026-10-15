@@ -54,6 +54,7 @@ zaino-persistence.workspace = true
 zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-snapshot.workspace = true
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 rcgen = { workspace = true }

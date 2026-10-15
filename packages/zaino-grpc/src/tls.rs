@@ -20,6 +20,7 @@ use rustls::{
     sign::CertifiedKey,
     ServerConfig,
 };
+use serde::{Deserialize, Serialize};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -27,8 +28,9 @@ use tracing::{info, warn};
 /// How often the cert files are checked for a renewal
 const RELOAD_EVERY: Duration = Duration::from_secs(60);
 
-/// PEM files: the certificate chain (leaf first) and its private key
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// PEM files: the certificate chain (leaf first) and its private key (PKCS#8, PKCS#1 or SEC1)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsFiles {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,

@@ -13,10 +13,10 @@
 //!                                                    ▼
 //!                                   Indexed ─┐
 //!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ Routes ─▶ GrpcService
-//!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────┘    └▶ admin, logs
+//!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘    └▶ admin, logs
 //! ```
 //!
-//! - Final path: follower → writers (disk); tip path: NFS (RAM); one global snapshot per request
+//! - Final path: follower → writers (disk); tip path: NFS (RAM); one `GrpcSnapshot` per request
 //! - Each writer = its own task over its subscription; a disabled index is never opened
 //! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
 
@@ -31,9 +31,7 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use crate::config::network_name;
 use zaino_chainview::ChainView;
-use zaino_grpc::{
-    AdmissionState, GrpcLimits, GrpcService, Routes, Routing, Tls, TlsFiles, TrustedProxies,
-};
+use zaino_grpc::{AdmissionState, GrpcLimits, GrpcService, Routes, Routing, Tls, TrustedProxies};
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
@@ -42,9 +40,7 @@ use zaino_index_utxo_set::UtxoSetIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{
-    DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine, View,
-};
+use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_snapshot::Publisher;
@@ -66,7 +62,7 @@ type TaskExit = (&'static str, Result<(), IndexerError>);
 /// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits; nothing
 /// restarts in-process)
 ///
-/// - gRPC listener first: health answers through the snapshot bootstrap, a taken port fails
+/// - gRPC listener first: health answers through the index-snapshot bootstrap, a taken port fails
 ///   before any download
 /// - then the bootstrap, then boot (no validator needs to answer first)
 pub(crate) async fn start_indexer(
@@ -118,8 +114,7 @@ async fn listen<S: ChainDataSource>(
         .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
         .with_health(Arc::clone(status) as Arc<dyn zaino_grpc::Health>);
     if let Some(tls) = &config.serve.tls {
-        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
-        server = server.with_tls(Tls::load(files)?);
+        server = server.with_tls(Tls::load(tls.clone())?);
     }
     let serving = Serving { routing: server.routing(), admission: server.admission() };
     status.serving(server.retire());
@@ -256,7 +251,7 @@ struct Inputs<S: ChainDataSource> {
     schedule: LocalNetwork,
 }
 
-/// The NFS, every enabled index's writer, the global snapshot's publisher, the gRPC routes:
+/// The NFS, every enabled index's writer, the `GrpcSnapshot` publisher, the gRPC routes:
 /// [`open_indexes`], then [`run_pipeline`] (an `Err` = nothing of it spawned)
 fn pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
@@ -282,7 +277,7 @@ fn open_indexes<S: ChainDataSource>(
     let mut indexes = Indexes {
         follower: FinalizedFollower::new(chain.clone(), balancer.clone(), lookahead),
         nfs: Nfs::new(chain.clone(), balancer.clone(), params, depth, lookahead),
-        engine: DiskEngine::new(Arc::clone(&inputs.fs), LsmConfig::from(&config.sync.lsm_store)),
+        engine: DiskEngine::new(Arc::clone(&inputs.fs), config.sync.lsm_store),
         network,
         opened: Vec::new(),
         writers: Vec::new(),
@@ -350,7 +345,7 @@ fn run_pipeline<S: ChainDataSource>(
     let publisher = Publisher::new(nfs.indexed(), inputs.view.subscriber(), depth);
     let snapshots = publisher.handle();
 
-    // --- run: every gRPC answer off one snapshot from here on
+    // --- run: every gRPC answer off one `GrpcSnapshot` from here on
     let progress = follower.progress();
     spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
@@ -620,7 +615,7 @@ mod tests {
     ///   zainod's version (not zaino-grpc's)
     /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
     /// - a `GetMempoolStream` opened at A8 ends on the reorg; the `GetLatestBlock` right after it
-    ///   is never A8 (G5: the race one global snapshot closes)
+    ///   is never A8 (G5: the race one `GrpcSnapshot` closes)
     /// - a scrape then renders every ztest family this process emits
     /// - SIGTERM stops every task cleanly (header sync's sender gone mid-drain included)
     #[tokio::test]

@@ -70,8 +70,8 @@ pub(crate) fn connect<S: ChainDataSource>(
     let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
         let address = validator.indexer_address.as_ref()?;
         let member = TrustedValidatorId::new(index)?;
-        let tls = validator.indexer_tls();
-        let watch = ZebraIndexerWatch::at(address, tls.as_ref(), validator.into());
+        let watch =
+            ZebraIndexerWatch::at(address, validator.indexer_tls.as_ref(), validator.into());
         Some(watch.map(|watch| (member, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
@@ -137,7 +137,12 @@ pub(crate) fn grpc_client(
         IndexerError::Config(format!("{}: no indexer_address", validator.jsonrpc_address))
     })?;
     let legacy = legacy_client(validator)?;
-    let tls = validator.indexer_tls();
-    ZebraIndexerGrpcClient::at(legacy, indexer, tls.as_ref(), validator.into(), validator.link())
-        .map_err(IndexerError::from)
+    ZebraIndexerGrpcClient::at(
+        legacy,
+        indexer,
+        validator.indexer_tls.as_ref(),
+        validator.into(),
+        validator.link(),
+    )
+    .map_err(IndexerError::from)
 }

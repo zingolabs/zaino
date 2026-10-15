@@ -50,7 +50,8 @@ use crate::pages::PageError;
 /// - `fanout` same-tier segments merge into one: write amplification `log_fanout(rows)`
 /// - `merge_slots` = merges doing I/O at once (the rest wait, lowest tier first)
 /// - `merge_mib_per_sec` = their read + written bytes per second, shared (commits never paced)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct LsmConfig {
     pub fanout: Fanout,
     pub merge_slots: NonZeroUsize,
