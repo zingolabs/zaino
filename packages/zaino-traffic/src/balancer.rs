@@ -19,8 +19,9 @@ use tracing::{info, warn};
 use zaino_primitives::types::Block;
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
-    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
-    QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    GetRawMempoolTransactionError, GetStandardFeeError, GetTransactionError, MempoolListed,
+    NonDomainError, PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError,
+    StandardFee, TransactionResponse,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
@@ -280,6 +281,19 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         let send = move |member| {
             let source = shared.trusted_only(member);
             async move { source.get_transaction(txid).await }.boxed()
+        };
+        self.ask(Class::Lookup, Route::Any, send).await
+    }
+
+    /// `getstandardfee` from whichever member answers. Every member predating the RPC =
+    /// `Unsupported`
+    pub async fn standard_fee(
+        &self,
+    ) -> Result<Answered<StandardFee>, Unanswered<GetStandardFeeError>> {
+        let shared = Arc::clone(&self.shared);
+        let send = move |member| {
+            let source = shared.trusted_only(member);
+            async move { source.get_standard_fee().await }.boxed()
         };
         self.ask(Class::Lookup, Route::Any, send).await
     }

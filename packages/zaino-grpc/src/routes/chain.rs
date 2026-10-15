@@ -149,6 +149,27 @@ where
     Ok(unary_response(frame(&found)))
 }
 
+/// `GetStandardFee`: the ZIP 317 marginal fee from the fleet
+///
+/// - `UNIMPLEMENTED` when every validator asked predates the RPC
+/// - `UNAVAILABLE` when the fleet is unreachable
+pub(crate) async fn standard_fee<S: ChainDataSource>(
+    validators: &TrafficBalancer<S>,
+) -> Result<Response<Body>, Status> {
+    let fee = validators.standard_fee().await.map_err(|unanswered| match &unanswered.last {
+        Some(QueryError::Domain(zaino_source::GetStandardFeeError::Unsupported)) => {
+            Status::unimplemented("every connected validator predates getstandardfee")
+        }
+        _ => Status::unavailable(unanswered.to_string()),
+    })?;
+    let fee = fee.value;
+    let reply = service::StandardFee {
+        fee_zat: u64::from(fee.fee_zat),
+        estimator_version: fee.estimator_version,
+    };
+    Ok(unary_response(frame(&reply)))
+}
+
 /// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
 /// bytes)
 ///
@@ -370,7 +391,7 @@ mod tests {
             consensus_branch_id: "37a5165b".to_owned(),
             estimated_height: 7,
             block_height: 5,
-            lightwallet_protocol_version: "v0.5.0".to_owned(),
+            lightwallet_protocol_version: "v0.6.0".to_owned(),
             ..Default::default()
         };
         assert_eq!(info().expect("served"), expected, "best 7, NU6.3's branch at 5, 5 served");
@@ -641,6 +662,32 @@ mod tests {
         );
         assert_eq!(ask(all).await, every_pool, "same answer from the cache");
         assert!(cached(&reader), "still the first render (never re-parsed)");
+        cancel.cancel();
+    }
+
+    /// `GetStandardFee` through the whole stack: the fee is the validator's answer alone.
+    #[tokio::test(start_paused = true)]
+    async fn standard_fee_forwards_the_validators_policy() {
+        use http_body_util::BodyExt as _;
+        use tower::Service as _;
+
+        let chain = MockChain::regtest();
+        let node = Arc::new(chain.validator(chain.genesis()));
+        let (routes, balancing, _fold) = routes_over(&node);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(balancing.run(cancel.child_token()));
+        let mut router = dispatch(routes);
+
+        let request = framed_request(Method::GetStandardFee, bytes::Bytes::new());
+        let response = router.call(request).await.expect("router answers");
+        assert_eq!(response.headers().get("grpc-status"), None, "a data reply");
+        let body = response.into_body().collect().await.expect("ok").to_bytes();
+        let fee = decode_frames::<service::StandardFee>(&body);
+        assert_eq!(
+            fee,
+            vec![service::StandardFee { fee_zat: 1000, estimator_version: 0 }],
+            "the mock validator's policy, as the validator reported it"
+        );
         cancel.cancel();
     }
 }
