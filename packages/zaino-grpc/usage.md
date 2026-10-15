@@ -68,8 +68,8 @@ routing.route(routes);
   `UNIMPLEMENTED`, `startIndex` past the end = empty `OK`). See
   [`docs/rpc_api.md`](../../docs/rpc_api.md).
 - `Unavailable` = `UNAVAILABLE` with its message: nothing served yet (a booting
-  NFS), no verified chain, or no trusted validator holding the best block (the
-  mempool methods).
+  NFS), no verified chain, or (the mempool methods) neither a `Live` trusted
+  validator holding the best block nor a peer quorum.
 - `GetMempoolStream` ends once the **served** tip moves (after the NFS folds the
   new block), so the `GetLatestBlock` a wallet sends after the end already
   answers the new tip.
@@ -85,8 +85,8 @@ routing.route(routes);
   index's reader over its durable view + the NFS's layers, on a read lane (any thread).
   Any engine's durable view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
-  `GrpcSnapshot`'s `block_hash` view: `height_of(hash)` names the height (above the
-  tip = `NOT_FOUND`), and the answering index must hold the same hash there
+  `GrpcSnapshot`'s `block_hash` view: `height_of(hash)` names the height (past
+  `At::answers_through` = `NOT_FOUND`), and the answering index must hold the same hash there
   (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
 - Route tests build a `GrpcSnapshot` with `zaino_snapshot::GrpcSnapshots::fixed` over
@@ -100,10 +100,9 @@ routing.route(routes);
   slots and prunes pools.
 - A t-address encoded for a network other than the transparent index's is
   `INVALID_ARGUMENT`.
-- Two network spellings: `chainName` and the tree state's `network` =
-  lightwalletd's `main` / `test` / `regtest`; `network_name` (exported) =
-  zainod's `mainnet` / `testnet` / `regtest` (config, logs, the t-address
-  mismatch message). No surface writes its own match.
+- `chainName`, the tree state's `network` and the t-address mismatch message spell the
+  network as lightwalletd does (`main` / `test` / `regtest`), from one match
+  (`network::chain_name`).
 - `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
   its `[grpc]` config section.
 - `bind().await` takes the socket and returns a `BoundGrpcService`; await it at
@@ -277,7 +276,7 @@ Every cap refuses; none queues except the read lanes:
 
 ### Read lanes
 
-`ReadLanes` (owned by the `GrpcService`, one per process) runs every read that
+`ReadLanes` (owned by the `GrpcService`) runs every read that
 touches index files on the blocking pool, under a permit of its lane, never on
 a runtime worker:
 
@@ -329,9 +328,9 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   the first message of each `OK` work request (a unary answer, or a stream's
   first item; `GetMempoolStream` is never timed), p50 / p99 from log-linear
   buckets ≤ 12.5 % wide, never above `max`, which is exact. **out** = response
-  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **work / subs /
-  conns** = work streams, subscriptions and connections held at the summary, of
-  their caps.
+  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **conns** =
+  connections held at the summary; **work** / **subs** (and **conns** as
+  `used/max`) appear only under `High load`.
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
   nothing served yet, validator unreachable; `at_capacity` = the admission share);

@@ -1,4 +1,4 @@
-//! value_balance writer: the final stream → one [`fold_run`] per run → its store
+//! utxo_set writer: the final stream → one [`fold_run`] per run → its store
 //!
 //! - one [`BlockFees`] per step into the [`FeeSink`], held heights' fees read back from `fees`
 //!   (compact-block may be behind this index)

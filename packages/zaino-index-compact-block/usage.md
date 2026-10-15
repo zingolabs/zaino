@@ -65,7 +65,7 @@ let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::CompactBlock, handle.view().tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
-tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
+tokio::spawn(writer.run(blocks, fees)); // fees: a subscription to utxo-set's `FeeSink`
 ```
 
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
@@ -84,8 +84,9 @@ tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
 
 ## Serving
 
-Routes read through one `GrpcSnapshot` per request (`snap.views().compact_block()`,
-`None` = disabled), at heights `≤ snap.tip()`. `CompactBlockReader<V>` works
+Routes read through one `GrpcSnapshot` per request (`at.views().compact_block()`,
+`None` = disabled), at heights `≤ at.answers_through(IndexKind::CompactBlock)`.
+`CompactBlockReader<V>` works
 over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
 `OverlayView` with non-final blocks layered on top.
 
@@ -122,8 +123,7 @@ the cache.
 
 `compact_tx(index, &Transaction, fee: Option<Zatoshis>) -> CompactTx` is the
 record's own per-transaction encoder, exposed so a mempool transaction renders
-identically (`index` = its slot in the response, `fee` = what a validator
-listed it at). The wire `fee` is a `uint32` with no presence bit, so `None` (a
+identically (`index` = its slot in the response, `fee` = its mempool entry's). The wire `fee` is a `uint32` with no presence bit, so `None` (a
 coinbase or an unpriced mempool transaction) and any fee of 2^32 zatoshis or
 more both write 0, "not provided", rather than a wrong value.
 

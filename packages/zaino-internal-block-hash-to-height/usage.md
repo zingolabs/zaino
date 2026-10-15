@@ -53,10 +53,10 @@ tokio::spawn(writer.run(blocks));
 
 ## Serving
 
-- A route reads `snap.views().block_hash()?.height_of(&hash)`.
+- A route reads `at.views().block_hash()?.height_of(&hash)`.
   `BlockHashReader<V>` works over any `V: MapRead`: a store's durable view or
   an `Indexed`'s `OverlayView`.
-- A hash it does not hold, or one located above the served tip, is
-  `NOT_FOUND`.
+- A hash it does not hold, or one located above the answering index's
+  `At::answers_through`, is `NOT_FOUND`.
 - The caller confirms the block: compact-block's `block_at` checks the record's
   `hash` field, and the tree-state route checks `Treestate.block_hash`.

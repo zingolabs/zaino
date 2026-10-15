@@ -1,7 +1,7 @@
 //! [`WriteBuffer`]: a store's applied, uncommitted [`BlockChanges`], concatenated per table
 //!
 //! - map rows unsorted (the LSM sorts each batch at commit)
-//! - per map: row numbers by key (staged lookups + the held-key check)
+//! - per map: row numbers by key (applied-view lookups + the held-key check)
 //! - a removed key = a tombstone row, unless the buffer holds its insert: both cancel (neither
 //!   reaches a segment)
 
@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-/// Committed view + its store's buffer, borrowed ([`Store::staged`](crate::Store::staged))
+/// Committed view + its store's buffer, borrowed ([`Store::applied`](crate::Store::applied))
 ///
 /// - borrow = none held across `apply` (compile error, never a buffer copy)
 pub type AppliedView<'a, V> = OverlayView<V, &'a WriteBuffer>;

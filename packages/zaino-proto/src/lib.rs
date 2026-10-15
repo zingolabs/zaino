@@ -1,4 +1,5 @@
-//! Tonic-generated lightwallet `CompactTxStreamer` service + compact formats, gRPC framing
+//! Tonic-generated lightwallet `CompactTxStreamer` service + compact formats, zebrad's indexer
+//! service, gRPC framing
 
 #![forbid(unsafe_code)]
 

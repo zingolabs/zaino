@@ -44,7 +44,7 @@ impl Limits {
     }
 }
 
-/// Poll = the active check, every reply the passive one (chainview's `EndpointState`, moved)
+/// Poll = the active check, every reply the passive one
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
     Pending,

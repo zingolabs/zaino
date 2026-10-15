@@ -81,7 +81,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     }
 }
 
-/// Value-balance's fees for `block`
+/// Utxo-set's fees for `block`
 async fn next_fees(fees: &mut Subscription<BlockFees>, block: &Block) -> Arc<BlockFees> {
     let Step::Apply { height, data } = fees.next().await else {
         panic!("{NAME}: fees ended before the blocks");

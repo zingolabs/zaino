@@ -76,20 +76,20 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
   with `S::View: MapRead`. zainod picks `DiskEngine`.
 - `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)):
-  each block it does not yet hold is folded onto `staged()`, then
+  each block it does not yet hold is folded onto `applied()`, then
   `zaino_sync::apply`d. `handle()` is the `IndexHandle` the NFS reads.
 - Fallible only at boot (`StoreError` from `open`). `run` panics on a failed
   commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.transparent_address.enabled`. Disabled, its
   methods answer `UNIMPLEMENTED`.
 - The index folds every block from genesis, so it cannot start at a later
-  height: a spend's output must already be in `receives`.
+  height: a read pairs each spend with a receive at any earlier height.
 
 ## Serving
 
 ```rust,ignore
-// a route's reader: snap.views().transparent_address() (None = disabled)
-let reader = reader.as_of(snap.tip().height).with_max_rows(max_address_rows);
+// a route's reader: at.views().transparent_address() (None = disabled)
+let reader = reader.as_of(at.tip().height).with_max_rows(max_address_rows);
 let utxos = reader.utxos_of(&addresses, start)?;          // Vec<Vec<AddressUtxo>>, oldest first
 let balances = reader.balances(&addresses)?;               // Vec<Zatoshis>
 let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>

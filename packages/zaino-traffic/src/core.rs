@@ -363,7 +363,7 @@ impl TrafficCore {
         crate::MemberTable { rows: rows.collect() }
     }
 
-    /// T1–T6, T10 (T7–T9 = the model's)
+    /// T1, T2, T4, T5, T10 (the rest = the model's)
     #[cfg(test)]
     pub(crate) fn check(&self) {
         use crate::class::LANES;

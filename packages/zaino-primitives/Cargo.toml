@@ -1,6 +1,6 @@
 [package]
 name = "zaino-primitives"
-description = "Zero-dependency Zcash chain-level domain types (heights, hashes, blocks, transactions) for the Zaino indexer."
+description = "Zcash chain-level domain types (heights, hashes, blocks, transactions) shared by every Zaino crate."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -12,7 +12,7 @@ driver. No `tower::Service`: every answer must name its sender (blame) and every
 ## Wiring
 
 ```rust,ignore
-use zaino_traffic::{Limits, TrafficBalancer, Trusted};
+use zaino_traffic::{Limits, Peers, TrafficBalancer, Trusted};
 
 let trusted = validators
     .iter()
@@ -27,8 +27,11 @@ let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
 tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is polled
 ```
 
-- `trusted[i]` is `TrustedValidatorId(i)`: configured order, at most `TrustedValidatorId::MAX` (64).
-- `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in production (one type per balancer: zainod's `validator_client`), `zaino_source::testing::MockValidator` in tests.
+- `trusted[i]` is `TrustedValidatorId(i)`: configured order, at most `TrustedValidatorId::MAX`
+  (64).
+- `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in
+  production (one type per balancer: zainod's `validator_client`),
+  `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Peers>`, the p2p network's whole peer set as one member (`MemberId::Peers`,
   below every trusted tier); `None` = trusted only. Its transport (`PeerTransport`: `headers`,
   `block`) picks the peer itself and must check a block body against its header, blaming the
@@ -50,7 +53,7 @@ it).
 | Method | Class (lane) | Reaches | Ends |
 | --- | --- | --- | --- |
 | `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then the peer set | never unanswered: every member tried → next round after 1 s, a warning each minute it stays unserved |
-| `blocks_at(heights, urgency)` | same classes | trusted only (peers answer by hash): one `getblock <h> 0` batch, or one `GetBlockRange` per run over gRPC | never unanswered, as `block` |
+| `blocks_at(heights, urgency)` | same classes | trusted only (peers answer by hash): `getblock <h> 0` batches (sized by `ResponseSizeCap`), or one `GetBlockRange` per run over gRPC | never unanswered, as `block` |
 | `headers(HeaderAsk::Pinned { member, heights })` | `Headers` (control) | that trusted member only | unanswered if it fails or is out |
 | `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
@@ -71,8 +74,8 @@ it).
 
 ## Blame: `report`
 
-The balancer cannot judge a value; the caller does (`check_block`, header rule H8, txid
-recomputed from bytes). On failure:
+The balancer cannot judge a value; the caller does (`zaino_sync::check_block`, the header rules,
+txid recomputed from bytes). On failure:
 
 ```rust,ignore
 let checked = loop {
@@ -92,24 +95,25 @@ let checked = loop {
 
 ## Polling and observations
 
-- Each trusted member is polled every 1 s (every 15 s while both its push streams are up), never closer
-  than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
+- Each trusted member is polled every 1 s (every 15 s while both its push streams are up), never
+  closer than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
   failures) is probed at 30 s and nothing else is sent to it. The poll has a permit of its own,
   outside every lane: no ask ever delays it. Metadata (`getpeerinfo`, `getinfo`,
   `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
 - `poll_best(f)`: every poll asks `getblockhash` at `f()` (the caller's best height, `None` =
   not asked), read as the poll starts; it never wakes a poll (an answer at a moved best is one
   stale fact, re-asked next poll). `observe(member)` is a `watch` of the latest
-  `Observation { polled, asked, at, streaming, health }` (`asked` = that `f()`; latest only: a
+  `Observation { polled, asked, streaming, health }` (`asked` = that `f()`; latest only: a
   slow consumer never stalls a poll; `health` = the member's right after that poll, so a
   consumer folds `Degraded` vs `Down` without the table).
   A consumer subscribing after the driver started marks the watch changed to read the poll
   already there.
-- `pushed(member, Push::Changed | Push::Link(up))`: wire `ZebraIndexerWatch::run`'s callbacks here; an
-  event polls within 200 ms.
-- `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, last reply's
-  latency, in flight; trusted first in configured order, then the peer set) for the chain view
-  and metrics, refreshed by the driver. `entries()`: trusted members a submission may enter by (live, not benched).
+- `pushed(member, Push::Changed | Push::Link(up))`: wire `ZebraIndexerWatch::run`'s callbacks
+  here; an event polls within 200 ms.
+- `members()`: `watch` of the `MemberTable` (consecutive failures, bench, last reply's latency,
+  in flight; trusted first in configured order, then the peer set) for the chain view and
+  metrics, refreshed by the driver. `entries()`: trusted members a submission may enter by
+  (live, not benched).
 
 ## Health
 
@@ -122,7 +126,8 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 
 ## Invariants
 
-`TrafficCore::check()` (T1, T2, T4, T5, T10) is test-only: the model calls it after every step; its oracle checks T3 and T6 on every send.
+`TrafficCore::check()` (T1, T2, T4, T5, T10) is test-only: the model calls it after every step;
+its oracle checks T3 and T6 on every send.
 
 | ID | Invariant |
 | --- | --- |

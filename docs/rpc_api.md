@@ -107,14 +107,14 @@ no progress (see [running.md](./running.md#stream-time-limits)).
 | --------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
 | nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
 | work-stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                | `UNAVAILABLE`        | retry after the hint                                                   |
-| no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`)              | `UNAVAILABLE`        | back off and retry                                                     |
+| no verified tip, or neither a trusted validator holding it nor a peer quorum (mempool methods)      | `UNAVAILABLE`        | back off and retry                                                     |
 | validator unreachable (`GetTransaction`, `SendTransaction`)                                         | `UNAVAILABLE`        | back off and retry                                                     |
 | stream with nothing to send for `silent_timeout_secs` (not `GetMempoolStream`)                      | `UNAVAILABLE`        | retry                                                                  |
 | index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED`      | never retry                                                            |
 | height, hash or txid not in the chain, or above the answering index's tip                           | `NOT_FOUND`          | ask for something else                                                 |
 | `GetBlockRange` reaching past the compact-block index's tip (after the blocks up to it)             | `OUT_OF_RANGE`       | ask again once the tip moves                                           |
 | the request's own `grpc-timeout` passed                                                             | `DEADLINE_EXCEEDED`  | allow longer or ask for less                                           |
-| bad or oversized range, unparseable or foreign-network address                                      | `INVALID_ARGUMENT`   | fix the request                                                        |
+| malformed request, height past the protocol ceiling, unparseable or foreign-network address         | `INVALID_ARGUMENT`   | fix the request                                                        |
 | request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`)                           | `RESOURCE_EXHAUSTED` | send less per call                                                     |
 | addresses with more receives than one request may walk (`serve.max_address_rows`)                   | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
 | request body not complete within 30 s                                                               | `DEADLINE_EXCEEDED`  | resend                                                                 |

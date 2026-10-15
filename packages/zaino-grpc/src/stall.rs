@@ -4,7 +4,7 @@
 //!   notice from inside, and a live peer that never reads keeps every permit it holds
 //! - owing = a body handed hyper a data frame and has not been polled since (a `Pending` body =
 //!   idle or waiting on a read, never owing)
-//! - the connection's watchdog closes it once any stream has owed for the stall timeout
+//! - the connection's watchdog closes it once any stream has owed for `unread_timeout`
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

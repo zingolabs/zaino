@@ -120,5 +120,5 @@ fee = Σ transparent inputs − Σ transparent outputs
   is `FoldError::NegativeFee`, never clamped. A sum past the money supply is
   `ValueOverflow` (ZIP 209).
 - Mempool fees do not come from this fold, since an unconfirmed transaction
-  may spend another unconfirmed one. A trusted validator's
-  `getrawmempool true` listing carries the fee.
+  may spend another unconfirmed one
+  ([architecture §5](../../docs/architecture.md#5-the-mempool-view)).

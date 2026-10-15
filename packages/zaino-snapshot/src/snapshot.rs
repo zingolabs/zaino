@@ -44,7 +44,7 @@ pub enum Unavailable {
     NothingServed,
 }
 
-/// Serving judged from one snapshot (zainod adds draining, a stalled runtime, provisioning)
+/// Serving judged from one snapshot (zainod adds held, provisioning, a stalled runtime)
 ///
 /// - `Syncing` also while every holder of best is catching up (best trails the network)
 /// - `Degraded` = serving a fresh proof-of-work-verified best no trusted validator vouches for

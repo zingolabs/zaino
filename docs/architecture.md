@@ -211,13 +211,13 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 - Heights the verified chain has a header for: fetched by hash from any member (peers included),
   checked against the header (hash, merkle root, coinbase height).
-- Below the header chain (bulk sync, a restart from an old index): by height, trusted only, 4 per
-  batched request, checked by coinbase height only. A trusted validator's body is trusted.
+- Below the header chain (bulk sync, a restart from an old index): by height, trusted only, batched
+  (up to 8 per request), checked by coinbase height only. A trusted validator's body is trusted.
 - Each block must link to every durable tip it extends and to the block sent before it; otherwise
   the follower stops and the process exits. Nothing is skipped.
 - Queues are byte-bounded and a send reserves room in every queue first, so the slowest writer
   paces the fetch and memory stays bounded. A dropped queue or failed commit panics.
-- Value-balance resolves each transaction's fee and feeds compact-block through a `FeeSink`.
+- Utxo-set resolves each transaction's fee and feeds compact-block through a `FeeSink`.
 - A writer commits when its buffer fills, after a run ending at the final tip, and at shutdown.
 
 ### Tip path (`zaino-nfs`)

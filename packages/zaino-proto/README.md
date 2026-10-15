@@ -16,10 +16,11 @@ only, and `zcash_client_backend` generates only the client.
   `RawTransaction.data` is `bytes::Bytes`, so fanning one transaction out to
   many streams is a refcount bump.
 - `proto::zebra_indexer` — zebrad's indexer service (`zebra.indexer.rpc`:
-  `ChainTipChange`, `NonFinalizedStateChange`, `MempoolChange`, `GetBlock`),
-  verbatim from zebra's `zebra-rpc/proto/indexer.proto`. Zaino is a client (the
-  chain view's push streams, `[[trusted_validators]] indexer_address`); the
-  server half serves tests' fake zebrad.
+  `ChainTipChange`, `NonFinalizedStateChange`, `MempoolChange`, `GetBlock`,
+  `GetBlockRange`): zebra's `zebra-rpc/proto/indexer.proto` plus `GetBlockRange`
+  (Zaino's zebra fork). Zaino is a client (`zaino-source`: push streams and block
+  fetch, `[[trusted_validators]] indexer_address`); the server half serves tests'
+  fake zebrad.
 - `LIGHTWALLET_PROTOCOL_VERSION` — the vendored release (newest
   `lightwallet-protocol/CHANGELOG.md` heading), served as
   `LightdInfo.lightwalletProtocolVersion`.
@@ -34,7 +35,7 @@ only, and `zcash_client_backend` generates only the client.
 lightwallet-protocol/walletrpc/   upstream v0.5.0 protos, with local edits
 proto/compact_formats.proto       → symlink into lightwallet-protocol/
 proto/service.proto               → symlink into lightwallet-protocol/
-proto/zebra_indexer.proto         zebra's indexer.proto, verbatim
+proto/zebra_indexer.proto         zebra's indexer.proto + GetBlockRange
 src/proto/*.rs                    generated, committed
 ```
 
@@ -52,4 +53,4 @@ sources.
 
 To move to a new upstream release, replace `lightwallet-protocol/` with that
 tag's contents, re-apply the local edits above, regenerate, and record the
-version in `CHANGELOG.md`.
+change in a `.changeset/` file ([RELEASING.md](../../RELEASING.md)).

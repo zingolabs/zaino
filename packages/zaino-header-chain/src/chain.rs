@@ -357,7 +357,7 @@ impl HeaderChain {
 
     /// H1, H2, H4, H5, H6 and the tree's own bookkeeping; panics naming the invariant broken
     ///
-    /// - O(nodes): tests run it after every mutation, the driver after every run in debug builds
+    /// - O(nodes): tests run it after every mutation
     pub fn check(&self) {
         let final_tip = self.final_tip();
         assert!(final_tip.is_some() || self.nodes.is_empty(), "H2: nothing held before an anchor");

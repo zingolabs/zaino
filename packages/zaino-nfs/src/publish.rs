@@ -2,7 +2,7 @@
 //! (`usage.md`)
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the durable view
-//! - Layers rebased onto the durable views they pair with, at build (decision 4)
+//! - Layers rebased onto the durable views they pair with, at build
 //! - [`Indexed::at`]: any folded node or the root, side branches included (G7)
 
 use std::sync::Arc;

@@ -1,7 +1,9 @@
 # `zaino-nfs` — usage
 
-The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block above the indexes' durable tips folded in
-RAM, one `Indexed` publish across every index (the index half of `zaino_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path (`zaino-sync`), never through here.
+The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block
+above the indexes' durable tips folded in RAM, one `Indexed` publish across every index (the index
+half of `zaino_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path
+(`zaino-sync`), never through here.
 
 ## Wiring: `Nfs`
 
@@ -48,8 +50,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
   best-branch block (final data), else the block.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
-  durable tip); a reorg moves it to the fork point at once. `None` only with no folded best node
-  and no root on the best chain (an index holding nothing still folds from genesis).
+  durable tip); a reorg moves it to the fork point at once. The publish is `None` (withdrawn) only
+  with no folded best node and no root on the best chain.
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
   or unknown. `At::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.
@@ -67,7 +69,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 | `zaino_reorgs_total` (0 from boot) + WARN `Chain reorg detected` (`from`, `to`) | a published tip that left the best chain |
 | INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized`) | each published tip that is the verified best |
 
-Fetch counters and `zaino_fetch_height` come from the final path (`zaino-sync`).
+Fetch counters come from the final path (`zaino-sync`); `zaino_best_tip` and `zaino_fetch_height`
+from `zaino-snapshot`.
 
 ## Core and invariants
 

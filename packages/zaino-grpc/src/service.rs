@@ -158,7 +158,7 @@ impl Route {
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
-/// - `indexes` = the configured ones: a [`ROUTES`] row needing another = `UNIMPLEMENTED`
+/// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`
 pub struct Routes<S: ChainDataSource, V> {
     pub snapshots: GrpcSnapshots<V>,
     pub submit: Arc<ChainView<S>>,

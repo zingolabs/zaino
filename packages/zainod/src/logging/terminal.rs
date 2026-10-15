@@ -1,5 +1,5 @@
 //! Terminal log line:
-//! `INFO  [09-25|12:00:30.002] ZainoSource:         Syncing blocks                height=1,730,091 bps=2,853`
+//! `INFO  [09-25|12:00:30.002] ZainoNFS:            Syncing blocks                height=1,730,091 bps=2,853`
 //!
 //! - Level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
 //!   [`MESSAGE_WIDTH`] when fields follow

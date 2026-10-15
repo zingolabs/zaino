@@ -109,11 +109,11 @@ tempfile = "3.2"
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.11.0-alpha.2" }
 zaino-persistence = { path = "packages/zaino-persistence", version = "0.11.0-alpha.2" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.11.0-alpha.2" }
-# Non-finalized state: fetch, folds above the durable root, the final stream, one snapshot
+# Non-finalized state: fetch, folds above the durable root, the final stream
 zaino-nfs = { path = "packages/zaino-nfs", version = "0.11.0-alpha.2" }
-# The best chain by proof of work: every header verified from genesis, most-work tip
+# Validated Header tree: most-work tip above a trusted anchor
 zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.11.0-alpha.2" }
-# Validator JSON-RPC: `ChainDataSource` port, zebrad adapter, traffic balancer
+# Validator source: `ChainDataSource` port + its JSON-RPC and indexer-gRPC clients
 zaino-source = { path = "packages/zaino-source", version = "0.11.0-alpha.2" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.11.0-alpha.2" }
 zaino-peers = { path = "packages/zaino-peers", version = "0.11.0-alpha.2" }
@@ -129,7 +129,7 @@ zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0a
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.11.0-alpha.2" }
 # Block hash <-> height: the locator every by-hash request resolves through.
 zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.2" }
-# Outpoint -> value: every transaction's value balance (fees), published for compact blocks.
+# Outpoint -> value: each transaction's fee for compact blocks
 zaino-index-utxo-set = { path = "packages/zaino-index-utxo-set", version = "0.11.0-alpha.2" }
 # Height → commitment-tree state, subtree roots (any historical frontier, no hashing)
 zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.11.0-alpha.2" }

@@ -44,7 +44,7 @@ const POLL_EVERY: Duration = Duration::from_secs(1);
 /// aria2c's RPC listener coming up
 const RPC_WAIT: Duration = Duration::from_secs(10);
 
-/// Published beside the archives (RUNBOOK "Index snapshot"): one seed, one height
+/// Published beside the archives (`usage.md` "Index snapshot"): one seed, one height
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {

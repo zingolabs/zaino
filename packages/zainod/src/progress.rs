@@ -4,7 +4,7 @@
 //!   writers), then `Fetching non-finalized blocks` (the NFS window up to best); a stall warning
 //!   once it has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
-//!   not synced
+//!   final blocks outstanding
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)
 //! - the phase's blocks/s over the last two intervals (`/status` `progress.rate`)
 

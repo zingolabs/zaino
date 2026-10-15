@@ -4,7 +4,7 @@
 //!   (`Frontier::append_batch_visiting`; node types split wide levels across cores)
 //! - pools fold concurrently; generic over the node type (ironwood reuses `MerkleHashOrchard`)
 //! - node / subtree root → the block holding its last leaf: any split into runs = same deltas
-//! - nothing carried between runs: each reads its parent frontiers off `Store::staged`
+//! - nothing carried between runs: each reads its parent frontiers off `Store::applied`
 
 use std::{
     collections::BTreeMap,

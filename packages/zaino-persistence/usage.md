@@ -35,10 +35,10 @@ let mut store = DiskEngine::new(fs, LsmConfig::default()).open(path, &schema, WR
 let mut changes = store.changes(block.at());           // one block's empty delta
 changes.sequence(BLOCKS).append(&record);
 changes.map(SPENT).insert(&outpoint.encode(), &spend);
-store.apply(changes);                                  // buffered: visible in staged() only
-store.commit()?;                                       // durable, then visible in committed()
+store.apply(changes);                                  // buffered: visible in applied() only
+store.commit()?;                                       // durable, then visible in durable()
 
-let view = store.durable();                          // what serving pins
+let view = store.durable();                            // what serving pins
 view.sequence(BLOCKS).records(a..b);                   // zero-copy slices of the mapping
 view.map(SPENT).range(&start, &end, limit);            // [start, end); None = more than `limit`
 ```
@@ -55,10 +55,10 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **`cache_writes()`** marks a table a fold reads back (tree-state, utxo-set's `outputs`).
   Everything else is dropped from page cache once synced, so bulk writes never evict hot tables.
 - **`apply` vs `commit`.** `apply` buffers in RAM; a writer folding the next block reads its parent
-  through `staged()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
+  through `applied()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
   reaches the `write_buffer` given to `open`, `apply` commits by itself. `commit` writes everything
   buffered at the last applied tip. `Schema::changes(at)` (or `store.changes(at)`) opens a block's
-  delta. Point reads through `staged()` hit the buffer's hash index; a map `range` through it
+  delta. Point reads through `applied()` hit the buffer's hash index; a map `range` through it
   scans and sorts every row the buffer holds for that map, so a fold should not range-read its own
   buffered map.
 - **A failed commit poisons the store.** Any later `apply` or `commit` panics. Drop the store and
@@ -172,12 +172,8 @@ process, and the service manager's restart is the recovery path.
 
 ## Why append-only files and mmap
 
-The data is dense, positional and written once, so a key-value store only adds overhead. Measured
-on the tree-state layout (3M commitments, 32 scattered reads per request): fixed-stride files took
-137 MiB and 3.0 µs warm / 296 µs cold, against LMDB's 210 MiB, 12.7 µs / 432 µs, and redb's 257 MiB,
-14.6 µs / 796 µs. An append-only file also stays one extent on any filesystem, where a
-copy-on-write B-tree after 10M random inserts held 478,526 extents and lost half its cold read speed.
-No mount options or `chattr` are needed.
+The data is dense, positional and written once, so a key-value store only adds overhead, and an
+append-only file stays unfragmented where a copy-on-write B-tree under random inserts does not.
 
 ## mmap hazards, and how the code avoids them
 
@@ -190,8 +186,7 @@ No mount options or `chattr` are needed.
   interrupted commit or the zeroed reserve. Every read goes through `Pages`, sliced to the sealed
   length.
 - **Page faults on async threads.** A cold read can block for milliseconds. Callers run reads on the
-  blocking pool (`zaino-grpc`'s read lanes), and multi-record reads issue `MADV_WILLNEED` first
-  (4× faster cold than faulting page by page). Point-lookup segments are mapped `MADV_RANDOM`,
+  blocking pool (`zaino-grpc`'s read lanes), and multi-record reads issue `MADV_WILLNEED` first. Point-lookup segments are mapped `MADV_RANDOM`,
   merge inputs `MADV_SEQUENTIAL`.
 - **Zero-copy slices outlive the view.** `Bytes` returned by a read hold the mapping alive, which is
   sound only because committed bytes are never rewritten or truncated after publication.
@@ -228,7 +223,7 @@ implementation writes and owns its tests; there is no shared harness.
 - **Model test** (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`):
   random blocks, reorgs, commits, merges, reopens and power loss on `SimFs`, checked against
   `Vec` / `BTreeMap` models after every step.
-- **Port contract** (`the_disk_engine_keeps_the_port_contract`): the port's edge cases and every
+- **Guards** (`a_key_inserted_twice_by_one_block_panics`, …): one `#[should_panic]` test per
   precondition panic.
 - **Files-only tests**: every crash state of a commit history, every failed I/O call, open's
   trimming and refusals, the manifest body's golden bytes, and `verify`.

@@ -165,7 +165,7 @@ pub fn describe_metrics() {
     );
 }
 
-/// Every gauge from `snap` + `progress`, set at scrape (decision 3: fresh, no mirror tasks)
+/// Every gauge from `snap` + `progress`, set at scrape (fresh, no mirror tasks)
 pub fn emit_gauges<V: View>(snap: &GrpcSnapshot<V>, progress: &SyncProgress) {
     let tips = snap.tips();
     if let Some(best) = tips.best {

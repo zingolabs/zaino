@@ -90,7 +90,8 @@ find a damaged index, then delete its directory and let it resync.
 ## Stopping and restarts
 
 Boot fails with exit code 1 if the gRPC address cannot be bound (checked first, before any
-index-snapshot download) or an index cannot open. No validator needs to answer for boot to finish,
+index-snapshot download) or an index cannot open. On mainnet and testnet no validator needs to
+answer for boot to finish (regtest reads its upgrade schedule from the first validator that answers),
 and a validator that goes away is retried, never fatal.
 
 SIGINT or SIGTERM closes the gRPC listener at once, sends every open connection an HTTP/2
@@ -107,8 +108,8 @@ non-finalized window again (logged as `Fetching non-finalized blocks`).
 
 ## Status
 
-The admin listener's `/livez` and `/readyz`, and the public `/readyz` and `/status` on the
-gRPC listener, all read one published `GrpcSnapshot` of what zainod serves
+The admin listener's `/readyz` and `/metrics` gauges, and the public `/readyz` and `/status` on
+the gRPC listener, each read one published `GrpcSnapshot` of what zainod serves
 ([architecture §8](./architecture.md#8-serving-one-grpcsnapshot)). States, readiness rules and every
 field: [zainod: the admin listener](../packages/zainod/usage.md#the-admin-listener).
 

@@ -10,7 +10,7 @@ use zaino_peers::{PeerConfig, PeerNetwork};
 
 let peers = PeerNetwork::start(PeerConfig::new(NetworkType::Main)).await; // seeds dialed + crawled
 let headers = peers.find_headers(&locator, None).await?;                 // raw header bytes
-let blocks = peers.blocks_by_hash(&hashes).await?;                       // (hash, Option<bytes>)
+let blocks = peers.blocks_by_hash(&hashes).await?;                       // (hash, Option<Supplied>)
 let listed = peers.mempool_of(peers.live()[0]).await?;                   // that peer's whole mempool
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
 let mut heard = peers.announcements();                                   // Announced { peer, hash }
@@ -19,11 +19,11 @@ let txid = peers.push(&raw).await?;                                      // the 
 
 ## Dependency
 
-zebra-network and zebra-chain come from the `elicbarbieri/zebra` fork
-(`lazy-network-main-ff14`: zebra main on the same librustzcash, orchard and
-sapling-crypto forks the workspace patches, plus `init`'s advertised services and
-`Request::MempoolTransactionIdsFrom`), pinned by rev in the root `Cargo.toml`. zebra-network is built on tower 0.4, so this crate uses tower
-0.4 for its peer set (`tower::buffer::Buffer`); nothing tower-typed is public.
+zebra-network and zebra-chain come from the `elicbarbieri/zebra` fork (zebra main on
+the same librustzcash, orchard and sapling-crypto forks the workspace patches, plus
+`init`'s advertised services and `Request::MempoolTransactionIdsFrom`), pinned by rev in
+the root `Cargo.toml`. zebra-network is built on tower 0.4, so this crate uses tower 0.4
+for its peer set (`tower::buffer::Buffer`); nothing tower-typed is public.
 
 zebra-network's codec parses in `block_in_place`: `PeerNetwork` needs a
 multi-thread tokio runtime.
@@ -45,7 +45,7 @@ It returns once the seeds are dialed and crawled once (`init` awaits one `getadd
 seconds, up to zebra's crawl timeout for a seed that never answers).
 
 Zaino advertises no services (`PeerServices::empty()` to `init`), so it never claims to
-serve blocks, and answers peers' requests with nothing. Zebra and Zakura still admit it:
+serve blocks, and answers peers' requests with nothing. Zebra still admits it:
 they require `NODE_NETWORK` only from peers they dial themselves, and only while syncing.
 
 ## Requests
@@ -57,7 +57,7 @@ several.
 | Method | Request | Returns |
 |---|---|---|
 | `find_headers(known, stop)` | `FindHeaders` | consensus bytes per header, best-chain order |
-| `blocks_by_hash(hashes)` | `BlocksByHash` | `(hash, Some(bytes) / None)` in request order |
+| `blocks_by_hash(hashes)` | `BlocksByHash` | `(hash, Some(Supplied { bytes, peer }) / None)` in request order |
 | `mempool_of(peer)` | `MempoolTransactionIdsFrom(peer)` | that peer's whole mempool: `PeerTxId`s (txid + v5 auth digest) |
 | `transactions_by_id(ids)` | `TransactionsById` | `(id, Some(bytes) / None)` in request order |
 | `push(raw)` | `PushTransaction` | the bytes' own txid |
@@ -92,7 +92,7 @@ sender's address attached by zebra: `zaino_primitives::types::Announced { peer, 
 (one block per `inv`; zebra drops multi-block ones), which the chain view counts by
 netgroup toward finality on peers' word.
 
-Transaction `inv`s are ignored: zebrad and zakura announce each admitted
+Transaction `inv`s are ignored: zebrad announces each admitted
 transaction to a third of their peers, once, so a peer's silence says nothing.
 Mempool membership is each peer's own listing (`mempool_of`).
 
@@ -105,7 +105,7 @@ knows it missed some.
 
 - Loopback, no DNS: a scripted zebra-network regtest node (a full `init`, since
   isolated connections advertise no services and the peer set refuses those as
-  outbound peers) serves real mainnet blocks 1–3 and three real transactions, lying
+  outbound peers) serves real mainnet blocks 1–3 and three transactions, lying
   for one of them. It admits Zaino and records it with no services. Headers and blocks
   arrive byte-identical, its mempool asked by address lists its three ids (a stranger's
   = a failure), the lie never labels the asked id, a transaction `inv` is ignored and a

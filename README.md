@@ -27,14 +27,14 @@ packages/                          Cargo workspace members
   # serving
   zaino-grpc/                        Lightwalletd-compatible gRPC over GrpcSnapshots, chain view, validators
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
-  zaino-snapshot/                    One GrpcSnapshot of everything served, /status report
+  zaino-snapshot/                    One GrpcSnapshot of everything served, its standing
   # indexing
   zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, publications
   zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
   zaino-sync/                        Final stream (sink + queues) + the writers' apply / commit / publish
   zaino-index-compact-block/         Height → gRPC-framed compact block (one sequence)
   zaino-internal-block-hash-to-height/  Hash ↔ height, the by-hash locator
-  zaino-index-utxo-set/      Outpoint → value: each transaction's fee for compact blocks
+  zaino-index-utxo-set/              Outpoint → value: each transaction's fee for compact blocks
   zaino-index-tree-state/            Commitment-tree frontiers and subtree roots
   zaino-index-transparent-address/   Transparent address → receives and their spends (two maps)
   zaino-persistence/                 Persistence port + DiskEngine (files for sequences, LSM for maps)
@@ -55,7 +55,6 @@ live-tests/                        Standalone workspace, run on the ztest Kubern
 
 docs/                              Operator docs, architecture, RPC API, testing
 tools/workbench/                   Repo guards run by `makers lint`
-scripts/                           ztest chain-fixture producer
 nix/, flake.nix                    Nix build and dev shell
 .github/                           CI workflows and issue templates
 .githooks/                         pre-push hook (`makers lint`)
@@ -89,7 +88,6 @@ Operating it:
 - [Testing](./docs/testing.md): unit tests, live tests, sync profiles, ztest cluster setup.
 - [Live-test guidelines](./live-tests/CLAUDE.md): rules for writing live tests.
 - [Updating Zebra](./docs/updating_zebra_crates.md): testing against a new zebrad release, and how the librustzcash forks are pinned.
-- [Cargo docs](https://zingolabs.github.io/zaino/).
 
 How it is built, and why:
 - [Architecture](./docs/architecture.md): **start here.** Who owns what, the map, what each source is trusted for, the best chain and finality, the mempool, submission, indexing, serving from one `GrpcSnapshot`, failure modes.
@@ -103,14 +101,14 @@ Releasing it:
 
 Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
-- [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
-- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and its two clients, `ZcashLegacyRpcClient` (JSON-RPC) and `ZebraIndexerGrpcClient` (indexer gRPC).
+- [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on no other Zaino crate.
+- [`zaino-source`](./packages/zaino-source/usage.md): the `ChainDataSource` port, the domain / non-domain error split, and its two clients, `ZcashLegacyRpcClient` (JSON-RPC) and `ZebraIndexerGrpcClient` (indexer gRPC).
 - [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers — request classes with reserved permits, one hedge / retry / blame policy under one budget, `report` benching exactly the member that misanswered, and every trusted validator's poll.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers and blocks (checked by proof of work and merkle root, so the tip follows the network while every trusted validator is down), each peer's own mempool listing (the chain view's peer quorum: the mempool keeps serving while every trusted validator is down), attributed block announcements (finality on peers' word) and the isolated per-attempt submission push; advertises no services.
 - [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the Validated Header tree, each header validated by the trusted validator that served it or by Zaino, anchored at a trusted tip − depth (no history from genesis) — the most-work tip, vouched finality, and `validate`, the consensus rules kept as the fallback for an untrusted source.
 - [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the final stream (lockstep finality), and publishes one `Indexed` across every index that moves to the fork point the moment a reorg lands.
-- [`zaino-snapshot`](./packages/zaino-snapshot/usage.md): one published `Snapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the public `/status` report, the gauges and the alarm logs derived from it.
+- [`zaino-snapshot`](./packages/zaino-snapshot/usage.md): one published `GrpcSnapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the serving `Standing`, the gauges and the alarm logs derived from it.
 - [`zaino-sync`](./packages/zaino-sync/usage.md): the final stream (`Step`, `Run`), byte-bounded queues, fees from one index to another, and the `apply` / `commit` / `IndexPublisher` every writer's loop runs on.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.

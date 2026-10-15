@@ -44,8 +44,8 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 ## Membership
 
 - `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more than
-  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted member of the
-  balancer (`ConfigError::AddressCountMismatch` otherwise).
+  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted
+  member of the balancer (`ConfigError::AddressCountMismatch` otherwise).
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
 
@@ -69,17 +69,19 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
 `HeaderSync::run(cancel)` owns the `HeaderChain` (no lock). `subscribe()` (take it before `run`) =
 `watch<Option<Arc<VerifiedChain>>>`, republished whenever best or final moves.
 
-- **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from a validator whose claim is off
-  our best. Anchors at claim − `anchor_below()` (max(depth, 113)) with no chain or a claim past
-  `ceiling`; otherwise extends. The run's last header is vouched.
-- **Peer runs** (`with_peers`, once anchored): `headers(Peers)` every 5 s when no trusted run is
-  due, each header through `insert_untrusted` (`validate`). Never vouched. `FromTheFuture`,
-  `Orphan`, `BelowFinal` and `ShortContext` end the run unblamed; any other refusal → `report`.
+- **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from the first answering
+  validator whose claim the verified chain does not hold. Anchors at claim − `anchor_below()`
+  (max(depth, 113)) with no chain or that anchor past `ceiling`; otherwise extends. The run's last
+  header is vouched.
+- **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
+  5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
+  vouched. `FromTheFuture`, `Orphan`, `BelowFinal` and `ShortContext` end the run unblamed; any
+  other refusal → `report`.
 - **Vouches** after every poll fold: each answering validator's claim and its held `getblockhash`
   answer.
-- **Stall** (fetch failed, malformed, empty, refused, or a fully read branch still not holding the
-  claim): that validator alone backs off 5 s. A trusted run orphaned at or below the floor marks
-  the member `forked` for that claim: not fetched again until the claim moves.
+- **Stall** (fetch failed, retreated, malformed, empty, refused, or a fully read branch still not
+  holding the claim): that validator alone backs off 5 s. A trusted run orphaned at or below the
+  floor marks the member `forked` for that claim: not fetched again until the claim moves.
 - **Peer finality** (`with_peers`): `peer_finalizable()` + live outbound peers in > 5 netgroups
   whose last block `inv` (`PeerSource::heard` via `PeerWatch`) is on our best at or above it.
 
@@ -105,8 +107,8 @@ Cheap to clone; cannot drive polling or submit.
 | `endpoints()` | per-endpoint `TrustedValidatorMeta`, configured order |
 | `alarms()`, `shared_outbound_min()` | below |
 
-`TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured positions,
-`TrustedValidatorSet::at(positions)` builds one (`testing` feature).
+`TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured
+positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
 
 `TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
 last-observed time, peers (every 60 s), release (build, user agent, protocol, end-of-service
@@ -156,12 +158,12 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 `ChainView::submit(raw)` → `Result<TxId, SubmitError>`; the protocol is
 [architecture §6](../../docs/architecture.md#6-submission).
 
-- Precheck (skipped before a verified best exists): undecodable → `Rejected` code −22; expired
+- Precheck: undecodable → `Rejected` code −22; once a verified best exists, expired
   (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.
 - Check: `TrafficBalancer::check_admission` on `entries()` ∩ `held_by()`, shuffled; the first
   `CheckAdmissionError::Refused` = `SubmitError::Rejected` at once (outcome `rejected`, 0
   attempts), the first `Ok` = the answer; `Unsupported` / no answer = the next.
-- `SubmitError::Rejected` = the check's refusal, else the first trusted rejection;
+- `SubmitError::Rejected` = the precheck's or the check's refusal, else the first trusted rejection;
   `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
   push failure).
 - Job inputs, taken once at its start: peers = `PeerSource::live()` non-empty, trusted =
@@ -187,7 +189,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 | `mempool(peer)` | `peer`'s whole mempool, that peer alone answering (`PeerTxId`s) |
 | `transactions(ids)` | each id's bytes in order (`None` = no peer supplied it) |
 
-- `UnspentOutputs::values(outpoints)`: the transparent UTXO set at the served tip (`None` = none yet).
+- `UnspentOutputs::values(outpoints)`: the transparent UTXO set at the served tip (`None` = none
+  yet).
 - `ChainView::peer_watch()` → `PeerWatch`: folds block `inv`s every 250 ms.
 
 ## Telemetry

@@ -100,8 +100,8 @@ fold(&parent, &block, &mut out)?;          // block = next above parent's tip
 
 ## Serving
 
-Routes read through one `GrpcSnapshot` per request (`snap.views().tree_state()`,
-`None` = disabled), at heights `≤ snap.tip()`:
+Routes read through one `GrpcSnapshot` per request (`at.views().tree_state()`,
+`None` = disabled), at heights `≤ at.answers_through(IndexKind::TreeState)`:
 
 | Reader method | Returns |
 |---|---|
@@ -111,17 +111,16 @@ Routes read through one `GrpcSnapshot` per request (`snap.views().tree_state()`,
 
 `zaino-grpc` adds what the reader does not know:
 
-- Past the served tip is `NOT_FOUND`. Below Sapling activation every pool is
+- Past `answers_through` is `NOT_FOUND`. Below Sapling activation every pool is
   `""`, where lightwalletd errors: the Android SDK asks for the height just
   below activation (ZA#1422).
-- `GetLatestTreeState` = `treestate(snap.tip())`. Subtree roots completing
+- `GetLatestTreeState` = `treestate(at.tip())`. Subtree roots completing
   above the tip are left out.
 - Each pool's tree is `write_commitment_tree` of the real tree (`000000` when
   empty). A pool's field is written only from its activation height
   (`PoolActivations::active`), and `""` below it, matching zebra and
   lightwalletd. An active pool is never `""`, because clients silently read an
   absent field as an empty tree.
-- `final_root` stays unset.
 - By `BlockID.hash`, the block-hash index
   ([`zaino-internal-block-hash-to-height`](../zaino-internal-block-hash-to-height/usage.md))
   names a height, and the route checks `Treestate.block_hash` matches.

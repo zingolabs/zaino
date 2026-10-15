@@ -85,7 +85,7 @@ pub(crate) struct Queued<T> {
 
 /// One batch of work off a [`Subscription`], in height order
 ///
-/// - `finalized` = its last block = `Step::FinalizedTip` (the chain's final tip)
+/// - `finalized_tip` = its last block = `Step::FinalizedTip` (the chain's final tip)
 pub struct Run<T> {
     pub blocks: Vec<(BlockHeight, Arc<T>)>,
     pub finalized_tip: bool,

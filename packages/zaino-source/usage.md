@@ -1,8 +1,8 @@
 # `zaino-source` — usage
 
 `ChainDataSource`: every question Zaino asks one trusted validator, one trait,
-declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its own domain error,
-nothing about the transport. Blocks come back decoded once, from consensus bytes,
+declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its
+own domain error, nothing about the transport. Blocks come back decoded once, from consensus bytes,
 into `zaino_primitives::types::Block`. Two implementations; a test fake answers
 what its test asks and `unimplemented!()`s the rest.
 
@@ -28,7 +28,7 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 ```rust,ignore
 use zaino_source::{LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
-let link = LinkLimits { max_connections, max_bytes_per_sec };
+let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
 let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
 let grpc = ZebraIndexerGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
@@ -51,7 +51,7 @@ Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
 zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
 
 - `ca_path` verifies the server's certificate; `cert_path` + `key_path` are this client's,
-  signed by the server's `client_ca_file`. Deserializes from the same keys (zainod's
+  signed by the server's client CA. Deserializes from the same keys (zainod's
   `[trusted_validators.indexer_tls]`).
 - `server_name` = the name on the server's certificate (`None` = the address's host).
 - The PEM files are read in `at`: an unreadable one is `EndpointError::TlsFile`, naming it. A
@@ -83,7 +83,9 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   that item's own outcome.
 - `LinkLimits`: `max_connections` = idle connections kept to the validator;
   `max_bytes_per_sec` (`None` = unlimited) paces response bytes per body chunk as
-  they are read, so an exhausted budget slows the sender through TCP backpressure.
+  they are read, so an exhausted budget slows the sender through TCP backpressure;
+  `response_size_cap` (`ResponseSizeCap`: one full block's reply ..= 32 MiB) = the largest
+  JSON-RPC reply buffered, and sets how many blocks one `getblock` batch asks.
 - Per-validator metrics carry a `validator` label: call duration by method,
   failures, calls in flight, bytes received.
 
@@ -106,8 +108,8 @@ as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
 ## `ZebraIndexerWatch`: push streams as wake hints
 
-`ZebraIndexerWatch::at(address, timeouts)` names zebrad's indexer gRPC
-(`indexer_listen_addr`, no auth). `run(cancel, on_change, on_link)` subscribes to
+`ZebraIndexerWatch::at(address, tls, timeouts)` names zebrad's indexer gRPC
+(`indexer_listen_addr`; `tls` as above). `run(cancel, on_change, on_link)` subscribes to
 `ChainTipChange` and `MempoolChange` until cancelled: every event calls
 `on_change(Change::Tip | Change::Mempool)`; `on_link(true)` fires once both
 streams are open and `on_link(false)` when either ends after that (a refused
@@ -139,11 +141,12 @@ header sync `get_block_links`:
 - `get_block_links(heights)` (`getblockheader <h> false` each):
   `BlockLink { header }` per height, the raw consensus header bytes, neither decoded nor
   hashed here: the consumer decodes once on receipt (`zaino_header_chain::decode_header`
-  recomputes the hash from the bytes). `GetAtHeightError::HeightNotFound` means a height above the tip.
+  recomputes the hash from the bytes). `GetAtHeightError::HeightNotFound` means a height above
+  the tip.
 - `get_raw_mempool_transactions(listed)`: the bytes of listed entries, in batches of at most
-  100 calls and 8 MiB of transactions by `encoded_len` (the hex reply stays under
-  zebrad's response cap). `NotFound` on an item means it left the mempool after
-  the listing (a normal race).
+  100 calls and, by `encoded_len`, as many bytes as keep the hex reply within
+  `response_size_cap` (an entry over that budget goes alone). `NotFound` on an item means it
+  left the mempool after the listing (a normal race).
 
 In each, items come back in request order and `Err` means the batch as a whole
 failed. A crate-internal JSON-RPC batch call is the transport underneath: one

@@ -1,4 +1,4 @@
-//! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
+//! Per-network consensus constants the header rules read (zebra-chain `src/parameters/`)
 
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{CompactDifficulty, Target};

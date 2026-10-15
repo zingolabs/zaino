@@ -64,15 +64,17 @@ body:
         - zaino-index-compact-block
         - zaino-index-transparent-address
         - zaino-index-tree-state
+        - zaino-index-utxo-set
         - zaino-internal-block-hash-to-height
-        - zaino-internal-value-balance
         - zaino-nfs
         - zaino-peers
         - zaino-persistence
         - zaino-primitives
         - zaino-proto
+        - zaino-snapshot
         - zaino-source
         - zaino-sync
+        - zaino-traffic
         - Testing / CI
         - Documentation
         - Other

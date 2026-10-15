@@ -9,7 +9,7 @@ license.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Value-balance index: every transparent output's value, resolving each transaction's fee for the FeeSink"
+description = "UTXO-set index: every transparent output's value, resolving each transaction's fee for the FeeSink"
 
 [dependencies]
 thiserror.workspace = true

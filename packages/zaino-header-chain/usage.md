@@ -76,11 +76,13 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 - Finality on peers' word: with no vouch that deep, `peer_finalizable()` names best − depth
   unless an unfinal best-chain block holds under half the work of the highest vouched block (or
   the anchor): a difficulty collapse, the mark of a minority miner's private chain. The caller
-  adds its own evidence (zainod: live peers in more than 5 netgroups carrying the chain) and calls
+  adds its own evidence (`zaino-chainview`'s `HeaderSync`: live peers in more than 5 netgroups
+  carrying the chain) and calls
   `finalize_by_peers(block)`, which panics on any other block. Peer-finalized blocks never move
   the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
-- Memory only: the newest max(`2 · depth`, `CONTEXT`) final headers stay, answering by height; older finals are
-  final by definition (`on_best` = true) and a header whose parent is one of them = `Orphan`.
+- Memory only: the newest max(`2 · depth`, `CONTEXT`) final headers stay, answering by height;
+  older finals are final by definition (`on_best` = true) and a header whose parent is one of
+  them = `Orphan`.
 
 ## `VerifiedChain`
 
@@ -100,8 +102,8 @@ holder's answers never change (H5).
 ## Invariants, checked
 
 `HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finals contiguous and at most
-max(`2 · depth`, `CONTEXT`), every node descends from the final tip), H4, H5, H6 and the tree's bookkeeping
-(cumulative work, child counts, leaf set), naming the invariant in its panic.
+max(`2 · depth`, `CONTEXT`), every node descends from the final tip), H4, H5, H6 and the tree's
+bookkeeping (cumulative work, child counts, leaf set), naming the invariant in its panic.
 
 ## Tests
 

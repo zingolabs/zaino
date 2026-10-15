@@ -15,7 +15,7 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-/// Block that passed [`check_block`] or [`check_block_at`] (no other constructor)
+/// Block that passed [`check_block`] or `check_block_at` (no other constructor)
 #[derive(Debug, Clone)]
 pub struct Checked(Arc<Block>);
 

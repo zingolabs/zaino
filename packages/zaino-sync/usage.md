@@ -80,7 +80,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   and a wallet's scan to zebra.
 - `fetch(balancer, at, record, urgency)` / `check_block`: by hash, held to a verified header
   (hash, coinbase height, `check_body`); the NFS's and the follower's.
-- `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch)}` names the check that failed.
+- `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch), Count}` names the check that failed.
 - `SyncProgress`: `handed()` = last height sent, `blocks()` = blocks sent since boot (atomics).
 
 ## `IndexHandle`
@@ -99,12 +99,13 @@ not), `changed()` (after each commit; `false` = writer gone).
 - `Subscription::next()`; `next_run()` → `Some(Run)` = next step + every `Apply` already
   queued, to the queue's budget (one batch of work, no wait past the first step) | `None` at
   `Shutdown`.
-- `Run { blocks, finalized }`: `finalized` = its last block = `Step::FinalizedTip` (the chain's final
-  tip; ends the run).
+- `Run { blocks, finalized_tip }`: `finalized_tip` = its last block = `Step::FinalizedTip` (the
+  chain's final tip; ends the run).
 
 ## Writer loop
 
-- `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip).
+- `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable
+  tip).
 - `apply` / `commit` return the time spent in the store; `ran(&store, started, write)` after each
   run records `zaino_index_run_seconds` (taken off the queue → published, waits included) and
   `zaino_index_write_seconds` (that run's applies + commits), both `{index}`: run − write = the
@@ -113,8 +114,9 @@ not), `changed()` (after each commit; `false` = writer gone).
   preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one
   height above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
 - `apply(store, changes)` = `Store::apply` + counted (`zaino_index_applied_blocks_total`, its
-  records + rows into `zaino_index_applied_rows_total`). Commits: the store's own once its buffer
-  reaches the `write_buffer` it was opened with (`zaino_persistence` usage).
+  records appended + rows inserted + keys removed into `zaino_index_applied_rows_total`).
+  Commits: the store's own once its buffer reaches the `write_buffer` it was opened with
+  (`zaino_persistence` usage).
 - `commit(store)`: everything buffered → disk now; the writer's after a `finalized` run and at
   `Shutdown`.
 - `IndexPublisher::new(&store)`; `handle()`; `publish(&store)` after every hop: applied tip
@@ -164,8 +166,8 @@ let handle = writer.stop().await.expect("stops at Shutdown"); // Err = the write
   `std::panic::resume_unwind(error.into_panic())`.
 - Random histories: `moves()` (1..16 of `Move::Send(1..=3)` / `Move::Reopen`, 4 : 1) and
   `write_buffers()` (MIN | MAX) as proptest strategies; `FinalStream::new(&blocks).steps(next)`
-  = the steps a move sends (a `Send`'s last `FinalizedTip`, a `Reopen`'s = the last sent block again,
-  into the restarted writer), `tip()` = the durable tip to wait for; `block_on_paused(history)`
+  = the steps a move sends (a `Send`'s last `FinalizedTip`, a `Reopen`'s = the last sent block
+  again, into the restarted writer), `tip()` = the durable tip to wait for; `block_on_paused(history)`
   runs the async body on a current-thread runtime, clock paused.
 - Fold preconditions (`assert_next` / `assert_run`) and the commit-failure panic are tested here,
   once; an index's tests cover only its own fold.

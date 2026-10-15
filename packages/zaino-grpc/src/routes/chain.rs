@@ -1,6 +1,6 @@
-//! Methods no index backs: `SendTransaction` (chain view), mempool methods + `GetLightdInfo`
-//! (the `GrpcSnapshot`'s chain view half), `GetTransaction` (forwarded: consensus bytes,
-//! usage.md "Why `GetTransaction` forwards")
+//! Methods no index backs: `SendTransaction` (chain view), mempool methods (the `GrpcSnapshot`'s
+//! chain view half), `GetLightdInfo` (its tips + schedule), `GetTransaction` (forwarded: consensus
+//! bytes, usage.md "Why `GetTransaction` forwards")
 //!
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = verified best tip, no validator call ("how far behind")

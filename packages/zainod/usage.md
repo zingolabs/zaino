@@ -36,14 +36,9 @@ moments.
   answer `200`. A degraded node keeps serving so a load balancer keeps routing to it during an
   outage of every trusted validator; alert on the state, not on `/readyz`.
 - While degraded, `GetLightdInfo` still answers from the served tip and the upgrade schedule.
-  Finality keeps moving on the peers' word once outbound peers in more than 5 netgroups carry
-  the chain and its difficulty has not collapsed; otherwise it waits for a trusted validator to
-  return.
-- While degraded, the mempool methods answer from a peer quorum: each outbound peer's mempool is
-  polled every 5 s, and a transaction is served once > 2/3 of them list it, from > 5
-  netgroups, and Zaino's own consensus checks pass against the served UTXO set (it needs
-  `index.compact_block`). `SendTransaction` goes to peers and answers once that quorum lists the
-  transaction. With fewer than 6 netgroups polled, the mempool methods answer `UNAVAILABLE`.
+  Finality and the mempool then run on the peers' word:
+  [architecture: Finality](../../docs/architecture.md#finality),
+  [The mempool view](../../docs/architecture.md#5-the-mempool-view).
 - `syncing` turns on until the served tip reaches the verified best. After that it turns back on
   only when the served tip leaves the best chain or trails it by more than `finalised_depth`.
   Requests are never refused for it.
@@ -151,13 +146,15 @@ or tailnet name:
     boot.
 - `info` holds the `GetLightdInfo` fields under lightwalletd's camelCase names, as numbers and
   strings, or `null` while that RPC would be `UNAVAILABLE`.
-- Before boot, `tip`, `served`, `validators`, `egress` and `info` are `null`.
+- Before boot, `tip`, `served`, `validators`, `egress` and `info` are `null` (`egress` also until
+  its first window closes).
 
 `/metrics` sets every state gauge from the `GrpcSnapshot` first (`zaino_best_tip`,
 `zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
 [`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then renders; events
 (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they happen
-([`zaino-nfs`](../zaino-nfs/usage.md#observability)). Each index writer reports its own progress
+([`zaino-nfs`](../zaino-nfs/usage.md#observability), [`zaino-sync`](../zaino-sync/usage.md)).
+Each index writer reports its own progress
 as it applies blocks ([`zaino-sync`](../zaino-sync/usage.md)): `zaino_index_applied_height`,
 `zaino_index_applied_blocks_total`, `zaino_index_applied_rows_total`, per commit
 `zaino_index_finalized_height`, and per run `zaino_index_run_seconds` / `zaino_index_write_seconds`
@@ -200,7 +197,7 @@ TimeoutStartSec=15min
 
 | Message | When |
 |---|---|
-| `READY=1` | the first time `/readyz` passes (serving at the verified tip) or the node is held; nothing is sent after it |
+| `READY=1` | the first time `/readyz` passes (`serving` or `degraded`) or the node is held; nothing is sent after it |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: index-snapshot bytes, the fetch height, the served height or an index height moved |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
@@ -309,6 +306,7 @@ network or format included).
 ```json
 {
   "clean": true,
+  "block_hash": { "heights": 4, "units": [ … ] },
   "compact_block": {
     "heights": 4,
     "units": [
@@ -316,10 +314,9 @@ network or format included).
       { "name": "blocks.idx", … }
     ]
   },
-  "utxo_set": { "heights": 4, "units": [ … ] },
-  "block_hash": { "heights": 4, "units": [ … ] },
+  "transparent_address": null,
   "tree_state": { "heights": 4, "units": [ … ] },
-  "transparent_address": null
+  "utxo_set": { "heights": 4, "units": [ … ] }
 }
 ```
 
@@ -358,7 +355,8 @@ zainod dies rather than serve from a state it cannot vouch for
 
 `zainodlib::logging::init()` installs the global `tracing` subscriber and the
 panic hook; `zainod start` calls it before `zainodlib::run` (which installs
-none of its own), `zainod verify` does not (stdout carries only the JSON report). Everything is read from the environment:
+none of its own). `zainod verify`, `hold` and `resume` do not (stdout carries only their report
+or state). Everything is read from the environment:
 
 | Variable | Effect |
 |---|---|
@@ -376,20 +374,20 @@ The `terminal` format follows go-ethereum's layout, with a component column:
 ```text
 WARN  [09-28|17:29:15.175] ChainView:           Validator catching up          endpoint=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
 INFO  [09-28|17:29:42.659] ZainoNFS:            Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
-INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        durable=3,501,802 size=31.0GB
-INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        durable=3,501,802  size=134MB
+INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        applied=3,501,900 durable=3,501,802 size=31.0GB
+INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        applied=3,501,900 durable=3,501,802  size=134MB
 ```
 
 - Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
   component that logged it, and the message, padded to 30 columns when fields
   follow, so repeated lines align. Index `durable` heights and `size` are padded
   into columns (between fields, never inside a value).
-- Components: `Zainod` (lifecycle), `Metrics`, `Traffic` (the balancer's driver: every
-  validator's poll), `ChainView` (polls folded, headers, mempool, submission), `ZainoNFS`
-  (block fetch, folds, the served tip, reorgs), `Grpc`, and one per index
-  (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
-  `TreeStateIdx`, `TransparentAddrIdx`), which also owns that index's
-  commits and compactions. In `json` the component is the `component` field of
+- Components: `Zainod` (lifecycle), `Metrics`, `IndexSnapshot` (the `[snapshot]` bootstrap),
+  `Traffic` (the balancer's driver), `ChainView` (polls folded, headers, peers, mempool,
+  submission), `ZainoSync` (the final-stream follower), `ZainoNFS` (tip-path fetch and folds,
+  the served tip, reorgs, sync progress), `GrpcSnapshot` (the snapshot publisher), `Grpc`, and
+  one per index (`UtxoSetIdx`, `CompactBlockIdx`, `BlockHashIdx`, `TreeStateIdx`,
+  `TransparentAddrIdx`), which also owns that index's commits and compactions. In `json` the component is the `component` field of
   the event's enclosing span.
 - Fields are `key=value` logfmt, parseable by Loki and `hl`. Integers from
   1,000 up, heights included, are grouped with commas (`json` keeps them plain
@@ -403,11 +401,11 @@ What an operator sees at `info`:
 
 | Component | Event | Level | When |
 |---|---|---|---|
-| `ChainView` | `Chain view configured` | info | At startup (`validators`, `headers_final` = the header chain's final height resumed from disk). |
+| `ChainView` | `Chain view configured` | info | At startup (`validators`, `p2p`). |
 | `ChainView` | `Polling validator` | info | A validator's first listing (`endpoint`, `listed` = its mempool size). |
-| `ChainView` | `Headers verified and final` | info | Header sync finalized past another 100,000 heights (`height`). |
+| `ChainView` | `Header chain anchored` | info | Header sync anchors its in-memory header chain (`height`, `hash`). |
 | `ChainView` | `Header fetch failed` | warn | Header sync skips that validator this round and retries in 5 s (`endpoint`, the failure, or no member to ask: benched, down). |
-| `ChainView` / `ZainoNFS` | `Misanswer, member benched` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (NFS): `member`, `class`, `why`. Nothing but its poll reaches it for 60 s (doubling, 1 h at most); the block is asked of another. |
+| `ChainView` / `ZainoSync` / `ZainoNFS` | `Misanswer` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (block fetch): `ticket.member`, `class`, `why`. Nothing but its poll reaches it for 60 s (doubling, 1 h at most); the block is asked of another. |
 | `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll (the traffic balancer's 0.5 → 30 s ladder); 10 in a row (its chain and sightings retracted, probed every 30 s); its first answer after. |
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
@@ -422,21 +420,20 @@ What an operator sees at `info`:
 | `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
 | `Grpc` | `Serving` | info / warn | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
-| `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
+| `Grpc` | `High load` | warn | In place of `Serving` while any cap (`work`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's final tip (`height` = the last block handed, else the lowest durable index tip, `—` when neither exists; `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
+| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's final tip (`height` = the higher of the last block handed and the lowest durable index tip, `—` when neither exists; `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
 | `ZainoNFS` | `Fetching non-finalized blocks` | info | Every 30 s once the indexes reach the final tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the final tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end. |
 | `ZainoNFS` | `Block fetch stalled` / `Non-finalized block fetch stalled` | warn | The phase above has not moved for 30 s or more (`stalled` = for how long). |
 | `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
 | `GrpcSnapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `applied` + `durable` (off its writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
+| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `applied` and `durable` (off the index writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 
-Per-commit lines (`Committed batch`) and every LSM merge (`Compacting segments`,
-`Compacted segments`) are at `debug`.
+Every LSM merge (`Compacting segments`, `Compacted segments`) is at `debug`.
 
 The panic hook logs each panic as a structured `error` event at its origin —
 thread, location, and message — so a panic on a worker thread that would

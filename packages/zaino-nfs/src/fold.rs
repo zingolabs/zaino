@@ -1,6 +1,6 @@
 //! [`fold_block`]: one block through each covered index, in dependency order (`usage.md`)
 //!
-//! - The one place indexes meet: a new index = one line here
+//! - The one place indexes meet: a new index = one fold call here
 
 use zaino_persistence::PerIndex;
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};

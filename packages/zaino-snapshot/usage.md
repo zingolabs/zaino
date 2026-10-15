@@ -1,7 +1,8 @@
 # `zaino-snapshot` — usage
 
-One value for everything Zaino serves ([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)): the chain view's
-latest, the NFS's latest and a mempool feed keyed to the served tip, published together as one
+One value for everything Zaino serves
+([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)): the chain view's latest,
+the NFS's latest and a mempool feed keyed to the served tip, published together as one
 `Arc<GrpcSnapshot>`. Every read of chain, index, mempool or validator state, by a route, a probe, a
 scrape or a log line, loads one and asks it everything.
 
@@ -95,7 +96,8 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
   `endpoint_state{endpoint,state}`, `agreement{endpoint,agreement}`, `tip_height{endpoint}`,
   `stale_blocks{endpoint}`, `peers{endpoint,direction}`, `push_stream{endpoint}`,
   `release{endpoint,build,user_agent}`, `end_of_service_height{endpoint}`, `tip_holders`,
-  `finality_paused`, `shared_outbound_min`, `mempool_transactions{state}` (`verified`, `quorum`, `ours_unverified`).
+  `finality_paused`, `shared_outbound_min`, `mempool_transactions{state}` (`verified`, `quorum`,
+  `ours_unverified`).
 - Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
   tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
   (stale validator tip, end of service, partition, eclipse, finality paused).
@@ -111,7 +113,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
-| G8 | every NFS node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check` |
+| G8 | every NFS node on best or a side branch the chain holds (`VerifiedChain::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
 | G10 | an epoch carries no txid of a block in `served_nonfinalized()` | `compose::check`; model |
 

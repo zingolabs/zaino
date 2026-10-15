@@ -54,7 +54,7 @@ pub trait Store: Send + 'static {
         self.schema().changes(at)
     }
 
-    /// `changes` buffered: in [`staged`](Self::staged), not in [`committed`](Self::committed),
+    /// `changes` buffered: in [`applied`](Self::applied), not in [`durable`](Self::durable),
     /// not durable; buffer then at `write_buffer` bytes = committed (as [`commit`](Self::commit))
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
@@ -64,7 +64,7 @@ pub trait Store: Send + 'static {
     fn apply(&mut self, changes: BlockChanges);
 
     /// Every buffered change + the last applied tip, durable together (one fsync), then in
-    /// [`committed`](Self::committed)
+    /// [`durable`](Self::durable)
     ///
     /// - nothing buffered = `Ok`, nothing written
     /// - `Err` poisons the store: every later apply / commit panics (failed sync never retried)
