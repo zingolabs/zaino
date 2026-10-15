@@ -14,7 +14,7 @@ use std::{
 
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
+use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store};
 use zaino_primitives::types::{Block, NoteCommitment, PerPool, Transaction, TreeRoot, TreeSizes};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
@@ -43,11 +43,9 @@ pub struct TreeStateIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES)) at its durable tip
+    /// Over `store` (opened with [`schema`](crate::schema)) at its durable tip
     pub fn new(store: S) -> Self {
-        let view = store.durable();
-        let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
-        assert_eq!(view.sequence(HEIGHTS).len(), held, "{NAME}: one record per durable height");
+        zaino_sync::assert_dense(&store.durable(), HEIGHTS);
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
@@ -281,7 +279,7 @@ mod tests {
 
     use incrementalmerkletree::frontier::CommitmentTree;
     use proptest::prelude::*;
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot};
     use zaino_sync::testing::{

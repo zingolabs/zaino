@@ -175,7 +175,7 @@ impl HeaderChain {
         (FINALIZED_PER_DEPTH * self.depth.get() as usize).max(CONTEXT)
     }
 
-    /// How far below a trusted claim a fresh anchor sits: the finalized depth, at least [`CONTEXT`]
+    /// How far below a trusted claim a fresh anchor sits: the finalized depth, at least `CONTEXT`
     /// (the claim's run then holds every ancestor the rules read)
     pub fn anchor_below(&self) -> u32 {
         self.depth.get().max(CONTEXT as u32)
@@ -186,7 +186,7 @@ impl HeaderChain {
         self.parent(header.prev_hash()).ok().map(|(height, _)| height)
     }
 
-    /// An untrusted header: every consensus rule ([`validate`]) over the ancestors held, then
+    /// An untrusted header: every consensus rule (`validate`) over the ancestors held, then
     /// [`insert`](Self::insert)
     ///
     /// - `now_unix` = the local clock (the 2 h future bound)
@@ -299,7 +299,7 @@ impl HeaderChain {
     }
 
     /// Every best-chain header up to `through` becomes finalized, every branch not descending from
-    /// it pruned; the newest [`finalized_headers_kept`](Self::finalized_headers_kept) finalized
+    /// it pruned; the newest `finalized_headers_kept()` finalized
     /// headers kept
     pub fn finalize(&mut self, through: BlockRef) {
         let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);

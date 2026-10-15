@@ -29,7 +29,7 @@ pub use follower::{FinalizedFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};
 pub use progress::SyncProgress;
-pub use writer::{apply, assert_next, assert_run, commit, held, ran, IndexPublisher};
+pub use writer::{apply, assert_dense, assert_next, assert_run, commit, held, ran, IndexPublisher};
 
 use zaino_primitives::types::{Block, BlockFees};
 

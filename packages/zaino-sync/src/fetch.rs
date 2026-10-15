@@ -15,7 +15,7 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-/// Block that passed [`check_block`] or `check_block_at` (no other constructor)
+/// Block that passed `check_block` or `check_block_at` (no other constructor)
 #[derive(Debug, Clone)]
 pub struct Checked(Arc<Block>);
 
@@ -68,7 +68,7 @@ fn check_block_at(block: Block, height: BlockHeight) -> Result<Checked, Misanswe
     Ok(Checked(Arc::new(block)))
 }
 
-/// Until a body passes [`check_block`] (drop = abandon: the balancer cancels its sends)
+/// Until a body passes `check_block` (drop = abandon: the balancer cancels its sends)
 pub async fn fetch<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
     at: BlockRef,

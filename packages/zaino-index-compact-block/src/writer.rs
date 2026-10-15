@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
+use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store};
 use zaino_primitives::types::{Block, BlockFees};
 use zaino_sync::{
     apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Step,
@@ -25,11 +25,9 @@ pub struct CompactBlockIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES))
+    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
-        let view = store.durable();
-        let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
-        assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per durable height");
+        zaino_sync::assert_dense(&store.durable(), BLOCKS);
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
@@ -110,7 +108,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use prost::Message as _;
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;

@@ -31,7 +31,7 @@ impl<V: View> std::fmt::Debug for TransparentAddressReader<V> {
 }
 
 impl<V: View> TransparentAddressReader<V> {
-    /// `view` of a store opened with [`TABLES`](crate::TABLES), as of its own tip
+    /// `view` of a store opened with [`schema`](crate::schema), as of its own tip
     pub fn new(view: V) -> Self {
         let tip = view.tip().map(|tip| tip.height);
         Self { view, tip, max_rows: DEFAULT_MAX_ADDRESS_ROWS }

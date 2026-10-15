@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
-use zaino_persistence::{BlockChanges, Store, View};
+use zaino_persistence::{BlockChanges, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -20,6 +20,13 @@ pub fn assert_next(out: &BlockChanges, parent: Option<BlockRef>, block: &Block) 
     assert!(opened == at, "{name}: changes opened for another block ({opened:?}), folding {at:?}");
     let extends = block.header().extends(parent);
     assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
+}
+
+/// Writer's open precondition, panic naming the index: `table` holds one record per durable height
+pub fn assert_dense<V: View + SequenceRead>(view: &V, table: SequenceTable) {
+    let name = view.schema().kind.name();
+    let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
+    assert_eq!(view.sequence(table).len(), held, "{name}: one record per durable height");
 }
 
 /// [`assert_next`] over a run: `out[i]` for `blocks[i]`, each block next above the one before it

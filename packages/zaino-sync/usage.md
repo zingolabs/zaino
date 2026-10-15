@@ -112,6 +112,7 @@ not), `changed()` (after each commit; `false` = writer gone).
   run records `zaino_index_run_seconds` (taken off the queue → published, waits included) and
   `zaino_index_write_seconds` (that run's applies + commits), both `{index}`: run − write = the
   fold + waits. Buckets: `METRIC_BUCKETS`.
+- `assert_dense(view, table)`: a writer's open check, one `table` record per durable height.
 - `assert_next(out, parent_tip, block)` / `assert_run(parent_tip, blocks, outs)`: a fold's
   preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one
   height above `parent_tip` linked by `prev_hash` (genesis on an empty parent).

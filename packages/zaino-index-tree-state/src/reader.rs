@@ -31,7 +31,7 @@ impl<V: View> std::fmt::Debug for TreeStateReader<V> {
 }
 
 impl<V: View> TreeStateReader<V> {
-    /// `view` of a store opened with [`TABLES`](crate::TABLES)
+    /// `view` of a store opened with [`schema`](crate::schema)
     pub fn new(view: V) -> Self {
         Self { view }
     }

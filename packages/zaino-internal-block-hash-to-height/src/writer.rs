@@ -19,7 +19,7 @@ pub struct BlockHashIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES))
+    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
