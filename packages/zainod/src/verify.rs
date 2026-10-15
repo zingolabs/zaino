@@ -27,7 +27,7 @@ struct Report {
 
 /// `Err` = indexes unreadable (exit 2)
 #[derive(Debug, thiserror::Error)]
-pub enum VerifyError {
+pub(super) enum VerifyError {
     #[error(transparent)]
     Config(#[from] crate::error::IndexerError),
 
@@ -39,7 +39,7 @@ pub enum VerifyError {
 }
 
 /// Verifies the indexes `config_path` enables; exit status 0 clean, 1 corrupt
-pub fn run(config_path: &Path) -> Result<ExitCode, VerifyError> {
+pub(super) fn run(config_path: &Path) -> Result<ExitCode, VerifyError> {
     let report = verify(&load_config(config_path)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     eprint!("{}", report.summary());

@@ -4,11 +4,10 @@ The Zaino indexer daemon. It follows the Zcash chain from one or more trusted Ze
 (JSON-RPC, or blocks over their indexer gRPC) and, optionally, Zcash p2p peers, builds its own
 on-disk indexes, and serves wallets over the
 [lightclient protocol](https://github.com/zcash/lightwallet-protocol) (`CompactTxStreamer` gRPC,
-as served by [lightwalletd](https://github.com/zcash/lightwalletd)). The package also builds
-`zainodlib`, the library behind the binary.
+as served by [lightwalletd](https://github.com/zcash/lightwalletd)).
 
 ```sh
-cargo install zainod
+cargo install --locked --git https://github.com/zingolabs/zaino zainod
 zainod generate-config     # writes $XDG_CONFIG_HOME/zaino/zainod.toml; edit it
 zainod start
 ```

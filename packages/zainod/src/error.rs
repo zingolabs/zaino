@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// Configuring, booting or running the daemon (`TaskEnded` = a task ended cleanly before any
 /// shutdown signal: never expected, a fault)
 #[derive(Debug, thiserror::Error)]
-pub enum IndexerError {
+pub(crate) enum IndexerError {
     #[error("configuration error: {0}")]
     Config(String),
     #[error("writing {}: {source}", path.display())]

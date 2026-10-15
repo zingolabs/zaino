@@ -17,10 +17,10 @@ use tracing_subscriber::{
 };
 
 /// Operator filter when `RUST_LOG` is unset (`zaino` prefix = every `zaino_*` crate)
-const DEFAULT_FILTER: &str = "zaino=info,zainod=info,zainodlib=info";
+const DEFAULT_FILTER: &str = "zaino=info,zainod=info";
 
 #[derive(Debug, thiserror::Error)]
-pub enum LogConfigError {
+pub(super) enum LogConfigError {
     #[error("{var}={value}: expected one of {expected}")]
     Unrecognised { var: &'static str, value: String, expected: &'static str },
     #[error("RUST_LOG: {0}")]
@@ -93,7 +93,7 @@ impl LogConfig {
 /// # Panics
 ///
 /// A global tracing subscriber already set
-pub fn init() -> Result<(), LogConfigError> {
+pub(super) fn init() -> Result<(), LogConfigError> {
     install(LogConfig::from_env()?)?;
     install_panic_logger();
     Ok(())

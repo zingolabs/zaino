@@ -2,20 +2,12 @@
 name = "zainod"
 publish.workspace = true
 version.workspace = true
-description = "Crate containing the Zaino Indexer binary."
+description = "The Zaino indexer daemon."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-
-[[bin]]
-name = "zainod"
-path = "src/main.rs"
-
-[lib]
-name = "zainodlib"
-path = "src/lib.rs"
 
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed

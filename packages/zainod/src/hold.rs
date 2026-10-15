@@ -29,7 +29,7 @@ const MARKER: &str = "held";
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Subcommand)]
-pub enum Action {
+pub(crate) enum Action {
     /// Take this node out of rotation until `zainod resume`, across restarts and reboots.
     ///
     /// Writes a marker in `[serve] state_dir`. The running zainod picks it up within a second:
@@ -52,7 +52,7 @@ pub enum Action {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum HoldError {
+pub(super) enum HoldError {
     #[error(transparent)]
     Config(#[from] crate::error::IndexerError),
     #[error("{}: {source}", marker.display())]
@@ -93,7 +93,7 @@ fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
 
 /// `zainod hold` / `zainod resume`: prints the resulting state; `Ok` = the marker says what was
 /// asked (hold: and a running zainod's connections GOAWAY'd)
-pub fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
+pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
     let config = crate::config::load_config(config_path)?;
     let state_dir = &config.serve.state_dir;
     let marker_failed = |source| HoldError::Marker { marker: state_dir.join(MARKER), source };

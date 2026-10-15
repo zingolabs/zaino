@@ -708,7 +708,7 @@ fn generate_default_config() -> Result<String, IndexerError> {
 }
 
 /// `zainod generate-config`: defaults → `path` (parent directories created)
-pub fn generate_config(path: &Path) -> Result<ExitCode, IndexerError> {
+pub(super) fn generate_config(path: &Path) -> Result<ExitCode, IndexerError> {
     let content = generate_default_config()?;
     let failed = |source| IndexerError::ConfigFile { path: path.to_owned(), source };
     if let Some(parent) = path.parent() {

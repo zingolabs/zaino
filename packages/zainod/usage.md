@@ -352,10 +352,9 @@ zainod dies rather than serve from a state it cannot vouch for
 
 ## Logging
 
-`zainodlib::logging::init()` installs the global `tracing` subscriber and the
-panic hook; `zainod start` calls it before `zainodlib::run` (which installs
-none of its own). `zainod verify`, `hold` and `resume` do not (stdout carries only their report
-or state). Everything is read from the environment:
+`zainod start` and `generate-config` install the global `tracing` subscriber and a panic hook
+that logs the panic before aborting. `zainod verify`, `hold` and `resume` do not (stdout carries
+only their report or state). Everything is read from the environment:
 
 | Variable | Effect |
 |---|---|

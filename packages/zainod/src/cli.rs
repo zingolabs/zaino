@@ -12,16 +12,16 @@ use clap::{Parser, Subcommand};
     about = "Zaino - The Zcash Indexing Service",
     long_about = None
 )]
-pub struct Cli {
+pub(super) struct Cli {
     /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
     #[arg(short, long, value_name = "FILE", global = true)]
-    pub config: Option<PathBuf>,
+    pub(super) config: Option<PathBuf>,
     #[command(subcommand)]
-    pub command: Command,
+    pub(super) command: Command,
 }
 
 #[derive(Subcommand, Debug, Clone)]
-pub enum Command {
+pub(super) enum Command {
     /// Start the Zaino indexer service.
     Start,
     /// Generate a configuration file with default values.
