@@ -76,3 +76,14 @@ description = """
 failing with `DeployError::ActivationSchedule` as the boot does when the \
 validator cannot describe its chain.
 """
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "feature"
+description = """
+`GetTreeState` accepts a block hash, as lightwalletd does: a non-zero height \
+selects by height, otherwise the hash (display byte order) selects the block on \
+the served chain, answered `NOT_FOUND` when no block there has it. \
+`LightServe::get_tree_state` takes a `BlockSelector` and returns `None` for an \
+unknown hash.
+"""

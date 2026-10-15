@@ -181,15 +181,31 @@ impl<S: LightWalletService> LightServe<S> {
             .boxed())
     }
 
-    /// `GetTreeState`: the commitment tree state at `height`. Zaino does not
-    /// index treestate — the engine's remote view passes it through to the
-    /// validator — and the domain answer is converted domain -> wire here.
-    pub async fn get_tree_state(&self, height: Height) -> Result<proto::TreeState, ServeError> {
+    /// `GetTreeState`: the commitment tree state at `at`, converted domain ->
+    /// wire here.
+    ///
+    /// The treestate read is height-addressed, so a hash is first resolved to
+    /// its height on the pinned best chain, through the same snapshot the
+    /// treestate is then read from. `None` when no block on the served chain
+    /// has that hash (unknown, or on a competing branch).
+    pub async fn get_tree_state(
+        &self,
+        at: BlockSelector,
+    ) -> Result<Option<proto::TreeState>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        Ok(treestate_to_wire(
+        let height = match at {
+            BlockSelector::Height(height) => height,
+            BlockSelector::Hash(_) => match snapshot.compact_block(at).await? {
+                Some(block) => Height::try_from(block.height).map_err(|e| {
+                    ServeError::Internal(format!("a served block's height is invalid: {e}"))
+                })?,
+                None => return Ok(None),
+            },
+        };
+        Ok(Some(treestate_to_wire(
             snapshot.treestate(height).await?,
             self.network,
-        ))
+        )))
     }
 
     /// `GetLatestTreeState`: the tree state at the pinned tip. `NoBlocks` before
@@ -508,11 +524,11 @@ mod tests {
     /// the read, not stubbed at the wire.
     #[tokio::test]
     async fn tree_state_delegates_to_the_snapshot_read() {
-        use zaino_primitives::types::Height;
+        use zaino_primitives::types::{BlockSelector, Height};
         let serve = serve(engine_with_tip(None));
         let height = Height::try_from(2_800_000).expect("valid height");
         assert!(matches!(
-            serve.get_tree_state(height).await,
+            serve.get_tree_state(BlockSelector::Height(height)).await,
             Err(ServeError::NotServiceable(_))
         ));
     }

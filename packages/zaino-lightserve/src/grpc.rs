@@ -99,18 +99,20 @@ fn height_from_wire(height: u64) -> Result<Height, Status> {
     Height::try_from(narrowed).map_err(|_| Status::invalid_argument("height out of range"))
 }
 
-/// Wire -> domain height for a treestate query. The domain treestate read is
-/// height-addressed, so a hash-only request is rejected (`invalid_argument`)
-/// rather than silently resolved — resolving hash -> height is not this read's
-/// job. A request carrying a height (hash empty) takes the common wallet path.
-fn tree_state_height_from_wire(id: BlockId) -> Result<Height, Status> {
-    if id.hash.is_empty() {
-        height_from_wire(id.height)
-    } else {
-        Err(Status::invalid_argument(
-            "get_tree_state by block hash is not supported; request by height",
-        ))
+/// Wire -> domain block reference for a treestate query, as lightwalletd reads
+/// one: a non-zero height wins; otherwise a present hash selects the block, in
+/// display (big-endian) byte order, the order lightwalletd hands to
+/// `z_gettreestate`. A request with neither is height 0.
+fn tree_state_selector_from_wire(id: BlockId) -> Result<BlockSelector, Status> {
+    if id.height != 0 || id.hash.is_empty() {
+        return Ok(BlockSelector::Height(height_from_wire(id.height)?));
     }
+    let mut bytes: [u8; 32] = id
+        .hash
+        .try_into()
+        .map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
+    bytes.reverse();
+    Ok(BlockSelector::Hash(BlockHash::from(bytes)))
 }
 
 /// Wire -> domain for a subtree-roots query: the shielded protocol, the start
@@ -302,12 +304,13 @@ impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<
             .map_err(to_status)
     }
     async fn get_tree_state(&self, r: Request<BlockId>) -> Result<Response<TreeState>, Status> {
-        let height = tree_state_height_from_wire(r.into_inner())?;
-        self.handler
-            .get_tree_state(height)
-            .await
-            .map(Response::new)
-            .map_err(to_status)
+        let at = tree_state_selector_from_wire(r.into_inner())?;
+        match self.handler.get_tree_state(at).await.map_err(to_status)? {
+            Some(tree_state) => Ok(Response::new(tree_state)),
+            None => Err(Status::not_found(
+                "no block with the requested hash on the served chain",
+            )),
+        }
     }
     async fn get_latest_tree_state(
         &self,
@@ -474,5 +477,53 @@ impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<
             .map_err(to_status)?;
         let stream = futures::stream::iter(replies.into_iter().map(Ok));
         Ok(Response::new(stream.boxed()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tree_state_selector_from_wire;
+    use zaino_primitives::types::{BlockHash, BlockSelector, Height};
+    use zaino_proto::proto::service::BlockId;
+
+    /// A non-zero height selects by height even when a hash is also sent.
+    #[test]
+    fn a_height_wins_over_a_hash() {
+        let selector = tree_state_selector_from_wire(BlockId {
+            height: 7,
+            hash: vec![1; 32],
+        })
+        .expect("valid request");
+        assert_eq!(
+            selector,
+            BlockSelector::Height(Height::try_from(7).expect("valid height"))
+        );
+    }
+
+    /// A hash alone selects by hash, read in display order and stored in
+    /// internal order.
+    #[test]
+    fn a_hash_alone_is_read_in_display_order() {
+        let mut display = [0u8; 32];
+        display[0] = 0xAB;
+        let selector = tree_state_selector_from_wire(BlockId {
+            height: 0,
+            hash: display.to_vec(),
+        })
+        .expect("valid request");
+        let mut internal = [0u8; 32];
+        internal[31] = 0xAB;
+        assert_eq!(selector, BlockSelector::Hash(BlockHash::from(internal)));
+    }
+
+    /// A hash that is not 32 bytes is rejected as a malformed argument.
+    #[test]
+    fn a_short_hash_is_invalid() {
+        let status = tree_state_selector_from_wire(BlockId {
+            height: 0,
+            hash: vec![1; 31],
+        })
+        .expect_err("a 31-byte hash is malformed");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 }
