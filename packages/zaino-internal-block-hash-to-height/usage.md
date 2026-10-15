@@ -25,10 +25,10 @@ by_hash   hash 32 (protocol byte order) → height u32 BE      point lookups onl
 ## Wiring
 
 ```rust,ignore
-use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
+use zaino_internal_block_hash_to_height::{schema, BlockHashIndexWriter, WRITE_BUFFER};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 
-let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
+let schema = schema(network);
 let writer = BlockHashIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::BlockHash, handle.durable_view().tip(), queue_bytes);
@@ -49,7 +49,7 @@ tokio::spawn(writer.run(blocks));
   `GetBlock` / `GetTreeState` is `UNIMPLEMENTED`; the by-height forms are
   unaffected.
 - `zainod verify` checks the directory against
-  `Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)`.
+  `schema(network)`.
 
 ## Serving
 

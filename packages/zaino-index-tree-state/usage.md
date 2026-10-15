@@ -18,7 +18,7 @@ stored:
     subtrees.dat             36 B per completed 2^16-leaf subtree: root, completing height
 ```
 
-`TABLES` declares the 100 sequences (`heights`, then per pool `<pool>/l00` …
+`schema(network)` declares the 100 sequences (`heights`, then per pool `<pool>/l00` …
 `<pool>/l31` and `<pool>/subtrees`).
 
 **Retained nodes.** A textbook incremental tree keeps only its latest frontier,
@@ -49,10 +49,10 @@ hash comes from its completing height's `heights` record.
 ## Wiring
 
 ```rust,ignore
-use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
+use zaino_index_tree_state::{schema, TreeStateIndexWriter, WRITE_BUFFER};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 
-let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
+let schema = schema(network);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TreeStateIndexWriter::new(store);
 let handle = writer.handle();

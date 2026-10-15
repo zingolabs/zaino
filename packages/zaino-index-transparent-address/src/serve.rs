@@ -144,16 +144,15 @@ impl<V: MapRead> TransparentAddressReader<V> {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use zaino_persistence::{fs::SimFs, IndexKind, Schema, Store};
+    use zaino_persistence::{fs::SimFs, Schema, Store};
     use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{fold, FORMAT, TABLES};
+    use crate::fold;
 
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     /// - 0, 1 durable, 2 buffered (durable view + layer): 1 pays `paid` 42, 2 spends it
     /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)

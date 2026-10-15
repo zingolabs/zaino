@@ -217,9 +217,8 @@ mod tests {
     use zcash_protocol::ShieldedPool;
 
     use super::*;
-    use crate::{FORMAT, TABLES};
 
-    const SCHEMA: Schema = Schema::new(IndexKind::UtxoSet, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
     /// the parent, its own block or an earlier run block; fees = the stated ones

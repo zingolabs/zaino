@@ -292,9 +292,9 @@ mod tests {
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::BlockHash;
 
-    use crate::{nodes::retained_nodes, ServeError, FORMAT, TABLES};
+    use crate::{nodes::retained_nodes, ServeError};
 
-    const SCHEMA: Schema = Schema::new(IndexKind::TreeState, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = TreeStateIndexWriter::new(store);

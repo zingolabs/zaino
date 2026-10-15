@@ -98,7 +98,7 @@ pub fn fold<V: MapRead>(
 mod tests {
     use std::num::NonZeroUsize;
 
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalizedStreamFixture, Move, Writer, QUEUE,
@@ -111,10 +111,9 @@ mod tests {
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
-    use crate::{key::AddressKey, AddressUtxo, TransactionRef, FORMAT, TABLES};
+    use crate::{key::AddressKey, AddressUtxo, TransactionRef};
 
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = TransparentAddressIndexWriter::new(store);

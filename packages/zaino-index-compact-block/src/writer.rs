@@ -124,10 +124,8 @@ mod tests {
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
-    use crate::{FORMAT, TABLES};
 
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     /// Genesis ..= tip + each block's fees as utxo-set derives them
     fn blocks_and_fees(chain: &MockChain) -> (Vec<Arc<Block>>, Vec<BlockFees>) {

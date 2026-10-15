@@ -12,7 +12,7 @@ use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedVal
 use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
 use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, NfsPublication};
-use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
+use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
@@ -30,21 +30,8 @@ pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
 /// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
 /// (compact-block's fees = the builder's: utxo-set's fold derives the same, in its tests)
 pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (IndexKind, DiskView) {
-    let (format, tables) = match kind {
-        IndexKind::CompactBlock => {
-            (zaino_index_compact_block::FORMAT, zaino_index_compact_block::TABLES)
-        }
-        IndexKind::TreeState => (zaino_index_tree_state::FORMAT, zaino_index_tree_state::TABLES),
-        IndexKind::TransparentAddress => {
-            (zaino_index_transparent_address::FORMAT, zaino_index_transparent_address::TABLES)
-        }
-        IndexKind::BlockHash => (
-            zaino_internal_block_hash_to_height::FORMAT,
-            zaino_internal_block_hash_to_height::TABLES,
-        ),
-        IndexKind::UtxoSet => panic!("not a served index"),
-    };
-    let schema = Schema::new(kind, format, chain.schedule().network, tables);
+    assert_ne!(kind, IndexKind::UtxoSet, "not a served index");
+    let schema = zaino_nfs::schema(kind, chain.schedule().network);
     let engine = DiskEngine::new(
         zaino_persistence::fs::SimFs::new(),
         zaino_persistence::LsmConfig::default(),
@@ -73,7 +60,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
                 let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
                 zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
             }
-            IndexKind::UtxoSet => unreachable!("refused above"),
+            IndexKind::UtxoSet => unreachable!("asserted above"),
         }
         index.apply(out);
     }

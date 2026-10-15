@@ -140,7 +140,7 @@ mod tests {
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());
             for &kind in enabled {
-                let schema = crate::tests::schema(kind);
+                let schema = crate::schema(kind, crate::tests::NETWORK);
                 let store = engine
                     .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
                     .expect("fresh store");

@@ -21,7 +21,7 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_persistence::{
-    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine, Schema,
+    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine,
     SequenceRead, Store, View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
@@ -36,30 +36,11 @@ use zcash_transparent::bundle::OutPoint;
 
 use super::*;
 
-const NETWORK: NetworkType = NetworkType::Regtest;
+pub(crate) const NETWORK: NetworkType = NetworkType::Regtest;
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
-
-/// `kind`'s store schema, as zainod opens it
-pub(crate) fn schema(kind: IndexKind) -> Schema {
-    let (format, tables) = match kind {
-        IndexKind::UtxoSet => (zaino_index_utxo_set::FORMAT, zaino_index_utxo_set::TABLES),
-        IndexKind::CompactBlock => {
-            (zaino_index_compact_block::FORMAT, zaino_index_compact_block::TABLES)
-        }
-        IndexKind::BlockHash => (
-            zaino_internal_block_hash_to_height::FORMAT,
-            zaino_internal_block_hash_to_height::TABLES,
-        ),
-        IndexKind::TreeState => (zaino_index_tree_state::FORMAT, zaino_index_tree_state::TABLES),
-        IndexKind::TransparentAddress => {
-            (zaino_index_transparent_address::FORMAT, zaino_index_transparent_address::TABLES)
-        }
-    };
-    Schema::new(kind, format, NETWORK, tables)
-}
 
 /// `kind`'s own fold of `block` onto `parent` into `out` (`fees` = compact-block's)
 fn own_fold(
@@ -113,8 +94,9 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
 fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
-    let open =
-        |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
+    let open = |kind: IndexKind| {
+        engine.open(Path::new(kind.name()), &schema(kind, NETWORK), NonZeroUsize::MAX)
+    };
     let mut stores: Vec<(IndexKind, DiskStore)> =
         IndexKind::ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
     let ((first, utxo_set), others) = stores.split_first_mut().expect("indexes");
@@ -228,7 +210,8 @@ impl Pipeline {
         let mut fee_sink = Some(fee_sink);
         let (mut writers, mut handles) = (tokio::task::JoinSet::new(), Vec::new());
         for &kind in kinds {
-            let store = engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MIN);
+            let store =
+                engine.open(Path::new(kind.name()), &schema(kind, NETWORK), NonZeroUsize::MIN);
             let store = store.expect("store");
             let mut add = |handle: IndexHandle<DiskView>| {
                 handles.push((kind, handle.clone()));
@@ -537,8 +520,11 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
-    let store =
-        engine.open(Path::new("block_hash"), &schema(IndexKind::BlockHash), NonZeroUsize::MIN);
+    let store = engine.open(
+        Path::new("block_hash"),
+        &schema(IndexKind::BlockHash, NETWORK),
+        NonZeroUsize::MIN,
+    );
     let writer = BlockHashIndexWriter::new(store.expect("store"));
     let lookahead = NonZeroUsize::MIN;
     let params = ChainParams::of(&blocks);

@@ -12,9 +12,7 @@ use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{ChainParams, NfsPublication};
-use zaino_persistence::{
-    fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
-};
+use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::{within, ValidatorViews};
@@ -111,12 +109,7 @@ fn one_snapshot_renders_every_gauge() {
     let chain = Arc::new(headers.verified().expect("verified"));
 
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
-    let schema = Schema::new(
-        IndexKind::BlockHash,
-        zaino_internal_block_hash_to_height::FORMAT,
-        NetworkType::Regtest,
-        zaino_internal_block_hash_to_height::TABLES,
-    );
+    let schema = zaino_internal_block_hash_to_height::schema(NetworkType::Regtest);
     let mut store =
         engine.open(Path::new("block_hash"), &schema, NonZeroUsize::MAX).expect("fresh store");
     for block in &a {

@@ -37,13 +37,13 @@ in `fees` and read back for a held height.
 ## Wiring
 
 ```rust,ignore
-use zaino_index_utxo_set::{UtxoSetIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
+use zaino_index_utxo_set::{schema, UtxoSetIndexWriter, WRITE_BUFFER};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new();
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
-let schema = Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES);
+let schema = schema(network);
 let writer = UtxoSetIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::UtxoSet, handle.durable_view().tip(), queue);
@@ -61,7 +61,7 @@ tokio::spawn(writer.run(blocks, fee_sink));
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)). The fee sink then
   drops without `Shutdown`, so compact-block panics on its next pop.
 - `zainod verify` checks the directory against
-  `Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES)`.
+  `schema(network)`.
 
 ## Readers
 

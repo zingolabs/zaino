@@ -166,9 +166,9 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use super::*;
-    use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
+    use crate::{fold, reader::WINDOW_RECORDS};
     use prost::Message;
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Overlay, Schema, Store};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Overlay, Schema, Store};
     use zaino_primitives::testing::{all_at, h, p2pkh, BlockBuilder, MockChain};
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats;
@@ -176,8 +176,7 @@ mod tests {
     use zcash_protocol::consensus::NetworkType;
     use zcash_transparent::bundle::OutPoint;
 
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     /// Blocks 0..`count` (every upgrade from genesis), each: a coinbase paying 17 345, then one tx
     /// spending it into every pool (transparent in + out, a sapling spend + output, one orchard,

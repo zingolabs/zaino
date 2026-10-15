@@ -1,6 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
-use zaino_persistence::{SequenceTable, Tables, Width};
+use zaino_persistence::{IndexKind, Schema, SequenceTable, Tables, Width};
+use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::ShieldedPool;
 
 mod heights;
@@ -17,10 +18,14 @@ pub use writer::{fold, FoldError, TreeStateIndexWriter};
 use nodes::{MERKLE_DEPTH, NODE};
 
 /// On-disk layout version
-pub const FORMAT: u16 = 1;
+const FORMAT: u16 = 1;
 
-/// What the store holds (`zainod` opens and verifies it by these)
-pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
+const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
+
+/// Store layout on `network` (`zainod` opens and verifies by it)
+pub const fn schema(network: NetworkType) -> Schema {
+    Schema::new(IndexKind::TreeState, FORMAT, network, TABLES)
+}
 
 /// Buffered heap that commits a bulk run (a `FinalizedTip` block commits at once)
 ///

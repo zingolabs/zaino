@@ -76,7 +76,7 @@ pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Bl
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, MockChain};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::BlockHeight;
@@ -84,9 +84,8 @@ mod tests {
     use zcash_protocol::BlockHash;
 
     use super::*;
-    use crate::{FORMAT, TABLES};
 
-    const SCHEMA: Schema = Schema::new(IndexKind::BlockHash, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = BlockHashIndexWriter::new(store);

@@ -61,10 +61,10 @@ state, no deletes, and a reorg never touches disk.
 ## Wiring
 
 ```rust,ignore
-use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
+use zaino_index_transparent_address::{schema, TransparentAddressIndexWriter, WRITE_BUFFER};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 
-let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
+let schema = schema(network);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TransparentAddressIndexWriter::new(store);
 let handle = writer.handle();

@@ -6,16 +6,21 @@ mod writer;
 pub use reader::UtxoSetReader;
 pub use writer::{fold, FoldError, UtxoSetIndexWriter};
 
-use zaino_persistence::{MapTable, SequenceTable, Tables, Width};
+use zaino_persistence::{IndexKind, MapTable, Schema, SequenceTable, Tables, Width};
 use zaino_primitives::types::Fee;
+use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::value::{BalanceError, Zatoshis};
 use zcash_transparent::bundle::OutPoint;
 
 /// On-disk layout version
-pub const FORMAT: u16 = 1;
+const FORMAT: u16 = 1;
 
-/// What the store holds (`zainod` opens and verifies it by these)
-pub const TABLES: Tables = Tables::new(&[FEES], &[OUTPUTS]);
+const TABLES: Tables = Tables::new(&[FEES], &[OUTPUTS]);
+
+/// Store layout on `network` (`zainod` opens and verifies by it)
+pub const fn schema(network: NetworkType) -> Schema {
+    Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES)
+}
 
 /// Buffered heap that commits a bulk run (a `FinalizedTip` block commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =

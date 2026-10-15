@@ -1,6 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
-use zaino_persistence::Tables;
+use zaino_persistence::{IndexKind, Schema, Tables};
+use zcash_protocol::consensus::NetworkType;
 
 use by_hash::BY_HASH;
 
@@ -15,10 +16,14 @@ pub use writer::{fold, BlockHashIndexWriter};
 pub(crate) const HASH: usize = 32;
 
 /// On-disk layout version
-pub const FORMAT: u16 = 1;
+const FORMAT: u16 = 1;
 
-/// What the store holds (`zainod` opens and verifies it by these)
-pub const TABLES: Tables = Tables::new(&[], &[BY_HASH]);
+const TABLES: Tables = Tables::new(&[], &[BY_HASH]);
+
+/// Store layout on `network` (`zainod` opens and verifies by it)
+pub const fn schema(network: NetworkType) -> Schema {
+    Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)
+}
 
 /// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks; a `FinalizedTip` block
 /// commits at once)

@@ -32,6 +32,8 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
   what publications and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
   `IndexGone(index)` = an input dropped.
+- `schema(kind, network)`: `kind`'s store layout (its index crate's `schema(network)`), what
+  `zainod` opens and verifies each store by.
 
 ## Readers: `NfsPublication` → `IndexesAtBlock`
 

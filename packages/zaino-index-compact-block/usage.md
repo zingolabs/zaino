@@ -24,7 +24,7 @@ blocks.idx    end offset per record (record h = end(h − 1)..end(h))
   Every pool is stored, so any `Pools` subset is servable by pruning on read.
 - Page checksums, the commit protocol, crash recovery and the open-time checks
   are the engine's ([zaino-persistence](../zaino-persistence/usage.md#the-commit-and-crash-contract)).
-  This index owns only its record encoding, `FORMAT` and `TABLES`.
+  This index owns only its record encoding and `schema(network)`.
 - The cumulative tree sizes after a block are not stored apart: they are that
   record's `chainMetadata`.
 - Hash → height lives in its own index,
@@ -57,9 +57,9 @@ fold(&parent, &block, &fees, &mut out);
 ## Building
 
 ```rust,ignore
-use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
+use zaino_index_compact_block::{schema, CompactBlockIndexWriter, WRITE_BUFFER};
 
-let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
+let schema = schema(network);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
