@@ -1,7 +1,7 @@
 //! Applied layers above a durable view (`docs/architecture.md` §7)
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
-//! - [`OverlayView`] = rows [`AppliedLayer`] the durable view they sit on: above first, then durable
+//! - [`OverlayView`] = an [`AppliedLayer`]'s rows over its durable view: above first, then durable
 //! - a key removed above masks durable ([`Entry::Removed`]; usage.md "Deletes")
 
 use std::{

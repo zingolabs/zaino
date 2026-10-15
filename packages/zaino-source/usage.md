@@ -32,7 +32,7 @@ let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
 let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
 let grpc = ZebraIndexerGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
-// one per validator, handed to `zaino_traffic::TrafficBalancer` as a `Trusted` member
+// one per validator, handed to `zaino_traffic::TrafficBalancer` as a `TrustedValidator` member
 ```
 
 `at` builds the client from config without contacting the validator. An

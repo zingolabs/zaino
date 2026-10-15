@@ -43,8 +43,8 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 
 ## Membership
 
-- `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more than
-  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted
+- `ChainView::new` rejects an empty list (`ConfigError::NoTrustedValidators`) and more than
+  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyTrustedValidators`). One address per trusted
   member of the balancer (`ConfigError::AddressCountMismatch` otherwise).
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
@@ -104,7 +104,7 @@ Cheap to clone; cannot drive polling or submit.
 | `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `spread(txid)` / `spreads()` | `Spread { peers: Count, trusted: Count, quorum, ours }` |
-| `endpoints()` | per-endpoint `TrustedValidatorMeta`, configured order |
+| `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
 | `alarms()`, `shared_outbound_min()` | below |
 
 `TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured

@@ -46,7 +46,7 @@ impl Route {
             Self::Any | Self::Prefer(_) => true,
             Self::Only(only) => *only == member,
             Self::Peers => member == MemberId::Peers,
-            Self::Trusted => matches!(member, MemberId::Trusted(_)),
+            Self::Trusted => matches!(member, MemberId::TrustedValidator(_)),
         }
     }
 }
@@ -81,11 +81,11 @@ pub(crate) enum Input {
     Report(Ticket),
     /// `read` = `None`: no answer
     Polled {
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         read: Option<Synced>,
     },
     Push {
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         push: Push,
     },
     Tick,
@@ -103,7 +103,7 @@ pub(crate) enum Output {
 /// One poll batch: tip + listing + `getblockhash` (+ metadata)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PollOrder {
-    pub(crate) member: TrustedValidatorId,
+    pub(crate) validator: TrustedValidatorId,
     pub(crate) metadata: bool,
     pub(crate) streaming: bool,
 }
@@ -146,7 +146,7 @@ impl TrafficCore {
             "at most TrustedValidatorId::MAX trusted validators"
         );
         let trusted = trusted.iter().enumerate().filter_map(|(index, (priority, limits))| {
-            let id = MemberId::Trusted(TrustedValidatorId::new(index)?);
+            let id = MemberId::TrustedValidator(TrustedValidatorId::new(index)?);
             Some((id, Member::trusted(*priority, *limits)))
         });
         let peers = peers.map(|in_flight| (MemberId::Peers, Member::peers(in_flight)));
@@ -176,14 +176,14 @@ impl TrafficCore {
             }
             // the peer set never benched: one peer's lie would starve every honest one
             Input::Report(ticket) => {
-                if let MemberId::Trusted(_) = ticket.member {
+                if let MemberId::TrustedValidator(_) = ticket.member {
                     let member = self.members.get_mut(&ticket.member);
                     member.expect("a configured validator").bench(now);
                 }
             }
-            Input::Polled { member, read } => self.polled(member, read),
-            Input::Push { member, push } => {
-                let poller = self.members.get_mut(&MemberId::Trusted(member));
+            Input::Polled { validator, read } => self.polled(validator, read),
+            Input::Push { validator, push } => {
+                let poller = self.members.get_mut(&MemberId::TrustedValidator(validator));
                 let poller =
                     poller.and_then(|m| m.poller.as_mut()).expect("a configured validator");
                 if let Push::Link(up) = push {
@@ -224,7 +224,7 @@ impl TrafficCore {
     }
 
     fn polled(&mut self, id: TrustedValidatorId, read: Option<Synced>) {
-        let member = self.members.get_mut(&MemberId::Trusted(id));
+        let member = self.members.get_mut(&MemberId::TrustedValidator(id));
         let member = member.filter(|m| m.poller.as_ref().is_some_and(|p| p.in_flight));
         let member = member.expect("a poll result for a poll in flight");
         let poller = member.poller.as_mut().expect("trusted members poll");
@@ -250,7 +250,9 @@ impl TrafficCore {
     fn poll(&mut self, out: &mut Vec<Output>) {
         let now = self.now;
         for (id, member) in &mut self.members {
-            let (MemberId::Trusted(validator), Some(poller)) = (id, member.poller.as_mut()) else {
+            let (MemberId::TrustedValidator(validator), Some(poller)) =
+                (id, member.poller.as_mut())
+            else {
                 continue;
             };
             if poller.in_flight {
@@ -263,7 +265,7 @@ impl TrafficCore {
             }
             let metadata = poller.start(now);
             let streaming = poller.streaming;
-            out.push(Output::Poll(PollOrder { member: *validator, metadata, streaming }));
+            out.push(Output::Poll(PollOrder { validator: *validator, metadata, streaming }));
         }
     }
 
@@ -341,14 +343,14 @@ impl TrafficCore {
             .iter()
             .filter(|(_, member)| member.health() == Health::Live && !member.benched(self.now));
         live.filter_map(|(id, _)| match id {
-            MemberId::Trusted(validator) => Some(*validator),
+            MemberId::TrustedValidator(validator) => Some(*validator),
             MemberId::Peers => None,
         })
         .collect()
     }
 
-    pub(crate) fn health(&self, member: TrustedValidatorId) -> Health {
-        let member = self.members.get(&MemberId::Trusted(member));
+    pub(crate) fn health(&self, validator: TrustedValidatorId) -> Health {
+        let member = self.members.get(&MemberId::TrustedValidator(validator));
         member.expect("a configured validator").health()
     }
 
@@ -396,7 +398,8 @@ impl TrafficCore {
             let mut asked = BTreeSet::new();
             for sent in &ask.sends {
                 assert!(self.members.contains_key(&sent.member), "a send's member");
-                let kind = matches!(sent.member, MemberId::Trusted(_)) || ask.class.peers();
+                let kind =
+                    matches!(sent.member, MemberId::TrustedValidator(_)) || ask.class.peers();
                 assert!(
                     kind && ask.route.admits(sent.member),
                     "T2: a class reaches only the member kinds its row allows"
@@ -414,7 +417,7 @@ impl TrafficCore {
 ///
 /// - synced read from the last poll, not `health()` (failing + catching up = `Degraded`)
 fn eligible(ask: &Ask, id: MemberId, member: &Member, now: Instant) -> bool {
-    let kind = matches!(id, MemberId::Trusted(_)) || ask.class.peers();
+    let kind = matches!(id, MemberId::TrustedValidator(_)) || ask.class.peers();
     let synced = !(ask.class.needs_synced() && member.synced == Some(Synced::CatchingUp));
     kind && ask.route.admits(id)
         && !member.benched(now)

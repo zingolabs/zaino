@@ -34,7 +34,7 @@ use crate::member::{Health, Limits, MemberId, MemberTable, Synced, TrustedValida
 const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …)
-pub struct Trusted<S> {
+pub struct TrustedValidator<S> {
     pub source: Arc<S>,
     pub priority: u8,
     pub limits: Limits,
@@ -71,7 +71,7 @@ pub enum Urgency {
 /// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, the peer set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
-    Pinned { member: TrustedValidatorId, heights: Vec<BlockHeight> },
+    Pinned { validator: TrustedValidatorId, heights: Vec<BlockHeight> },
     Peers { locator: Vec<BlockHash>, stop: Option<BlockHash> },
 }
 
@@ -160,7 +160,10 @@ enum Event {
 
 impl<S: ChainDataSource> TrafficBalancer<S> {
     /// `trusted[i]` = `TrustedValidatorId(i)` (non-empty, ≤ `TrustedValidatorId::MAX`)
-    pub fn new(trusted: Vec<Trusted<S>>, peers: Option<Peers>) -> (Self, TrafficDriver<S>) {
+    pub fn new(
+        trusted: Vec<TrustedValidator<S>>,
+        peers: Option<Peers>,
+    ) -> (Self, TrafficDriver<S>) {
         let config: Vec<(u8, Limits)> = trusted.iter().map(|t| (t.priority, t.limits)).collect();
         let in_flight = peers.as_ref().map(|peers| peers.in_flight);
         let core = TrafficCore::new(&config, in_flight, Instant::now().into_std());
@@ -235,13 +238,14 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     ) -> Result<Answered<BlockLinks>, Unanswered<GetAtHeightError>> {
         let shared = Arc::clone(&self.shared);
         match ask {
-            HeaderAsk::Pinned { member, heights } => {
+            HeaderAsk::Pinned { validator, heights } => {
                 let send = move |to| {
                     let (source, heights) = (shared.trusted_only(to), heights.clone());
                     let links = async move { source.get_block_links(&heights).await };
                     links.map_err(QueryError::NonDomain).boxed()
                 };
-                self.ask(Class::Headers, Route::Only(MemberId::Trusted(member)), send).await
+                self.ask(Class::Headers, Route::Only(MemberId::TrustedValidator(validator)), send)
+                    .await
             }
             HeaderAsk::Peers { locator, stop } => {
                 let send = move |to| {
@@ -298,36 +302,36 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.ask(Class::Lookup, Route::Any, send).await
     }
 
-    /// `sendrawtransaction` on `member` alone (the caller's privacy choice); one attempt
+    /// `sendrawtransaction` on `validator` alone (the caller's privacy choice); one attempt
     pub async fn submit(
         &self,
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         raw: Vec<u8>,
     ) -> Result<Answered<TxId>, Unanswered<SendRawTransactionError>> {
-        self.on_alone(member, move |source| {
+        self.on_alone(validator, move |source| {
             let raw = raw.clone();
             async move { source.send_raw_transaction(raw).await }.boxed()
         })
         .await
     }
 
-    /// `checkadmission` on `member` alone: the send's verdict, nothing relayed; one attempt
+    /// `checkadmission` on `validator` alone: the send's verdict, nothing relayed; one attempt
     pub async fn check_admission(
         &self,
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         raw: Vec<u8>,
     ) -> Result<Answered<TxId>, Unanswered<CheckAdmissionError>> {
-        self.on_alone(member, move |source| {
+        self.on_alone(validator, move |source| {
             let raw = raw.clone();
             async move { source.check_admission(raw).await }.boxed()
         })
         .await
     }
 
-    /// A `Submit`-class ask of trusted `member` alone
+    /// A `Submit`-class ask of `validator` alone
     async fn on_alone<T, E>(
         &self,
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         ask: impl Fn(Arc<S>) -> BoxFuture<'static, Result<T, QueryError<E>>>,
     ) -> Result<Answered<T>, Unanswered<E>>
     where
@@ -335,7 +339,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     {
         let shared = Arc::clone(&self.shared);
         let send = move |to| ask(shared.trusted_only(to));
-        self.ask(Class::Submit, Route::Only(MemberId::Trusted(member)), send).await
+        self.ask(Class::Submit, Route::Only(MemberId::TrustedValidator(validator)), send).await
     }
 
     /// Trusted members a submission may enter by: live, not benched
@@ -352,13 +356,16 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         assert!(set, "poll_best set twice: one chain view per balancer");
     }
 
-    /// A push stream's event (`ZebraIndexerWatch` callbacks): wakes `member`'s poll
-    pub fn pushed(&self, member: TrustedValidatorId, push: Push) {
-        self.shared.step(Input::Push { member, push });
+    /// A push stream's event (`ZebraIndexerWatch` callbacks): wakes `validator`'s poll
+    pub fn pushed(&self, validator: TrustedValidatorId, push: Push) {
+        self.shared.step(Input::Push { validator, push });
     }
 
-    pub fn observe(&self, member: TrustedValidatorId) -> watch::Receiver<Option<Arc<Observation>>> {
-        let observation = self.shared.observations.get(member.get());
+    pub fn observe(
+        &self,
+        validator: TrustedValidatorId,
+    ) -> watch::Receiver<Option<Arc<Observation>>> {
+        let observation = self.shared.observations.get(validator.get());
         observation.expect("a configured validator").subscribe()
     }
 
@@ -370,7 +377,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// set never: its transport already dropped what it could check)
     pub fn report(&self, ticket: Ticket, why: &(dyn std::error::Error + 'static)) {
         let member = match ticket.member {
-            MemberId::Trusted(validator) => validator.get().to_string(),
+            MemberId::TrustedValidator(validator) => validator.get().to_string(),
             MemberId::Peers => "peers".to_owned(),
         };
         warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer");
@@ -528,7 +535,7 @@ impl<S> Shared<S> {
 
     /// T2: the core sends trusted-only classes to trusted members
     fn trusted_only(&self, member: MemberId) -> Arc<S> {
-        let MemberId::Trusted(validator) = member else {
+        let MemberId::TrustedValidator(validator) = member else {
             unreachable!("T2: a trusted-only class reached a peer");
         };
         Arc::clone(&self.trusted[validator.get()])
@@ -547,7 +554,7 @@ impl<S> Shared<S> {
         F: Future<Output = Result<T, QueryError<E>>> + Send + 'static,
     {
         match member {
-            MemberId::Trusted(validator) => {
+            MemberId::TrustedValidator(validator) => {
                 trusted(Arc::clone(&self.trusted[validator.get()])).boxed()
             }
             MemberId::Peers => peers(self.peers()).map_err(QueryError::NonDomain).boxed(),
@@ -590,7 +597,7 @@ impl<S: ChainDataSource> TrafficDriver<S> {
 
 impl<S: ChainDataSource> Shared<S> {
     fn poll(&self, order: PollOrder) -> BoxFuture<'static, Polled> {
-        let source = Arc::clone(&self.trusted[order.member.get()]);
+        let source = Arc::clone(&self.trusted[order.validator.get()]);
         let asked = self.best.get().and_then(|best| best());
         async move {
             let polled = source.get_poll_reading(order.metadata, asked.as_slice()).await;
@@ -606,12 +613,12 @@ impl<S: ChainDataSource> Shared<S> {
             Err(_) => Synced::CatchingUp,
         });
         let mut state = self.lock();
-        self.step_locked(&mut state, Input::Polled { member: order.member, read });
-        let health = state.core.health(order.member);
+        self.step_locked(&mut state, Input::Polled { validator: order.validator, read });
+        let health = state.core.health(order.validator);
         drop(state);
         self.changed.notify_one();
-        let PollOrder { member, streaming, .. } = order;
+        let PollOrder { validator, streaming, .. } = order;
         let observation = Observation { asked, polled, streaming, health };
-        self.observations[member.get()].send_replace(Some(Arc::new(observation)));
+        self.observations[validator.get()].send_replace(Some(Arc::new(observation)));
     }
 }

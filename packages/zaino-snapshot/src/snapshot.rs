@@ -131,7 +131,7 @@ impl<V> GrpcSnapshot<V> {
             None => Unavailable::NoChain,
             Some(best) => Unavailable::NotHeld {
                 height: u32::from(best.height),
-                configured: self.view.endpoints().len(),
+                configured: self.view.trusted_validators().len(),
             },
         }
     }
@@ -150,16 +150,17 @@ impl<V> GrpcSnapshot<V> {
     /// (`now_unix` = the clock), else down; not synced or best held only by validators catching
     /// up → syncing; else serving
     pub fn standing(&self, now_unix: i64) -> Standing {
-        let endpoints = self.view.endpoints();
-        let health = |at: usize| endpoints.get(at).map(|meta| meta.health);
-        let unvouched =
-            if !endpoints.is_empty() && endpoints.iter().all(|meta| meta.health == Health::Down) {
-                Some(Down::NoValidatorReachable)
-            } else if self.tips.best.is_some() && self.tips.held_by.is_empty() {
-                Some(Down::TipNotHeld)
-            } else {
-                None
-            };
+        let trusted_validators = self.view.trusted_validators();
+        let health = |at: usize| trusted_validators.get(at).map(|meta| meta.health);
+        let unvouched = if !trusted_validators.is_empty()
+            && trusted_validators.iter().all(|meta| meta.health == Health::Down)
+        {
+            Some(Down::NoValidatorReachable)
+        } else if self.tips.best.is_some() && self.tips.held_by.is_empty() {
+            Some(Down::TipNotHeld)
+        } else {
+            None
+        };
         if let Some(why) = unvouched {
             return match self.tips.synced && self.fresh(now_unix) {
                 true => Standing::Degraded(why),
@@ -185,7 +186,7 @@ impl<V> GrpcSnapshot<V> {
     pub fn sync_target(&self) -> Option<BlockHeight> {
         let best = self.tips.best.map(|best| best.height);
         let catching_up =
-            self.view.endpoints().iter().filter(|meta| meta.health == Health::CatchingUp);
+            self.view.trusted_validators().iter().filter(|meta| meta.health == Health::CatchingUp);
         let estimates =
             catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()

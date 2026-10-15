@@ -18,7 +18,6 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
-use crate::endpoints::TrustedValidatorMeta;
 use crate::error::{ConfigError, SubmitError};
 use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
@@ -29,6 +28,7 @@ use crate::ports::{PeerSource, UnspentOutputs};
 use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
+use crate::trusted_validators::TrustedValidatorMeta;
 
 /// One view over N validators: owns submission and the runnables feeding it
 ///
@@ -66,19 +66,20 @@ impl<S: ChainDataSource> ChainView<S> {
         shutdown: CancellationToken,
     ) -> Result<Self, ConfigError> {
         if addresses.is_empty() {
-            return Err(ConfigError::NoEndpoints);
+            return Err(ConfigError::NoTrustedValidators);
         }
         if addresses.len() > TrustedValidatorId::MAX {
-            return Err(ConfigError::TooManyEndpoints { count: addresses.len() });
+            return Err(ConfigError::TooManyTrustedValidators { count: addresses.len() });
         }
         let trusted = (balancer.members().borrow().rows.iter())
-            .filter(|row| matches!(row.id, MemberId::Trusted(_)))
+            .filter(|row| matches!(row.id, MemberId::TrustedValidator(_)))
             .count();
         if trusted != addresses.len() {
             return Err(ConfigError::AddressCountMismatch { addresses: addresses.len(), trusted });
         }
-        let endpoints = addresses.iter().map(|address| TrustedValidatorMeta::new(address.clone()));
-        let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth));
+        let trusted_validators =
+            addresses.iter().map(|address| TrustedValidatorMeta::new(address.clone()));
+        let core = Arc::new(ChainViewCore::new(trusted_validators.collect(), depth));
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
         let policy = SubmitPolicy::default();

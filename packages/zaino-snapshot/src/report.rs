@@ -186,7 +186,7 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
         metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => state.label()).set(held as f64);
     }
 
-    for meta in view.endpoints().iter() {
+    for meta in view.trusted_validators().iter() {
         let endpoint = meta.address.clone();
         for state in STATES {
             let labels = [("endpoint", endpoint.clone()), ("state", state.label().to_owned())];
@@ -245,26 +245,26 @@ pub(crate) fn transitions<V>(prev: &GrpcSnapshot<V>, next: &GrpcSnapshot<V>) {
 
 fn alarm_edges(prev: &ChainViewSnapshot, next: &ChainViewSnapshot) {
     let (was, now) = (prev.alarms(), next.alarms());
-    for (position, meta) in next.endpoints().iter().enumerate() {
+    for (position, meta) in next.trusted_validators().iter().enumerate() {
         let Some(index) = TrustedValidatorId::new(position) else { continue };
         let tip = meta.tip().map(|tip| u32::from(tip.height));
         let behind = meta.stale_blocks();
         match (was.stale().contains(index), now.stale().contains(index)) {
             (false, true) => warn!(
-                endpoint = %meta.address, ?tip, ?behind,
+                validator = %meta.address, ?tip, ?behind,
                 "Validator tip stale against its own clock (stalled or eclipsed)"
             ),
-            (true, false) => info!(endpoint = %meta.address, ?tip, "Validator tip fresh again"),
+            (true, false) => info!(validator = %meta.address, ?tip, "Validator tip fresh again"),
             _ => {}
         }
         let left = meta.blocks_to_end_of_service();
         let build = meta.release.as_ref().map(|release| release.build.as_str());
         match (was.ending().contains(index), now.ending().contains(index)) {
             (false, true) => warn!(
-                endpoint = %meta.address, ?build, ?left,
+                validator = %meta.address, ?build, ?left,
                 "Validator release reaches end of service soon (it halts there): upgrade it"
             ),
-            (true, false) => info!(endpoint = %meta.address, ?build, "Validator release upgraded"),
+            (true, false) => info!(validator = %meta.address, ?build, "Validator release upgraded"),
             _ => {}
         }
     }

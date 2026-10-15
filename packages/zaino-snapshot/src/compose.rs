@@ -98,7 +98,8 @@ pub(crate) fn check<V>(
 pub(crate) fn mempool_read<V>(snap: &crate::GrpcSnapshot<V>) -> bool {
     use zaino_traffic::Health;
 
-    let endpoints = snap.view().endpoints();
-    let live = |at: usize| endpoints.get(at).is_some_and(|meta| meta.health == Health::Live);
+    let trusted_validators = snap.view().trusted_validators();
+    let live =
+        |at: usize| trusted_validators.get(at).is_some_and(|meta| meta.health == Health::Live);
     snap.tips().held_by.positions().any(live) || snap.view().peers_quorate()
 }

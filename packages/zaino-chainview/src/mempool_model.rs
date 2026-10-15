@@ -30,12 +30,12 @@ use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::NextBlock;
-use crate::endpoints::TrustedValidatorMeta;
 use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 use crate::listings::LISTING_FRESH;
 use crate::netgroup::Netgroup;
 use crate::netgroup::ECLIPSE_NETGROUPS;
 use crate::peer_mempool::judge;
+use crate::trusted_validators::TrustedValidatorMeta;
 
 /// `a`, `b` and `rival` (spends `b`'s prevout) fund from coinbases at 1..=3, `child` spends `a`'s
 /// output, `bad` pays out more than it spends, `orphan` spends an outpoint nobody holds
@@ -375,9 +375,9 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
 
     let tip = chain.tip();
     let utxos = chain.ledger(tip);
-    let endpoints: Vector<TrustedValidatorMeta> =
+    let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
-    let core = ChainViewCore::new(endpoints, ReorgDepth::CONSENSUS);
+    let core = ChainViewCore::new(trusted_validators, ReorgDepth::CONSENSUS);
     core.apply_headers(Some(Arc::new(chain.verified(tip))));
     let oracle = Oracle {
         health: vec![Health::Pending; validators],

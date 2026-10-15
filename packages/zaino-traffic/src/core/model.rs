@@ -113,7 +113,8 @@ proptest! {
 #[test]
 fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
     let ms = Duration::from_millis;
-    let [v0, v1] = [0, 1].map(|i| MemberId::Trusted(TrustedValidatorId::new(i).expect("small")));
+    let [v0, v1] =
+        [0, 1].map(|i| MemberId::TrustedValidator(TrustedValidatorId::new(i).expect("small")));
     let cases = [
         (Kind::Silent, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
         (Kind::Slow, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
@@ -138,7 +139,7 @@ fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
 /// sent at once (the failed poll's answer at 25 s, the next started in that same instant)
 #[test]
 fn a_due_poll_never_waits_behind_other_asks() {
-    let v0 = MemberId::Trusted(TrustedValidatorId::new(0).expect("small"));
+    let v0 = MemberId::TrustedValidator(TrustedValidatorId::new(0).expect("small"));
     let mut world = World::new(&[(Kind::Silent, 0)], None);
     let t0 = world.now;
     for (class, route) in [
@@ -191,8 +192,8 @@ impl World {
         let limits = Limits::new(CONNECTIONS).expect("MIN_CONNECTIONS");
         let config: Vec<(u8, Limits)> = trusted.iter().map(|(_, p)| (*p, limits)).collect();
         let t0 = Instant::now();
-        let ids =
-            (0..trusted.len()).map(|i| MemberId::Trusted(TrustedValidatorId::new(i).expect("≤ 4")));
+        let ids = (0..trusted.len())
+            .map(|i| MemberId::TrustedValidator(TrustedValidatorId::new(i).expect("≤ 4")));
         let mut kinds: BTreeMap<MemberId, Kind> =
             ids.clone().zip(trusted.iter().map(|(kind, _)| *kind)).collect();
         let mut tiers: BTreeMap<MemberId, u16> =
@@ -232,8 +233,11 @@ impl World {
     }
 
     fn trusted(&self, pick: u8) -> MemberId {
-        let trusted: Vec<MemberId> =
-            self.members().into_iter().filter(|m| matches!(m, MemberId::Trusted(_))).collect();
+        let trusted: Vec<MemberId> = self
+            .members()
+            .into_iter()
+            .filter(|m| matches!(m, MemberId::TrustedValidator(_)))
+            .collect();
         trusted[usize::from(pick) % trusted.len()]
     }
 
@@ -263,10 +267,10 @@ impl World {
             }
             Move::Advance(ms) => self.advance(self.now + Duration::from_millis(u64::from(ms))),
             Move::Push { member, push } => {
-                let MemberId::Trusted(member) = self.trusted(member) else {
+                let MemberId::TrustedValidator(validator) = self.trusted(member) else {
                     unreachable!("trusted")
                 };
-                self.step(Input::Push { member, push });
+                self.step(Input::Push { validator, push });
             }
         }
     }
@@ -320,8 +324,8 @@ impl World {
                     self.value_from = Some(*ticket);
                 }
             }
-            Input::Polled { member, read } => {
-                let member_id = MemberId::Trusted(*member);
+            Input::Polled { validator, read } => {
+                let member_id = MemberId::TrustedValidator(*validator);
                 self.polling.remove(&member_id);
                 self.count(member_id, read.is_some());
                 if let Some(read) = read {
@@ -423,9 +427,9 @@ impl World {
                 self.forget(ask);
                 self.ends.insert(ask, (now, None));
             }
-            Output::Poll(PollOrder { member, .. }) => {
-                self.polls.entry(member).or_default().push(now);
-                let member_id = MemberId::Trusted(member);
+            Output::Poll(PollOrder { validator, .. }) => {
+                self.polls.entry(validator).or_default().push(now);
+                let member_id = MemberId::TrustedValidator(validator);
                 assert!(self.polling.insert(member_id), "T10: one poll per member in flight");
                 let (after, read) = match self.kinds[&member_id] {
                     Kind::Honest | Kind::Lying => (FAST, Some(Synced::Live)),
@@ -436,7 +440,7 @@ impl World {
                     Kind::Flapping | Kind::Down => (FAST, None),
                     Kind::Silent => (TIMEOUT, None),
                 };
-                self.pending.push((now + after, Input::Polled { member, read }));
+                self.pending.push((now + after, Input::Polled { validator, read }));
             }
         }
     }
@@ -451,7 +455,7 @@ impl World {
             core.members.iter().map(|(id, m)| (*id, m.bench.map_or(0, |b| b.times))).collect()
         };
         let mut expected = times(&self.core);
-        if let MemberId::Trusted(_) = ticket.member {
+        if let MemberId::TrustedValidator(_) = ticket.member {
             *expected.get_mut(&ticket.member).expect("a present liar") += 1;
             let count = self.benched.get(&ticket.member).map_or(0, |(_, count)| *count);
             let span = Duration::from_secs(60 << count.min(6)).min(Duration::from_secs(3600));
@@ -463,10 +467,10 @@ impl World {
 
     /// Naive eligibility, `round` = members asked this round
     fn eligible(&self, asked: &Asked, member: MemberId) -> bool {
-        let kind = matches!(member, MemberId::Trusted(_)) || asked.class.peers();
+        let kind = matches!(member, MemberId::TrustedValidator(_)) || asked.class.peers();
         let benched = self.benched.get(&member).is_some_and(|(until, _)| *until > self.now);
         // down needs a poll probe back up: the peer set never goes down
-        let polled = matches!(member, MemberId::Trusted(_));
+        let polled = matches!(member, MemberId::TrustedValidator(_));
         let down = polled && self.failures.get(&member).is_some_and(|f| *f >= DOWN_AFTER);
         let lagging =
             asked.class.needs_synced() && self.synced.get(&member) == Some(&Synced::CatchingUp);
@@ -479,7 +483,7 @@ impl World {
     fn room(&self, member: MemberId, lane: usize) -> bool {
         let flying = self.flying.get(&member).copied().unwrap_or([0; 3]);
         let max = match member {
-            MemberId::Trusted(_) => CONNECTIONS - 1,
+            MemberId::TrustedValidator(_) => CONNECTIONS - 1,
             MemberId::Peers => PEER_IN_FLIGHT,
         };
         flying[lane] == 0 || flying.iter().map(|n| (*n).max(1)).sum::<u32>() < max
@@ -566,7 +570,7 @@ impl World {
 
     fn honest_may_serve(&self, asked: &Asked) -> bool {
         self.kinds.iter().any(|(member, kind)| {
-            let kind_ok = matches!(member, MemberId::Trusted(_)) || asked.class.peers();
+            let kind_ok = matches!(member, MemberId::TrustedValidator(_)) || asked.class.peers();
             matches!(kind, Kind::Honest | Kind::Slow) && kind_ok && asked.route.admits(*member)
         })
     }
@@ -580,7 +584,8 @@ impl World {
                 "T9: an ask an honest member may serve still open: {asked:?}"
             );
         }
-        for liar in self.answered_lies.iter().filter(|m| matches!(m, MemberId::Trusted(_))) {
+        for liar in self.answered_lies.iter().filter(|m| matches!(m, MemberId::TrustedValidator(_)))
+        {
             let member = self.core.members.get(liar).expect("a configured liar");
             assert!(member.bench.is_some(), "every trusted liar that answered benched");
         }

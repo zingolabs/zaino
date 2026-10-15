@@ -4,13 +4,13 @@ use zaino_source::{NonDomainError, SendRawTransactionError};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
-    #[error("no validator endpoints configured")]
-    NoEndpoints,
+    #[error("no trusted validators configured")]
+    NoTrustedValidators,
 
-    #[error("{count} endpoints configured, {max} is the ceiling", max = zaino_traffic::TrustedValidatorId::MAX)]
-    TooManyEndpoints { count: usize },
+    #[error("{count} trusted validators configured, {max} is the ceiling", max = zaino_traffic::TrustedValidatorId::MAX)]
+    TooManyTrustedValidators { count: usize },
 
-    #[error("{addresses} endpoint addresses for {trusted} trusted balancer members")]
+    #[error("{addresses} trusted validator addresses for {trusted} balancer members")]
     AddressCountMismatch { addresses: usize, trusted: usize },
 }
 

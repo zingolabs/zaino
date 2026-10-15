@@ -15,8 +15,8 @@ use zcash_protocol::{BlockHash, TxId};
 
 use crate::testing::PeerSetViews;
 use crate::{
-    HeaderAsk, Health, Limits, MemberId, Peers, Push, TrafficBalancer, Trusted, TrustedValidatorId,
-    Urgency,
+    HeaderAsk, Health, Limits, MemberId, Peers, Push, TrafficBalancer, TrustedValidator,
+    TrustedValidatorId, Urgency,
 };
 
 fn v(index: usize) -> TrustedValidatorId {
@@ -40,8 +40,8 @@ async fn each_class_reaches_the_member_its_route_names() {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, driver) = TrafficBalancer::new(
         vec![
-            Trusted { source: Arc::new(chain.validator(tip)), priority: 0, limits },
-            Trusted { source: Arc::new(partner), priority: 1, limits },
+            TrustedValidator { source: Arc::new(chain.validator(tip)), priority: 0, limits },
+            TrustedValidator { source: Arc::new(partner), priority: 1, limits },
         ],
         None,
     );
@@ -49,28 +49,35 @@ async fn each_class_reaches_the_member_its_route_names() {
     tokio::spawn(driver.run(cancel.clone()));
 
     let found = within("a lookup", balancer.transaction(txid)).await.expect("partner holds it");
-    assert_eq!((found.ticket.member, found.value.bytes), (MemberId::Trusted(v(1)), raw.clone()));
+    assert_eq!(
+        (found.ticket.member, found.value.bytes),
+        (MemberId::TrustedValidator(v(1)), raw.clone())
+    );
     let unknown = TxId::from_bytes([7; 32]);
     let absent =
         within("a lookup", balancer.transaction(unknown)).await.expect_err("nobody holds it").last;
     let expected = GetTransactionError::NotFound(unknown);
     assert!(matches!(absent, Some(QueryError::Domain(said)) if said == expected));
 
-    let pinned = HeaderAsk::Pinned { member: v(0), heights: vec![h(0), h(3), h(4)] };
+    let pinned = HeaderAsk::Pinned { validator: v(0), heights: vec![h(0), h(3), h(4)] };
     let links = within("headers", balancer.headers(pinned)).await.expect("ours answers");
     let link = |at: usize| Ok(BlockLink { header: chain.header_bytes(blocks[at].header().hash) });
     let expected = vec![link(0), link(3), Err(GetAtHeightError::HeightNotFound(h(4)))];
-    assert_eq!((links.ticket.member, links.value), (MemberId::Trusted(v(0)), expected));
+    assert_eq!((links.ticket.member, links.value), (MemberId::TrustedValidator(v(0)), expected));
     let listed = MempoolListed { txid, fee: chain.mempool()[0].fee, encoded_len: raw.len() as u32 };
-    let bytes = within("bytes", balancer.bytes(vec![listed], vec![MemberId::Trusted(v(1))]))
-        .await
-        .expect("answered");
+    let bytes =
+        within("bytes", balancer.bytes(vec![listed], vec![MemberId::TrustedValidator(v(1))]))
+            .await
+            .expect("answered");
     let not_listed = vec![Err(GetRawMempoolTransactionError::NotFound(txid))];
     let best_tier = (bytes.ticket.member, bytes.value);
-    assert_eq!(best_tier, (MemberId::Trusted(v(0)), not_listed), "best tier first");
+    assert_eq!(best_tier, (MemberId::TrustedValidator(v(0)), not_listed), "best tier first");
 
     let accepted = within("a submit", balancer.submit(v(1), sent)).await.expect("well-formed");
-    assert_eq!((accepted.ticket.member, accepted.value), (MemberId::Trusted(v(1)), sent_id));
+    assert_eq!(
+        (accepted.ticket.member, accepted.value),
+        (MemberId::TrustedValidator(v(1)), sent_id)
+    );
     let refused =
         within("a submit", balancer.submit(v(0), vec![9; 8])).await.expect_err("malformed").last;
     assert!(matches!(refused, Some(QueryError::Domain(SendRawTransactionError::Malformed(_)))));
@@ -86,8 +93,8 @@ async fn a_reported_liar_is_benched_until_another_serves() {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, driver) = TrafficBalancer::new(
         vec![
-            Trusted { source: Arc::new(chain.validator(tip)), priority: 0, limits },
-            Trusted { source: Arc::new(chain.validator(tip)), priority: 1, limits },
+            TrustedValidator { source: Arc::new(chain.validator(tip)), priority: 0, limits },
+            TrustedValidator { source: Arc::new(chain.validator(tip)), priority: 1, limits },
         ],
         None,
     );
@@ -96,14 +103,25 @@ async fn a_reported_liar_is_benched_until_another_serves() {
 
     let hash = chain.at(h(2)).hash;
     let first = within("a block", balancer.block(hash, Urgency::Tip)).await;
-    assert_eq!((first.ticket.member, first.value.header().hash), (MemberId::Trusted(v(0)), hash));
+    assert_eq!(
+        (first.ticket.member, first.value.header().hash),
+        (MemberId::TrustedValidator(v(0)), hash)
+    );
     balancer.report(first.ticket, &std::io::Error::other("merkle root mismatch"));
     let again = within("a block", balancer.block(hash, Urgency::Bulk)).await;
-    assert_eq!(again.ticket.member, MemberId::Trusted(v(1)), "the reported member benched");
+    assert_eq!(
+        again.ticket.member,
+        MemberId::TrustedValidator(v(1)),
+        "the reported member benched"
+    );
     let by_height =
         within("blocks by height", balancer.blocks_at(Arc::from([h(2)]), Urgency::Bulk)).await;
     let served = (by_height.ticket.member, by_height.value[0].header().hash);
-    assert_eq!(served, (MemberId::Trusted(v(1)), hash), "by height: the benched member skipped");
+    assert_eq!(
+        served,
+        (MemberId::TrustedValidator(v(1)), hash),
+        "by height: the benched member skipped"
+    );
     tokio::time::sleep(Duration::from_millis(1)).await;
     let table = balancer.members().borrow().clone();
     let benched: Vec<bool> = table.rows.iter().map(|row| row.benched_until.is_some()).collect();
@@ -126,8 +144,8 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     let partner = chain.validator(tip);
     let (balancer, driver) = TrafficBalancer::new(
         vec![
-            Trusted { source: Arc::new(ours), priority: 0, limits },
-            Trusted { source: Arc::new(partner), priority: 1, limits },
+            TrustedValidator { source: Arc::new(ours), priority: 0, limits },
+            TrustedValidator { source: Arc::new(partner), priority: 1, limits },
         ],
         None,
     );
@@ -137,7 +155,7 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     let started = Instant::now();
     let hedged = within("a hedged block", balancer.block(tip.hash, Urgency::Tip)).await;
     let waited = started.elapsed();
-    assert_eq!(hedged.ticket.member, MemberId::Trusted(v(1)));
+    assert_eq!(hedged.ticket.member, MemberId::TrustedValidator(v(1)));
     assert!((Duration::from_secs(2)..Duration::from_millis(2_100)).contains(&waited), "{waited:?}");
 
     let mut polls = balancer.observe(v(0));
@@ -192,7 +210,7 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
     let ours = Arc::new(chain.validator(tip));
     ours.reachable(&[Port::Block], false);
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&ours), priority: 0, limits }];
+    let trusted = vec![TrustedValidator { source: Arc::clone(&ours), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, None);
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
@@ -208,7 +226,7 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
     let named = |line: &String| {
         line.contains("WARN")
             && line.contains("class=\"bulk_block\"")
-            && line.contains("member=Some(Trusted(")
+            && line.contains("member=Some(TrustedValidator(")
             && line.contains("MockValidator unreachable on Block")
     };
     assert!(warnings.iter().all(named), "level, class, member, cause: {warnings:#?}");
@@ -217,7 +235,7 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
     ours.reachable(&[Port::Block], true);
     let served = within("the block served", asking).await.expect("ask task joins");
     let served = (served.ticket.member, served.value.header().hash);
-    assert_eq!(served, (MemberId::Trusted(v(0)), tip.hash));
+    assert_eq!(served, (MemberId::TrustedValidator(v(0)), tip.hash));
     let answered = lines(&captured).into_iter().filter(|l| l.contains("Stalled ask answered"));
     assert_eq!(answered.count(), 1, "one line once served");
     cancel.cancel();
@@ -235,7 +253,7 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     let tip = chain.mine_empty(3);
     let validator = Arc::new(chain.validator(tip));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+    let trusted = vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, None);
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
@@ -299,7 +317,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     validator.reachable(&Port::ALL, false);
     let peers = Peers { transport: Arc::new(chain.peer_set(chain.at(h(2)))), in_flight: 4 };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+    let trusted = vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
@@ -338,10 +356,10 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     validator.reachable(&Port::ALL, true);
     let back = within("the block once reachable", pending).await;
     let back = (back.ticket.member, back.value.header().hash);
-    assert_eq!(back, (MemberId::Trusted(v(0)), lacking));
+    assert_eq!(back, (MemberId::TrustedValidator(v(0)), lacking));
     let at_one = within("by height once reachable", by_height).await;
     let at_one = (at_one.ticket.member, at_one.value[0].header().hash);
-    assert_eq!(at_one, (MemberId::Trusted(v(0)), hash));
+    assert_eq!(at_one, (MemberId::TrustedValidator(v(0)), hash));
     cancel.cancel();
 }
 
@@ -352,7 +370,7 @@ fn poll_best_set_twice_panics() {
     let source = Arc::new(chain.validator(chain.genesis()));
     let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
     let (balancer, _driver) =
-        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+        TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
     balancer.poll_best(|| None);
     balancer.poll_best(|| None);
 }

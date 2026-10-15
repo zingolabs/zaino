@@ -6,8 +6,8 @@
 //!   (others poll on their own cadence too: every observation counts)
 //! - Paused clock: the sim stands still while any poll runs (moves land between waits)
 //! - Header chain = a real one, fed each polled chain (header sync's part, without its I/O)
-//! - Oracle = each endpoint's chain *as last polled*, full length from genesis, and the best it
-//!   was asked under
+//! - Oracle = each trusted validator's chain *as last polled*, full length from genesis, and the
+//!   best it was asked under
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
-use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, TrustedValidatorId};
+use zaino_traffic::{Health, Limits, Push, TrafficBalancer, TrustedValidator, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
@@ -62,7 +62,7 @@ proptest! {
     ///
     /// - holders ⊆ reporting validators whose polled chain holds it, ⊇ those claiming it or
     ///   polled under it; no holder = no mempool
-    /// - each endpoint's own tip = its polled chain's (none once `Down`)
+    /// - each trusted validator's own tip = its polled chain's (none once `Down`)
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(
         nodes in 1..=MAX_NODES,
@@ -82,7 +82,7 @@ struct Node {
     tip: BlockRef,
 }
 
-/// What the view last read from one endpoint, and the best it asked under
+/// What the view last read from one trusted validator, and the best it asked under
 #[derive(Debug, Clone)]
 struct Seen {
     chain: Vec<BlockHash>,
@@ -144,7 +144,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     });
     let mut sim = Sim { nodes: nodes.collect(), chain };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = sim.nodes.iter().map(|node| Trusted {
+    let trusted = sim.nodes.iter().map(|node| TrustedValidator {
         source: Arc::clone(&node.validator),
         priority: 0,
         limits,
@@ -159,12 +159,12 @@ async fn run(n: usize, moves: Vec<Move>) {
         schedule,
         tokio_util::sync::CancellationToken::new(),
     );
-    let view = view.expect("1..=5 endpoints");
+    let view = view.expect("1..=5 trusted validators");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));
-    let member = |node: usize| TrustedValidatorId::new(node).expect("< MAX_NODES");
-    let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(member(node))).collect();
+    let validator = |node: usize| TrustedValidatorId::new(node).expect("< MAX_NODES");
+    let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(validator(node))).collect();
     let reader = view.subscriber();
     let mut seen: Vec<Option<Seen>> = vec![None; n];
 
@@ -193,7 +193,7 @@ async fn run(n: usize, moves: Vec<Move>) {
             Move::Poll { node } => {
                 let node = node % n;
                 let under = reader.current().best();
-                balancer.pushed(member(node), Push::Changed);
+                balancer.pushed(validator(node), Push::Changed);
                 within("the node polled", observed[node].changed()).await.expect("driver running");
                 observed[node].mark_changed();
                 // every fold of what landed (paused clock: runs before the timer fires)
@@ -241,9 +241,9 @@ async fn run(n: usize, moves: Vec<Move>) {
                         Some(BlockRef { hash: *seen.chain.last()?, height })
                     });
                     assert_eq!(
-                        pinned.endpoints()[index].tip(),
+                        pinned.trusted_validators()[index].tip(),
                         theirs,
-                        "{context}: endpoint {index}"
+                        "{context}: trusted validator {index}"
                     );
                 }
             }

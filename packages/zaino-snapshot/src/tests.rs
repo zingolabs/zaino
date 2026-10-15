@@ -19,7 +19,7 @@ use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
-use zaino_traffic::{Health, Limits, TrafficBalancer, Trusted};
+use zaino_traffic::{Health, Limits, TrafficBalancer, TrustedValidator};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;
@@ -47,7 +47,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let source = Arc::new(builder.validator(a3));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, _never_driven) =
-        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+        TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
     let address = vec!["10.0.0.1:8232".to_owned()];
     let schedule = builder.schedule().upgrades;
     let view = ChainView::new(
@@ -129,7 +129,7 @@ fn one_snapshot_renders_every_gauge() {
         &addresses,
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
-    let view = view.endpoint(1, Health::Degraded, 0);
+    let view = view.trusted_validator(1, Health::Degraded, 0);
     let snap = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
 
@@ -180,12 +180,15 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     };
 
     let (indexed, view) = served_at(&a[4]);
-    let core =
-        Core::new(Some(indexed), Arc::new(view.endpoint(0, Health::CatchingUp, 1_200)), DEPTH);
+    let core = Core::new(
+        Some(indexed),
+        Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)),
+        DEPTH,
+    );
     let snapshots = core.handle();
     for tip in [&a[4], &a[8], &a[12]] {
         let (indexed, view) = served_at(tip);
-        core.publish(Some(indexed), Arc::new(view.endpoint(0, Health::CatchingUp, 1_200)));
+        core.publish(Some(indexed), Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)));
         let snap = snapshots.load();
         let height = u32::from(tip.header().height);
         assert_eq!(snap.tips().served, snap.tips().best, "at {height}: served = best");
@@ -236,7 +239,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
             &addresses,
             &[],
         );
-        let view = view.endpoint(0, holder, behind).endpoint(1, other, 0);
+        let view = view.trusted_validator(0, holder, behind).trusted_validator(1, other, 0);
         let snap = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
         assert_eq!((snap.standing(now), notes(&snap)), (standing, expected_notes), "{case}");
     }
@@ -261,7 +264,7 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
         &addresses,
         &[],
     );
-    let all_down = held.endpoint(0, Health::Down, 0).endpoint(1, Health::Down, 0);
+    let all_down = held.trusted_validator(0, Health::Down, 0).trusted_validator(1, Health::Down, 0);
     let unheld =
         ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
     for (why, view) in [(Down::NoValidatorReachable, all_down), (Down::TipNotHeld, unheld)] {

@@ -1,4 +1,4 @@
-//! Who the endpoints are, and what the view needs to know about each
+//! Who the trusted validators are, and what the view needs to know about each
 
 use std::time::Instant;
 
@@ -7,7 +7,7 @@ use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
 
-/// Which endpoints, by [`TrustedValidatorId`]: a bitset, never a count
+/// Which trusted validators, by [`TrustedValidatorId`]: a bitset, never a count
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TrustedValidatorSet(u64);
 
@@ -18,16 +18,16 @@ impl TrustedValidatorSet {
     /// Ceiling on the configured set (the bitset's width)
     pub const MAX: usize = u64::BITS as usize;
 
-    pub(crate) fn insert(&mut self, endpoint: TrustedValidatorId) {
-        self.0 |= 1u64 << endpoint.get();
+    pub(crate) fn insert(&mut self, validator: TrustedValidatorId) {
+        self.0 |= 1u64 << validator.get();
     }
 
-    pub(crate) fn remove(&mut self, endpoint: TrustedValidatorId) {
-        self.0 &= !(1u64 << endpoint.get());
+    pub(crate) fn remove(&mut self, validator: TrustedValidatorId) {
+        self.0 &= !(1u64 << validator.get());
     }
 
-    pub fn contains(&self, endpoint: TrustedValidatorId) -> bool {
-        self.0 & (1u64 << endpoint.get()) != 0
+    pub fn contains(&self, validator: TrustedValidatorId) -> bool {
+        self.0 & (1u64 << validator.get()) != 0
     }
 
     pub fn count(&self) -> usize {
@@ -38,29 +38,29 @@ impl TrustedValidatorSet {
         self.0 == 0
     }
 
-    /// Every endpoint in `other` is in `self`
+    /// Every validator in `other` is in `self`
     pub fn covers(&self, other: TrustedValidatorSet) -> bool {
         self.0 & other.0 == other.0
     }
 
-    /// `self` minus every endpoint in `other`
+    /// `self` minus every validator in `other`
     pub fn without(self, other: TrustedValidatorSet) -> TrustedValidatorSet {
         TrustedValidatorSet(self.0 & !other.0)
     }
 
-    /// Positions in the configured endpoint list, ascending
+    /// Positions in the configured trusted validator list, ascending
     pub fn positions(self) -> impl Iterator<Item = usize> {
         (0..Self::MAX).filter(move |position| self.0 & (1u64 << position) != 0)
     }
 
-    /// Endpoints at `positions` in the configured list (each `< TrustedValidatorId::MAX`, asserted)
+    /// Trusted validators at `positions` in configured order (each `< TrustedValidatorId::MAX`)
     #[cfg(any(test, feature = "testing"))]
     pub fn at(positions: impl IntoIterator<Item = usize>) -> Self {
         positions
             .into_iter()
             .map(|position| {
                 TrustedValidatorId::new(position).unwrap_or_else(|| {
-                    panic!("endpoint {position} past {}", TrustedValidatorId::MAX)
+                    panic!("trusted validator {position} past {}", TrustedValidatorId::MAX)
                 })
             })
             .collect()
@@ -68,10 +68,10 @@ impl TrustedValidatorSet {
 }
 
 impl FromIterator<TrustedValidatorId> for TrustedValidatorSet {
-    fn from_iter<I: IntoIterator<Item = TrustedValidatorId>>(endpoints: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = TrustedValidatorId>>(validators: I) -> Self {
         let mut set = Self::default();
-        for endpoint in endpoints {
-            set.insert(endpoint);
+        for validator in validators {
+            set.insert(validator);
         }
         set
     }

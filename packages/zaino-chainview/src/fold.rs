@@ -1,4 +1,4 @@
-//! The fold: per-endpoint deltas in, one published `ChainViewSnapshot` out
+//! The fold: per-validator deltas in, one published `ChainViewSnapshot` out
 //!
 //! - Store, then signal (a woken reader must find what woke it)
 
@@ -17,9 +17,9 @@ use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
-use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
+use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
 /// State before a fold's change (settle's baseline)
 struct Before {
@@ -58,7 +58,7 @@ pub(crate) struct Reading {
     pub(crate) streaming: bool,
 }
 
-/// One endpoint's poll-to-poll mempool change
+/// One trusted validator's poll-to-poll mempool change
 #[derive(Debug, Clone)]
 pub(crate) struct Listing {
     pub(crate) added: Vec<Sighted>,
@@ -97,8 +97,8 @@ pub(crate) struct ChainViewCore {
 }
 
 impl ChainViewCore {
-    pub(crate) fn new(endpoints: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
-        let empty = ChainViewSnapshot::empty(endpoints, depth);
+    pub(crate) fn new(trusted_validators: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
+        let empty = ChainViewSnapshot::empty(trusted_validators, depth);
         Self {
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
@@ -123,13 +123,13 @@ impl ChainViewCore {
     /// nowhere: re-listed + re-fetched next poll, never lost)
     pub(crate) fn apply(
         &self,
-        endpoint: TrustedValidatorId,
+        validator: TrustedValidatorId,
         report: TrustedValidatorReport,
     ) -> Vec<TxId> {
         self.fold(|state| {
             let mut touched: Vec<TxId> = Vec::new();
             let mut unadmitted: Vec<TxId> = Vec::new();
-            let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
+            let Some(meta) = state.trusted_validators.get_mut(validator.get()) else {
                 return (Change::Unchanged, unadmitted);
             };
             match report {
@@ -137,13 +137,13 @@ impl ChainViewCore {
                     meta.health = health;
                     read(meta, reading);
                     if !listed {
-                        touched.extend(retract(&mut state.mempool, endpoint));
+                        touched.extend(retract(&mut state.mempool, validator));
                     }
                 }
                 TrustedValidatorReport::Listed(listing) => {
                     for txid in &listing.removed {
                         if let Some(sighting) = state.mempool.get_mut(txid) {
-                            sighting.unsight(endpoint);
+                            sighting.unsight(validator);
                             touched.push(*txid);
                         }
                     }
@@ -151,7 +151,7 @@ impl ChainViewCore {
                         match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
                             (Some(sighting), _) => {
                                 let verified = sighting.timeline().first_trusted.is_some();
-                                sighting.sight(endpoint);
+                                sighting.sight(validator);
                                 sighting.listed_fee(sighted.fee);
                                 if !verified {
                                     telemetry::first_trusted(sighting);
@@ -159,7 +159,7 @@ impl ChainViewCore {
                             }
                             (None, Some(raw)) => {
                                 let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
-                                sighting.sight(endpoint);
+                                sighting.sight(validator);
                                 telemetry::first_trusted(&sighting);
                                 state.mempool.insert(sighted.txid, sighting);
                             }
@@ -177,7 +177,7 @@ impl ChainViewCore {
                     if health == Health::Down {
                         (meta.info, meta.held) = (None, None);
                         meta.peers = Vector::new();
-                        touched.extend(retract(&mut state.mempool, endpoint));
+                        touched.extend(retract(&mut state.mempool, validator));
                     }
                 }
             }
@@ -298,16 +298,16 @@ impl ChainViewCore {
         let state = &mut *guard;
         let chain = state.chain.clone();
         let holding = state
-            .endpoints
+            .trusted_validators
             .iter()
             .enumerate()
             .filter(|(_, meta)| chain.as_deref().is_some_and(|chain| meta.holds(chain)));
         state.held_by = holding.filter_map(|(at, _)| TrustedValidatorId::new(at)).collect();
-        for meta in state.endpoints.iter_mut() {
+        for meta in state.trusted_validators.iter_mut() {
             meta.agreement = meta.agreement_with(chain.as_deref());
         }
         let stalled = state.finality_stalled(Instant::now());
-        state.alarms = telemetry::alarms(&state.endpoints, stalled);
+        state.alarms = telemetry::alarms(&state.trusted_validators, stalled);
 
         // reader joined / left → any spread may complete (else only `touched`)
         let readers = state.mempool_readers();
@@ -380,16 +380,16 @@ fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     }
 }
 
-/// `endpoint`'s bit cleared from every sighting → the txids it held
-fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, endpoint: TrustedValidatorId) -> Vec<TxId> {
+/// `validator`'s bit cleared from every sighting → the txids it held
+fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, validator: TrustedValidatorId) -> Vec<TxId> {
     let held: Vec<TxId> = mempool
         .iter()
-        .filter(|(_, sighting)| sighting.trusted().contains(endpoint))
+        .filter(|(_, sighting)| sighting.trusted().contains(validator))
         .map(|(txid, _)| *txid)
         .collect();
     for txid in &held {
         if let Some(sighting) = mempool.get_mut(txid) {
-            sighting.unsight(endpoint);
+            sighting.unsight(validator);
         }
     }
     held

@@ -1,4 +1,4 @@
-//! Endpoint telemetry: alarm conditions per fold, event histograms + counters
+//! Trusted validator telemetry: alarm conditions per fold, event histograms + counters
 //!
 //! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
 //! - State gauges + alarm edge logs = `zaino-snapshot`'s (at scrape, per publish)
@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
 use zaino_traffic::{Health, TrustedValidatorId};
 
-use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::snapshot::Sighting;
 use crate::submit::Ended;
+use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
 mod names {
     pub(super) const FIRST_TRUSTED: &str = "zaino.chainview.first_trusted_seconds";
@@ -73,22 +73,22 @@ pub struct Alarms {
 }
 
 impl Alarms {
-    /// Live endpoints whose tip trails their own clock estimate by >= `STALE_TIP_BLOCKS`
+    /// Live trusted validators whose tip trails their own clock estimate by >= `STALE_TIP_BLOCKS`
     pub fn stale(&self) -> TrustedValidatorSet {
         self.stale
     }
 
-    /// Endpoints whose release halts within `END_OF_SERVICE_WARN_BLOCKS` of their tip
+    /// Trusted validators whose release halts within `END_OF_SERVICE_WARN_BLOCKS` of their tip
     pub fn ending(&self) -> TrustedValidatorSet {
         self.ending
     }
 
-    /// Two live endpoints share no outbound peer
+    /// Two live trusted validators share no outbound peer
     pub fn partitioned(&self) -> bool {
         self.partitioned
     }
 
-    /// Live endpoints together reach at most `ECLIPSE_OUTBOUND_MAX` outbound peers
+    /// Live trusted validators together reach at most `ECLIPSE_OUTBOUND_MAX` outbound peers
     pub fn eclipsed(&self) -> bool {
         self.eclipsed
     }
@@ -100,9 +100,11 @@ impl Alarms {
     }
 }
 
-/// Outbound peers per live endpoint that reported any (inbound addrs = ephemeral ports)
-pub(crate) fn outbound(endpoints: &imbl::Vector<TrustedValidatorMeta>) -> Vec<HashSet<&str>> {
-    endpoints
+/// Outbound peers per live trusted validator that reported any (inbound addrs = ephemeral ports)
+pub(crate) fn outbound(
+    trusted_validators: &imbl::Vector<TrustedValidatorMeta>,
+) -> Vec<HashSet<&str>> {
+    trusted_validators
         .iter()
         .filter(|meta| meta.health == Health::Live)
         .map(|meta| {
@@ -112,7 +114,7 @@ pub(crate) fn outbound(endpoints: &imbl::Vector<TrustedValidatorMeta>) -> Vec<Ha
         .collect()
 }
 
-/// Least pairwise overlap; `None` below two endpoints with outbound peers
+/// Least pairwise overlap; `None` below two trusted validators with outbound peers
 pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
     let pairs = outbound.iter().enumerate().flat_map(|(at, left)| {
         outbound[at + 1..].iter().map(move |right| left.intersection(right).count())
@@ -121,17 +123,17 @@ pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
 }
 
 pub(crate) fn alarms(
-    endpoints: &imbl::Vector<TrustedValidatorMeta>,
+    trusted_validators: &imbl::Vector<TrustedValidatorMeta>,
     finality_paused: bool,
 ) -> Alarms {
-    let stale = endpoints
+    let stale = trusted_validators
         .iter()
         .enumerate()
         .filter(|(_, meta)| meta.health == Health::Live)
         .filter(|(_, meta)| meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS))
         .filter_map(|(index, _)| TrustedValidatorId::new(index))
         .collect();
-    let ending = endpoints
+    let ending = trusted_validators
         .iter()
         .enumerate()
         .filter(|(_, meta)| {
@@ -139,7 +141,7 @@ pub(crate) fn alarms(
         })
         .filter_map(|(index, _)| TrustedValidatorId::new(index))
         .collect();
-    let outbound = outbound(endpoints);
+    let outbound = outbound(trusted_validators);
     let union: HashSet<&str> = outbound.iter().flatten().copied().collect();
     Alarms {
         stale,
@@ -206,11 +208,11 @@ mod tests {
 
     #[test]
     fn alarms_rise_on_a_stale_tip_a_partition_and_a_thin_outbound_set() {
-        type Endpoint = (Health, u32, u32, &'static [&'static str], &'static [&'static str]);
+        type Validator = (Health, u32, u32, &'static [&'static str], &'static [&'static str]);
         type Raised = (&'static [usize], bool, bool);
         use Health::{CatchingUp, Live};
         #[rustfmt::skip]
-        let cases: [(&str, &[Endpoint], Raised); 8] = [
+        let cases: [(&str, &[Validator], Raised); 8] = [
             ("isolated regtest node",     &[(Live, 10, 10, &[], &[])],                                   (&[], false, false)),
             ("one block short of stale",  &[(Live, 10, 33, &["p1", "p2", "p3"], &[])],                   (&[], false, false)),
             ("stale live tip",            &[(Live, 10, 34, &["p1", "p2", "p3"], &[])],                   (&[0], false, false)),
@@ -223,8 +225,8 @@ mod tests {
                                             (Live, 10, 10, &["p4", "p5", "p6"], &["x"])],                (&[], true, false)),
             ("one outbound peer for all", &[(Live, 10, 10, &["p1"], &[]), (Live, 10, 10, &["p1"], &[])], (&[], false, true)),
         ];
-        for (case, endpoints, (stale, partitioned, eclipsed)) in cases {
-            let endpoints: imbl::Vector<TrustedValidatorMeta> = endpoints
+        for (case, trusted_validators, (stale, partitioned, eclipsed)) in cases {
+            let trusted_validators: imbl::Vector<TrustedValidatorMeta> = trusted_validators
                 .iter()
                 .enumerate()
                 .map(|(index, (state, tip, estimated, outbound, inbound))| {
@@ -249,7 +251,7 @@ mod tests {
             let stale = TrustedValidatorSet::at(stale.iter().copied());
             let ending = TrustedValidatorSet::default();
             let expected = Alarms { stale, ending, partitioned, eclipsed, finality_paused: false };
-            assert_eq!(alarms(&endpoints, false), expected, "{case}");
+            assert_eq!(alarms(&trusted_validators, false), expected, "{case}");
         }
     }
 }

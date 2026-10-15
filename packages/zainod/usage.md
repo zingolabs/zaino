@@ -372,7 +372,7 @@ format.
 The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
-WARN  [09-28|17:29:15.175] ChainView:           Validator catching up          endpoint=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
+WARN  [09-28|17:29:15.175] ChainView:           Validator catching up          validator=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
 INFO  [09-28|17:29:42.659] ZainoNFS:            Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
 INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        applied=3,501,900 durable=3,501,802 size=31.0GB
 INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        applied=3,501,900 durable=3,501,802  size=134MB
@@ -402,20 +402,20 @@ What an operator sees at `info`:
 | Component | Event | Level | When |
 |---|---|---|---|
 | `ChainView` | `Chain view configured` | info | At startup (`validators`, `p2p`). |
-| `ChainView` | `Polling validator` | info | A validator's first listing (`endpoint`, `listed` = its mempool size). |
+| `ChainView` | `Polling validator` | info | A validator's first listing (`validator`, `listed` = its mempool size). |
 | `ChainView` | `Header chain anchored` | info | Header sync anchors its in-memory header chain (`height`, `hash`). |
-| `ChainView` | `Header fetch failed` | warn | Header sync skips that validator this round and retries in 5 s (`endpoint`, the failure, or no member to ask: benched, down). |
+| `ChainView` | `Header fetch failed` | warn | Header sync skips that validator this round and retries in 5 s (`validator`, the failure, or no member to ask: benched, down). |
 | `ChainView` / `ZainoSync` / `ZainoNFS` | `Misanswer` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (block fetch): `ticket.member`, `class`, `why`. Nothing but its poll reaches it for 60 s (doubling, 1 h at most); the block is asked of another. |
 | `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll (the traffic balancer's 0.5 → 30 s ladder); 10 in a row (its chain and sightings retracted, probed every 30 s); its first answer after. |
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
-| `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
+| `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`validator`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
-| `GrpcSnapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `behind`). |
+| `GrpcSnapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`validator`, `tip`, `behind`). |
 | `GrpcSnapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
 | `GrpcSnapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
 | `GrpcSnapshot` | `Finality paused: no trusted validator holds the boundary` / `Finality resumed` | warn / info | A boundary block is `finalised_depth` deep but no trusted validator holds it, then one does (`best`). |
 | `ChainView` | `Validator peer list read failed, last kept` / `Validator release read failed, last kept` | warn | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on). |
-| `GrpcSnapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
+| `GrpcSnapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`validator`, `build`, `left` blocks), then a newer release clears it. |
 | `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's indexer push streams (`indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
 | `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |

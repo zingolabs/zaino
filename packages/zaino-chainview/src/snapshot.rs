@@ -1,4 +1,4 @@
-//! The published view: verified tip, sighted transactions, per-endpoint metadata.
+//! The published view: verified tip, sighted transactions, per-validator metadata
 //!
 //! - `imbl` collections, so republishing on every fold clones in `O(1)` with structural sharing
 //! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a fold
@@ -20,9 +20,9 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::FINALITY_STALL;
-use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
+use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
 /// One unconfirmed transaction, as served
 ///
@@ -195,13 +195,13 @@ impl Sighting {
         std::mem::replace(&mut self.quorum, quorum) != quorum
     }
 
-    pub(crate) fn sight(&mut self, endpoint: TrustedValidatorId) {
-        self.trusted.insert(endpoint);
+    pub(crate) fn sight(&mut self, validator: TrustedValidatorId) {
+        self.trusted.insert(validator);
         self.timeline.first_trusted.get_or_insert_with(Instant::now);
     }
 
-    pub(crate) fn unsight(&mut self, endpoint: TrustedValidatorId) {
-        self.trusted.remove(endpoint);
+    pub(crate) fn unsight(&mut self, validator: TrustedValidatorId) {
+        self.trusted.remove(validator);
     }
 
     pub(crate) fn mark_ours(&mut self) {
@@ -219,7 +219,7 @@ pub struct ChainViewSnapshot {
     pub(crate) owed_since: Option<Instant>,
     pub(crate) held_by: TrustedValidatorSet,
     pub(crate) mempool: OrdMap<TxId, Sighting>,
-    pub(crate) endpoints: Vector<TrustedValidatorMeta>,
+    pub(crate) trusted_validators: Vector<TrustedValidatorMeta>,
     pub(crate) alarms: Alarms,
     pub(crate) peers_live: OrdSet<SocketAddr>,
     pub(crate) peers_carrying: OrdMap<SocketAddr, BlockHash>,
@@ -227,14 +227,17 @@ pub struct ChainViewSnapshot {
 }
 
 impl ChainViewSnapshot {
-    pub(crate) fn empty(endpoints: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
+    pub(crate) fn empty(
+        trusted_validators: Vector<TrustedValidatorMeta>,
+        depth: ReorgDepth,
+    ) -> Self {
         Self {
             chain: None,
             depth,
             owed_since: None,
             held_by: TrustedValidatorSet::default(),
             mempool: OrdMap::new(),
-            endpoints,
+            trusted_validators,
             alarms: Alarms::default(),
             peers_live: OrdSet::new(),
             peers_carrying: OrdMap::new(),
@@ -265,7 +268,7 @@ impl ChainViewSnapshot {
     }
 
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
-    /// endpoint per address; `ours` served (our relay)
+    /// trusted validator per address; `ours` served (our relay)
     ///
     /// - each holder `Live` + `Agreed`, its `getblockchaininfo` = the best block, no upgrade,
     ///   branch id 0
@@ -278,8 +281,9 @@ impl ChainViewSnapshot {
     ) -> Self {
         use zaino_source::BlockchainInfo;
 
-        let endpoints = addresses.iter().map(|at| TrustedValidatorMeta::new((*at).to_owned()));
-        let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
+        let trusted_validators =
+            addresses.iter().map(|at| TrustedValidatorMeta::new((*at).to_owned()));
+        let mut view = Self::empty(trusted_validators.collect(), ReorgDepth::CONSENSUS);
         view.chain = chain;
         view.held_by = view.best().map_or_else(TrustedValidatorSet::default, |_| held_by);
         if let Some(best) = view.best() {
@@ -289,10 +293,10 @@ impl ChainViewSnapshot {
                 activations: Vec::new(),
             };
             for at in view.held_by.positions() {
-                if let Some(meta) = view.endpoints.get_mut(at) {
+                if let Some(meta) = view.trusted_validators.get_mut(at) {
                     meta.info = Some(info.clone());
                     meta.health = Health::Live;
-                    meta.agreement = crate::endpoints::Agreement::Agreed;
+                    meta.agreement = crate::trusted_validators::Agreement::Agreed;
                 }
             }
         }
@@ -302,17 +306,19 @@ impl ChainViewSnapshot {
         view
     }
 
-    /// Consumers' tests: endpoint `at`'s health, and its clock estimate `behind` blocks past
-    /// its tip (a [`fixed`](Self::fixed) holder's tip = best); alarms re-derived as a fold would
+    /// Consumers' tests: trusted validator `at`'s health, and its clock estimate `behind` blocks
+    /// past its tip (a [`fixed`](Self::fixed) holder's tip = best)
+    /// - alarms re-derived as a fold would
     #[cfg(any(test, feature = "testing"))]
-    pub fn endpoint(mut self, at: usize, health: Health, behind: u32) -> Self {
-        if let Some(meta) = self.endpoints.get_mut(at) {
+    pub fn trusted_validator(mut self, at: usize, health: Health, behind: u32) -> Self {
+        if let Some(meta) = self.trusted_validators.get_mut(at) {
             meta.health = health;
             if let Some(info) = meta.info.as_mut() {
                 info.estimated_height = info.tip.height + behind;
             }
         }
-        self.alarms = crate::telemetry::alarms(&self.endpoints, self.alarms.finality_paused());
+        self.alarms =
+            crate::telemetry::alarms(&self.trusted_validators, self.alarms.finality_paused());
         self
     }
 
@@ -325,7 +331,8 @@ impl ChainViewSnapshot {
         let best = self.best().expect("ahead of a verified best");
         let id = TrustedValidatorId::new(at).expect("a small position");
         assert!(self.held_by.contains(id), "{at}: not a holder");
-        let meta = self.endpoints.get_mut(at).expect("a holder = a configured endpoint");
+        let meta =
+            self.trusted_validators.get_mut(at).expect("a holder = a configured trusted validator");
         let info = meta.info.as_mut().expect("a holder answered");
         info.tip = BlockRef { hash: BlockHash([0xA0; 32]), height: best.height + by };
         info.estimated_height = info.tip.height;
@@ -341,7 +348,7 @@ impl ChainViewSnapshot {
     /// tip yet: header sync short of it, e.g. anchored `depth` below its claim at boot)
     pub fn claimed_past_best(&self) -> bool {
         let Some(chain) = self.chain.as_deref() else { return false };
-        self.endpoints.iter().any(|meta| meta.claims_past(chain))
+        self.trusted_validators.iter().any(|meta| meta.claims_past(chain))
     }
 
     /// Answering validators (`Live` or catching up) whose last poll holds the verified best block
@@ -378,14 +385,14 @@ impl ChainViewSnapshot {
         self.alarms
     }
 
-    /// Per-endpoint metadata, in configured order
-    pub fn endpoints(&self) -> &Vector<TrustedValidatorMeta> {
-        &self.endpoints
+    /// Per-validator metadata, in configured order
+    pub fn trusted_validators(&self) -> &Vector<TrustedValidatorMeta> {
+        &self.trusted_validators
     }
 
     /// Fewest outbound peers any two live validators share (`None` below two reporting any)
     pub fn shared_outbound_min(&self) -> Option<usize> {
-        telemetry::shared_outbound_min(&telemetry::outbound(&self.endpoints))
+        telemetry::shared_outbound_min(&telemetry::outbound(&self.trusted_validators))
     }
 
     /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch;
@@ -396,7 +403,7 @@ impl ChainViewSnapshot {
 
     /// Trusted validators whose mempool is read now (`Live`: catching-up and down ones list none)
     pub fn mempool_readers(&self) -> TrustedValidatorSet {
-        self.endpoints
+        self.trusted_validators
             .iter()
             .enumerate()
             .filter(|(_, meta)| meta.health == Health::Live)
@@ -423,7 +430,8 @@ impl ChainViewSnapshot {
     /// listing) holds the best block nor [`peers_quorate`](Self::peers_quorate) (fail closed: no
     /// empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
-        let live = |at: usize| self.endpoints.get(at).is_some_and(|m| m.health == Health::Live);
+        let live =
+            |at: usize| self.trusted_validators.get(at).is_some_and(|m| m.health == Health::Live);
         let trusted = self.held_by.positions().any(live);
         (trusted || self.peers_quorate()).then_some(MempoolView(self))
     }

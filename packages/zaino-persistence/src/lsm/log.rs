@@ -35,7 +35,8 @@ const STALL_WINDOWS: usize = 2;
 ///
 /// - one merge per tier at a time, <= `slots` working engine-wide (lowest tier first:
 ///   small merges never queue behind a large one)
-/// - `batch` stages → owner's manifest commit → `on_manifest_durable` maps the new list, unlinks, launches
+/// - `batch` stages → owner's manifest commit → `on_manifest_durable` maps the new list, unlinks,
+///   launches
 pub(crate) struct SegmentLog {
     series: Series,
     segments_view: Arc<SegmentsView>,

@@ -17,7 +17,7 @@ use zaino_source::{
     ChainDataSource, ZcashLegacyRpcClient, ZebraIndexerGrpcClient, ZebraIndexerWatch,
 };
 use zaino_traffic::{
-    PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, TrustedValidatorId,
+    PeerTransport, Peers, TrafficBalancer, TrafficDriver, TrustedValidator, TrustedValidatorId,
 };
 use zcash_protocol::local_consensus::LocalNetwork;
 
@@ -58,7 +58,7 @@ pub(crate) fn connect<S: ChainDataSource>(
     let trusted = validators.iter().map(|validator| {
         let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
         let source = Arc::new(client(validator)?);
-        Ok(Trusted { source, priority: validator.priority, limits })
+        Ok(TrustedValidator { source, priority: validator.priority, limits })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
     let p2p = config.p2p.enabled.then(|| crate::peers::start(config.p2p.peers(config.network)));
@@ -69,10 +69,10 @@ pub(crate) fn connect<S: ChainDataSource>(
     let (balancer, balancing) = TrafficBalancer::new(trusted, peers);
     let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
         let address = validator.indexer_address.as_ref()?;
-        let member = TrustedValidatorId::new(index)?;
+        let id = TrustedValidatorId::new(index)?;
         let watch =
             ZebraIndexerWatch::at(address, validator.indexer_tls.as_ref(), validator.into());
-        Some(watch.map(|watch| (member, watch)))
+        Some(watch.map(|watch| (id, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
     let p2p = p2p.map(|(port, start)| (port, start.boxed()));

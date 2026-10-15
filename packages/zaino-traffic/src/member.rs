@@ -24,7 +24,7 @@ impl TrustedValidatorId {
 /// `Peers` = the p2p network's peer set, one member (zebra picks the peer per request)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemberId {
-    Trusted(TrustedValidatorId),
+    TrustedValidator(TrustedValidatorId),
     Peers,
 }
 

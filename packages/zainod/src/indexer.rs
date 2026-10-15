@@ -653,7 +653,7 @@ mod tests {
         let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
-            zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
+            zaino_traffic::TrustedValidator { source: Arc::clone(&validator), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
         let view = ChainView::new(
             vec!["mock".to_owned()],

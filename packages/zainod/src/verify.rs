@@ -202,7 +202,7 @@ mod tests {
         let clean = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let indexes =
             ["compact_block", "utxo_set", "block_hash", "tree_state", "transparent_address"];
-        // on disk = the sealed bytes, then the zeroed reserve the appends grow into (not yet durable)
+        // on disk = sealed bytes, then the zeroed reserve the appends grow into (not yet durable)
         let blocks_dat = &clean["compact_block"]["units"][0];
         let durable_bytes = blocks_dat["committed_bytes"].as_u64().expect("committed_bytes");
         let on_disk = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();

@@ -1,10 +1,10 @@
-//! Each trusted member's polls (the balancer's [`Observation`]s) folded into the view
+//! Each trusted validator's polls (the balancer's [`Observation`]s) folded into the view
 //!
 //! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
 //! - Reading (claim, `getblockhash`) folded first, then the listing (holder facts never wait on
 //!   bytes)
-//! - Bytes = only what the view lacks, through `bytes(..)` with this member preferred
-//! - A transaction leaves a member's listing one way: unlisted (mined or evicted); a new tip
+//! - Bytes = only what the view lacks, through `bytes(..)` with this validator preferred
+//! - A transaction leaves a validator's listing one way: unlisted (mined or evicted); a new tip
 //!   clears nothing (an unmined transaction survives a block)
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +27,7 @@ use zcash_protocol::{BlockHash, TxId};
 use crate::config::CATCHING_UP_WARN_INTERVAL;
 use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 
-/// Folds every trusted member's observations into the view; spawn [`run`](Self::run)
+/// Folds every trusted validator's observations into the view; spawn [`run`](Self::run)
 pub struct ObservationFold<S> {
     pub(crate) core: Arc<ChainViewCore>,
     pub(crate) balancer: TrafficBalancer<S>,
@@ -35,13 +35,13 @@ pub struct ObservationFold<S> {
 }
 
 impl<S: ChainDataSource> ObservationFold<S> {
-    /// Until `cancel`: each member's latest poll, as it lands (members independent)
+    /// Until `cancel`: each validator's latest poll, as it lands (validators independent)
     pub async fn run(self, cancel: CancellationToken) {
-        let members = self.addresses.iter().enumerate().map(|(index, address)| {
-            let member =
+        let followers = self.addresses.iter().enumerate().map(|(index, address)| {
+            let validator =
                 TrustedValidatorId::new(index).expect("configured below TrustedValidatorId::MAX");
-            let folding = Member {
-                member,
+            let folding = ValidatorFollower {
+                validator,
                 address,
                 core: &self.core,
                 balancer: &self.balancer,
@@ -51,13 +51,13 @@ impl<S: ChainDataSource> ObservationFold<S> {
             };
             folding.follow()
         });
-        cancel.run_until_cancelled(join_all(members)).await;
+        cancel.run_until_cancelled(join_all(followers)).await;
     }
 }
 
 /// `listed` = its last listing as admitted (the diff's left side); `health` = as last folded
-struct Member<'a, S> {
-    member: TrustedValidatorId,
+struct ValidatorFollower<'a, S> {
+    validator: TrustedValidatorId,
     address: &'a str,
     core: &'a ChainViewCore,
     balancer: &'a TrafficBalancer<S>,
@@ -66,9 +66,9 @@ struct Member<'a, S> {
     catching_up_warned: Option<Instant>,
 }
 
-impl<S: ChainDataSource> Member<'_, S> {
+impl<S: ChainDataSource> ValidatorFollower<'_, S> {
     async fn follow(mut self) {
-        let mut observations = self.balancer.observe(self.member);
+        let mut observations = self.balancer.observe(self.validator);
         // a poll landed before this subscribed: folded too
         observations.mark_changed();
         while observations.changed().await.is_ok() {
@@ -93,13 +93,13 @@ impl<S: ChainDataSource> Member<'_, S> {
         match listing {
             Ok(listing) => {
                 let report = TrustedValidatorReport::Read { reading, health, listed: true };
-                self.core.apply(self.member, report);
+                self.core.apply(self.validator, report);
                 self.listed(listing).await;
             }
             Err(_) => {
                 self.catching_up(&reading);
                 let report = TrustedValidatorReport::Read { reading, health, listed: false };
-                self.core.apply(self.member, report);
+                self.core.apply(self.validator, report);
                 self.listed.clear();
             }
         }
@@ -139,7 +139,7 @@ impl<S: ChainDataSource> Member<'_, S> {
             }
         }
         let listing = Listing { added, removed };
-        for txid in self.core.apply(self.member, TrustedValidatorReport::Listed(listing)) {
+        for txid in self.core.apply(self.validator, TrustedValidatorReport::Listed(listing)) {
             admitted.remove(&txid);
         }
         self.live(admitted.len());
@@ -154,11 +154,11 @@ impl<S: ChainDataSource> Member<'_, S> {
         if unheld.is_empty() {
             return Vec::new();
         }
-        let prefer = vec![MemberId::Trusted(self.member)];
+        let prefer = vec![MemberId::TrustedValidator(self.validator)];
         match self.balancer.bytes(unheld.to_vec(), prefer).await {
             Ok(answered) => answered.value,
             Err(unanswered) => {
-                debug!(endpoint = self.address, %unanswered, "Mempool bytes unanswered");
+                debug!(validator = self.address, %unanswered, "Mempool bytes unanswered");
                 Vec::new()
             }
         }
@@ -169,14 +169,14 @@ impl<S: ChainDataSource> Member<'_, S> {
         match health {
             Health::Down => {
                 if self.health != Health::Down {
-                    warn!(endpoint = self.address, %cause, "Validator down, holds no tip");
+                    warn!(validator = self.address, %cause, "Validator down, holds no tip");
                 }
-                self.core.apply(self.member, TrustedValidatorReport::Failed(health));
+                self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
                 self.listed.clear();
             }
             _ => {
-                warn!(endpoint = self.address, %cause, "Validator poll failed");
-                self.core.apply(self.member, TrustedValidatorReport::Failed(health));
+                warn!(validator = self.address, %cause, "Validator poll failed");
+                self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
             }
         }
         self.health = health;
@@ -185,9 +185,9 @@ impl<S: ChainDataSource> Member<'_, S> {
     fn live(&mut self, listed: usize) {
         match std::mem::replace(&mut self.health, Health::Live) {
             Health::Live => {}
-            Health::CatchingUp => info!(endpoint = self.address, listed, "Validator caught up"),
-            Health::Pending => info!(endpoint = self.address, listed, "Polling validator"),
-            Health::Degraded | Health::Down => info!(endpoint = self.address, "Validator back"),
+            Health::CatchingUp => info!(validator = self.address, listed, "Validator caught up"),
+            Health::Pending => info!(validator = self.address, listed, "Polling validator"),
+            Health::Degraded | Health::Down => info!(validator = self.address, "Validator back"),
         }
         self.catching_up_warned = None;
     }
@@ -202,7 +202,7 @@ impl<S: ChainDataSource> Member<'_, S> {
             let behind = u32::from(network).saturating_sub(tip.into());
             let height = u32::from(tip);
             let hash = reading.info.tip.hash;
-            warn!(endpoint = self.address, height, behind, %hash, "Validator catching up");
+            warn!(validator = self.address, height, behind, %hash, "Validator catching up");
             self.catching_up_warned = Some(Instant::now());
         }
     }
@@ -217,7 +217,7 @@ impl<S: ChainDataSource> Member<'_, S> {
             (height, Ok(hash)) => Some(BlockRef { hash: *hash, height }),
             (_, Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_)))) => None,
             (height, Err(QueryError::NonDomain(cause))) => {
-                debug!(endpoint = self.address, ?height, %cause, "getblockhash unanswered");
+                debug!(validator = self.address, ?height, %cause, "getblockhash unanswered");
                 None
             }
         }
@@ -230,7 +230,7 @@ impl<S: ChainDataSource> Member<'_, S> {
     ) -> (Option<Vec<PeerInfo>>, Option<NodeRelease>) {
         let Some(MetadataReading { peers, release }) = metadata else { return (None, None) };
         let kept = |what: &str, cause: &NonDomainError| {
-            warn!(endpoint = self.address, %cause, "Validator {what} read failed, last kept");
+            warn!(validator = self.address, %cause, "Validator {what} read failed, last kept");
         };
         let peers = peers.as_ref().inspect_err(|cause| kept("peer list", cause)).ok().cloned();
         let release = release.as_ref().inspect_err(|cause| kept("release", cause)).ok().cloned();

@@ -21,7 +21,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
     let chain = MockChain::regtest();
     let validator = Arc::new(chain.validator(chain.genesis()));
     let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
+    let trusted = zaino_traffic::TrustedValidator { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
     let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
     let schedule = zaino_primitives::protocol::compiled_schedule(network);

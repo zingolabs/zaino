@@ -18,7 +18,8 @@ use zaino_source::{
 };
 use zaino_traffic::testing::PeerSetViews;
 use zaino_traffic::{
-    Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, TrustedValidatorId,
+    Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, TrustedValidator,
+    TrustedValidatorId,
 };
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
@@ -38,7 +39,7 @@ fn running(
     peer_set: Option<Arc<dyn PeerTransport>>,
 ) -> (ChainView<MockValidator>, TrafficBalancer<MockValidator>, CancellationToken) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = validators.iter().map(|validator| Trusted {
+    let trusted = validators.iter().map(|validator| TrustedValidator {
         source: Arc::clone(validator),
         priority: 0,
         limits,
@@ -105,7 +106,8 @@ fn regtest() -> zcash_protocol::local_consensus::LocalNetwork {
 ///   out and back, or a drop: nothing); ours served before any listing
 /// - a mined block: the mempool as it now stands (ours listed)
 #[tokio::test(start_paused = true)]
-async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_new_transaction_once() {
+async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_new_transaction_once()
+{
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
     for n in 1..=3u8 {
@@ -196,7 +198,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let reader = view.subscriber();
 
     polled(&balancer).await;
-    assert_eq!(reader.current().endpoints()[0].health, Health::Live, "listed its mempool");
+    assert_eq!(reader.current().trusted_validators()[0].health, Health::Live, "listed its mempool");
     view.set_verified(Some(chain.verified(at(10))));
 
     validator.follow(&chain, at(11));
@@ -207,7 +209,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let catching_up = reader.current();
     let held = (catching_up.best(), catching_up.held_by());
     assert_eq!(held, (Some(at(11)), TrustedValidatorSet::at([0])), "catching up: still the holder");
-    let meta = &catching_up.endpoints()[0];
+    let meta = &catching_up.trusted_validators()[0];
     let answered = (meta.health, meta.tip(), meta.stale_blocks(), meta.agreement);
     let expected = (Health::CatchingUp, Some(at(11)), Some(29), Agreement::Agreed);
     assert_eq!(answered, expected, "an answer, no failure");
@@ -223,7 +225,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     polled(&balancer).await;
     view.set_verified(Some(chain.verified(at(12))));
     let caught_up = reader.current();
-    assert_eq!(caught_up.endpoints()[0].health, Health::Live);
+    assert_eq!(caught_up.trusted_validators()[0].health, Health::Live);
     assert_eq!(
         caught_up.mempool().expect("held").entries().map(|e| e.txid).collect::<Vec<_>>(),
         [two],
@@ -258,7 +260,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     polled(&balancer).await;
     let first = reader.current();
     assert_eq!((first.best(), first.held_by()), (Some(agreed), TrustedValidatorSet::at([0])));
-    let spread = first.spread(&tx7).expect("endpoint a reported it");
+    let spread = first.spread(&tx7).expect("validator a reported it");
     let one_of_one = Count { seen: 1, of: 1 };
     assert_eq!(spread.trusted, one_of_one, "b, c not yet read");
     assert!(spread.timeline.all_trusted.is_some(), "every reader so far lists it");
@@ -279,11 +281,15 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let pinned = reader.current();
     let held = (pinned.best(), pinned.held_by());
     assert_eq!(held, (Some(agreed), TrustedValidatorSet::at([0, 1])), "never the claim");
-    assert_eq!(pinned.endpoints()[2].agreement, Agreement::Diverged, "holds neither 100 nor 97");
+    assert_eq!(
+        pinned.trusted_validators()[2].agreement,
+        Agreement::Diverged,
+        "holds neither 100 nor 97"
+    );
     let trusted = pinned.spread(&tx7).map(|spread| spread.trusted);
     assert_eq!(trusted, Some(Count { seen: 2, of: 3 }), "a and c list it, of three read");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
-        .endpoints()
+        .trusted_validators()
         .iter()
         .map(|meta| (meta.address.as_str(), meta.peers.iter().cloned().collect()))
         .collect();
@@ -620,7 +626,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     validator.reachable(&Port::ALL, false);
     // `Down` (its listing retracted) after 10 failures on the 0.5 → 30 s ladder
     tokio::time::sleep(Duration::from_secs(300)).await;
-    let down = reader.current().endpoints()[0].health;
+    let down = reader.current().trusted_validators()[0].health;
     assert_eq!(down, Health::Down, "its listing retracted, not kept as `Degraded`");
     assert!(reader.current().held_by().is_empty(), "no trusted validator vouches");
     assert_eq!(served(), [(a, Some(zats(1_000)))], "the quorum keeps it");
@@ -695,7 +701,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     let reader = view.subscriber();
     let held_by = |positions: &[usize]| TrustedValidatorSet::at(positions.iter().copied());
     let agreements = || -> Vec<Agreement> {
-        reader.current().endpoints().iter().map(|meta| meta.agreement).collect()
+        reader.current().trusted_validators().iter().map(|meta| meta.agreement).collect()
     };
     // best + its holders, `None` while nobody holds it
     let tip = || {
@@ -723,7 +729,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     // a goes unreachable: no trusted validator holds 101 → no mempool (never a weaker answer)
     validators[0].reachable(&Port::ALL, false);
     polled(&balancer).await;
-    let health = reader.current().endpoints()[0].health;
+    let health = reader.current().trusted_validators()[0].health;
     assert_eq!(health, Health::Degraded, "one failure = degraded, out of the holders");
     assert_eq!(tip(), None);
     assert!(reader.current().mempool().is_none(), "no holder: refused");
@@ -759,7 +765,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(tip(), None, "re-asked: on the trunk, it holds nothing of the fork (never stale)");
     let pinned = reader.current();
-    let c = &pinned.endpoints()[2];
+    let c = &pinned.trusted_validators()[2];
     assert_eq!((c.tip(), c.agreement), (Some(at_101), Agreement::Diverged));
     let links: usize = validators.iter().map(|v| v.calls().links).sum();
     assert_eq!(links, 0, "holding is asked by getblockhash in the poll: no header reads");
@@ -768,7 +774,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
 
 /// Peers + release ride the poll every 60 s; the push stream's state, every poll
 ///
-/// - failed half → endpoint still live, last answer kept
+/// - failed half → validator still live, last answer kept
 /// - release halting within a week of the tip raises `ending`; an upgrade clears it
 /// - stream up / down (the balancer's) shown from the next poll
 #[tokio::test(start_paused = true)]
@@ -789,10 +795,12 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     );
     let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     let reader = view.subscriber();
-    let peers =
-        || -> Vec<PeerInfo> { reader.current().endpoints()[0].peers.iter().cloned().collect() };
-    let build = || reader.current().endpoints()[0].release.as_ref().map(|r| r.build.clone());
-    let streaming = || reader.current().endpoints()[0].streaming;
+    let peers = || -> Vec<PeerInfo> {
+        reader.current().trusted_validators()[0].peers.iter().cloned().collect()
+    };
+    let build =
+        || reader.current().trusted_validators()[0].release.as_ref().map(|r| r.build.clone());
+    let streaming = || reader.current().trusted_validators()[0].streaming;
     let one = TrustedValidatorSet::at([0]);
 
     polled(&balancer).await;
@@ -800,13 +808,15 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     assert_eq!(first.len(), 2);
     assert_eq!(build().as_deref(), Some("v6.4.2"));
     let pinned = reader.current();
-    assert_eq!(pinned.endpoints()[0].blocks_to_end_of_service(), Some(4_960));
+    assert_eq!(pinned.trusted_validators()[0].blocks_to_end_of_service(), Some(4_960));
     assert_eq!(pinned.alarms().ending(), one, "halts within a week of its tip");
 
     validator.metadata(None, None);
     tokio::time::sleep(Duration::from_secs(60)).await;
-    let health =
-        (reader.current().endpoints()[0].health, balancer.members().borrow().rows[0].failures);
+    let health = (
+        reader.current().trusted_validators()[0].health,
+        balancer.members().borrow().rows[0].failures,
+    );
     assert_eq!(health, (Health::Live, 0), "a metadata failure is not a poll failure");
     assert_eq!((peers(), build().as_deref()), (first, Some("v6.4.2")), "last answers kept");
 
@@ -841,7 +851,7 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     let (view, _, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     view.set_verified(Some(chain.verified(genesis)));
     let reader = view.subscriber();
-    let state = || reader.current().endpoints()[0].health;
+    let state = || reader.current().trusted_validators()[0].health;
     let serves_tx1 = || {
         let pinned = reader.current();
         pinned.mempool().is_some_and(|mempool| mempool.entries().any(|entry| entry.txid == tx1))
@@ -1051,7 +1061,7 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     tokio::time::sleep(Duration::from_secs(30)).await;
     assert_eq!(validators[0].calls().links, links, "a's forked claim never fetched again");
     let pinned = reader.current();
-    let standing = (pinned.best(), pinned.endpoints()[0].agreement);
+    let standing = (pinned.best(), pinned.trusted_validators()[0].agreement);
     assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below final: never followed");
     cancel.cancel();
 }

@@ -12,11 +12,11 @@ driver. No `tower::Service`: every answer must name its sender (blame) and every
 ## Wiring
 
 ```rust,ignore
-use zaino_traffic::{Limits, Peers, TrafficBalancer, Trusted};
+use zaino_traffic::{Limits, Peers, TrafficBalancer, TrustedValidator};
 
 let trusted = validators
     .iter()
-    .map(|v| Trusted {
+    .map(|v| TrustedValidator {
         source: Arc::new(ZcashLegacyRpcClient::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections)?,               // None below 5
@@ -54,7 +54,7 @@ it).
 | --- | --- | --- | --- |
 | `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then the peer set | never unanswered: every member tried → next round after 1 s, a warning each minute it stays unserved |
 | `blocks_at(heights, urgency)` | same classes | trusted only (peers answer by hash): `getblock <h> 0` batches (sized by `ResponseSizeCap`), or one `GetBlockRange` per run over gRPC | never unanswered, as `block` |
-| `headers(HeaderAsk::Pinned { member, heights })` | `Headers` (control) | that trusted member only | unanswered if it fails or is out |
+| `headers(HeaderAsk::Pinned { validator, heights })` | `Headers` (control) | that trusted validator only | unanswered if it fails or is out |
 | `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |

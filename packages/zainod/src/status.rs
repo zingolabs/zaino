@@ -403,7 +403,7 @@ struct Chain {
 impl Chain {
     fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
         let tips = snap.tips();
-        let endpoints = snap.view().endpoints();
+        let trusted_validators = snap.view().trusted_validators();
         let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
@@ -415,8 +415,8 @@ impl Chain {
             }),
             served: tips.served.map(|served| u32::from(served.height)),
             validators: ValidatorCounts {
-                configured: endpoints.len(),
-                connected: endpoints.iter().filter(answering).count(),
+                configured: trusted_validators.len(),
+                connected: trusted_validators.iter().filter(answering).count(),
             },
             egress: *sources.egress.borrow(),
             info: info.map(lightd_json),

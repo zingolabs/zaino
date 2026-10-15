@@ -58,7 +58,7 @@ pub struct HeaderSync<S> {
     balancer: TrafficBalancer<S>,
     chain: HeaderChain,
     verified: watch::Sender<Option<Arc<VerifiedChain>>>,
-    members: Vec<Member>,
+    fetch_states: Vec<FetchState>,
     peers: Option<Peers>,
 }
 
@@ -73,25 +73,25 @@ struct Peers {
 /// - `next` = where its next run starts (`None` = above our best, capped at its claim)
 /// - `forked` = a claim whose chain leaves ours below the final tip (skipped while it stands)
 #[derive(Debug, Clone, Copy, Default)]
-struct Member {
+struct FetchState {
     next: Option<BlockHeight>,
     forked: Option<BlockRef>,
     retry_at: Option<Instant>,
 }
 
-impl Member {
+impl FetchState {
     /// Backs off `RETRY` (only it), then starts afresh
     fn stalled() -> Self {
         Self { retry_at: Some(Instant::now() + RETRY), ..Self::default() }
     }
 }
 
-/// - `Anchor` = the header at `at` becomes the final tip (no chain, or `member` far ahead)
-/// - `Extend` = `member`'s heights `from..=to`, toward its `claim`
+/// - `Anchor` = the header at `at` becomes the final tip (no chain, or `validator` far ahead)
+/// - `Extend` = `validator`'s heights `from..=to`, toward its `claim`
 #[derive(Debug, Clone, Copy)]
 enum Run {
-    Anchor { member: TrustedValidatorId, at: BlockHeight },
-    Extend { member: TrustedValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
+    Anchor { validator: TrustedValidatorId, at: BlockHeight },
+    Extend { validator: TrustedValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
 }
 
 impl<S: ChainDataSource> HeaderSync<S> {
@@ -101,11 +101,11 @@ impl<S: ChainDataSource> HeaderSync<S> {
         chain: HeaderChain,
     ) -> Self {
         let verified = watch::Sender::new(chain.verified().map(Arc::new));
-        let members = vec![Member::default(); core.current().endpoints().len()];
-        Self { core, balancer, chain, verified, members, peers: None }
+        let fetch_states = vec![FetchState::default(); core.current().trusted_validators().len()];
+        Self { core, balancer, chain, verified, fetch_states, peers: None }
     }
 
-    /// Headers from the peer set too, each held to `params` (the balancer's peer member)
+    /// Headers from the peer set too, each held to `params` (the balancer's peer-set member)
     pub fn with_peers(self, params: Params) -> Self {
         Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
     }
@@ -160,7 +160,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let Some(verified) = verified else { return };
         let floor = verified.final_tip().height + 1;
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
-        let answering = view.endpoints().iter().filter(|meta| meta.answering());
+        let answering = view.trusted_validators().iter().filter(|meta| meta.answering());
         let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.held));
         facts.filter(held).for_each(|fact| self.chain.vouch(fact));
         self.finalize(view);
@@ -175,63 +175,63 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let ceiling = chain.ceiling(HEADER_BATCH);
         let floor = chain.final_tip().map_or(H0, |tip| tip.height + 1);
         let mut retry: Option<Instant> = None;
-        for (at, meta) in view.endpoints().iter().enumerate() {
-            let (Some(claim), Some(member), true) =
-                (meta.tip(), self.members.get_mut(at), meta.answering())
+        for (at, meta) in view.trusted_validators().iter().enumerate() {
+            let (Some(claim), Some(fetch), true) =
+                (meta.tip(), self.fetch_states.get_mut(at), meta.answering())
             else {
                 continue;
             };
             if verified.as_ref().is_some_and(|verified| verified.holds(claim)) {
-                *member = Member::default();
+                *fetch = FetchState::default();
                 continue;
             }
-            if let Some(at) = member.retry_at.filter(|at| *at > now) {
+            if let Some(at) = fetch.retry_at.filter(|at| *at > now) {
                 retry = Some(retry.map_or(at, |retry| retry.min(at)));
                 continue;
             }
-            if member.forked == Some(claim) {
+            if fetch.forked == Some(claim) {
                 continue;
             }
             let id = TrustedValidatorId::new(at).expect("configured below TrustedValidatorId::MAX");
             let anchor = claim.height.saturating_sub(chain.anchor_below());
             if chain.final_tip().is_none() || anchor > ceiling {
-                return Ok(Run::Anchor { member: id, at: anchor });
+                return Ok(Run::Anchor { validator: id, at: anchor });
             }
             let above_best = verified.as_ref().map_or(H0, |v| v.best().height + 1);
-            let next = member.next.filter(|next| *next <= claim.height);
+            let next = fetch.next.filter(|next| *next <= claim.height);
             let from = next.unwrap_or(above_best.min(claim.height)).max(floor);
             let to = claim.height.min(ceiling);
             let to = (from + (HEADER_BATCH - 1)).min(to);
             if from <= to {
-                return Ok(Run::Extend { member: id, from, to, claim });
+                return Ok(Run::Extend { validator: id, from, to, claim });
             }
         }
         Err(retry)
     }
 
-    /// One run from its member; its fetch state follows the outcome
+    /// One run from its validator; its fetch state follows the outcome
     async fn fetch(&mut self, run: Run) {
-        let (member, after) = match run {
-            Run::Anchor { member, at } => (member, self.anchored(member, at).await),
-            Run::Extend { member, from, to, claim } => {
-                (member, self.extended(member, from, to, claim).await)
+        let (validator, after) = match run {
+            Run::Anchor { validator, at } => (validator, self.anchored(validator, at).await),
+            Run::Extend { validator, from, to, claim } => {
+                (validator, self.extended(validator, from, to, claim).await)
             }
         };
-        self.members[member.get()] = after;
+        self.fetch_states[validator.get()] = after;
     }
 
-    /// `member`'s headers at `heights`, decoded; `Err` = its fetch state (stalled, reported)
+    /// `validator`'s headers at `heights`, decoded; `Err` = its fetch state (stalled, reported)
     async fn headers(
         &self,
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         heights: Vec<BlockHeight>,
-    ) -> Result<Vec<Header>, Member> {
-        let address = self.core.current().endpoints()[member.get()].address.clone();
-        let answered = match self.balancer.headers(HeaderAsk::Pinned { member, heights }).await {
+    ) -> Result<Vec<Header>, FetchState> {
+        let address = self.core.current().trusted_validators()[validator.get()].address.clone();
+        let answered = match self.balancer.headers(HeaderAsk::Pinned { validator, heights }).await {
             Ok(answered) => answered,
             Err(unanswered) => {
-                warn!(endpoint = %address, %unanswered, "Header fetch failed");
-                return Err(Member::stalled());
+                warn!(validator = %address, %unanswered, "Header fetch failed");
+                return Err(FetchState::stalled());
             }
         };
         let mut headers = Vec::with_capacity(answered.value.len());
@@ -240,40 +240,40 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 Ok(Ok(header)) => headers.push(header),
                 Ok(Err(malformed)) => {
                     self.balancer.report(answered.ticket, &malformed);
-                    return Err(Member::stalled());
+                    return Err(FetchState::stalled());
                 }
                 // retreated since its claim was read: its next claim is read again
-                Err(GetAtHeightError::HeightNotFound(_)) => return Err(Member::stalled()),
+                Err(GetAtHeightError::HeightNotFound(_)) => return Err(FetchState::stalled()),
             }
         }
         match headers.is_empty() {
-            true => Err(Member::stalled()),
+            true => Err(FetchState::stalled()),
             false => Ok(headers),
         }
     }
 
-    /// `member`'s header at `at` = the final tip, everything held before dropped
-    async fn anchored(&mut self, member: TrustedValidatorId, at: BlockHeight) -> Member {
-        let header = match self.headers(member, vec![at]).await {
+    /// `validator`'s header at `at` = the final tip, everything held before dropped
+    async fn anchored(&mut self, validator: TrustedValidatorId, at: BlockHeight) -> FetchState {
+        let header = match self.headers(validator, vec![at]).await {
             Ok(mut headers) => headers.remove(0),
             Err(after) => return after,
         };
         self.chain.anchor(&header, at);
         info!(height = u32::from(at), hash = %header.hash(), "Header chain anchored");
         self.publish();
-        Member::default()
+        FetchState::default()
     }
 
-    /// `member`'s heights `from..=to` inserted in order, the last vouched, then finality
+    /// `validator`'s heights `from..=to` inserted in order, the last vouched, then finality
     async fn extended(
         &mut self,
-        member: TrustedValidatorId,
+        validator: TrustedValidatorId,
         from: BlockHeight,
         to: BlockHeight,
         claim: BlockRef,
-    ) -> Member {
+    ) -> FetchState {
         let headers = match self
-            .headers(member, (u32::from(from)..=u32::from(to)).map(BlockHeight::from).collect())
+            .headers(validator, (u32::from(from)..=u32::from(to)).map(BlockHeight::from).collect())
             .await
         {
             Ok(headers) => headers,
@@ -291,18 +291,19 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let floor = verified.as_ref().map_or(H0, |v| v.final_tip().height + 1);
         match refused {
             // its whole chain read, its claim still not held (an evicted side branch)
-            None if to == claim.height && !holds(claim) => Member::stalled(),
+            None if to == claim.height && !holds(claim) => FetchState::stalled(),
             // off our best: its branch continued from there
-            None => Member { next: (!on_best).then(|| to + 1), ..Member::default() },
+            None => FetchState { next: (!on_best).then(|| to + 1), ..FetchState::default() },
             // its chain leaves ours below `from`: from the final tip, then given up on this claim
             Some(Rejected::Orphan | Rejected::BelowFinal) => match from <= floor {
-                true => Member { forked: Some(claim), ..Member::default() },
-                false => Member { next: Some(floor), ..Member::default() },
+                true => FetchState { forked: Some(claim), ..FetchState::default() },
+                false => FetchState { next: Some(floor), ..FetchState::default() },
             },
             Some(rejected) => {
-                let address = self.core.current().endpoints()[member.get()].address.clone();
-                debug!(endpoint = %address, %rejected, "Trusted header refused");
-                Member::stalled()
+                let address =
+                    self.core.current().trusted_validators()[validator.get()].address.clone();
+                debug!(validator = %address, %rejected, "Trusted header refused");
+                FetchState::stalled()
             }
         }
     }

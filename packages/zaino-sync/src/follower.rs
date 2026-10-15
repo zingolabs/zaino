@@ -191,7 +191,7 @@ mod tests {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_source::testing::{within, Lie, ValidatorViews};
-    use zaino_traffic::{Limits, Trusted};
+    use zaino_traffic::{Limits, TrustedValidator};
 
     use super::*;
 
@@ -213,7 +213,7 @@ mod tests {
             Arc::new(member)
         });
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = members.iter().map(|member| Trusted {
+        let trusted = members.iter().map(|member| TrustedValidator {
             source: Arc::clone(member),
             priority: 0,
             limits,
@@ -285,7 +285,8 @@ mod tests {
         let b11 = chain.fork(h(4)).mine_empty(7).tip();
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let validator = Arc::new(chain.validator(a7));
-        let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+        let trusted =
+            vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
         let (balancer, balancing) = TrafficBalancer::new(trusted, None);
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
@@ -343,7 +344,7 @@ mod peers {
     use zaino_primitives::testing::{h, MockChain};
     use zaino_source::testing::{Port, ValidatorViews};
     use zaino_traffic::testing::PeerSetViews;
-    use zaino_traffic::{Limits, Peers, Trusted};
+    use zaino_traffic::{Limits, Peers, TrustedValidator};
 
     use super::*;
 
@@ -358,7 +359,8 @@ mod peers {
         let validator = Arc::new(chain.validator(a11));
         validator.reachable(&Port::ALL, false);
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+        let trusted =
+            vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
         let peers = Peers { transport: Arc::new(chain.peer_set(a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();

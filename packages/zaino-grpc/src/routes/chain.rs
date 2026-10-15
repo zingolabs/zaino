@@ -505,7 +505,7 @@ mod tests {
 
         // block 11 verified and held, not yet served: every stream stays open
         node.follow(&chain, tip_11);
-        rounds("11 held", || reader.current().endpoints()[0].tip() == Some(tip_11)).await;
+        rounds("11 held", || reader.current().trusted_validators()[0].tip() == Some(tip_11)).await;
         verified(tip_11);
         rounds("11 best", || snapshots.load().tips().best == Some(tip_11)).await;
         subscribers.extend(late);

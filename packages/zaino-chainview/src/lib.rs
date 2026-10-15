@@ -3,7 +3,6 @@
 
 mod admission;
 mod config;
-mod endpoints;
 mod error;
 mod fold;
 mod headers;
@@ -20,6 +19,7 @@ mod submit;
 mod telemetry;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod trusted_validators;
 mod view;
 
 #[cfg(test)]
@@ -27,7 +27,6 @@ mod network_model;
 #[cfg(test)]
 mod tests;
 
-pub use endpoints::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
 pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
 pub use observe::ObservationFold;
@@ -37,4 +36,5 @@ pub use ports::{PeerSource, UnspentOutputs};
 pub use snapshot::{ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread};
 pub use submit::SubmitPolicy;
 pub use telemetry::{describe_metrics, Alarms, METRIC_BUCKETS};
+pub use trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
 pub use view::{ChainView, ChainViewSubscriber};

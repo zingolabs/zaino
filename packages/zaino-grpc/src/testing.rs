@@ -18,7 +18,7 @@ use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_snapshot::{GrpcSnapshots, Publisher};
 use zaino_source::testing::{MockValidator, ValidatorViews};
-use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
+use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
 use zcash_protocol::TxId;
 
 use crate::service::{Dispatch, Method, Routes};
@@ -120,7 +120,7 @@ pub(super) fn routes_over(
 ) -> (Routes<MockValidator, DiskView>, TrafficDriver<MockValidator>, ObservationFold<MockValidator>)
 {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
+    let trusted = TrustedValidator { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let schedule = compiled_schedule(MAINNET).expect("mainnet compiled in");
     let address = vec!["node:8232".to_owned()];

@@ -28,7 +28,7 @@ use zaino_primitives::testing::{p2pkh, MockChain};
 use zaino_primitives::types::{Block, BlockFees};
 use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
 use zaino_sync::{FeeSink, FinalizedFollower, FollowError, SyncProgress};
-use zaino_traffic::{Limits, Trusted};
+use zaino_traffic::{Limits, TrustedValidator};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
@@ -415,8 +415,11 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
         Arc::new(member)
     });
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted =
-        members.iter().map(|member| Trusted { source: Arc::clone(member), priority: 0, limits });
+    let trusted = members.iter().map(|member| TrustedValidator {
+        source: Arc::clone(member),
+        priority: 0,
+        limits,
+    });
     let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
@@ -471,7 +474,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let mut headers = blocks.header_chain(DEPTH);
     let member = Arc::new(blocks.validator(genesis));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&member), priority: 0, limits }];
+    let trusted = vec![TrustedValidator { source: Arc::clone(&member), priority: 0, limits }];
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
@@ -535,7 +538,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let source = Arc::new(blocks.validator(a5));
     let (balancer, _never_driven) =
-        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+        TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let store =
         engine.open(Path::new("block_hash"), &schema(IndexKind::BlockHash), NonZeroUsize::MIN);

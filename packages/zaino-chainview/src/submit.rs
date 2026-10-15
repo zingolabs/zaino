@@ -21,7 +21,7 @@ use zaino_source::{NonDomainError, SendRawTransactionError};
 
 use zaino_traffic::TrustedValidatorId;
 
-use crate::endpoints::TrustedValidatorSet;
+use crate::trusted_validators::TrustedValidatorSet;
 
 /// How hard Zaino pushes one transaction into the network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
