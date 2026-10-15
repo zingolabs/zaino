@@ -12,8 +12,10 @@ use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
 use crate::{decode_header, Inserted};
 
-/// Depth 9; `trunk[h]` = trunk at height `h`, 0..=12, finalized through 3; `side` = a header at 12
-/// on 11 (equal work, received after the trunk's 12); `builder` mined both
+/// Depth 9, `builder` mined both branches
+///
+/// - `trunk[h]` = trunk at height `h`, 0..=12, finalized through 3
+/// - `side` = header at 12 on 11 (equal work, received after the trunk's 12)
 struct Valid {
     chain: HeaderChain,
     trunk: [BlockHash; 13],

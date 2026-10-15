@@ -44,8 +44,8 @@ pub fn held<S: Store>(store: &S, block: &Block) -> bool {
     Some(block.header().height) <= store.applied().tip().map(|tip| tip.height)
 }
 
-/// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`); time it took (an
-/// auto-commit included)
+/// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`) → time it took
+/// (auto-commit included)
 pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
     emit::applied_block(store.schema().kind.name(), changes.rows());
     let started = Instant::now();
@@ -53,7 +53,7 @@ pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
     started.elapsed()
 }
 
-/// Everything buffered → disk now (nothing buffered = nothing written); time it took
+/// Everything buffered → disk now (nothing buffered = nothing written) → time it took
 ///
 /// - failure = panic naming the index and its directory (store poisoned)
 pub fn commit<S: Store>(store: &mut S) -> Duration {

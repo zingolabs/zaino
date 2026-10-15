@@ -8,8 +8,10 @@ use zcash_protocol::consensus::{
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
 
-/// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
-/// or [`regtest`](Self::regtest); `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
+/// One network's header rules ([`mainnet`](Self::mainnet), [`testnet`](Self::testnet),
+/// [`regtest`](Self::regtest))
+///
+/// - `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Params {
     pub(crate) genesis: BlockHash,
@@ -41,7 +43,7 @@ const MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 6;
 const POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 18;
 
 impl Params {
-    /// `network`'s rules; regtest's heights from `schedule`
+    /// `network`'s rules (regtest's heights from `schedule`)
     pub fn for_network(network: NetworkType, schedule: &LocalNetwork) -> Self {
         match network {
             NetworkType::Main => Self::mainnet(),
@@ -77,10 +79,10 @@ impl Params {
         }
     }
 
-    /// Proof of work off (Equihash, hash ≤ target), nBits fixed at the limit; linkage, time and
-    /// work still enforced (`testnet.rs` `new_regtest`: a configured testnet, so testnet's
-    /// max-time height applies too)
+    /// Proof of work off (Equihash, hash ≤ target), nBits fixed at the limit
     ///
+    /// - linkage, time and work still enforced (`testnet.rs` `new_regtest`: a configured testnet,
+    ///   so testnet's max-time height applies too)
     /// - `schedule` only moves the averaging window at NU7 (nBits = the limit at every height)
     pub fn regtest(schedule: LocalNetwork) -> Self {
         Self {
@@ -169,9 +171,10 @@ mod tests {
 
     use super::*;
 
-    /// Limits as zcashd's chainparams encode them (`powLimit` → nBits): mainnet 0x1f07ffff,
-    /// testnet 0x2007ffff, regtest 0x200f0f0f; genesis hashes render back to their display form;
-    /// spacing, window and testnet's minimum-difficulty gap switch at Blossom and NU7
+    /// - limits as zcashd's chainparams encode them (`powLimit` → nBits): mainnet 0x1f07ffff,
+    ///   testnet 0x2007ffff, regtest 0x200f0f0f
+    /// - genesis hashes render back to their display form
+    /// - spacing, window and testnet's minimum-difficulty gap switch at Blossom and NU7
     #[test]
     fn each_network_carries_zcashd_limits_genesis_and_upgrade_switches() {
         let regtest = Params::regtest(all_at(h(1)));

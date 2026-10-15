@@ -59,7 +59,7 @@ pub enum Refused {
 }
 
 impl Ledger {
-    /// Nothing mined; the next block at `next`
+    /// Nothing mined, next block at `next`
     pub(super) fn empty(upgrades: LocalNetwork, next: BlockHeight) -> Self {
         Self {
             upgrades,
@@ -71,7 +71,7 @@ impl Ledger {
         }
     }
 
-    /// `tx` spent here as an unmined (non-coinbase) transaction; its fee, or nothing changed
+    /// `tx` spent here as an unmined (non-coinbase) transaction → its fee, or nothing changed
     pub fn admit(&mut self, tx: &Transaction) -> Result<Zatoshis, Refused> {
         if tx.transparent.coinbase {
             return Err(Refused::Coinbase);
@@ -105,7 +105,9 @@ impl Ledger {
     }
 
     /// M3 (distinct txids), M4 (coinbase spends nothing), M6 (spends, conservation, fee), M7
-    /// (pools) at `next`; all checked before anything held changes
+    /// (pools) at `next`
+    ///
+    /// - all checked before anything held changes
     pub(super) fn apply(&mut self, tx: &Transaction, stated: Option<u64>) -> Result<Fee, Refused> {
         let txid = tx.txid;
         if self.txids.contains(&txid) {

@@ -39,12 +39,13 @@ fn context(headers: &[Header], at: usize) -> Vec<Ancestor> {
     headers[from..at].iter().rev().map(|h| Ancestor { bits: h.bits(), time: h.time() }).collect()
 }
 
-/// Every captured header passes `validate`, its nBits reproduced exactly:
+/// Every captured header passes `validate`, its nBits reproduced exactly
+///
 /// - mainnet: genesis's first 300 (the limit while the window runs off genesis, height 1
 ///   included), Blossom's spacing switch at 653,600, the tip in 2026
 /// - testnet: minimum difficulty from 299,188 (gap > 6 × 150 s) and Blossom at 584,000 (> 6 × 75 s)
-/// - mid-chain ranges from their 29th header (17-block window + 11 medians held); each header
-///   links to the one before by hash
+/// - mid-chain ranges from their 29th header (17-block window + 11 medians held)
+/// - each header links to the one before by hash
 #[test]
 fn every_captured_header_passes_and_its_nbits_is_reproduced() {
     let window = AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
@@ -77,11 +78,13 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
 
 /// Anchored mid-chain at mainnet 3,508,500 (no history below), the next 200 real headers inserted
 /// as a trusted validator's (no rule run), each the new best, vouched as it lands, finalized
-/// behind a 10-block bound:
-/// - work counted from the anchor; only the newest max(2 · depth, CONTEXT) = 113 finalized headers
-///   answer by height, older ones = on the best chain by definition (finalized), a header below
-///   them = an orphan
-/// - the locator ends at the finalized tip; a re-anchor drops everything held before it
+/// behind a 10-block bound
+///
+/// - work counted from the anchor
+/// - only the newest max(2 · depth, CONTEXT) = 113 finalized headers answer by height, older ones
+///   = on the best chain by definition (finalized), a header below them = an orphan
+/// - locator ends at the finalized tip
+/// - re-anchor drops everything held before it
 #[test]
 fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() {
     let headers = headers(RECENT_RANGE);
@@ -145,12 +148,14 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
 
 /// Anchored at mainnet 3,508,500, trusted 1..=27, then untrusted (every rule over the ancestors the
 /// chain holds), finalized behind a 10-block bound so the ancestors read cross into the finalized
-/// headers:
+/// headers
+///
 /// - right after the anchor: too few held to judge (`ShortContext`: the caller's, not the header's)
 /// - 28..=200: real headers, each the new best
-/// - at 201: a wrong nBits, a broken solution (both: hash above target), a local clock 2 h + 1 s
-///   behind each refused with nothing inserted; its real self accepted after; a missing parent =
-///   orphan (difficulty and time rules mutation by mutation: the test below)
+/// - at 201: wrong nBits, broken solution (both: hash above target), local clock 2 h + 1 s behind
+///   → each refused, nothing inserted
+/// - then its real self accepted, a missing parent = orphan (difficulty and time rules mutation
+///   by mutation: the test below)
 #[test]
 fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
     let mainnet = Params::mainnet();
@@ -210,10 +215,11 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
 }
 
 /// Real headers, mutated one field at a time: each refused by the rule it breaks
+///
 /// - mainnet 3,508,600: Equihash, hash ≤ target, nBits, time, version (int32), nBits encoding
 /// - a regtest header: version > 4 valid, a non-minimal solution length refused by decode
-/// - testnet NU7: the 102-block window at 25 s decides nBits (the 17-block rule's is refused);
-///   the minimum-difficulty gap stays 450 s across Blossom → NU7 (451 qualifies, 450 does not)
+/// - testnet NU7: 102-block window at 25 s decides nBits (the 17-block rule's is refused)
+/// - testnet minimum-difficulty gap stays 450 s across Blossom → NU7 (451 qualifies, 450 not)
 /// - linkage in the chain: an unknown parent, a parent off the finalized chain
 #[test]
 fn each_mutation_is_refused_by_its_own_rule() {
@@ -329,7 +335,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     chain.check();
 }
 
-/// Decode: one exact header; a short one, a trailing byte, a wrong solution length all refused
+/// Decode: one exact header (short one, trailing byte, wrong solution length → all refused)
 #[test]
 fn decode_takes_exactly_one_header() {
     let raw = &GENESIS_RANGE[..HEADER_LEN];

@@ -1,8 +1,8 @@
 //! [`VerifiedChain`]: the one value everything downstream reads
 //!
 //! - clone = refcounts (`imbl`): a holder's answers never change
-//! - at or below the finalized tip = finalized by definition (a trusted validator held it); only
-//!   the newest `2 · depth` finalized headers answer by height
+//! - at or below the finalized tip = finalized by definition (a trusted validator held it)
+//! - only the newest `2 · depth` finalized headers answer by height
 
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
@@ -10,8 +10,8 @@ use zcash_protocol::BlockHash;
 
 use crate::chain::{BestTip, Node, Record};
 
-/// - `above[i]` = best branch at `finalized + 1 + i`; `finalized_headers` = the newest finalized
-///   headers, oldest first, the finalized tip last
+/// - `above[i]` = best branch at `finalized + 1 + i`
+/// - `finalized_headers` = newest finalized headers, oldest first, the finalized tip last
 /// - `nodes` = the header tree above the finalized tip, every branch
 #[derive(Debug, Clone)]
 pub struct VerifiedChain {

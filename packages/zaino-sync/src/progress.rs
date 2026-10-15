@@ -1,6 +1,6 @@
 //! [`SyncProgress`]: finalized blocks handed to the index writers, sampled at report time
 //!
-//! - Atomics, not a watch (bulk sync hands thousands of blocks a second; readers sample)
+//! - Atomics, not a watch (bulk sync hands thousands of blocks a second, readers sample)
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

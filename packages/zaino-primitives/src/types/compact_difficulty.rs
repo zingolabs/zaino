@@ -1,6 +1,6 @@
-//! Header `nBits`: 8-bit base-256 exponent + 24-bit signed mantissa → 256-bit [`Target`]; work =
-//! `floor(2^256 / (target + 1))` (protocol [§7.7.4] `ToTarget`, [§7.7.5] work)
+//! Header `nBits`: 8-bit base-256 exponent + 24-bit signed mantissa → 256-bit [`Target`]
 //!
+//! - work = `floor(2^256 / (target + 1))` (protocol [§7.7.4] `ToTarget`, [§7.7.5] work)
 //! - Accepted (a validator's checks, before any hash compare): sign bit clear, target within 256
 //!   bits, target non-zero, work within 128 bits
 //! - Port of zebra-chain v6.4.2 `src/work/difficulty.rs` on `uint`'s U256 (= zebra's type)
@@ -37,7 +37,7 @@ const EXPONENT_OFFSET: u32 = 3;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CompactDifficulty(u32);
 
-/// Threshold a header's hash must not exceed (zebra `ExpandedDifficulty`); ordered numerically
+/// Threshold a header's hash must not exceed (zebra `ExpandedDifficulty`, ordered numerically)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Target(U256);
 
@@ -84,7 +84,7 @@ impl CompactDifficulty {
 
 impl Target {
     /// `MeanTarget`: ⌊Σ / n⌋ as Σ quotients + ⌊Σ remainders / n⌋ (102 testnet targets overflow
-    /// U256); `None` = no targets
+    /// U256), `None` = no targets
     pub fn mean(targets: &[Self]) -> Option<Self> {
         let count = U256::from(targets.len());
         let (quotients, remainders) =
@@ -118,7 +118,7 @@ impl Target {
         mantissa.low_u32() + (size << PRECISION)
     }
 
-    /// `floor(2^256 / (self + 1))` as `!self / (self + 1) + 1`; `None` past 128 bits
+    /// `floor(2^256 / (self + 1))` as `!self / (self + 1) + 1` (`None` past 128 bits)
     fn work(self) -> Option<u128> {
         let divisor = self.0.checked_add(U256::one())?;
         let work = (!self.0 / divisor).checked_add(U256::one())?;

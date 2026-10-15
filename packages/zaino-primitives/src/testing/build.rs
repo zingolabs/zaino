@@ -1,5 +1,6 @@
-//! What a test states about a block or a transaction; [`MockChain`](super::MockChain) fills in the
-//! rest (txids, detection material, header) and checks it
+//! What a test states about a block or a transaction
+//!
+//! - rest (txids, detection material, header) filled + checked by [`MockChain`](super::MockChain)
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_protocol::TxId;
@@ -24,7 +25,7 @@ pub struct BlockBuilder {
     pub(super) bits: Option<u32>,
 }
 
-/// `Raw` = decoded bytes + the bytes (served by a validator double; a `Built` tx has none)
+/// `Raw` = decoded bytes + the bytes (served by a validator double, `Built` tx has none)
 #[derive(Debug, Clone)]
 pub(super) enum Planned {
     Built(TxBuilder),
@@ -46,13 +47,13 @@ impl BlockBuilder {
         self
     }
 
-    /// Real bytes + their decode (`zaino_source::testing::decoded`; decoding lives above this crate)
+    /// Real bytes + their decode (`zaino_source::testing::decoded`, decoding above this crate)
     pub fn raw_tx(mut self, (tx, bytes): (Transaction, Vec<u8>)) -> Self {
         self.txs.push(Planned::Raw(tx, bytes));
         self
     }
 
-    /// Header rule tests (default: parent + target spacing; must pass the median time past)
+    /// Header rule tests (default: parent + target spacing, must pass the median time past)
     pub fn time(self, unix: u32) -> Self {
         Self { time: Some(unix), ..self }
     }
@@ -70,7 +71,7 @@ impl BlockBuilder {
     }
 }
 
-/// One transaction; zats as `u64` / `i64` (checked against the supply when mined)
+/// Single transaction, zats as `u64` / `i64` (checked against the supply when mined)
 #[derive(Debug, Clone)]
 pub struct TxBuilder {
     pub(super) txid: Option<TxId>,

@@ -1,10 +1,10 @@
 //! One body per wanted block, from whichever member the balancer picks
 //!
-//! - By hash (NFS; peers or trusted): hash + merkle root vs the verified header + coinbase height
-//! - By height (FinalizedFollower, trusted members only, batched): coinbase height alone; body trusted
-//!   (linkage = the follower's, in delivery order)
-//! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again; who, hedges, retries =
-//!   `zaino-traffic`'s
+//! - By hash (NFS, peers or trusted): hash + merkle root vs the verified header + coinbase height
+//! - By height (FinalizedFollower, trusted members only, batched): coinbase height alone, body
+//!   trusted (linkage = the follower's, in delivery order)
+//! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again
+//! - who, hedges, retries = `zaino-traffic`'s
 
 use std::sync::Arc;
 
@@ -58,8 +58,10 @@ pub fn check_block(
     check_block_at(block, height)
 }
 
-/// `block` = the one at `height` (a trusted member's by-height answer: its body trusted, not
-/// re-hashed; the batch is paired with `heights` by position, so the coinbase height is checked)
+/// `block` = the one at `height` (a trusted member's by-height answer)
+///
+/// - body trusted, not re-hashed
+/// - coinbase height checked (batch paired with `heights` by position)
 fn check_block_at(block: Block, height: BlockHeight) -> Result<Checked, Misanswer> {
     let labelled = block.header().height;
     if labelled != height {
@@ -85,7 +87,7 @@ pub async fn fetch<S: ChainDataSource>(
 }
 
 /// Until one trusted member's batch at `heights` passes [`check_block_at`] block by block
-/// (`heights` order; drop = abandon)
+/// (`heights` order, drop = abandon)
 pub(crate) async fn fetch_at<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
     heights: Arc<[BlockHeight]>,
@@ -118,11 +120,14 @@ mod tests {
 
     use super::*;
 
-    /// Chain 0..=3 (2 = coinbase + 2 txs) + a side 2': the asked block passes; a sibling, a block
-    /// whose header lies about its height, a body with a txid added (root moves) and a body
-    /// repeating its last pair (root kept, CVE-2012-2459) are each refused by name; by height
-    /// (a trusted member's body, trusted) only the height lie is refused (the sibling = the
-    /// follower's linkage to refuse); a batch short of its heights = `Count`, never truncated
+    /// Chain 0..=3 (2 = coinbase + 2 txs) + a side 2'
+    ///
+    /// - asked block passes
+    /// - by hash: sibling, header lying about its height, txid added (root moves), last pair
+    ///   repeated (root kept, CVE-2012-2459) → each refused by name
+    /// - by height (trusted member's body, trusted): only the height lie refused (sibling = the
+    ///   follower's linkage to refuse)
+    /// - batch short of its heights = `Count`, never truncated
     #[test]
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
         let mut chain = MockChain::regtest();
@@ -169,9 +174,11 @@ mod tests {
         assert_eq!(short, Err(Misanswer::Count { asked: 2, got: 1 }), "a short batch = misanswer");
     }
 
-    /// M9: a `MockValidator` answers its best block honestly, by hash and by height, and each
-    /// `Lie` it is told to tell fails the body check by the rule that names it (by height, a
-    /// trusted member: only the height lie; a re-mined block = the successor's link to refuse)
+    /// M9: `MockValidator` answers its best block honestly, by hash and by height
+    ///
+    /// - each `Lie` it is told to tell fails the body check by the rule that names it
+    /// - by height (trusted member): only the height lie, re-mined block = successor's link to
+    ///   refuse
     #[tokio::test]
     async fn every_lie_a_mock_validator_tells_fails_the_body_check() {
         let mut chain = MockChain::regtest();

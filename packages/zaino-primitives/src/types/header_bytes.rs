@@ -128,7 +128,8 @@ mod tests {
     use super::*;
     use crate::testing::MockChain;
 
-    /// `encode_header` → `split` → every field back, the rest untouched; each layout fault named
+    /// - `encode_header` → `split` → every field back, the rest untouched
+    /// - each layout fault named
     #[test]
     fn split_reads_back_every_encoded_field_and_names_each_layout_fault() {
         let chain = MockChain::regtest();

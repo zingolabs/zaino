@@ -1,7 +1,7 @@
 //! Work that must not run on an async worker, awaited like any I/O
 //!
 //! - [`compute`] = CPU-bound index construction (fold, encode, project, sort) on the rayon pool,
-//!   one thread per core; inside it, `rayon::par_*` spreads data-parallel work over that pool
+//!   one thread per core (`rayon::par_*` inside it spreads data-parallel work over that pool)
 //! - [`blocking`] = a blocking syscall (pwrite, fsync, rename) on tokio's blocking pool
 //! - a panic in either resumes on the awaiting task (zainod: abort, never a half-built state)
 //! - the caller's tracing span rides along (a pool thread's lines keep their component)

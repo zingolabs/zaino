@@ -90,8 +90,10 @@ mod tests {
     use zcash_transparent::address::Script;
 
     /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
-    /// one zatoshi apiece, so a dropped or flipped term shows); a coinbase pays none; below 0 =
-    /// `Negative`, past the supply = `Overflow`
+    /// one zatoshi apiece, so a dropped or flipped term shows)
+    ///
+    /// - coinbase pays none
+    /// - below 0 = `Negative`, past the supply = `Overflow`
     #[test]
     fn a_fee_is_what_inputs_and_pools_leave_and_never_below_zero_or_past_the_supply() {
         let tx = |coinbase: bool, outputs: &[u64], pools: [i64; 4]| {

@@ -54,8 +54,10 @@ impl HeaderViews for MockChain {
     }
 }
 
-/// Each header of `blocks` in order as a trusted validator's run (the anchor itself = `Known`),
-/// the last vouched; the first refusal ends it
+/// Each header of `blocks` in order as a trusted validator's run (the anchor itself = `Known`)
+///
+/// - last one vouched
+/// - first refusal ends it
 pub fn insert(chain: &mut HeaderChain, blocks: &[Arc<Block>]) -> Result<(), Rejected> {
     for block in blocks {
         let raw = encode_header(block.header());
@@ -79,8 +81,8 @@ mod tests {
     use super::*;
     use crate::Inserted;
 
-    /// Varied chain: views follow it as built, finalized where asked; the header chain follows its
-    /// outweigh (work decides, not height)
+    /// - varied chain: views follow it as built, finalized where asked
+    /// - header chain follows its outweigh (work decides, not height)
     #[test]
     fn a_mock_chain_verifies_as_built_and_its_header_chain_follows_the_work() {
         let mut chain = MockChain::regtest().varied_work();
@@ -122,9 +124,12 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-        /// M5 + M8, each the other's oracle: after every shape (extend, fork, outweigh, revive,
-        /// side branch; Limit turns each outweigh into a longer fork) every new block inserts into
-        /// the real header chain and `MockChain::tip` = `HeaderChain::best`; outweigh = the best
+        /// M5 + M8, each the other's oracle, after every shape (extend, fork, outweigh, revive,
+        /// side branch)
+        ///
+        /// - every new block inserts into the real header chain, `MockChain::tip` =
+        ///   `HeaderChain::best`
+        /// - outweigh = the best (Limit turns each outweigh into a longer fork)
         #[test]
         fn the_builders_best_tip_is_the_real_header_chains_best(
             varied: bool,

@@ -1,4 +1,4 @@
-//! Zcash protocol constants and rules (specification facts; restating them elsewhere = bug)
+//! Zcash protocol constants and rules (specification facts, restating them elsewhere = bug)
 
 use zcash_protocol::consensus::{NetworkType, Parameters, MAIN_NETWORK, TEST_NETWORK};
 use zcash_protocol::local_consensus::LocalNetwork;
@@ -20,7 +20,7 @@ pub fn compiled_schedule(network: NetworkType) -> Option<LocalNetwork> {
 /// No valid reorg rewrites more than this many blocks
 pub const MAX_BLOCK_REORG_HEIGHT: u32 = 1000;
 
-/// Serialized block ceiling (protocol spec §7.1 `MAX_BLOCK_SIZE`; a transaction never exceeds it)
+/// Serialized block ceiling (protocol spec §7.1 `MAX_BLOCK_SIZE`, transaction size ≤ it)
 pub const MAX_BLOCK_BYTES: usize = 2_000_000;
 
 /// Ancestors whose times a median time past reads (protocol spec `PoWMedianBlockSpan`)
@@ -37,7 +37,8 @@ pub fn median_time_past(newest_first: impl IntoIterator<Item = u32>) -> Option<u
 mod tests {
     use super::*;
 
-    /// Unsorted input; only the newest 11 count; an even count takes the upper middle
+    /// - unsorted input, only the newest 11 count
+    /// - even count → upper middle
     #[test]
     fn median_time_past_is_the_upper_median_of_the_newest_eleven() {
         let newest_first = [9, 1, 8, 2, 7, 3, 6, 4, 5, 10, 11, 1_000, 2_000];

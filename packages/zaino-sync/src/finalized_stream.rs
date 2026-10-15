@@ -93,7 +93,7 @@ pub struct Subscription<T> {
 }
 
 impl<T> Subscription<T> {
-    /// Next step, its bytes returned to the budget; `Shutdown` again on every call after it
+    /// Next step, its bytes returned to the budget (`Shutdown` again on every call after it)
     pub async fn next(&mut self) -> Step<T> {
         let queued = self.rx.recv().await;
         self.popped(queued)
@@ -121,8 +121,9 @@ impl<T> Subscription<T> {
 
 impl<T: Weight> Subscription<T> {
     /// Next step + every `Apply` already queued behind it, to the queue's budget (one batch of
-    /// work, no wait past the first step); `None` = `Shutdown`
+    /// work, no wait past the first step)
     ///
+    /// - `None` = `Shutdown`
     /// - `FinalizedTip` block ends the run, included
     pub async fn next_run(&mut self) -> Option<Run<T>> {
         let first = self.next().await;
@@ -130,7 +131,7 @@ impl<T: Weight> Subscription<T> {
         (!run.blocks.is_empty()).then_some(run)
     }
 
-    /// `first` + queued `Apply`s to `budget` bytes; `Shutdown` ends it (the next `next` = it again)
+    /// `first` + queued `Apply`s to `budget` bytes (`Shutdown` ends it, next `next` = it again)
     fn run(&mut self, first: Step<T>, budget: NonZeroUsize) -> Run<T> {
         let mut run = Run { blocks: Vec::new(), ends_at_finalized_tip: false };
         let mut bytes = 0usize;
@@ -156,8 +157,10 @@ impl<T: Weight> Subscription<T> {
     }
 }
 
-/// Budget = semaphore permits (1 per byte) over an unbounded channel: the byte-bounded queue
-/// tokio lacks; `capacity` = largest acquire (a step heavier than the budget waits for empty)
+/// Budget = semaphore permits (1 per byte) over an unbounded channel (byte-bounded queue tokio
+/// lacks)
+///
+/// - `capacity` = largest acquire (a step heavier than the budget waits for empty)
 struct Subscriber<T> {
     name: &'static str,
     tx: mpsc::UnboundedSender<Queued<T>>,
@@ -206,7 +209,7 @@ impl<T> FinalizedStream<T> {
         Subscription { rx, budget, shut_down: false }
     }
 
-    /// `Shutdown` last in every queue; never waits (budget bypassed)
+    /// `Shutdown` last in every queue, never waits (budget bypassed)
     pub fn shutdown(self) {
         for subscriber in &self.subscribers {
             subscriber.push(Queued { step: Step::Shutdown, _held: None });
@@ -268,8 +271,9 @@ mod tests {
         }
     }
 
-    /// Two subscribers see the same steps in the same order; a send cancelled while `two` is full
-    /// reaches neither; `Shutdown` lands last and stays popped
+    /// - two subscribers see the same steps in the same order
+    /// - send cancelled while `two` full → reaches neither
+    /// - `Shutdown` lands last and stays popped
     #[tokio::test]
     async fn every_subscriber_sees_the_same_steps_a_cancelled_send_none_then_shutdown_forever() {
         let mut sink = FinalizedStream::<Blob>::new();
@@ -351,8 +355,11 @@ mod tests {
         sub.next().await;
     }
 
-    /// Budget = three 100-byte steps: a fourth waits for a pop; a step over the whole budget
-    /// passes alone once the queue drains; `Shutdown` queues behind a full budget, never waits
+    /// Budget = three 100-byte steps
+    ///
+    /// - fourth waits for a pop
+    /// - step over the whole budget passes alone once the queue drains
+    /// - `Shutdown` queues behind a full budget, never waits
     #[tokio::test]
     async fn a_byte_budget_bounds_the_queue_and_never_holds_back_shutdown() {
         let step = size_of::<Step<Blob>>() + 100;

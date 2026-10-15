@@ -6,7 +6,7 @@ use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
-/// From its writer (`XIndexWriter::handle`); cheap clone
+/// From its writer (`XIndexWriter::handle`), cheap clone
 #[derive(Clone)]
 pub struct IndexHandle<V> {
     durable: watch::Receiver<V>,
@@ -35,7 +35,7 @@ impl<V: View> IndexHandle<V> {
         self.durable.borrow().tip().map(|tip| tip.height)
     }
 
-    /// Next durable view; `false` = its writer gone
+    /// Next durable view (`false` = its writer gone)
     pub async fn changed(&mut self) -> bool {
         self.durable.changed().await.is_ok()
     }

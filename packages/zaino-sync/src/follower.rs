@@ -2,8 +2,8 @@
 //!
 //! - Target = the chain's finalized tip height
 //! - A height the verified chain holds a header for: by hash, from any member (peers included),
-//!   checked against that header; below the headers held (bulk): by height from a trusted
-//!   member, batched (trusted = trusted)
+//!   checked against that header
+//! - Below the headers held (bulk): by height from a trusted member, batched (trusted = trusted)
 //! - Starts after the lowest durable tip (an index ahead skips what it holds)
 //! - Each block's parent = the block sent before it, and = the durable tip of each index it
 //!   extends (else `Unlinked` / `Diverged`: stop, never skip)
@@ -66,7 +66,7 @@ impl<S: ChainDataSource> FinalizedFollower<S> {
         }
     }
 
-    /// `kind`'s stream; `durable` = its store's durable tip; `queue` = the stream's byte budget
+    /// `kind`'s stream (`durable` = its store's durable tip, `queue` = the stream's byte budget)
     pub fn subscribe(
         &mut self,
         kind: IndexKind,
@@ -114,8 +114,8 @@ async fn follow<S: ChainDataSource>(
         let finalized_height = verified.as_ref().map(|chain| chain.finalized_tip().height);
         let header_at = |height| verified.as_ref().and_then(|chain| chain.header_at(height));
         while in_flight < lookahead.get() && Some(wanted) <= finalized_height {
-            // own task: fetches progress while `send` waits on a full queue (else every in-flight
-            // reply sits unread); abort on drop: no fetch outlives the follower
+            // - own task: fetches progress while `send` waits on a full queue (else replies unread)
+            // - abort on drop: no fetch outlives the follower
             let fetched = match header_at(wanted) {
                 Some(record) => {
                     let at = BlockRef { hash: record.hash, height: wanted };
@@ -200,11 +200,13 @@ mod tests {
 
     use super::*;
 
-    /// Chain A 0..=11, finalized 5 then 8; an honest member + a `Lie::Poisoned` liar (by height
-    /// too); two subscribers, one durable at A2, one fresh:
+    /// Chain A 0..=11, finalized 5 then 8, honest member + `Lie::Poisoned` liar (by height too),
+    /// two subscribers (one durable at A2, one fresh)
+    ///
     /// - both queues = A0..=A8, once each, in order, the honest bodies (a lie never sent)
     /// - the finalized tip's block (A5, then A8) `FinalizedTip`, every other `Apply`
-    /// - nothing above the finalized tip; progress = the last height sent, blocks counted
+    /// - nothing above the finalized tip
+    /// - progress = the last height sent, blocks counted
     /// - cancel → `Ok`, `Shutdown` last in every queue
     #[tokio::test(start_paused = true)]
     async fn finalized_blocks_reach_every_subscriber_once_in_order_from_the_lowest_durable_tip() {
@@ -357,9 +359,11 @@ mod peers {
 
     use super::*;
 
-    /// The trusted validator unreachable throughout, the peer set holding A0..=A11; finalized 8 on
-    /// a chain naming every header: A0..=A8 reach the stream from the peer set alone (each checked
-    /// against its verified header; the validator, asked first, never answers)
+    /// Trusted validator unreachable throughout, peer set holding A0..=A11, finalized 8 on a chain
+    /// naming every header
+    ///
+    /// - A0..=A8 reach the stream from the peer set alone
+    /// - each checked against its verified header (validator asked first, never answers)
     #[tokio::test(start_paused = true)]
     async fn finalized_blocks_the_verified_chain_names_come_from_peers_when_no_validator_answers() {
         let mut chain = MockChain::regtest();
@@ -394,8 +398,9 @@ mod peers {
         cancel.cancel();
     }
 
-    /// Headers held from A3 (anchored there), finalized 8; the trusted validator on B (B3.. off A2),
-    /// the peer set on A; lookahead past one by-height batch:
+    /// Headers held from A3 (anchored there), finalized 8, trusted validator on B (B3.. off A2),
+    /// peer set on A, lookahead past one by-height batch
+    ///
     /// - A0..=A2 by height (below the headers: the validator's, shared by both chains)
     /// - A3..=A8 by hash, checked: the batch stops at A3 (by height they would be B's)
     #[tokio::test(start_paused = true)]

@@ -1,6 +1,7 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! Every block handed out passes M1–M7 (else panic naming the rule; `usage.md` § Invariants):
+//! Every block handed out passes M1–M7 (else panic naming the rule, `usage.md` § Invariants)
+//!
 //! - M1: hash = SHA-256d(`encode_header`)
 //! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
 //! - M3: merkle root = `MerkleRoot::of_txids`, txids distinct per branch (`Ledger::apply`)
@@ -28,8 +29,10 @@ use crate::types::{
 };
 use zcash_protocol::BlockHash;
 
-/// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
-/// `Varied` = `Branch::outweigh` / `BlockBuilder::bits` allowed (header views accept any nBits)
+/// nBits source
+///
+/// - `Limit` = the regtest limit everywhere (strict header rules, heavier = longer)
+/// - `Varied` = `Branch::outweigh` / `BlockBuilder::bits` allowed (header views accept any nBits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
     Limit,
@@ -44,7 +47,7 @@ pub struct Schedule {
     pub network: NetworkType,
 }
 
-/// Block tree over one genesis; best chain = the most-work tip, first mined on a tie
+/// Block tree over one genesis (best chain = the most-work tip, first mined on a tie)
 #[derive(Debug)]
 pub struct MockChain {
     schedule: Schedule,
@@ -73,7 +76,7 @@ impl MockChain {
         Self::over(schedule, BlockBuilder::new())
     }
 
-    /// Before the first mine; heights in protocol order (zebrad refuses any other config)
+    /// Before the first mine, heights in protocol order (zebrad refuses any other config)
     pub fn upgrades(self, upgrades: LocalNetwork) -> Self {
         let upgrades = LocalNetwork::from_activation_heights(|nu| upgrades.activation_height(nu));
         let schedule = Schedule { upgrades, ..self.schedule };
@@ -140,7 +143,7 @@ impl MockChain {
         self.branch(tip).mine(block).tip()
     }
 
-    /// `count` bare blocks on `tip()`; the last (`tip()` itself when `count` = 0)
+    /// `count` bare blocks on `tip()` → the last (`tip()` itself when `count` = 0)
     pub fn mine_empty(&mut self, count: u32) -> BlockRef {
         let tip = self.tip();
         self.branch(tip).mine_empty(count).tip()
@@ -327,7 +330,8 @@ impl MockChain {
     /// Mempool re-admitted on the best after it left `old`
     ///
     /// - `old`'s transactions above the fork come back first, block order (coinbases and
-    ///   `TxBuilder` ones never: no bytes); mined, conflicting or orphaned entries leave
+    ///   `TxBuilder` ones never: no bytes)
+    /// - mined, conflicting or orphaned entries leave
     fn repool(&mut self, old: BlockHash) {
         let old = self.reference(old);
         let fork = self.fork_point(old, self.tip());
@@ -351,7 +355,7 @@ impl MockChain {
         self.mempool = self.ledger(self.tip()).readmit(candidates);
     }
 
-    /// Coinbase first, each beside its stated fee; default txids minted
+    /// Coinbase first, each beside its stated fee, default txids minted
     ///
     /// - `raw_tx` bytes held at once (keyed by the txid they hash to: never wrong for any block)
     fn plan(&mut self, spec: BlockBuilder) -> Vec<(Transaction, Option<u64>)> {

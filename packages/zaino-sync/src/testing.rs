@@ -46,7 +46,7 @@ pub struct Writer<V> {
 }
 
 impl<V: View> Writer<V> {
-    /// `run` (the writer's loop over the subscription) spawned; `queue` = one run's bytes
+    /// `run` (the writer's loop over the subscription) spawned (`queue` = one run's bytes)
     pub fn spawn<F>(
         handle: IndexHandle<V>,
         queue: NonZeroUsize,
@@ -116,7 +116,7 @@ impl<'a> FinalizedStreamFixture<'a> {
         Self { blocks, sent: 0 }
     }
 
-    /// Steps for `next` (a `Reopen`'s → the restarted writer; a `Send` past the end = what is left)
+    /// Steps for `next` (`Reopen`'s → the restarted writer, `Send` past the end = what is left)
     pub fn steps(&mut self, next: Move) -> Vec<Step<Block>> {
         match next {
             Move::Send(count) => {

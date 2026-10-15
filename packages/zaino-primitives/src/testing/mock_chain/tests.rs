@@ -12,10 +12,12 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// M1–M4 on every block handed out, and what reads them back:
-/// - genesis pinned byte for byte; each hash = SHA-256d of its header bytes
+/// M1–M4 on every block handed out, and what reads them back
+///
+/// - genesis pinned byte for byte, each hash = SHA-256d of its header bytes
 /// - each child one height and one target spacing up (150 s pre-Blossom, 75 s, 25 s from NU7)
-/// - merkle root = the txids'; one coinbase, slot 0; siblings distinct, the first mined best
+/// - merkle root = the txids', one coinbase in slot 0
+/// - siblings distinct, the first mined = best
 /// - `getblockchaininfo`: active / pending by the tip, branch ids at the tip and the next block
 #[test]
 fn every_block_is_a_real_linked_header_over_its_own_transactions() {
@@ -81,9 +83,10 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
 }
 
 /// M6 + M7 accepted: Alice's 50 000 coinbase funds a block whose txs spend in order, one of them
-/// an output earlier in the same block; Sapling takes 29 000 in and gives 20 000 back, Sprout
-/// 18 000 and 9 000
-/// - stated fees match, unstated ones are derived; `fees` = `[Coinbase, Paid(..)..]`
+/// an output earlier in the same block
+///
+/// - Sapling takes 29 000 in and gives 20 000 back, Sprout 18 000 and 9 000
+/// - stated fees match, unstated ones derived, `fees` = `[Coinbase, Paid(..)..]`
 /// - a sibling branch may mine the same txid (a reorged tx, re-mined)
 #[test]
 fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_leaves() {
@@ -325,8 +328,11 @@ fn a_height_above_the_best_tip_panics() {
 }
 
 /// M5: `outweigh()` = the best right after its first block, by the least work that wins
-/// - retreat (12 → 11), same-height replacement, revival of an old tip; later blocks at the limit
-/// - one nBits step easier would have lost; a side branch never moves the tip
+///
+/// - retreat (12 → 11), same-height replacement, revival of an old tip
+/// - later blocks at the limit
+/// - one nBits step easier would have lost
+/// - side branch never moves the tip
 /// - `Work::Limit`: every nBits the limit, the longer fork wins, an equal one does not
 #[test]
 fn outweigh_takes_the_best_with_the_least_work_that_wins() {
@@ -368,8 +374,10 @@ fn outweigh_takes_the_best_with_the_least_work_that_wins() {
 }
 
 /// Mempool on Alice's 50 000 coinbase: `parent` (fee 1 000), `child` spending it (fee 500)
-/// - each held at the fee its spends leave; evicting `parent` drops `child` (orphaned)
-/// - `mine_mempool` carries both in order at those fees, bytes kept; the mempool then empty
+///
+/// - each held at the fee its spends leave
+/// - evicting `parent` drops `child` (orphaned)
+/// - `mine_mempool` carries both in order at those fees, bytes kept, mempool then empty
 #[test]
 fn the_mempool_holds_what_the_best_admits_until_mined() {
     let alice = p2pkh([0xaa; 20]);
@@ -400,8 +408,10 @@ fn the_mempool_holds_what_the_best_admits_until_mined() {
     assert_eq!(held(&chain), [], "mined = out of the mempool");
 }
 
-/// Reorgs around a block mining `parent` + `child` (Alice's coinbase at 1 funds `parent`):
-/// - its branch outweighed: both back, block order; it revived: both mined again, gone
+/// Reorgs around a block mining `parent` + `child` (Alice's coinbase at 1 funds `parent`)
+///
+/// - its branch outweighed: both back, block order
+/// - it revived: both mined again, gone
 /// - a winner spending `parent`'s prevout first: `parent` conflicts, `child` orphaned, both gone
 #[test]
 fn a_reorg_returns_what_the_best_no_longer_mines_and_drops_conflicts() {

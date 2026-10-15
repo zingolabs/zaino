@@ -31,8 +31,9 @@ impl MerkleRoot {
 mod tests {
     use super::*;
 
-    /// One txid = itself; a pair = SHA-256d of both; an odd level pairs its last with itself; a
-    /// repeated pair (same root as without it) and an empty list have no root
+    /// - single txid = itself, pair = SHA-256d of both
+    /// - odd level pairs its last with itself
+    /// - repeated pair (same root as without it) and empty list → no root
     #[test]
     fn merkle_root_pairs_by_sha256d_duplicates_an_odd_last_and_refuses_a_mutated_list() {
         let [a, b, c] = [[1u8; 32], [2; 32], [3; 32]];

@@ -66,7 +66,7 @@ mod tests {
         age_secs: Option<Duration>,
     }
 
-    /// Whole seconds both ways; 0 = zero, refused, never (per adapter)
+    /// Whole seconds both ways (0 = zero, refused, never: per adapter)
     #[test]
     fn each_adapter_reads_and_writes_whole_seconds_with_its_zero_rule() {
         let secs = Duration::from_secs;

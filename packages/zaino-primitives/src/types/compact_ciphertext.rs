@@ -5,8 +5,8 @@ const COMPACT_CIPHERTEXT_LENGTH: usize = 52;
 /// Full Sapling / Orchard / Ironwood note ciphertext width
 const NOTE_CIPHERTEXT_LENGTH: usize = 580;
 
-/// First 52 bytes of a 580-byte note ciphertext (enough to trial-decrypt; the whole note needs
-/// the full transaction)
+/// First 52 bytes of a 580-byte note ciphertext (enough to trial-decrypt, whole note needs the
+/// full transaction)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CompactCiphertext(pub [u8; COMPACT_CIPHERTEXT_LENGTH]);
 

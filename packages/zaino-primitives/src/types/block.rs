@@ -43,7 +43,8 @@ pub enum BodyMismatch {
 /// Decoded from its consensus bytes: the one parse every index consumes
 ///
 /// - Each index keeps what it needs and drops the rest (no per-consumer re-parse)
-/// - Position = block order (coinbase = slot 0); no cumulative indexed state
+/// - Position = block order (coinbase = slot 0)
+/// - No cumulative indexed state
 #[derive(Debug, Clone)]
 pub struct Block {
     header: DecodedHeader,
@@ -130,8 +131,11 @@ mod tests {
         assert_eq!(chain.block(two.hash).block_ref(), two);
     }
 
-    /// Body = what its header commits to: its own passes; a txid added or reordered moves the root;
-    /// a repeated last pair keeps the root (CVE-2012-2459) and is refused as mutated
+    /// Body = what its header commits to
+    ///
+    /// - its own passes
+    /// - txid added or reordered → root moves
+    /// - repeated last pair keeps the root (CVE-2012-2459) → refused as mutated
     #[test]
     fn a_body_passes_only_when_its_txids_rebuild_its_headers_merkle_root() {
         let mut chain = crate::testing::MockChain::regtest();

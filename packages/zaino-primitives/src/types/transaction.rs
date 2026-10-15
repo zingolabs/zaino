@@ -8,7 +8,7 @@ use zcash_transparent::bundle::OutPoint;
 use super::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 
 /// - `txid`: pre-v5 = SHA-256d of the bytes, v5+ = ZIP-244 id
-/// - No position (slot = [`Block::transactions`](super::Block::transactions) order; mempool: none)
+/// - No position (slot = [`Block::transactions`](super::Block::transactions) order, mempool: none)
 /// - `ironwood` = Orchard-shaped, own field (own tree, value balance, compact-block filter)
 #[derive(Debug, Clone)]
 pub struct Transaction {
@@ -21,7 +21,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Heap bytes held (allocation capacities; the inline struct excluded)
+    /// Heap bytes held (allocation capacities, inline struct excluded)
     pub(crate) fn heap_size(&self) -> usize {
         fn slots<T>(items: &Vec<T>) -> usize {
             size_of::<T>() * items.capacity()
@@ -56,14 +56,14 @@ pub struct TransparentOutput {
 
 /// Value only (no compact-format fields)
 ///
-/// - `value_balance` = Σ `vpub_new` − Σ `vpub_old`, v2–v4 (+ = into the transparent value pool;
+/// - `value_balance` = Σ `vpub_new` − Σ `vpub_old`, v2–v4 (+ = into the transparent value pool,
 ///   protocol.pdf §4.12)
 #[derive(Debug, Clone, Default)]
 pub struct SproutData {
     pub value_balance: ZatBalance,
 }
 
-/// `value_balance` = `valueBalanceSapling` (+ = into the transparent value pool; spec §4.13)
+/// `value_balance` = `valueBalanceSapling` (+ = into the transparent value pool, spec §4.13)
 #[derive(Debug, Clone, Default)]
 pub struct SaplingData {
     pub spends: Vec<SaplingSpend>,
@@ -86,7 +86,7 @@ pub struct SaplingOutput {
 
 /// - Action = spend + output
 /// - `value_balance` = `valueBalanceOrchard` / `valueBalanceIronwood` (+ = into the transparent
-///   value pool; protocol.pdf §4.14, ZIP-229)
+///   value pool, protocol.pdf §4.14, ZIP-229)
 #[derive(Debug, Clone, Default)]
 pub struct OrchardData {
     pub actions: Vec<OrchardAction>,

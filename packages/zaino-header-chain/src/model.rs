@@ -1,22 +1,23 @@
 //! Header trees at random against a naive model
 //!
-//! - any nBits, so work varies per branch and the most work is not the highest; anchored at
-//!   genesis (work counted from it)
-//! - trusted runs (no rule run) and untrusted ones (every rule: the model predicts an edited time
-//!   not past the median; ancestors held are always enough, `KEPT` ≥ `CONTEXT`)
+//! - any nBits (work varies per branch, most work != highest)
+//! - anchored at genesis (work counted from it)
+//! - trusted runs (no rule run) and untrusted ones (every rule, model predicts an edited time not
+//!   past the median, ancestors held always enough as `KEPT` ≥ `CONTEXT`)
 //! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
-//!   the finalized chain as a list (the chain keeps only its newest `KEPT`); best = the max-work
-//!   leaf (first received on a tie), eviction = the lowest-work side leaf (last received on a
-//!   tie), both recomputed from scratch
-//! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`; a trusted run =
-//!   its last header vouched, then finality
+//!   the finalized chain as a list (the chain keeps only its newest `KEPT`)
+//! - best = max-work leaf (first received on a tie), eviction = lowest-work side leaf (last
+//!   received on a tie), both recomputed from scratch
+//! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`, trusted run = its
+//!   last header vouched, then finality
 //! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
-//!   parent); finalized target = min(highest vouched on best, best − depth)
+//!   parent)
+//! - finalized target = min(highest vouched on best, best − depth)
 //! - peer finality oracle: best − depth above the finalized tip, unless a non-finalized best-path
 //!   header's work (from its own nBits) is under half the highest vouched header's (the anchor's at
 //!   first)
 //! - checked after every move: `check()`, best, finalized tip, boundary, tree size + its bound
-//!   (H9), every height of the published chain (kept finalized headers and above; older finalized
+//!   (H9), every height of the published chain (kept finalized headers and above, older finalized
 //!   headers = on best by definition), its locator, its forks and their branches, `holds` for every
 //!   header ever mined, and the chain published one move earlier still answering as it did (H5)
 //! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
@@ -48,7 +49,7 @@ const BITS: [u32; 3] = [0x200f_0f0f, 0x1f7f_ffff, 0x1f0f_ffff];
 /// The local clock: past every mined header (the 2 h future bound never fires)
 const NOW: i64 = i64::MAX / 2;
 
-/// - `Extend`: `bits.len()` headers on mined `parent`, `gap` s apart; `trusted` = a validator's
+/// - `Extend`: `bits.len()` headers on mined `parent`, `gap` s apart, `trusted` = a validator's
 ///   run (its last accepted header vouched, then finality)
 /// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
 /// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
@@ -438,10 +439,12 @@ impl Builder {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
-    /// After every move the chain answers exactly like the model: every insert's outcome, best
-    /// tip and work, finalized tip, boundary, live tree, every height and header of the published
-    /// chain, its locator, forks, branches and `holds`; `check()` holds; old published chains
-    /// never change
+    /// After every move: chain answers = model (every insert's outcome, best tip and work,
+    /// finalized tip, boundary, live tree, every height and header of the published chain, its
+    /// locator, forks, branches and `holds`)
+    ///
+    /// - `check()` holds
+    /// - old published chains never change
     #[test]
     fn random_header_trees_answer_like_the_naive_model(moves in moves()) {
         run(moves);
@@ -475,7 +478,8 @@ fn run(moves: Vec<Move>) {
     type Published = (VerifiedChain, Vec<Record>, usize, Vec<(BlockRef, bool)>);
     let mut published: Option<Published> = None;
 
-    // the driver's: nothing above the ceiling offered (H9); untrusted = every rule run first
+    // - driver's: nothing above the ceiling offered (H9)
+    // - untrusted = every rule run first
     let params = Params::regtest(all_at(height(1)));
     let params = params.with_genesis(genesis.hash()).any_bits();
     let offer = |chain: &mut HeaderChain,

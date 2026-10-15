@@ -5,7 +5,7 @@
 //! - `getblockheader <h> false` per height → `tests/fixtures/<network>_<start>.headers`
 //! - file = the raw consensus headers, concatenated (1487 bytes each: 200-9 solution)
 //! - testnet: no golden zebra on the tailnet (`kubectl -n golden-testnet port-forward svc/zebra`)
-//! - NU7 range: only from a validator that activated NU7 (zebra ≥ 7; a 6.x follows the old rules)
+//! - NU7 range: only from a validator that activated NU7 (zebra ≥ 7, 6.x = old rules)
 
 use std::io::Write;
 

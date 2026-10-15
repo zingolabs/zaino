@@ -6,12 +6,12 @@
 //!                                  └──●──●         B   work 1000.2   (kept: may still win)
 //! ```
 //!
-//! - trusted: a header enters on its parent link + its nBits work alone (zebra validated it);
-//!   untrusted ([`HeaderChain::insert_untrusted`]): every consensus rule first, over the
+//! - trusted: a header enters on its parent link + its nBits work alone (zebra validated it)
+//! - untrusted ([`HeaderChain::insert_untrusted`]): every consensus rule first, over the
 //!   ancestors held
 //! - anchored, never from genesis: [`HeaderChain::anchor`] = one trusted header as the finalized
 //!   tip, work counted from it
-//! - pure core: no clock, no lock, no I/O; one owner (`HeaderSync`) drives it
+//! - pure core: no clock, no lock, no I/O, one owner (`HeaderSync`)
 //! - H1 best = max work, H2 descends from finalized, H4 bounded, H5 published never changes, H6
 //!   finalized = vouched or peer-confirmed: asserted by [`HeaderChain::check`] and on every
 //!   finalize
@@ -61,8 +61,9 @@ pub struct BestTip {
 
 /// What an accepted header did to the chain
 ///
-/// - `Known` = held already (tree or finalized); `Side` = no more work than the best (maybe evicted
-///   at once: H4); `Best { reorg }` = new tip, `reorg` = not a child of the previous best
+/// - `Known` = held already (tree or finalized)
+/// - `Side` = no more work than the best (maybe evicted at once: H4)
+/// - `Best { reorg }` = new tip, `reorg` = not a child of the previous best
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inserted {
     Known,
@@ -70,7 +71,7 @@ pub enum Inserted {
     Best { reorg: bool },
 }
 
-/// - `received` = arrival order (H1 tie: first received wins; eviction tie: last received goes)
+/// - `received` = arrival order (H1 tie → first received wins, eviction tie → last received goes)
 /// - `vouched` closed under parents (H6)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node {
@@ -118,8 +119,9 @@ impl HeaderChain {
         }
     }
 
-    /// `header` at `height`, from a trusted validator, = the finalized tip; everything held before
-    /// dropped (a start, or a jump to a validator far ahead)
+    /// `header` at `height`, from a trusted validator, = the finalized tip
+    ///
+    /// - everything held before dropped (a start, or a jump to a validator far ahead)
     pub fn anchor(&mut self, header: &Header, height: BlockHeight) {
         let record = Record {
             hash: header.hash(),
@@ -243,7 +245,8 @@ impl HeaderChain {
 
     /// A trusted validator had `block` on its best chain: it + every ancestor vouched (H6)
     ///
-    /// - permanent (zebra commits only valid blocks); not held above the finalized tip = no-op
+    /// - permanent (zebra commits only valid blocks)
+    /// - not held above the finalized tip = no-op
     pub fn vouch(&mut self, block: BlockRef) {
         let mut at = block.hash;
         let Some(node) = self.nodes.get(&at).filter(|node| node.height == block.height) else {
@@ -298,9 +301,10 @@ impl HeaderChain {
         self.on_best(node.block_ref()).then_some(node.height)
     }
 
-    /// Every best-chain header up to `through` becomes finalized, every branch not descending from
-    /// it pruned; the newest `finalized_headers_kept()` finalized
-    /// headers kept
+    /// Every best-chain header up to `through` finalized
+    ///
+    /// - every branch not descending from it pruned
+    /// - newest `finalized_headers_kept()` finalized headers kept
     pub fn finalize(&mut self, through: BlockRef) {
         let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);
         assert!(vouched, "H6: only a vouched block (or an ancestor of one) becomes finalized");
@@ -354,7 +358,7 @@ impl HeaderChain {
         self.best_path = self.best_path.skip(count);
     }
 
-    /// H1, H2, H4, H5, H6 and the tree's own bookkeeping; panics naming the invariant broken
+    /// H1, H2, H4, H5, H6 + the tree's own bookkeeping (panics naming the invariant broken)
     ///
     /// - O(nodes): tests run it after every mutation
     pub fn check(&self) {

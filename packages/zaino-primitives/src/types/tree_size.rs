@@ -4,8 +4,9 @@ use core::fmt;
 
 /// Cumulative note-commitment count of one pool's tree, as of a block
 ///
-/// - `u32`-backed = every format's range; a full depth-32 tree (`2^32`) refused at
-///   [`TryFrom<u64>`] / `checked_add`, never written as `0` (#549)
+/// - `u32`-backed = every format's range
+/// - full depth-32 tree (`2^32`) refused at [`TryFrom<u64>`] / `checked_add`, never written as `0`
+///   (#549)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TreeSize(u32);
 

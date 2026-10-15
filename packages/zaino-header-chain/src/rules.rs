@@ -74,7 +74,7 @@ impl Rejected {
 }
 
 /// Every consensus rule `header` at `height` must meet: alone (version, nBits, solution, proof of
-/// work), then against `ancestors` (newest first, up to `CONTEXT`; empty = genesis) and the clock
+/// work), then against `ancestors` (newest first, up to `CONTEXT`, empty = genesis) and the clock
 ///
 /// - for an untrusted source only: a trusted validator's headers skip it (zebra ran it)
 pub(crate) fn validate(
@@ -118,7 +118,7 @@ pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
     Ok(())
 }
 
-/// `header` at `height` after `context` (ancestors, newest first; empty for genesis) and the clock
+/// `header` at `height` after `context` (ancestors, newest first, empty for genesis) and the clock
 ///
 /// - `context` = every ancestor near genesis, else the window + one median span
 ///   ([`Rejected::ShortContext`]: the caller holds too few, never the header's fault)
@@ -166,8 +166,11 @@ pub(crate) fn equihash_valid(header: &Header) -> Result<(), Rejected> {
         .map_err(|_| Rejected::Solution)
 }
 
-/// `GetNextWorkRequired` (`None` = any nBits): regtest = the limit; testnet after a long gap =
-/// the limit; else [`threshold`] over the window for `height`
+/// `GetNextWorkRequired` (`None` = any nBits)
+///
+/// - regtest = the limit
+/// - testnet after a long gap = the limit
+/// - else [`threshold`] over the window for `height`
 pub(crate) fn expected_bits(
     params: &Params,
     height: BlockHeight,
@@ -185,8 +188,8 @@ pub(crate) fn expected_bits(
     if params.min_difficulty_gap(height).is_some_and(|min_gap| gap > min_gap) {
         return Some(params.limit_bits());
     }
-    // zcashd `pow.cpp`: the window walk off genesis (`pindexFirst == NULL`) = the limit outright;
-    // zebra 6.x damps a limit mean instead, which mints the wrong nBits at mainnet height 1
+    // - zcashd `pow.cpp`: window walk off genesis (`pindexFirst == NULL`) = the limit outright
+    // - zebra 6.x damps a limit mean instead (wrong nBits at mainnet height 1)
     let window = params.averaging_window(height);
     if u32::from(height) as usize <= window {
         return Some(params.limit_bits());
@@ -227,9 +230,11 @@ mod tests {
     }
 
     /// zcashd `src/test/pow_tests.cpp` `CalculateNextWorkRequired` vectors (mean bits, timespan
-    /// → bits), pre-Blossom at mainnet height 0; the Blossom variants at mainnet's Blossom height
-    /// (half the spacing, same clamps); a testnet NU7 window (102 × 25 s) clamps on the same
-    /// percentages, so the lower-limit vector lands on the same nBits there too
+    /// → bits)
+    ///
+    /// - pre-Blossom at mainnet height 0
+    /// - Blossom variants at mainnet's Blossom height (half the spacing, same clamps)
+    /// - testnet NU7 window (102 × 25 s): lower-limit vector → same nBits (same clamp percentages)
     #[test]
     fn threshold_reproduces_zcashds_pow_vectors() {
         let mainnet = Params::mainnet();
