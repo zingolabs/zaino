@@ -72,11 +72,3 @@ command = "git push"
 
 [[workflows.steps]]
 type = "Release"
-
-# crates.io, dependency order (an owner of the published crates, after `release`)
-[[workflows]]
-name = "publish"
-
-[[workflows.steps]]
-type = "Command"
-command = "cargo publish --workspace --locked"

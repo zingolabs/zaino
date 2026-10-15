@@ -94,7 +94,7 @@ How it is built, and why:
 - [What the clients actually call](./docs/client-requirements.md): an audit of the two wallet sync engines.
 
 Releasing it:
-- [RELEASING.md](./RELEASING.md): change files, releases, publishing.
+- [RELEASING.md](./RELEASING.md): change files and releases.
 
 ### Crate usage guides
 

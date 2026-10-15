@@ -1,14 +1,12 @@
 [package]
 name = "zaino-index-utxo-set"
+publish.workspace = true
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 edition.workspace = true
 license.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 description = "UTXO-set index: every transparent output's value, resolving each transaction's fee for the FeeSink"
 
 [dependencies]

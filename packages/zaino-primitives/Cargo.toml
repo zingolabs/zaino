@@ -1,5 +1,6 @@
 [package]
 name = "zaino-primitives"
+publish.workspace = true
 description = "Zcash chain-level domain types (heights, hashes, blocks, transactions) shared by every Zaino crate."
 version.workspace = true
 edition.workspace = true
@@ -7,9 +8,6 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 # `testing::MockChain`: regtest block trees with real header bytes, for every test

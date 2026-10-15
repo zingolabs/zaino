@@ -1,14 +1,12 @@
 [package]
 name = "zaino-proto"
+publish.workspace = true
 description = "Tonic-generated lightwallet CompactTxStreamer service and compact-format types."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-readme = { workspace = true }
-keywords = { workspace = true }
-categories = { workspace = true }
 version.workspace = true
 
 [dependencies]

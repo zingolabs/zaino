@@ -52,14 +52,11 @@ git fetch origin && git switch -c release/0.11 "$SHA" && git push -u origin rele
 # 3. bump + CHANGELOG.md from .changeset/, commit, push, GitHub release + tag v0.11.0
 GITHUB_TOKEN=$(gh auth token) knope release
 
-# 4. crates.io, in dependency order (needs an owner of the published crates)
-knope publish
-
-# 5. carry the bump and the consumed change files back to dev (needs one approval)
+# 4. carry the bump and the consumed change files back to dev (needs one approval)
 gh pr create -B dev -f && gh pr merge --auto --merge
 ```
 
-Step 5 is required. Without it `dev` keeps the old version and the change files that were
+Step 4 is required. Without it `dev` keeps the old version and the change files that were
 already released.
 
 A pre-release takes a label: `knope release --prerelease-label alpha` gives `0.11.0-alpha.3`

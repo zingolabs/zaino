@@ -2,13 +2,6 @@
 
 Canonical terms, where the team has picked one word among several.
 
-## Release engineering
-
-**Publishable set**:
-The crates released to crates.io, all at the workspace version: every
-`packages/*` crate without `publish = false`.
-_Avoid_: crate list, publish list
-
 ## Chains and networks
 
 **The Public Testnet**:

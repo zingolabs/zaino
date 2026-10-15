@@ -31,12 +31,11 @@ repos:
         entry: code-dupes check
         types: [rust]
         pass_filenames: false
-      # cargo_common_metadata: crates.io-required manifest fields (`knope publish`)
       - id: clippy
         name: cargo clippy
         language: system
         entry: >-
           cargo clippy --locked --workspace --all-targets --all-features --
-          -D warnings -D clippy::cargo_common_metadata
+          -D warnings
         pass_filenames: false
         stages: [pre-push]

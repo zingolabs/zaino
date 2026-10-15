@@ -1,11 +1,9 @@
 [package]
 name = "zaino-index-transparent-address"
+publish.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
 repository.workspace = true
 description = "Transparent-address index: receives and spends as two insert-only map projections"
 
