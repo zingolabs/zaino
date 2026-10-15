@@ -36,7 +36,8 @@ fn to_status(error: ServeError) -> Status {
 /// One range's cursor + the status its stream ends in once the cursor is spent
 ///
 /// - `ends` = `OUT_OF_RANGE` when the range reaches past the compact-block tip (lightwalletd: lazily
-///   to the tip, then the error; an early `OK` end hangs the iOS downloader for good)
+///   to the tip, then the error)
+/// - early `OK` end hangs the iOS downloader for good
 struct Walk<V> {
     cursor: RangeCursor<V>,
     ends: Status,
@@ -44,7 +45,7 @@ struct Walk<V> {
 
 /// Server-streaming response, cursor chunk by chunk
 ///
-/// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
+/// - `grpc-status` in trailers only (headers precede the walk, a status there = response done)
 /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
 fn range_response<V: PinnedView>(
     walk: Walk<V>,
@@ -94,8 +95,9 @@ pub(crate) fn latest<V>(at: &IndexesAtBlock<V>) -> Response<Body> {
 
 /// `GetBlock`: one whole block, every pool
 ///
-/// - TODO: deprecate pending light-client ZIP updates (`GetBlockRange` defaults shielded-only:
-///   one block != range of one; `BlockID` has no `poolTypes`; kept = lightwalletd parity)
+/// - TODO: deprecate pending light-client ZIP updates (kept = lightwalletd parity)
+/// - one block != range of one (`GetBlockRange` defaults shielded-only, `BlockID` has no
+///   `poolTypes`)
 pub(crate) async fn block<V, B>(
     (at, blocks): Compact<'_, V>,
     body: B,
@@ -122,7 +124,7 @@ where
 {
     let id: service::BlockId = wire::decode_request(body).await?;
 
-    // Hash wins when given (names one block across a reorg; a height doesn't)
+    // Hash wins when given (names one block across a reorg, a height doesn't)
     if !id.hash.is_empty() {
         let through = at.answers_through(IndexKind::CompactBlock);
         let (height, hash) = wire::locate(at, through, &id.hash, "GetBlock")?;
@@ -195,7 +197,8 @@ fn open_range<V: PinnedView>(
 
 // =================================================================================================
 // !!! TODO: REMOVE THIS MODULE. DEPRECATED `GetBlockRangeNullifiers`.
-// !!! - Served only because pepper-sync still calls it; not part of Zaino's supported surface
+// !!! - Served only for pepper-sync (still calls it)
+// !!! - not part of Zaino's supported surface
 // !!! - Delete with its `ROUTES` row + `Method` variant and its proto rpc once pepper-sync
 // !!!   requests `GetBlockRange` with `poolTypes`
 // =================================================================================================
@@ -287,8 +290,10 @@ mod tests {
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes, MAINNET,
     };
 
-    /// `GetBlock` by hash: the block-hash index locates, the compact index answers only where it
-    /// holds that same block; no locator wired = `Unimplemented`
+    /// `GetBlock` by hash:
+    ///
+    /// - block-hash index locates, compact index answers only where it holds that same block
+    /// - no locator wired = `Unimplemented`
     #[tokio::test]
     async fn get_block_by_hash_answers_only_where_the_compact_index_holds_that_block() {
         use http_body_util::BodyExt as _;
@@ -296,7 +301,7 @@ mod tests {
         use tower::Service as _;
         use zaino_proto::proto::service;
 
-        // compact index over 0..=2; locator over 0, 1, then a sibling at 2
+        // compact index over 0..=2, locator over 0, 1, then a sibling at 2
         let mut chain = MockChain::regtest().network(MAINNET);
         let two = chain.mine_empty(2);
         let other_2 = chain.fork(h(1)).mine_empty(1).tip();
@@ -346,9 +351,11 @@ mod tests {
         assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
     }
 
-    /// GrpcSnapshot served at 5: a range reaching past the tip streams every block to the tip
-    /// in walk order, then `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on
-    /// one); a first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
+    /// GrpcSnapshot served at 5:
+    ///
+    /// - range reaching past the tip streams every block to the tip in walk order, then
+    ///   `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on one)
+    /// - first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
     #[tokio::test]
     async fn get_block_range_past_the_tip_streams_to_it_then_ends_out_of_range() {
         use http_body_util::BodyExt as _;
@@ -396,7 +403,9 @@ mod tests {
     }
 
     /// Blocks 1..=5: a coinbase paying alice, then one tx spending it into every pool (transparent
-    /// in + out, a sapling spend + output, one orchard, two ironwood actions); body = stored bytes
+    /// in + out, a sapling spend + output, one orchard, two ironwood actions):
+    ///
+    /// - body = stored bytes
     /// - `GetBlock` 3: one unary record, transparent kept
     /// - `GetBlockRange` 1..=4, no `poolTypes`: shielded only, one data frame, `OK` trailers
     /// - `[TRANSPARENT]`: the coinbase kept, orchard dropped
@@ -571,8 +580,8 @@ mod tests {
         assert_eq!(projected, expected);
     }
 
-    /// Malformed ranges refused at the boundary (never reach the index's asserts); grpc-message
-    /// percent-encoded
+    /// - malformed ranges refused at the boundary (never reach the index's asserts)
+    /// - grpc-message percent-encoded
     #[tokio::test]
     async fn a_malformed_range_is_invalid_argument_before_any_read() {
         use prost::Message as _;

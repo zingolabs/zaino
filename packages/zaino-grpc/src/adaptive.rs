@@ -1,7 +1,8 @@
 //! Adaptive work-stream limit: Netflix concurrency-limits' Gradient2 over server time per message
 //!
 //! - sample = time the server spent producing one message (admission → first DATA frame, then
-//!   each poll → the next); a client's backpressure never counts (hyper stops polling)
+//!   each poll → the next)
+//! - client backpressure never counts (hyper stops polling)
 //! - per window: `limit × clamp(TOLERANCE × long / short, 0.5, 1) + √limit`, smoothed, in
 //!   `floor..=ceiling` (`max_work_streams`)
 //! - window whose peak in flight < limit / 2 = app-limited: no change (a quiet node never inflates)

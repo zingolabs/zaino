@@ -7,7 +7,7 @@
 //!                                              └─▶ transitions(prev, next)
 //! ```
 //!
-//! - No tearing: each input = one immutable `Arc`; a snapshot = two `Arc`s + `Copy` tips
+//! - No tearing: each input = one immutable `Arc`, a snapshot = two `Arc`s + `Copy` tips
 //! - Inputs `watch`-coalesced: a burst publishes once, from the latest of both
 
 use std::sync::Arc;
@@ -146,7 +146,8 @@ impl<V> Publisher<V> {
         self.core.handle()
     }
 
-    /// Cancel → `Ok`; the NFS gone before it → `IndexedGone`
+    /// - cancel → `Ok`
+    /// - NFS gone before it → `IndexedGone`
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), GrpcSnapshotError> {
         loop {
             tokio::select! {

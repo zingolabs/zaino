@@ -4,8 +4,8 @@
 //! - Chain view: header moves (extend, reorg above finalized, finalize), holders (some claiming
 //!   past best), mempool (relays, drops), a block mining a held tx while the view still lists it
 //!   (listings lag a block)
-//! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet;
-//!   root = genesis (every served block above it)
+//! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet
+//! - NFS root = genesis (every served block above it)
 //! - Each move published or coalesced with the next (the run loop's `watch`es keep the latest)
 //! - Tails opened at random, drained after every publish: each tx once per epoch, every one the
 //!   epoch carried, end iff the served tip moved and only once the new snapshot is stored
@@ -34,10 +34,12 @@ const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonze
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
 /// - `Reorg`: top `depth` (above finalized) replaced by `len` blocks, the first outweighing them
-/// - `Ahead` = holders in `mask` claim a block past best (header sync short of them); `read` =
-///   their hash at best polled (still holders), else not yet (no longer holders)
-/// - `Relay` = ours (held, served); `Mine` = one block on best carrying that txid (kept held)
-/// - `ServeBest` = NFS `lag` below the best; `ServeOld` = an earlier best tip (reorg in flight)
+/// - `Ahead` = holders in `mask` claim a block past best (header sync short of them)
+/// - `Ahead.read` = their hash at best polled (still holders), else not yet (no longer holders)
+/// - `Relay` = ours (held, served)
+/// - `Mine` = one block on best carrying that txid (kept held)
+/// - `ServeBest` = NFS `lag` below the best
+/// - `ServeOld` = an earlier best tip (reorg in flight)
 /// - paired `bool` = published now (else coalesced with the next)
 #[derive(Debug, Clone)]
 enum Input {
@@ -74,8 +76,8 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// Every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6),
-    /// standing; every tail = its epoch exactly, ended iff the served tip moved past it (G5)
+    /// - every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6), standing
+    /// - every tail = its epoch exactly, ended iff the served tip moved past it (G5)
     #[test]
     fn every_publish_composes_the_latest_inputs_and_tails_follow_the_served_tip(moves in moves()) {
         run(moves);
@@ -96,8 +98,9 @@ struct Tailed {
     ended: bool,
 }
 
-/// `held` / `ahead` = bitmasks over `ADDRESSES` (ahead counts for holders only, `read` = `Ahead`'s);
-/// `mempool` = our relays the view still lists (real bytes: `relayed(pick)`)
+/// - `held` / `ahead` = bitmasks over `ADDRESSES` (ahead counts for holders only)
+/// - `read` = `Ahead`'s
+/// - `mempool` = our relays the view still lists (real bytes: `relayed(pick)`)
 struct Model {
     builder: MockChain,
     headers: HeaderChain,
@@ -324,7 +327,7 @@ fn run(moves: Vec<(Input, bool)>) {
 /// Clock the model reads standing at (before every block: every best fresh)
 const EPOCH: i64 = 0;
 
-/// From tips alone (a chain always verified; holders `Live`, the rest `Pending`)
+/// From tips alone (a chain always verified, holders `Live`, the rest `Pending`)
 fn standing_of(tips: &Tips) -> Standing {
     match (tips.held_by.is_empty(), tips.synced) {
         (true, true) => Standing::Degraded(Down::TipNotHeld),

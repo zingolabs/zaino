@@ -1,6 +1,7 @@
 //! Admission outcomes per summary window (`report::INTERVAL`) → refusal rate + overload latch
 //!
-//! - every outcome recorded here once (a refusal's metric included); read = last closed window
+//! - every outcome recorded here once (a refusal's metric included)
+//! - read = last closed window
 //! - overload = persistent over-capacity, for readiness (backstop: admission sheds within seconds)
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,8 +11,9 @@ use std::time::Duration;
 use crate::admission::Class;
 use crate::emit;
 
-/// Overloaded once every window refuses >= `ENTER_SHARE` of work (at >= `ENTER_REFUSALS_PER_S`)
-/// for `SUSTAINED`; cleared once every window stays < `EXIT_SHARE` as long
+/// - overloaded: every window refuses >= `ENTER_SHARE` of work (at >= `ENTER_REFUSALS_PER_S`)
+///   for `SUSTAINED`
+/// - cleared: every window < `EXIT_SHARE` as long
 const SUSTAINED: Duration = Duration::from_secs(5 * 60);
 const ENTER_SHARE: f64 = 0.10;
 const ENTER_REFUSALS_PER_S: f64 = 1.0;
@@ -93,7 +95,8 @@ mod tests {
     /// - 30 % refused (one window dipping to 25 %): overloaded after exactly 5 min
     /// - back to 0 %: cleared after exactly 5 min under 2 %
     /// - 50 % of 1 admission/s (0.5 refusals/s): under the 1/s floor, never overloaded
-    /// - a tick = its window's refusals, subscriptions included; `refused_per_s` = work only
+    /// - tick = its window's refusals, subscriptions included
+    /// - `refused_per_s` = work only
     #[test]
     fn overload_latches_after_five_sustained_minutes_and_clears_after_five_quiet() {
         let minute = Duration::from_secs(60);

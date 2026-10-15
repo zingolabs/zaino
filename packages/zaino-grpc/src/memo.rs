@@ -36,7 +36,8 @@ impl<V, K: Eq + Hash, T: Clone> PerView<V, K, T> {
     /// `compute` at most once per `(view, key)`
     ///
     /// - concurrent askers of one key block on the first (single flight: the herd after a block
-    ///   costs one computation); other keys proceed
+    ///   costs one computation)
+    /// - other keys proceed
     /// - blocking: call off the async workers when `compute` reads pages
     pub(crate) fn get_or_compute(&self, view: &Arc<V>, key: K, compute: impl FnOnce() -> T) -> T {
         let cell = {
@@ -55,8 +56,9 @@ impl<V, K: Eq + Hash, T: Clone> PerView<V, K, T> {
 mod tests {
     use super::*;
 
-    /// One computation per (view, key) however many ask at once; a new view starts empty; an
-    /// uncomputed key is not `cached`
+    /// - one computation per (view, key) however many ask at once
+    /// - new view starts empty
+    /// - uncomputed key != `cached`
     #[test]
     fn each_view_computes_each_key_once_and_a_new_view_starts_fresh() {
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};

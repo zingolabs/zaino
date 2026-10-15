@@ -2,7 +2,8 @@
 //!
 //! - Provider passed per `ServerConfig`, never installed process-wide (two providers in one
 //!   graph = rustls refuses to pick: zainod 0.5.0's startup panic, #1360)
-//! - Renewal = new files on disk; [`Tls::reload`] swaps them in whole, a bad pair keeps the old
+//! - Renewal = new files on disk
+//! - [`Tls::reload`] swaps them in whole, a bad pair keeps the old
 
 use std::{
     future::Future,
@@ -71,7 +72,7 @@ impl Tls {
             .map_err(TlsError::Config)?
             .with_no_client_auth()
             .with_cert_resolver(Arc::clone(&certs) as Arc<dyn ResolvesServerCert>);
-        // gRPC = h2 (preferred); HTTP/1.1 = load-balancer health monitors (`health.rs`)
+        // gRPC = h2 (preferred), HTTP/1.1 = load-balancer health monitors (`health.rs`)
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Self { acceptor: TlsAcceptor::from(Arc::new(config)), certs })
     }
@@ -173,8 +174,9 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsConnector;
 
-    /// Serves its pair over a real h2 handshake; a renewal swaps in without a restart; a
-    /// mismatched renewal keeps the last good pair; a mismatched boot pair refuses to start
+    /// - serves its pair over a real h2 handshake
+    /// - renewal swaps in without a restart
+    /// - mismatched renewal keeps the last good pair, mismatched boot pair refuses to start
     #[tokio::test]
     async fn serves_renews_and_refuses_a_bad_pair() {
         let dir = tempfile::tempdir().expect("tempdir");

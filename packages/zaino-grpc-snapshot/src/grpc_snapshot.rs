@@ -48,7 +48,8 @@ pub enum Unavailable {
 ///
 /// - `Syncing` also while every holder of best is catching up (best trails the network)
 /// - `Degraded` = serving a fresh proof-of-work-verified best no trusted validator vouches for
-///   (peers'); `Down` = that best stale or not yet served
+///   (peers')
+/// - `Down` = that best stale or not yet served
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
     Serving,
@@ -143,9 +144,11 @@ impl<V> GrpcSnapshot<V> {
         self.indexed.as_ref()
     }
 
-    /// First match: every validator down, or best unheld → degraded while synced to a fresh best
-    /// (`now_unix` = the clock), else down; not synced or best held only by validators catching
-    /// up → syncing; else serving
+    /// First match (`now_unix` = the clock):
+    ///
+    /// - all validators down, or best unheld → `Degraded` while synced to a fresh best, else `Down`
+    /// - not synced, or best held only by validators catching up → `Syncing`
+    /// - else `Serving`
     pub fn standing(&self, now_unix: i64) -> Standing {
         let trusted_validators = self.view.trusted_validators();
         let health = |at: usize| trusted_validators.get(at).map(|meta| meta.health);

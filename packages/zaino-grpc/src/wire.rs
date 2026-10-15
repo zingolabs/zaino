@@ -26,7 +26,7 @@ pub(super) fn height(raw: u64, field: &str) -> Result<BlockHeight, Status> {
 /// answering index's [`zaino_nfs::IndexesAtBlock::answers_through`])
 ///
 /// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
-///   a time; a test may pair views of different chains)
+///   a time, a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::PinnedView>(
     at: &zaino_nfs::IndexesAtBlock<V>,
     through: BlockHeight,
@@ -45,7 +45,7 @@ pub(super) fn locate<V: zaino_persistence::PinnedView>(
     Ok((height.ok_or_else(missing)?, hash))
 }
 
-/// Client `poolTypes` → [`Pools`] (empty = shielded default; unknown / `POOL_TYPE_INVALID` refused)
+/// Client `poolTypes` → [`Pools`] (empty = shielded default, unknown / `POOL_TYPE_INVALID` refused)
 pub(super) fn pools(raw: &[i32]) -> Result<Pools, Status> {
     use zaino_proto::proto::service::PoolType;
 
@@ -98,11 +98,12 @@ pub(super) fn frame_all<M: prost::Message>(messages: &[M]) -> bytes::Bytes {
     bytes::Bytes::from(framed)
 }
 
-/// Request body caps (gRPC framing included); over one = `RESOURCE_EXHAUSTED` (= tonic's own)
+/// Request body caps (gRPC framing included)
 ///
+/// - over one = `RESOURCE_EXHAUSTED` (= tonic's own)
 /// - claimed paths collect their own bodies (tonic's 4 MiB default never applies)
 pub(super) mod request_limit {
-    /// Every claimed request but a transaction: ids, ranges, address lists (~1.5k t-addresses;
+    /// Every claimed request but a transaction: ids, ranges, address lists (~1.5k t-addresses,
     /// clients send tens)
     pub(crate) const MESSAGE: usize = 64 * 1024;
 
@@ -115,8 +116,9 @@ pub(super) mod request_limit {
 
 /// Unary response, body = one already-framed record, then `OK` trailers
 ///
-/// - never `grpc-status` in headers beside a body (= Trailers-Only, body forbidden: grpc-go,
-///   grpc-java, grpcio fail it "closed the stream without sending trailers"; tonic tolerates it)
+/// - never `grpc-status` in headers beside a body (= Trailers-Only, body forbidden)
+/// - grpc-go, grpc-java, grpcio fail it "closed the stream without sending trailers" (tonic
+///   tolerates it)
 pub(super) fn unary_response(record: bytes::Bytes) -> Response<Body> {
     streamed_response(vec![record])
 }
@@ -263,7 +265,8 @@ mod tests {
     use crate::service::{Method, RouteDeps};
     use crate::testing::{dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET};
 
-    /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
+    /// - `poolTypes` → pools served (pruning itself = compact-block's projection)
+    /// - unknown refused
     /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
     #[test]
     fn pool_types_name_the_pools_empty_means_shielded_only_and_unknown_is_refused() {
@@ -298,8 +301,8 @@ mod tests {
         assert_eq!(pools(&every), Pools::ALL);
     }
 
-    /// A body over its method's cap is `RESOURCE_EXHAUSTED` before any decode; one byte under is
-    /// decoded as usual (then refused for what it says: a hash is 32 bytes)
+    /// - body over its method's cap → `RESOURCE_EXHAUSTED` before any decode
+    /// - one byte under → decoded as usual (then refused for what it says: a hash = 32 bytes)
     #[tokio::test]
     async fn a_request_body_over_its_cap_is_refused_before_it_is_decoded() {
         use tower::Service as _;

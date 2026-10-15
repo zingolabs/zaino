@@ -30,8 +30,9 @@ impl Watch {
         self.owing.lock().expect("stall watch poisoned").values().min().copied()
     }
 
-    /// Resolves once some stream has owed for `timeout` (sleeps to the oldest deadline; with
-    /// nothing owed, rechecks every `timeout`: detection within 2 × `timeout` at worst)
+    /// Resolves once some stream has owed for `timeout` (sleeps to the oldest deadline)
+    ///
+    /// - nothing owed → recheck every `timeout` (detection within 2 × `timeout` at worst)
     pub(crate) async fn stalled(&self, timeout: Duration) {
         loop {
             let deadline = match self.oldest() {
@@ -80,8 +81,9 @@ impl Drop for Ticket {
 mod tests {
     use super::*;
 
-    /// A frame handed and never pulled trips the watch at the timeout, not before; a pull or a
-    /// dropped stream clears it; a quiet connection never trips
+    /// - frame handed, never pulled → watch trips at the timeout, not before
+    /// - pull / dropped stream clears it
+    /// - quiet connection never trips
     #[tokio::test(start_paused = true)]
     async fn only_data_left_unpulled_for_the_timeout_trips_the_watch() {
         let timeout = Duration::from_secs(300);

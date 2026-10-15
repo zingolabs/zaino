@@ -49,8 +49,8 @@ fn routes() -> RouteDeps<MockValidator, DiskView> {
 
 const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
-/// Real wallet → real answer over hyper-served h2; second connection from its address closed at
-/// accept
+/// - real wallet → real answer over hyper-served h2
+/// - second connection from its address closed at accept
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused() {
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");

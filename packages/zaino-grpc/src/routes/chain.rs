@@ -29,9 +29,10 @@ use crate::wire::{self, decode_request, frame, streamed_response, trailers, unar
 ///
 /// - Materialised, not lazy (CPU over in-memory bytes)
 /// - consensus parse once per entry ([`Projection`](zaino_chainview::Projection), slot 0, every
-///   pool); per request only the slot and the pool selection, over the cached bytes
-/// - a transaction the selection leaves with no component is dropped, as from a block
-///   ([`project_tx_at`]); slots stay the listing's
+///   pool)
+/// - per request: only the slot and the pool selection, over the cached bytes
+/// - transaction the selection leaves with no component dropped, as from a block
+///   ([`project_tx_at`]), slots stay the listing's
 pub(crate) async fn mempool_tx<V, B>(
     grpc_snapshot: &GrpcSnapshot<V>,
     body: B,
@@ -61,8 +62,9 @@ fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
     Ok(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
 }
 
-/// Submitted; rejection = domain answer, only unreachable = a status (wallet tells "no"
-/// from "unreachable")
+/// Submitted
+///
+/// - rejection = domain answer, only unreachable = a status (wallet tells "no" from "unreachable")
 pub(crate) async fn send<S: ChainDataSource, B>(
     view: &ChainView<S>,
     body: B,
@@ -96,7 +98,7 @@ fn send_reply(outcome: Result<TxId, SubmitError>) -> Result<service::SendRespons
     }
 }
 
-/// Unmined by construction; the wire spells that `height: 0`
+/// Unmined by construction (wire spells that `height: 0`)
 fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
     service::RawTransaction { data: entry.raw.clone(), height: 0 }
 }
@@ -105,8 +107,8 @@ fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
 /// served tip moves (no holder of the verified best = `UNAVAILABLE`, never a silent stream)
 ///
 /// - end ⇒ the next load serves the new tip (`GetLatestBlock` ≥ it: G5)
-/// - each record encoded once (first subscriber to reach it); the rest share it by refcount
-///   (a burst ready at once = joined per stream, `Coalesced`)
+/// - each record encoded once (first subscriber to reach it)
+/// - the rest share it by refcount (a burst ready at once = joined per stream, `Coalesced`)
 pub(crate) fn mempool_stream<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Result<Response<Body>, Status> {
     let tail = grpc_snapshot.mempool_stream().map_err(wire::unavailable)?;
     let opening = tail.opening_rendered(|entries| {
@@ -188,7 +190,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
         })?;
     let found = found.value;
 
-    // Orphaned → unmined (one wire "no height"; an abandoned branch must not read as confirmed)
+    // Orphaned → unmined (one wire "no height", an abandoned branch must not read as confirmed)
     let height = match found.location {
         TransactionLocation::BestChain(at) => at.into(),
         TransactionLocation::NonBestChain | TransactionLocation::Mempool => 0,
@@ -271,7 +273,7 @@ mod tests {
 
     /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
     /// - Rejected = gRPC OK + the validator's code + message verbatim (zingolib's
-    ///   `classify_rejection` texts intact; Android reconciles only on an OK reply)
+    ///   `classify_rejection` texts intact, Android reconciles only on an OK reply)
     /// - Unreachable = `UNAVAILABLE` (never a reply a wallet reads as the network's answer)
     #[test]
     fn a_submission_answers_like_lightwalletd() {
@@ -395,11 +397,13 @@ mod tests {
     }
 
     /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:
+    ///
     /// - refused without a verified tip
     /// - mempool at the served tip, then each arrival once, in order, same bytes (a lone record
     ///   shared by refcount, a ready burst joined per stream)
-    /// - late subscriber = same log; a new best block alone ends nothing; the served tip moving
-    ///   ends all in `OK` trailers, and the next load serves the new tip (G5)
+    /// - late subscriber = same log
+    /// - new best block alone ends nothing
+    /// - served tip moving ends all in `OK` trailers, next load serves the new tip (G5)
     /// - resubscribe opens on the mempool as it now stands
     #[tokio::test(start_paused = true)]
     async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
@@ -462,7 +466,8 @@ mod tests {
             let response = router.call(stream()).await.expect("router answers");
             subscribers.push(Box::pin(response.into_body()));
         }
-        // Every subscriber's next data frame, the same bytes; `true` = one buffer shared by all
+        // - every subscriber's next data frame, the same bytes
+        // - `true` = one buffer shared by all
         async fn next_frame<B>(subscribers: &mut [std::pin::Pin<Box<B>>]) -> (bytes::Bytes, bool)
         where
             B: http_body::Body<Data = bytes::Bytes, Error = Status>,
@@ -482,8 +487,8 @@ mod tests {
         let opened = (decoded(opening), shared);
         assert_eq!(opened, (unmined(&[1, 2]), true), "the mempool at the block, encoded once");
 
-        // a burst of two (one poll: txid order) = one frame each (joined, `Coalesced`); then one
-        // more = the shared record
+        // - burst of two (one poll: txid order) = one frame each (joined, `Coalesced`)
+        // - then one more = the shared record
         hear(&[3, 4]);
         let (burst, _) = next_frame(&mut subscribers).await;
         assert_eq!(decoded(burst), unmined(&[3, 4]), "in order, once each");
@@ -526,8 +531,10 @@ mod tests {
     }
 
     /// Mempool = 3 mainnet txs (block 2,000,000: Orchard, Sapling, transparent):
+    ///
     /// - each answer: own slots, own pools (tx left empty dropped), no gap for an excluded suffix
-    /// - each pool = what the consensus parse found; each tx parsed once (projection cached)
+    /// - each pool = what the consensus parse found
+    /// - each tx parsed once (projection cached)
     #[tokio::test(start_paused = true)]
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
         use http_body_util::BodyExt as _;

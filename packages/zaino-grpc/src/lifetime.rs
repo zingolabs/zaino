@@ -181,9 +181,10 @@ mod tests {
     }
 
     /// Paused clock, delay 10 s, one connection open before the first hold:
+    ///
     /// - hold at 0 s, resume at 3 s, hold at 5 s: fires at 15 s (the second hold's deadline), not 10 s
-    /// - `state` Off → Draining → Drained; a repeated `hold` keeps the first deadline
-    /// - a connection accepted past the deadline fires at once; after `resume`, one never does
+    /// - `state` Off → Draining → Drained, repeated `hold` keeps the first deadline
+    /// - connection accepted past the deadline fires at once, after `resume` never
     #[tokio::test(start_paused = true)]
     async fn a_hold_retires_every_connection_at_its_own_deadline_and_a_resume_disarms_it() {
         let delay = Duration::from_secs(10);
@@ -217,8 +218,11 @@ mod tests {
         assert_eq!(retire.state(), Hold::Off);
     }
 
-    /// Paused clock, idle = 60 s: quiet from the start → idle at 60 s; a stream open the whole
-    /// time holds it off; idle counts from the last close, not from the first open
+    /// Paused clock, idle = 60 s:
+    ///
+    /// - quiet from the start → idle at 60 s
+    /// - stream open the whole time holds it off
+    /// - idle counts from the last close, not from the first open
     #[tokio::test(start_paused = true)]
     async fn idle_counts_from_the_last_stream_closed() {
         let idle = Duration::from_secs(60);

@@ -66,8 +66,8 @@ where
 
 /// `GetTaddressTransactions`: index names them, a validator supplies them
 ///
-/// - Fetched lazily, one per poll (busy address = thousands; a client that stops reading stops
-///   the round trips; HTTP/2 flow control paces)
+/// - Fetched lazily, one per poll (busy address = thousands)
+/// - client that stops reading stops the round trips (HTTP/2 flow control paces)
 pub(crate) async fn transactions<S: ChainDataSource, V: PinnedView, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
@@ -294,8 +294,10 @@ mod tests {
         let bob = Script(Code([&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat()));
         let miner = p2pkh([0x33; 20]);
 
-        // 1: a coinbase funds the miner 870; 2: alice 500 (vout 0), bob 70 (vout 1), change 300
-        // (vout 2); 3: the change to alice (real bytes: a validator serves them)
+        // Real bytes (a validator serves them):
+        // - 1: coinbase funds the miner 870
+        // - 2: alice 500 (vout 0), bob 70 (vout 1), change 300 (vout 2)
+        // - 3: the change to alice
         let mut chain = MockChain::regtest().network(crate::testing::MAINNET);
         chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&miner, 870)));
         let pays = [(&alice, 500), (&bob, 70), (&miner, 300)];

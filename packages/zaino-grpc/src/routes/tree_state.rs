@@ -1,6 +1,7 @@
-//! Tree-state methods (framed once per NFS publish): `GetTreeState` at heights `<=`
-//! [`IndexesAtBlock::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the served
-//! tip
+//! Tree-state methods (framed once per NFS publish)
+//!
+//! - `GetTreeState` at heights `<=` [`IndexesAtBlock::answers_through`]
+//! - `GetLatestTreeState`, `GetSubtreeRoots` as of the served tip
 
 use std::sync::Arc;
 
@@ -57,7 +58,7 @@ impl<V: PinnedView> Answering<V> {
         self.served().answers_through(IndexKind::TreeState)
     }
 
-    /// Framed on first ask per NFS publish, on the point lane (single flight); then inline
+    /// Framed on first ask per NFS publish, on the point lane (single flight), then inline
     async fn once<K, T>(
         &self,
         memo: fn(&Memos<V>) -> &Memo<V, K, T>,
@@ -77,8 +78,9 @@ impl<V: PinnedView> Answering<V> {
         self.reads.read(Lane::Point, compute).await
     }
 
-    /// Tree state at exactly `at` framed for the wire; past the index's own tip = a miss
+    /// Tree state at exactly `at` framed for the wire
     ///
+    /// - past the index's own tip = a miss
     /// - below Sapling = every pool `""`, not lightwalletd's error (Android asks `batchStart - 1`,
     ///   so Sapling activation − 1 too: ZA#1422)
     fn state_at(
@@ -116,8 +118,10 @@ impl FramedRoots {
         Self { framed: Bytes::from(framed), ends }
     }
 
-    /// Roots `start` inclusive to `start + max` exclusive; `max == 0` = to the last root
-    /// (`start ≥ count` = none, any `u32`: pepper-sync resumes until an empty answer)
+    /// Roots `start` inclusive to `start + max` exclusive
+    ///
+    /// - `max == 0` = to the last root
+    /// - `start ≥ count` = none, any `u32` (pepper-sync resumes until an empty answer)
     fn slice(&self, start: u32, max: u32) -> Bytes {
         let count = self.ends.len();
         let wide = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
@@ -219,9 +223,9 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     })
 }
 
-/// Every root of the pool completed at or below the tip, framed once per NFS publish; a request =
-/// one slice of it, whole or refused before the first byte (iOS keeps a partial prefix)
+/// Every root of the pool completed at or below the tip, framed once per NFS publish
 ///
+/// - request = one slice of it, whole or refused before the first byte (iOS keeps a partial prefix)
 /// - unknown pool = `UNIMPLEMENTED` (the one non-Sapling refusal the Android SDK survives with its
 ///   fast sync intact)
 /// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
@@ -326,8 +330,10 @@ mod tests {
     }
 
     /// Over the router, no subtree complete yet:
+    ///
     /// - every pool, any `startIndex` / `maxEntries` (past `u16` too) = an empty `OK` stream
-    ///   (status in trailers: pepper-sync's resume probe; Orchard after Sapling = iOS's pass)
+    ///   (status in trailers: pepper-sync's resume probe)
+    /// - Orchard after Sapling = iOS's pass
     /// - unknown pool = `UNIMPLEMENTED`, trailers-only (no body: never a partial prefix)
     #[tokio::test]
     async fn subtree_roots_answer_whole_or_refuse_before_the_first_byte() {
@@ -376,14 +382,18 @@ mod tests {
         }
     }
 
-    /// Z#1622: exactly the requested height, display-order hash, each pool `""` below its upgrade
-    /// and its tree from it on (`000000` while empty: pepper-sync rejects `""` there); below
-    /// Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
+    /// Z#1622:
+    ///
+    /// - exactly the requested height, display-order hash
+    /// - each pool `""` below its upgrade, its tree from it on (`000000` while empty: pepper-sync
+    ///   rejects `""` there)
+    /// - below Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
     #[tokio::test]
     async fn tree_state_fields_follow_the_validators_activation_schedule() {
         use tower::Service as _;
 
-        // Sapling at 1, NU5 (orchard) at 2, NU6.3 (ironwood) at 3; one sapling output per block
+        // - Sapling at 1, NU5 (orchard) at 2, NU6.3 (ironwood) at 3
+        // - one sapling output per block
         let upgrades = LocalNetwork::from_activation_heights(|upgrade| match upgrade {
             NetworkUpgrade::Nu7 => None,
             NetworkUpgrade::Nu6_3 => Some(h(3)),
@@ -439,8 +449,8 @@ mod tests {
         assert_eq!(latest, expected[3].1, "the tip's");
     }
 
-    /// By height, at the tip, and by hash through the block-hash locator; every pool its own hex
-    /// tree (an absent field would read as `CommitmentTree::empty()`)
+    /// - by height, at the tip, and by hash through the block-hash locator
+    /// - every pool its own hex tree (an absent field would read as `CommitmentTree::empty()`)
     #[tokio::test]
     async fn a_populated_tree_state_index_answers_by_height_at_the_tip_and_by_hash() {
         use tower::Service as _;
@@ -490,7 +500,7 @@ mod tests {
         assert_eq!(state.orchard_tree, "000000", "a real empty tree, not \"\"");
         assert_eq!(state.ironwood_tree, "000000");
 
-        // Tip = same answer; framed once per NFS publish (second ask = same allocation)
+        // Tip = same answer, framed once per NFS publish (second ask = same allocation)
         let latest = || async {
             use http_body_util::BodyExt as _;
             let response = router

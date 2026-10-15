@@ -1,9 +1,9 @@
 //! Public health on the gRPC listener: `GET /readyz` + `GET /status`, over HTTP/1.1 or h2
 //!
-//! - load-balancer monitors speak HTTPS/1.1; a `200` here also proves TLS + this listener up
+//! - load-balancer monitors speak HTTPS/1.1 (`200` here also proves TLS + this listener up)
 //! - answered before admission: never a work permit, never counted as a gRPC request
 //! - per connection: [`BURST`] at once, refilled [`PER_SECOND`] (per client ≤
-//!   `max_connections_per_ip` × that); over = `429`
+//!   `max_connections_per_ip` × that), over = `429`
 //! - anything else over HTTP/1.x = `404` (gRPC needs h2)
 
 use std::sync::{Arc, Mutex};
@@ -204,10 +204,11 @@ mod tests {
     }
 
     /// Paused clock:
+    ///
     /// - `/readyz` = 200 serving / 503 not, `/status` = 200, both over HTTP/1.1 and h2
-    /// - a non-GET health request = 405; any other path over HTTP/1.1 = 404, over h2 = passed on
+    /// - non-GET health request = 405, any other path over HTTP/1.1 = 404, over h2 = passed on
     /// - no `Health` wired = every path passed on (h2) or 404 (HTTP/1.1)
-    /// - 10 at once, the 11th = 429; one more per second after that
+    /// - 10 at once, the 11th = 429, then one more per second
     #[tokio::test(start_paused = true)]
     async fn health_is_answered_beside_grpc_and_rate_limited_per_connection() {
         let h1 = Version::HTTP_11;

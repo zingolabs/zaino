@@ -3,7 +3,7 @@
 //!
 //! - stack, outermost first: usage.md "Serve stack"
 //! - hyper, not `tonic::transport::Server` (own accept loop: over-cap closed before a task
-//!   exists; h2 settings per connection)
+//!   exists, h2 settings per connection)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -123,7 +123,8 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
     }
 }
 
-/// h2 for gRPC; HTTP/1.1 only ever reaches the health paths (`health.rs`)
+/// - h2 for gRPC
+/// - HTTP/1.1 only ever reaches the health paths (`health.rs`)
 fn http(limits: &GrpcLimits) -> auto::Builder<TokioExecutor> {
     let mut builder = auto::Builder::new(TokioExecutor::new());
     builder
@@ -212,7 +213,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         }
     }
 
-    /// Until `cancel`, each connection on `connections`; returning drops the listener
+    /// Until `cancel`, each connection on `connections` (return drops the listener)
     async fn accept(self, cancel: &CancellationToken, connections: &TaskTracker) {
         let Self { server, listener } = self;
         if let Some(tls) = &server.tls {
@@ -489,12 +490,14 @@ mod tests {
     }
 
     /// gRPC A9 over a real socket, raw h2 client (sees the GOAWAY a tonic channel hides):
+    ///
     /// - aged (1 s ±10%) with a `GetTaddressBalanceStream` in flight: GOAWAY (a new stream
     ///   refused), the in-flight one still answered `OK` once its client ends it, then closed
     /// - aged with a stream held past the grace (1 s): closed at age + grace, the stream reset
     /// - no age, idle 1 s, never used: closed at ~1 s
-    /// - no age or idle, held (delay 0): the open connection closes at once (nothing in flight),
-    ///   so does one opened while held; after `resume` a new one stays up
+    /// - no age or idle, held (delay 0): open connection + one opened while held close at once
+    ///   (nothing in flight)
+    /// - after `resume`: new connection stays up
     #[tokio::test(flavor = "multi_thread")]
     async fn connections_retire_at_their_age_or_idleness_and_in_flight_streams_get_the_grace() {
         use std::time::Instant;
@@ -632,10 +635,12 @@ mod tests {
     }
 
     /// One TLS listener, as a load balancer's HTTPS/1.1 monitor and a wallet each see it:
+    ///
     /// - bound before routed (an owner still booting): health answered, every method
-    ///   `UNAVAILABLE` [`crate::service::STARTING`]; routed later = the routes' own answer
-    /// - ALPN `http/1.1`: `GET /readyz` = 200 + the health body, `/status` = 200, a gRPC path =
-    ///   404; ALPN `h2`: `GetLightdInfo` reaches the gRPC stack (`UNAVAILABLE`: nothing served)
+    ///   `UNAVAILABLE` [`crate::service::STARTING`]
+    /// - routed later = the routes' own answer
+    /// - ALPN `http/1.1`: `GET /readyz` = 200 + the health body, `/status` = 200, a gRPC path = 404
+    /// - ALPN `h2`: `GetLightdInfo` reaches the gRPC stack (`UNAVAILABLE`: nothing served)
     /// - a monitor's `/readyz` never takes a work slot (`in_flight` stays 0)
     #[tokio::test]
     async fn one_tls_listener_answers_health_from_bind_and_grpc_once_routed() {

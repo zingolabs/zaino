@@ -15,7 +15,8 @@ use tokio::net::TcpStream;
 /// A proxy sends its header with the connection (slower = not a proxy)
 pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// v1 ≤ 107 bytes; v2 = 16 + addresses + the TLVs real proxies add (AWS, Azure: tens of bytes)
+/// - v1 ≤ 107 bytes
+/// - v2 = 16 + addresses + the TLVs real proxies add (AWS, Azure: tens of bytes)
 const HEADER_MAX: usize = 4096;
 
 /// Peers whose connections carry a PROXY header naming the real client (empty = no proxy)
@@ -105,8 +106,8 @@ fn source_of(parsed: HeaderResult<'_>) -> Result<(Option<IpAddr>, usize), Header
 mod tests {
     use super::*;
 
-    /// Each header shape names its source and leaves the client's bytes after it untouched,
-    /// however the header arrived split; garbage and an oversized header are refused
+    /// - each header shape → its source named, client's bytes after it untouched, however split
+    /// - garbage / oversized header → refused
     #[tokio::test]
     async fn a_proxy_header_names_the_client_and_hands_back_the_rest_of_the_stream() {
         use tokio::io::AsyncWriteExt as _;

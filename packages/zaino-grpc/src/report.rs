@@ -1,9 +1,9 @@
 //! Serving summary every [`INTERVAL`], from status-code tallies every request feeds (latency and
 //! bytes out = the `zaino.grpc.*` metrics)
 //!
-//! - `Serving`: rate, connections held, then the window's problems by count; WARN once any
-//!   request failed, was refused, stalled or ran slow, INFO otherwise; silent while nothing is
-//!   served or held
+//! - `Serving`: rate, connections held, then the window's problems by count (silent while nothing
+//!   served or held)
+//! - `Serving` level: WARN once any request failed, was refused, stalled or ran slow, else INFO
 //! - `High load` (WARN) instead while any cap is past [`HIGH_LOAD`]: those caps as `used/max`
 //! - `Method served` (DEBUG): the same, per method with traffic
 //! - First server fault (ERROR, `Request failed`) and first unavailable answer (WARN, `Request
@@ -112,7 +112,7 @@ impl Window {
 
 static WINDOW: Window = Window::new();
 
-/// A stream's close-out; `latency` = time to its first message, for an answered work request
+/// Stream close-out (`latency` = time to its first message, for an answered work request)
 pub(crate) fn finished(method: Option<Method>, code: Code, latency: Option<Duration>) {
     WINDOW.finished(method, code, latency);
 }
@@ -304,7 +304,8 @@ impl fmt::Display for Used {
 mod tests {
     use super::*;
 
-    /// Codes split by who they blame; slow = past [`SLOW`] to the first message
+    /// - codes split by who they blame
+    /// - slow = past [`SLOW`] to the first message
     #[test]
     fn a_window_tallies_outcomes_and_slow_requests() {
         let window = Window::new();

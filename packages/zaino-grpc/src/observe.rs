@@ -94,7 +94,8 @@ where
 
 /// Response body measured to its end, wherever that comes from
 ///
-/// - `first_message` = admission → first DATA frame; `message` = non-`Ok` status message
+/// - `first_message` = admission → first DATA frame
+/// - `message` = non-`Ok` status message
 /// - `at_capacity` = admission refusal (counted, never logged one by one)
 pub(crate) struct Counted<Inner> {
     inner: Inner,
@@ -228,7 +229,7 @@ impl Messages {
 mod tests {
     use super::*;
 
-    /// Messages, not chunks (one chunk = a run of records; a record may straddle two)
+    /// Messages, not chunks (one chunk = a run of records, a record may straddle two)
     #[test]
     fn messages_are_counted_across_chunk_boundaries() {
         let framed = |payload: &[u8]| {

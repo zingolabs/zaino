@@ -35,7 +35,8 @@ const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonze
 /// - Seq 0 stored at `new` (nothing verified, nothing served)
 /// - A chain view publish → seq 1 under the new chain
 /// - Three NFS publishes before the publisher runs → one publish, from the last (coalesced)
-/// - Cancel → `Ok`; the NFS's watch dropped → `IndexedGone`
+/// - Cancel → `Ok`
+/// - NFS's watch dropped → `IndexedGone`
 #[tokio::test]
 async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_gone_nfs() {
     let mut builder = MockChain::regtest();
@@ -90,8 +91,10 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     assert!(matches!(stopped, Err(GrpcSnapshotError::IndexedGone)), "{stopped:?}");
 }
 
-/// A 0..=5 finalized through 2; one of two validators holds A5, the other degraded; block-hash
-/// durable through A5, served A5, handed 5; one relayed tx: the gauges a scrape renders
+/// Gauges a scrape renders, given:
+///
+/// - A 0..=5 finalized through 2, one of two validators holding A5, the other degraded
+/// - block-hash durable through A5, served A5, handed 5, one relayed tx
 #[test]
 fn one_snapshot_renders_every_gauge() {
     let mut builder = MockChain::regtest();

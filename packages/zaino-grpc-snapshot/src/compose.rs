@@ -1,4 +1,5 @@
-//! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6, G10
+//! - [`compose`]: one publish's tips from that publish's inputs alone
+//! - [`check`]: G2–G6, G10
 
 use crate::grpc_snapshot::Tips;
 use zaino_chainview::ChainViewSnapshot;
@@ -6,7 +7,9 @@ use zaino_header_chain::VerifiedChain;
 use zaino_nfs::NfsPublication;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 
-/// Pure (no I/O, no clock); `was_synced` = the last publish's (hysteresis)
+/// Pure (no I/O, no clock)
+///
+/// - `was_synced` = the last publish's (hysteresis)
 pub(crate) fn compose<V>(
     was_synced: bool,
     indexed: Option<&NfsPublication<V>>,
@@ -26,8 +29,8 @@ pub(crate) fn compose<V>(
     }
 }
 
-/// Opens at the best block (hash, not height), no validator claiming past it (`ahead`); stays
-/// while on the best and ≤ `depth` behind it
+/// - opens: served = best block (hash, not height) & no validator claiming past it (`ahead`)
+/// - stays: served on the best & ≤ `depth` behind it
 fn synced(
     was: bool,
     served: Option<BlockRef>,
@@ -45,8 +48,9 @@ fn synced(
     }
 }
 
-/// G2–G6 between two consecutive publishes; panics naming the invariant broken
+/// G2–G6 between two consecutive publishes
 ///
+/// - panics naming the invariant broken
 /// - after `next`'s store and `prev`'s seal (the publisher's order)
 #[cfg(test)]
 pub(crate) fn check<V>(

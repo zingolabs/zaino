@@ -15,8 +15,10 @@ use http_body::{Body, Frame};
 /// One full-size DATA frame (h2's default `SETTINGS_MAX_FRAME_SIZE`)
 const TARGET: usize = 16 * 1024;
 
-/// `inner` with every run of ready data chunks below [`TARGET`] joined (a chunk at or over it =
-/// passed through uncopied; `next` = what was polled past the held run)
+/// `inner` with every run of ready data chunks below [`TARGET`] joined
+///
+/// - chunk at or over [`TARGET`] = passed through uncopied
+/// - `next` = what was polled past the held run
 #[derive(Debug)]
 pub(crate) struct Coalesced<B: Body> {
     inner: B,
@@ -112,8 +114,10 @@ mod tests {
     use super::*;
 
     /// 170 × 100 B ready, a `Pending`, 2 × 100 B, one chunk of `TARGET` B, 100 B, trailers:
-    /// - a ready run joins until it reaches `TARGET` (164 × 100 B), the rest flushes at `Pending`
-    /// - a chunk at `TARGET` passes uncopied, after what was held; trailers last, after held data
+    ///
+    /// - ready run joins until it reaches `TARGET` (164 × 100 B), the rest flushes at `Pending`
+    /// - chunk at `TARGET` passes uncopied, after what was held
+    /// - trailers last, after held data
     #[tokio::test]
     async fn ready_small_chunks_join_and_a_pending_inner_or_a_big_chunk_flushes_them() {
         let small = || Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(vec![1; 100])));

@@ -1,8 +1,8 @@
 //! lightwalletd-compatible `CompactTxStreamer` endpoint
 //!
 //! - [`GrpcService`] = every method in the one registry (`service.rs` `ROUTES`), dispatched by
-//!   path over [`RouteDeps`] (`GrpcSnapshots`, the chain view, the validators); compact blocks
-//!   = stored bytes, never re-encoded
+//!   path over [`RouteDeps`] (`GrpcSnapshots`, the chain view, the validators)
+//! - compact blocks = stored bytes, never re-encoded
 //! - one `GrpcSnapshot` per request or stream (`service.rs`)
 //! - Domain → wire owned by the byte-producing crate (no domain crate depends on the schema)
 #![forbid(unsafe_code)]

@@ -219,8 +219,9 @@ pub(crate) fn first_message(method: Option<Method>, elapsed: Duration) {
     series(slot(method)).first_message.record(elapsed.as_secs_f64());
 }
 
-/// One stream's close-out (recorded where the body drops); `latency` = time to its first message,
-/// for an answered work request
+/// One stream's close-out (recorded where the body drops)
+///
+/// - `latency` = time to its first message, for an answered work request
 pub(crate) fn stream_finished(
     method: Option<Method>,
     code: Code,

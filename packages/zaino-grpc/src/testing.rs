@@ -101,7 +101,9 @@ pub(super) fn grpc_snapshots(
 }
 
 /// `RouteDeps` over `node`, every index configured (the balancer's driver + the view's poll merge
-/// back, unspawned); nothing verified, nothing served, never republished
+/// back, unspawned)
+///
+/// - nothing verified, nothing served, never republished
 pub(super) fn routes_over(
     node: &Arc<MockValidator>,
 ) -> (

@@ -1,10 +1,10 @@
 //! `CompactTxStreamer` service: the method registry ([`ROUTES`]) and the one dispatch over it
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
-//!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
+//!   would be decoded to be re-encoded, usage.md "Stored bytes on the wire")
 //! - one global [`GrpcSnapshot`](zaino_grpc_snapshot::GrpcSnapshot) per request or stream (G1),
-//!   pinned for its life: no height named = its served tip; a height named =
-//!   `IndexesAtBlock::answers_through`
+//!   pinned for its life
+//! - no height named = its served tip, height named = `IndexesAtBlock::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a row whose index `RouteDeps::indexes` lacks = `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
@@ -158,7 +158,8 @@ impl Route {
 /// What one `GrpcService` answers from
 ///
 /// - `grpc_snapshots` = every read (chain, indexes, mempool, validator facts)
-/// - `submit` = `SendTransaction` only; `validators` = `GetTransaction` + address tx bytes
+/// - `submit` = `SendTransaction` only
+/// - `validators` = `GetTransaction` + address tx bytes
 /// - `network` = declared (zainod's `network` key), never read off a validator
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
@@ -225,7 +226,9 @@ impl<S: ChainDataSource, V> Clone for Routing<S, V> {
 }
 
 impl<S: ChainDataSource, V> Routing<S, V> {
-    /// Every method answered from `routes` from here on; once per server (twice = a bug, panics)
+    /// Every method answered from `routes` from here on
+    ///
+    /// - once per server (twice = a bug, panics)
     pub fn route(&self, routes: RouteDeps<S, V>) {
         let disabled_by = ROUTES.map(|row| row.index.filter(|kind| !routes.indexes.contains(kind)));
         let routed = Routed { routes, disabled_by };
@@ -382,7 +385,8 @@ mod tests {
         indexed, request_at, routes, MAINNET,
     };
 
-    /// Each row's path names its own method; any other path (another service, a typo) none
+    /// - each row's path names its own method
+    /// - any other path (another service, a typo) names none
     #[test]
     fn a_path_names_its_row_or_no_method() {
         let resolved: Vec<_> = ROUTES.iter().map(|row| Method::of(&row.method.path())).collect();
@@ -393,8 +397,9 @@ mod tests {
     }
 
     /// Routed with only tree_state configured, nothing served yet:
-    /// - an enabled method = `UNAVAILABLE` (retry); a disabled one = `UNIMPLEMENTED` naming its
-    ///   index, served or not
+    ///
+    /// - enabled method = `UNAVAILABLE` (retry)
+    /// - disabled method = `UNIMPLEMENTED` naming its index, served or not
     /// - a method reading no index (`GetLatestBlock`, `GetLightdInfo`) = never disabled
     /// - an unknown path = `UNIMPLEMENTED`
     #[tokio::test]
@@ -433,12 +438,13 @@ mod tests {
         assert_eq!(answered, cases.map(|(_, expected)| expected));
     }
 
-    /// G1, zingolib #2835: no height named = served tip; height named = that index's durable
-    /// - Views hold 0..=3, served tip 2 (root publication in bulk sync: views ahead of its tip);
-    ///   validator 0 holds 2, one tx of ours relayed
+    /// G1, zingolib #2835: no height named = served tip, height named = that index's durable
+    ///
+    /// - Views hold 0..=3, served tip 2 (root publication in bulk sync: views ahead of its tip)
+    /// - validator 0 holds 2, one tx of ours relayed
     /// - `GetLatestBlock`, `GetLatestTreeState`, `GetLightdInfo.blockHeight` = 2
-    /// - `GetBlockRange` 0..=9 = 0..=3 then `OUT_OF_RANGE`; `GetTreeState` / `GetBlock` 3 answered
-    ///   (block hash = its tree state's), 4 = a miss
+    /// - `GetBlockRange` 0..=9 = 0..=3 then `OUT_OF_RANGE`
+    /// - `GetTreeState` / `GetBlock` 3 answered (block hash = its tree state's), 4 = a miss
     /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
     ///   fixed `GrpcSnapshot` never moves on)
     #[tokio::test]
@@ -470,7 +476,7 @@ mod tests {
             async move {
                 use http_body_util::BodyExt as _;
                 let response = response.await.expect("router answers");
-                // refusal = Trailers-Only (headers); an answer = status in its trailers
+                // refusal = Trailers-Only (headers), answer = status in its trailers
                 let headed = Status::from_header_map(response.headers()).map(|s| s.code());
                 let body = response.into_body().collect().await.expect("body");
                 let trailers = body.trailers().cloned().unwrap_or_else(HeaderMap::new);
@@ -550,8 +556,10 @@ mod tests {
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
     }
 
-    /// Every index method on one router, each index enabled: each answers `OK` off its own index;
-    /// `GetSubtreeRoots` past the end = an empty stream (pepper-sync's probe), never a status
+    /// Every index method on one router, each index enabled:
+    ///
+    /// - each answers `OK` off its own index
+    /// - `GetSubtreeRoots` past the end = an empty stream (pepper-sync's probe), never a status
     #[tokio::test]
     async fn every_index_answers_its_own_methods() {
         use prost::Message as _;

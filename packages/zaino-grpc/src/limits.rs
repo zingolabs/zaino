@@ -1,7 +1,7 @@
 //! Serving caps + the one bounded wait in the serve path
 //!
 //! - Every cap refuses, never queues, except [`ReadLanes`] (a page-faulting read waits for its
-//!   lane's permit; at most `max_work_streams` waiting)
+//!   lane's permit, at most `max_work_streams` waiting)
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
@@ -14,10 +14,10 @@ use zaino_primitives::serde_secs;
 use crate::client::TrustedProxies;
 use crate::emit;
 
-/// What one zainod serves at once + which peers name their client (zainod's `[grpc]`; each
-/// field's contract: usage.md "Serve stack")
+/// What one zainod serves at once + which peers name their client (zainod's `[grpc]`)
 ///
-/// - `max_streams_per_connection` = every h2 stream; `max_work_streams` = admitted work only
+/// - each field's contract: usage.md "Serve stack"
+/// - `max_streams_per_connection` = every h2 stream, `max_work_streams` = admitted work only
 /// - `unread_timeout` (client stopped reading) != `silent_timeout` (server has nothing to send)
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]

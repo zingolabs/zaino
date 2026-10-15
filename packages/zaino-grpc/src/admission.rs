@@ -1,7 +1,8 @@
 //! Stream admission: a slot, or `UNAVAILABLE` + pushback, never a queue
 //!
 //! - Slot owned by the response *body*, not the handler (back on stream end or disconnect: hyper
-//!   drops the body either way; released at handler return = unbounded streams)
+//!   drops the body either way)
+//! - released at handler return = unbounded streams
 //! - Two pools by [`Class`]: a subscription idles for a block, so it never holds a work slot (one
 //!   mempool stream per wallet would otherwise fill `max_work_streams` with idlers)
 //! - Work held exactly to the adaptive limit (`adaptive.rs`), fed each message's production time
@@ -29,9 +30,11 @@ const PUSHBACK_MS: &str = "250";
 /// gRPC's own "come back later" header (grpc-core)
 const PUSHBACK_HEADER: &str = "grpc-retry-pushback-ms";
 
-/// Cap a request counts against (each method's in [`ROUTES`](crate::service::ROUTES); an unknown
-/// path = `Work`): `Work` = unary, ranges, scans; `Subscription` = open until the next block,
-/// idle between arrivals
+/// Cap a request counts against (each method's in [`ROUTES`](crate::service::ROUTES), unknown
+/// path = `Work`)
+///
+/// - `Work` = unary, ranges, scans
+/// - `Subscription` = open until the next block, idle between arrivals
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
     Work,
@@ -50,8 +53,10 @@ pub struct AdmissionState {
     overload: Overload,
 }
 
-/// The work pool: `limit` = the adaptive one (`max_work_streams` when off); `refused_per_s` and
-/// `overloaded` as of the last serving summary (thresholds: `overload.rs`)
+/// Work pool
+///
+/// - `limit` = the adaptive one (`max_work_streams` when off)
+/// - `refused_per_s`, `overloaded` as of the last serving summary (thresholds: `overload.rs`)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AdmissionReport {
     pub limit: usize,
@@ -126,7 +131,9 @@ impl AdmissionState {
     }
 }
 
-/// Slot of the request's class, or refusal; one per connection (`stalls` = its watch)
+/// Slot of the request's class, or refusal
+///
+/// - one per connection (`stalls` = its watch)
 #[derive(Clone, Debug)]
 pub(crate) struct Admission<Inner> {
     inner: Inner,
@@ -283,8 +290,9 @@ mod tests {
 
     use super::*;
 
-    /// `/open` + `GetMempoolStream` never end; `/data` = one frame then waits; `/short` = one
-    /// frame, done
+    /// - `/open` + `GetMempoolStream` never end
+    /// - `/data` = one frame then waits
+    /// - `/short` = one frame, done
     #[derive(Clone)]
     struct Answers;
 
@@ -330,7 +338,8 @@ mod tests {
     }
 
     /// - Frame handed over, never polled again (client stopped reading) → stall at the timeout
-    /// - Waiting on nothing never trips; a poll clears it
+    /// - Waiting on nothing never trips
+    /// - Poll clears it
     #[tokio::test(start_paused = true)]
     async fn an_unpulled_frame_trips_the_stall_watch_and_an_idle_stream_never_does() {
         use http_body_util::BodyExt as _;
@@ -371,7 +380,7 @@ mod tests {
 
     /// - Slot lives as long as its *body* (back when a client walks away mid-stream)
     /// - No slot → refused on the spot + pushback, never queued
-    /// - Subscriptions = own pool (full work pool admits one; full subscription pool refuses only
+    /// - Subscriptions = own pool (full work pool admits one, full subscription pool refuses only
     ///   subscriptions)
     #[tokio::test]
     async fn a_stream_slot_outlives_its_handler_and_a_refusal_never_queues() {
@@ -430,8 +439,10 @@ mod tests {
     }
 
     /// Default limits (`max_work_streams` 2048, adaptive from 256):
-    /// - the 257th open work stream is refused below the ceiling, `UNAVAILABLE` + pushback
-    /// - the report says so once the window closes; a subscription is never held to the work limit
+    ///
+    /// - 257th open work stream refused below the ceiling, `UNAVAILABLE` + pushback
+    /// - report says so once the window closes
+    /// - subscription never held to the work limit
     #[tokio::test]
     async fn work_past_the_adaptive_limit_is_refused_below_the_ceiling() {
         use tower::Service as _;

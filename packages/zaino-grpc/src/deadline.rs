@@ -3,7 +3,8 @@
 //! - deadline = `grpc-timeout` at arrival: past it, a pending handler = `DEADLINE_EXCEEDED`, a
 //!   stream ends in `DEADLINE_EXCEEDED` trailers
 //! - silence = nothing to send for `silent_timeout` while hyper waits on the handler or the body
-//!   → `UNAVAILABLE` (retry); client-side twin = `stall.rs` (`unread_timeout` → connection closed)
+//!   → `UNAVAILABLE` (retry)
+//! - client-side twin = `stall.rs` (`unread_timeout` → connection closed)
 //! - `GetMempoolStream` exempt (silent until the next block by design)
 //! - a long stream that keeps delivering lives as long as the client wants (Z#1537)
 
@@ -20,8 +21,9 @@ use tonic::{body::Body, Status};
 
 use crate::wire::trailers;
 
-/// `grpc-timeout` (gRPC over HTTP/2: <= 8 digits + `H M S m u n`); malformed = none, as tonic reads
-/// it
+/// `grpc-timeout` (gRPC over HTTP/2: <= 8 digits + `H M S m u n`)
+///
+/// - malformed = none (as tonic reads it)
 fn requested(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get("grpc-timeout")?.to_str().ok()?;
     let (digits, unit) = value.split_at_checked(value.len().checked_sub(1)?)?;
@@ -52,7 +54,9 @@ impl Bounds {
         Self { deadline: requested(headers).map(|timeout| Instant::now() + timeout), silent_limit }
     }
 
-    /// `answer` cut at the first bound; a stream's body (status in trailers) bounded the same
+    /// `answer` cut at the first bound
+    ///
+    /// - stream's body (status in trailers) bounded the same
     pub(crate) async fn apply(
         self,
         answer: impl Future<Output = Response<Body>>,
@@ -179,7 +183,7 @@ mod tests {
         headers
     }
 
-    /// gRPC over HTTP/2's `TimeoutValue TimeoutUnit`; anything else = no deadline (tonic's)
+    /// gRPC over HTTP/2's `TimeoutValue TimeoutUnit`, anything else = no deadline (tonic's)
     #[test]
     fn grpc_timeout_reads_up_to_eight_digits_and_a_unit() {
         let secs = Duration::from_secs;
@@ -225,7 +229,7 @@ mod tests {
         frames
     }
 
-    /// A stream: one record every 100 s, `count` of them, then `OK` trailers; or silent after them
+    /// Stream: one record every 100 s, `count` of them, then `OK` trailers (or silent after them)
     fn every_100_s(count: u64, then_silent: bool) -> Response<Body> {
         use std::cmp::Ordering::{Equal, Greater, Less};
 
@@ -245,9 +249,11 @@ mod tests {
     }
 
     /// Z#1537 (paused clock, silent = 300 s):
+    ///
     /// - no total cap: 1,000 s of a record every 100 s ends `OK`
     /// - `grpc-timeout` 250 s cuts the same stream after two records, `DEADLINE_EXCEEDED`
-    /// - nothing to send for 300 s = `UNAVAILABLE`; no silence bound (a subscription) = never cut
+    /// - nothing to send for 300 s = `UNAVAILABLE`
+    /// - no silence bound (a subscription) = never cut
     /// - a handler pending past its deadline / the silence bound = that status, in the headers
     #[tokio::test(start_paused = true)]
     async fn a_stream_lives_while_it_delivers_until_the_clients_deadline_or_a_silence_bound() {

@@ -117,7 +117,8 @@ impl Feed {
 /// One `GetMempoolStream`: [`opening`](Self::opening), then [`next`](Self::next) until the served
 /// tip moves
 ///
-/// - cost per arrival: one read lock + one `Arc` clone; nothing grows with the epoch
+/// - cost per arrival: one read lock + one `Arc` clone
+/// - nothing grows with the epoch
 #[derive(Debug)]
 pub struct MempoolTail {
     epoch: Arc<Epoch>,
@@ -136,8 +137,9 @@ impl MempoolTail {
         self.epoch.opening_rendered.get_or_init(|| render(&self.epoch.opening)).clone()
     }
 
-    /// Next transaction turned servable after the opening, once; `None` = the served tip moved
+    /// Next transaction turned servable after the opening, once
     ///
+    /// - `None` = the served tip moved
     /// - cancel-safe: the cursor moves only when an entry is returned
     pub async fn next(&mut self) -> Option<Arc<Logged>> {
         loop {
