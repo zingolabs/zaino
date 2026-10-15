@@ -3,9 +3,9 @@
 
 mod compose;
 mod feed;
+mod grpc_snapshot;
 mod publisher;
 mod report;
-mod snapshot;
 
 #[cfg(test)]
 mod model;
@@ -13,6 +13,6 @@ mod model;
 mod tests;
 
 pub use feed::{Logged, MempoolTail};
+pub use grpc_snapshot::{Down, GrpcSnapshot, Lightd, Standing, Tips, Unavailable};
 pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
 pub use report::{describe_metrics, emit_gauges, notes};
-pub use snapshot::{Down, GrpcSnapshot, Lightd, Standing, Tips, Unavailable};

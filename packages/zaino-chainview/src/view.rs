@@ -18,6 +18,7 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
+use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::error::{ConfigError, SubmitError};
 use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
@@ -25,7 +26,6 @@ use crate::observe::ObservationFold;
 use crate::peer_mempool::PeerMempool;
 use crate::peers::PeerWatch;
 use crate::ports::{PeerSource, UnspentOutputs};
-use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
 use crate::trusted_validators::TrustedValidatorMeta;

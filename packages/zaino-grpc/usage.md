@@ -2,7 +2,7 @@
 
 The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
 dispatched by path over [`Routes`]. Every method that reads chain, index, mempool or
-validator state loads one `zaino_snapshot::GrpcSnapshot` and reads it for the life of its
+validator state loads one `zaino_grpc_snapshot::GrpcSnapshot` and reads it for the life of its
 request or stream. The per-method table and the status codes a client must distinguish
 live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
@@ -10,7 +10,7 @@ live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
 ```rust
 let routes = Routes {
-    snapshots: publisher.handle(),       // zaino_snapshot::GrpcSnapshots<V>: one load per request
+    grpc_snapshots: publisher.handle(),  // zaino_grpc_snapshot::GrpcSnapshots<V>: one load per request
     submit: Arc::clone(&view),           // Arc<ChainView<S>>: SendTransaction
     validators,                          // zaino_traffic::TrafficBalancer<S>: GetTransaction
     network,                             // declared (GetLightdInfo.chainName)
@@ -53,8 +53,8 @@ routing.route(routes);
 | `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
-- **One `GrpcSnapshot` per request** (`snapshots.load()`, pinned for the request or
-  the whole stream, [G1](../zaino-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
+- **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
+  the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
   index holds: `GetLatestBlock`, `GetLatestTreeState`,
   `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
   transparent reader `.as_of(tip)`. A height named (`GetBlock`, `GetBlockRange`,
@@ -89,7 +89,7 @@ routing.route(routes);
   `At::answers_through` = `NOT_FOUND`), and the answering index must hold the same hash there
   (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
-- Route tests build a `GrpcSnapshot` with `zaino_snapshot::GrpcSnapshots::fixed` over
+- Route tests build a `GrpcSnapshot` with `zaino_grpc_snapshot::GrpcSnapshots::fixed` over
   `Indexed::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
 - `GetLightdInfo` never calls a validator: one `GrpcSnapshot` load (`lightd()`), so it
@@ -181,7 +181,7 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   logged while the previous pair keeps serving. A handshake not done within 10 s closes the
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
-- `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a `GrpcSnapshot`, `version` the
+- `lightd_info(grpc_snapshot, network, version)` = `GetLightdInfo`'s answer off a `GrpcSnapshot`, `version` the
   daemon's (`None` = `UNAVAILABLE`).
 
 Every cap refuses; none queues except the read lanes:

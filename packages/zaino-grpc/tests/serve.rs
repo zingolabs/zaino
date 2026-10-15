@@ -34,7 +34,10 @@ fn routes() -> Routes<MockValidator, DiskView> {
     );
     let chain = chain.expect("one endpoint");
     Routes {
-        snapshots: zaino_snapshot::GrpcSnapshots::fixed(None, chain.subscriber().current()),
+        grpc_snapshots: zaino_grpc_snapshot::GrpcSnapshots::fixed(
+            None,
+            chain.subscriber().current(),
+        ),
         submit: Arc::new(chain),
         validators,
         network,

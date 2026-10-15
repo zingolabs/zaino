@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod admission;
+mod chain_view_snapshot;
 mod config;
 mod error;
 mod fold;
@@ -14,7 +15,6 @@ mod observe;
 mod peer_mempool;
 mod peers;
 mod ports;
-mod snapshot;
 mod submit;
 mod telemetry;
 #[cfg(any(test, feature = "testing"))]
@@ -27,13 +27,15 @@ mod network_model;
 #[cfg(test)]
 mod tests;
 
+pub use chain_view_snapshot::{
+    ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread,
+};
 pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
 pub use observe::ObservationFold;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
 pub use ports::{PeerSource, UnspentOutputs};
-pub use snapshot::{ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread};
 pub use submit::SubmitPolicy;
 pub use telemetry::{describe_metrics, Alarms, METRIC_BUCKETS};
 pub use trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};

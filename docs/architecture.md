@@ -48,8 +48,8 @@ possible, take everything else from as many peers as possible.**
   (zaino-sync)         tip overlay  │
        │ IndexerDataSink     │ Indexed
        ▼                     ▼      ▼
-  5 index writers ──▶ zaino-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
-  (disk)  durable views                             → zaino-grpc, /status, /readyz, /metrics
+  5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
+  (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
 ```
 
 Two paths fold blocks, and their windows overlap:
@@ -238,7 +238,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 ## 8. Serving: one `GrpcSnapshot`
 
-`zaino-snapshot`'s publisher combines the NFS's latest `Indexed` and the chain view's latest
+`zaino-grpc-snapshot`'s publisher combines the NFS's latest `Indexed` and the chain view's latest
 publish into one `Arc<GrpcSnapshot>`. Every gRPC request or stream, probe, scrape and state log loads
 one and reads only it, so no answer mixes two moments.
 

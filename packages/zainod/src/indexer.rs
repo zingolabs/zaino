@@ -32,6 +32,7 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 use crate::config::network_name;
 use zaino_chainview::ChainView;
 use zaino_grpc::{AdmissionState, GrpcLimits, GrpcService, Routes, Routing, Tls, TrustedProxies};
+use zaino_grpc_snapshot::Publisher;
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
@@ -43,7 +44,6 @@ use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{Block, ReorgDepth};
-use zaino_snapshot::Publisher;
 use zaino_source::{BlockchainInfo, ChainDataSource};
 use zaino_sync::{FeeSink, FinalizedFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
@@ -343,7 +343,7 @@ fn run_pipeline<S: ChainDataSource>(
         spawn_infallible(&mut tasks, kind.name(), span, writer);
     }
     let publisher = Publisher::new(nfs.indexed(), inputs.view.subscriber(), depth);
-    let snapshots = publisher.handle();
+    let grpc_snapshots = publisher.handle();
 
     // --- run: every gRPC answer off one `GrpcSnapshot` from here on
     let progress = follower.progress();
@@ -351,7 +351,7 @@ fn run_pipeline<S: ChainDataSource>(
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
     spawn(&mut tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
     serving.routing.route(Routes {
-        snapshots: snapshots.clone(),
+        grpc_snapshots: grpc_snapshots.clone(),
         submit: Arc::clone(&inputs.view),
         validators: inputs.balancer,
         network,
@@ -359,7 +359,7 @@ fn run_pipeline<S: ChainDataSource>(
         max_address_rows: config.serve.max_address_rows,
         indexes: opened.iter().map(|index| index.kind).collect(),
     });
-    let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
+    let utxos = Arc::new(crate::utxos::ServedUtxos(grpc_snapshots.clone()));
     if let Some(polling) = inputs.view.peer_mempool(utxos) {
         if config.enabled(IndexKind::CompactBlock).is_none() {
             warn!(
@@ -371,7 +371,7 @@ fn run_pipeline<S: ChainDataSource>(
     }
     let (rate, block_rate) = watch::channel(None);
     let reporting = crate::progress::run(
-        snapshots.clone(),
+        grpc_snapshots.clone(),
         progress.clone(),
         opened,
         rate,
@@ -382,7 +382,7 @@ fn run_pipeline<S: ChainDataSource>(
     let measuring = crate::egress::run(egress, cancel.child_token());
     spawn(&mut tasks, "egress", component("Grpc"), measuring);
     status.publish(crate::status::Sources {
-        snapshots,
+        grpc_snapshots,
         progress,
         block_rate,
         grpc_admission: serving.admission,

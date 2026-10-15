@@ -21,8 +21,8 @@ use zaino_primitives::types::ReorgDepth;
 
 use crate::compose::compose;
 use crate::feed::{above_durable_txids, Feed};
+use crate::grpc_snapshot::GrpcSnapshot;
 use crate::report::transitions;
-use crate::snapshot::GrpcSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GrpcSnapshotError {

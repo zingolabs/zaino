@@ -1,4 +1,4 @@
-# `zaino-snapshot` — usage
+# `zaino-grpc-snapshot` — usage
 
 One value for everything Zaino serves
 ([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)): the chain view's latest,
@@ -9,10 +9,10 @@ scrape or a log line, loads one and asks it everything.
 ## Wiring: `Publisher`
 
 ```rust,ignore
-use zaino_snapshot::{Publisher, GrpcSnapshotError};
+use zaino_grpc_snapshot::{Publisher, GrpcSnapshotError};
 
 let publisher = Publisher::new(nfs.indexed(), chain_view.subscriber(), depth); // seq 0 stored now
-let snapshots = publisher.handle();                    // clone per route / probe / scrape
+let grpc_snapshots = publisher.handle();               // clone per route / probe / scrape
 tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the NFS stopped
 ```
 
@@ -26,12 +26,12 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
 ## Readers: `GrpcSnapshots` → `GrpcSnapshot`
 
 ```rust,ignore
-let snap = snapshots.load();                           // one atomic load, never None: pin it
-let at = snap.served()?;                               // Err(Unavailable): UNAVAILABLE + its message
+let grpc_snapshot = grpc_snapshots.load();             // one atomic load, never None: pin it
+let at = grpc_snapshot.served()?;                      // Err(Unavailable): UNAVAILABLE + its message
 let blocks = at.views().compact_block();
-let mempool = snap.mempool()?;                         // gate: a Live holder of best, or a peer quorum
-let lightd = snap.lightd()?;                           // GetLightdInfo: one load, no validator
-snapshots.changed().await?;                            // next publish
+let mempool = grpc_snapshot.mempool()?;                // gate: a Live holder of best, or a peer quorum
+let lightd = grpc_snapshot.lightd()?;                  // GetLightdInfo: one load, no validator
+grpc_snapshots.changed().await?;                       // next publish
 ```
 
 | Method                  | Answer                                                                        |
@@ -64,7 +64,7 @@ snapshots.changed().await?;                            // next publish
 ## `GetMempoolStream`: one epoch per served tip
 
 ```rust,ignore
-let mut tail = snap.mempool_stream()?;
+let mut tail = grpc_snapshot.mempool_stream()?;
 send(tail.opening_rendered(render_all));               // servable at the epoch's opening
 while let Some(logged) = tail.next().await {            // each arrival once; None = served moved
     send(logged.rendered(render_one));
@@ -86,10 +86,10 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 
 ```rust,ignore
 describe_metrics();                                     // once, at boot
-emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then render
+emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then render
 ```
 
-- `notes(&snap)`: one sentence per raised alarm (zainod's `/status` `notes`).
+- `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `notes`).
 - Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
   `zaino_fetch_height` (`handed`), `zaino_index_synced{index}`, and the chain view's
   `zaino_chainview_*` state:

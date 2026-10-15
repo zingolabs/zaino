@@ -1,5 +1,5 @@
 [package]
-name = "zaino-snapshot"
+name = "zaino-grpc-snapshot"
 publish.workspace = true
 version.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "One published snapshot of what Zaino serves: chain, indexes, mempool, validators"
+description = "One published GrpcSnapshot of what Zaino serves: chain, indexes, mempool, validators"
 
 [features]
 # `Snapshots::fixed`

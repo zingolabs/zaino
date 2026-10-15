@@ -25,10 +25,10 @@ use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::{admissible, NextBlock, Refused};
+use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::fold::{Candidate, ChainViewCore};
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::ports::{PeerSource, UnspentOutputs};
-use crate::snapshot::ChainViewSnapshot;
 
 /// A transaction one of our checks refused stays refused this long
 pub(crate) const REFUSED_TTL: Duration = Duration::from_secs(600);

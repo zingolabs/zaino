@@ -2,7 +2,7 @@
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
-//! - one global [`GrpcSnapshot`](zaino_snapshot::GrpcSnapshot) per request or stream (G1), pinned for
+//! - one global [`GrpcSnapshot`](zaino_grpc_snapshot::GrpcSnapshot) per request or stream (G1), pinned for
 //!   its life: no height named = its served tip; a height named = `At::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a row whose index `Routes::indexes` lacks = `UNIMPLEMENTED`, naming the index
@@ -19,8 +19,8 @@ use futures::future::BoxFuture;
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
+use zaino_grpc_snapshot::{GrpcSnapshots, Unavailable};
 use zaino_persistence::{IndexKind, PinnedView};
-use zaino_snapshot::{GrpcSnapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
@@ -156,14 +156,14 @@ impl Route {
 
 /// What one `GrpcService` answers from
 ///
-/// - `snapshots` = every read (chain, indexes, mempool, validator facts)
+/// - `grpc_snapshots` = every read (chain, indexes, mempool, validator facts)
 /// - `submit` = `SendTransaction` only; `validators` = `GetTransaction` + address tx bytes
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
 /// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`
 pub struct Routes<S: ChainDataSource, V> {
-    pub snapshots: GrpcSnapshots<V>,
+    pub grpc_snapshots: GrpcSnapshots<V>,
     pub submit: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
     pub network: NetworkType,
@@ -266,8 +266,8 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
         use Method::*;
 
         let (routes, reads) = (&self.routes, wired.reads.clone());
-        let snap = routes.snapshots.load();
-        let served = || snap.served().map_err(wire::unavailable);
+        let grpc_snapshot = routes.grpc_snapshots.load();
+        let served = || grpc_snapshot.served().map_err(wire::unavailable);
         let compact = || {
             let at = served()?;
             let blocks = view(at.views().compact_block(), method, IndexKind::CompactBlock)?;
@@ -276,7 +276,7 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
         let trees = || {
             // the NFS publish itself: memo identity (`served()` = its served tip)
             let nothing = || wire::unavailable(Unavailable::NothingServed);
-            let indexed = snap.indexed().ok_or_else(nothing)?;
+            let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
             let trees = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
             let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
             Ok::<_, Status>(tree_state::Answering { indexed, trees, reads: reads.clone(), memos })
@@ -310,11 +310,11 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
                 transparent_address::transactions(addresses()?, validators, body, &reads).await
             }
             SendTransaction => chain::send(&routes.submit, body).await,
-            GetMempoolTx => chain::mempool_tx(&snap, body).await,
-            GetMempoolStream => chain::mempool_stream(&snap),
+            GetMempoolTx => chain::mempool_tx(&grpc_snapshot, body).await,
+            GetMempoolStream => chain::mempool_stream(&grpc_snapshot),
             GetTransaction => chain::transaction(&routes.validators, body).await,
             GetLightdInfo => {
-                let info = chain::lightd_info(&snap, routes.network, routes.version)?;
+                let info = chain::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
                 Ok(unary_response(frame(&info)))
             }
             GetStandardFee => chain::standard_fee(&routes.validators).await,
@@ -461,9 +461,9 @@ mod tests {
         let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
         let two = chain.at(h(2));
-        let snapshots =
+        let grpc_snapshots =
             grpc_snapshots_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
-        let mut router = dispatch(Routes { snapshots, ..routes() });
+        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
         let mut call = |method: Method, message: Vec<u8>| {
             let response = router.call(framed_request(method, message.into()));
             async move {
@@ -563,7 +563,7 @@ mod tests {
         let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
         let views = kinds.into_iter().map(|kind| indexed(kind, &chain, tip)).collect();
         let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
+            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
         let range = service::BlockRange {

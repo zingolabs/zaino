@@ -71,7 +71,7 @@ body:
         - zaino-persistence
         - zaino-primitives
         - zaino-proto
-        - zaino-snapshot
+        - zaino-grpc-snapshot
         - zaino-source
         - zaino-sync
         - zaino-traffic

@@ -271,21 +271,29 @@ fn run(moves: Vec<(Input, bool)>) {
             core.publish(model.indexed(), model.view());
             let expected = model.publish();
             seq += 1;
-            let snap = handle.load();
-            crate::compose::check(&prev, &snap, DEPTH);
-            assert_eq!((snap.seq(), snap.tips()), (seq, expected), "{context}: G2-G4 tips");
-            assert_eq!(snap.standing(EPOCH), standing_of(&expected), "{context}: standing");
+            let grpc_snapshot = handle.load();
+            crate::compose::check(&prev, &grpc_snapshot, DEPTH);
+            assert_eq!(
+                (grpc_snapshot.seq(), grpc_snapshot.tips()),
+                (seq, expected),
+                "{context}: G2-G4 tips"
+            );
+            assert_eq!(
+                grpc_snapshot.standing(EPOCH),
+                standing_of(&expected),
+                "{context}: standing"
+            );
         }
-        let snap = handle.load();
+        let grpc_snapshot = handle.load();
         if matches!(input, Input::Tail) {
-            match snap.mempool_stream() {
+            match grpc_snapshot.mempool_stream() {
                 Ok(tail) => {
                     let epoch = model.epochs.len() - 1;
                     let received = tail.opening().iter().map(|entry| entry.txid).collect();
                     tails.push(Tailed { tail, epoch, received, ended: false });
                 }
                 Err(refused) => {
-                    let read = crate::compose::mempool_read(&snap);
+                    let read = crate::compose::mempool_read(&grpc_snapshot);
                     assert!(!read, "{context}: G6 a read mempool refused a stream: {refused}");
                 }
             }

@@ -1,6 +1,6 @@
 //! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6, G10
 
-use crate::snapshot::Tips;
+use crate::grpc_snapshot::Tips;
 use zaino_chainview::ChainViewSnapshot;
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::Indexed;
@@ -95,11 +95,11 @@ pub(crate) fn check<V>(
 /// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the
 /// peers' listings spanning a quorum's netgroups
 #[cfg(test)]
-pub(crate) fn mempool_read<V>(snap: &crate::GrpcSnapshot<V>) -> bool {
+pub(crate) fn mempool_read<V>(grpc_snapshot: &crate::GrpcSnapshot<V>) -> bool {
     use zaino_traffic::Health;
 
-    let trusted_validators = snap.view().trusted_validators();
+    let trusted_validators = grpc_snapshot.view().trusted_validators();
     let live =
         |at: usize| trusted_validators.get(at).is_some_and(|meta| meta.health == Health::Live);
-    snap.tips().held_by.positions().any(live) || snap.view().peers_quorate()
+    grpc_snapshot.tips().held_by.positions().any(live) || grpc_snapshot.view().peers_quorate()
 }

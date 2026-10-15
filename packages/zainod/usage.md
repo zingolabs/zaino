@@ -18,7 +18,7 @@ may reach it: [running.md: Network exposure](../../docs/running.md#network-expos
 | `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` or `degraded` (`503`) |
 
 `/readyz`, the public [`/status`](#public-health-on-the-grpc-listener) and the `/metrics` gauges
-each read **one** load of the global snapshot (`zaino-snapshot`): none of them can mix two
+each read **one** `GrpcSnapshot` load (`zaino-grpc-snapshot`): none of them can mix two
 moments.
 
 `state` is one of six, and the first rule that matches wins:
@@ -151,7 +151,7 @@ or tailnet name:
 
 `/metrics` sets every state gauge from the `GrpcSnapshot` first (`zaino_best_tip`,
 `zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
-[`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then renders; events
+[`zaino-grpc-snapshot`](../zaino-grpc-snapshot/usage.md#reporting)), then renders; events
 (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they happen
 ([`zaino-nfs`](../zaino-nfs/usage.md#observability), [`zaino-sync`](../zaino-sync/usage.md)).
 Each index writer reports its own progress

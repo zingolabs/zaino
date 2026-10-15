@@ -17,7 +17,7 @@ use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
-use crate::snapshot::{ChainViewSnapshot, Sighting};
+use crate::chain_view_snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
 use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 

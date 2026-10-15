@@ -2,7 +2,7 @@
 
 The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block
 above the indexes' durable tips folded in RAM, one `Indexed` publish across every index (the index
-half of `zaino_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path
+half of `zaino_grpc_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path
 (`zaino-sync`), never through here.
 
 ## Wiring: `Nfs`
@@ -20,7 +20,7 @@ let utxo_set = utxo_set_writer.handle();
 let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.view().tip(), queue_bytes);
 nfs.add(IndexKind::UtxoSet, utxo_set);
 
-let publisher = zaino_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
+let publisher = zaino_grpc_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
 tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone | IndexGone
 ```
 
@@ -35,11 +35,11 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 
 ## Readers: `Indexed` → `At`
 
-Routes never hold an `Indexed`: they load one `zaino_snapshot::GrpcSnapshot` per request and ask it
+Routes never hold an `Indexed`: they load one `zaino_grpc_snapshot::GrpcSnapshot` per request and ask it
 `served()?` (this crate's `At`).
 
 ```rust,ignore
-let at = snap.served()?;                                // zaino-snapshot: one load, pinned
+let at = grpc_snapshot.served()?;                       // zaino-grpc-snapshot: one load, pinned
 let tip = at.tip();                                     // GetLatestBlock: every read answers <= it
 let blocks = at.views().compact_block().ok_or_else(disabled)?; // None = disabled, never syncing
 let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
@@ -70,7 +70,7 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 | INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized`) | each published tip that is the verified best |
 
 Fetch counters come from the final path (`zaino-sync`); `zaino_best_tip` and `zaino_fetch_height`
-from `zaino-snapshot`.
+from `zaino-grpc-snapshot`.
 
 ## Core and invariants
 
@@ -79,7 +79,7 @@ from `zaino-snapshot`.
  checked bodies ─────┤                    │
  fold results ───────┼─▶ NfsCore::step ───┼─▶ Fold ────▶ fold_block on rayon ─▶ Node in graph
  IndexHandle commits ┘   (pure: no I/O)   │
-   (durable tips)                         └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-snapshot
+   (durable tips)                         └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-grpc-snapshot
 ```
 
 `NfsCore::step` is pure (no I/O): inputs = the chain, checked bodies, fold results, durable tips;

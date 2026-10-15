@@ -9,6 +9,7 @@ use http_body_util::Full;
 use tokio::sync::watch;
 use tonic::body::Body;
 use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationFold, TrustedValidatorSet};
+use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
 use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
@@ -16,7 +17,6 @@ use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
-use zaino_snapshot::{GrpcSnapshots, Publisher};
 use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
 use zcash_protocol::TxId;
@@ -134,7 +134,7 @@ pub(super) fn routes_over(
     let view = view.expect("one endpoint");
     let fold = view.observation_fold();
     let routes = Routes {
-        snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
+        grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
         submit: Arc::new(view),
         validators,
         network: MAINNET,
@@ -160,7 +160,7 @@ pub(super) fn published(
 ) -> (Publisher<DiskView>, NfsPublishes) {
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::new(indexed, routes.submit.subscriber(), ReorgDepth::CONSENSUS);
-    routes.snapshots = publisher.handle();
+    routes.grpc_snapshots = publisher.handle();
     (publisher, nfs)
 }
 

@@ -337,7 +337,7 @@ mod tests {
         let genesis = chain.genesis();
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
         let mut router = dispatch(Routes {
-            snapshots: grpc_snapshots(&chain, genesis, vec![trees]),
+            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees]),
             ..routes()
         });
 
@@ -393,8 +393,10 @@ mod tests {
         }
         let tip = chain.tip();
         let trees = indexed(IndexKind::TreeState, &chain, tip);
-        let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![trees]), ..routes() });
+        let mut router = dispatch(Routes {
+            grpc_snapshots: grpc_snapshots(&chain, tip, vec![trees]),
+            ..routes()
+        });
 
         let mut ask = |method: Method, body: Vec<u8>| {
             let request = framed_request(method, body.into());
@@ -452,7 +454,7 @@ mod tests {
         let hash = genesis.hash.0;
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
         let mut router = dispatch(Routes {
-            snapshots: grpc_snapshots(&chain, genesis, vec![trees.clone()]),
+            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees.clone()]),
             ..routes()
         });
 
@@ -518,7 +520,7 @@ mod tests {
         let located_by = |locator: &MockChain| {
             let views =
                 vec![trees.clone(), indexed(IndexKind::BlockHash, locator, locator.genesis())];
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, genesis, views), ..routes() })
+            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() })
         };
         let mut linked = located_by(&chain);
         let response = linked.call(by_hash(hash)).await.expect("answers");

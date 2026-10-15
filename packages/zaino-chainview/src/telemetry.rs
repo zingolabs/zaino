@@ -1,14 +1,14 @@
 //! Trusted validator telemetry: alarm conditions per fold, event histograms + counters
 //!
 //! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
-//! - State gauges + alarm edge logs = `zaino-snapshot`'s (at scrape, per publish)
+//! - State gauges + alarm edge logs = `zaino-grpc-snapshot`'s (at scrape, per publish)
 
 use std::collections::HashSet;
 
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
 use zaino_traffic::{Health, TrustedValidatorId};
 
-use crate::snapshot::Sighting;
+use crate::chain_view_snapshot::Sighting;
 use crate::submit::Ended;
 use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
@@ -62,7 +62,7 @@ pub fn describe_metrics() {
     );
 }
 
-/// Raised conditions as of one fold (`zaino-snapshot` logs each edge)
+/// Raised conditions as of one fold (`zaino-grpc-snapshot` logs each edge)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Alarms {
     stale: TrustedValidatorSet,

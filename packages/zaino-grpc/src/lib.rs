@@ -43,11 +43,11 @@ pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};
 pub use zaino_proto::proto::service::LightdInfo;
 
-/// `GetLightdInfo`'s answer from `snap` (`None` = the RPC answers `UNAVAILABLE`)
+/// `GetLightdInfo`'s answer from `grpc_snapshot` (`None` = the RPC answers `UNAVAILABLE`)
 pub fn lightd_info<V>(
-    snap: &zaino_snapshot::GrpcSnapshot<V>,
+    grpc_snapshot: &zaino_grpc_snapshot::GrpcSnapshot<V>,
     network: zcash_protocol::consensus::NetworkType,
     version: &str,
 ) -> Option<LightdInfo> {
-    routes::chain::lightd_info(snap, network, version).ok()
+    routes::chain::lightd_info(grpc_snapshot, network, version).ok()
 }

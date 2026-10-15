@@ -51,7 +51,7 @@ arc-swap = { workspace = true }
 zaino-persistence.workspace = true
 zaino-nfs.workspace = true
 zaino-traffic.workspace = true
-zaino-snapshot.workspace = true
+zaino-grpc-snapshot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
@@ -65,7 +65,7 @@ zaino-chainview = { workspace = true, features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-internal-block-hash-to-height.workspace = true
-zaino-snapshot = { workspace = true, features = ["testing"] }
+zaino-grpc-snapshot = { workspace = true, features = ["testing"] }
 h2 = "0.4"
 
 [lints.rust]

@@ -39,7 +39,7 @@ zainod spawns the balancer's driver first, builds the view once the upgrade sche
 (regtest's = the first answered poll), then spawns header sync, the observation fold, each push
 stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and with `[p2p]` on
 `peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `Routes.submit` holds the view for
-`SendTransaction`; every read goes through `zaino-snapshot`.
+`SendTransaction`; every read goes through `zaino-grpc-snapshot`.
 
 ## Membership
 
@@ -196,7 +196,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 ## Telemetry
 
 zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` gauges are
-`zaino-snapshot`'s, set at scrape. This crate emits events only (buckets: `METRIC_BUCKETS`):
+`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only (buckets: `METRIC_BUCKETS`):
 
 | Metric | Kind | Labels |
 |---|---|---|

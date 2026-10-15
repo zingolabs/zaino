@@ -11,7 +11,7 @@ use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
 /// No answer from this `GrpcSnapshot`: retry (`UNAVAILABLE`, the reason as its message)
-pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
+pub(crate) fn unavailable(why: zaino_grpc_snapshot::Unavailable) -> Status {
     Status::unavailable(why.to_string())
 }
 
@@ -307,8 +307,8 @@ mod tests {
         let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let snapshots = grpc_snapshots(&chain, genesis, vec![compact]);
-        let mut router = dispatch(Routes { snapshots, ..routes() });
+        let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![compact]);
+        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {

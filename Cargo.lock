@@ -5073,6 +5073,7 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "zaino-chainview",
+ "zaino-grpc-snapshot",
  "zaino-header-chain",
  "zaino-index-compact-block",
  "zaino-index-transparent-address",
@@ -5082,13 +5083,38 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-proto",
- "zaino-snapshot",
  "zaino-source",
  "zaino-traffic",
  "zcash_address",
  "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
+]
+
+[[package]]
+name = "zaino-grpc-snapshot"
+version = "0.11.0-alpha.2"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "proptest",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chainview",
+ "zaino-header-chain",
+ "zaino-internal-block-hash-to-height",
+ "zaino-nfs",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-sync",
+ "zaino-traffic",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -5274,32 +5300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-snapshot"
-version = "0.11.0-alpha.2"
-dependencies = [
- "arc-swap",
- "bytes",
- "futures",
- "metrics",
- "metrics-exporter-prometheus",
- "proptest",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "zaino-chainview",
- "zaino-header-chain",
- "zaino-internal-block-hash-to-height",
- "zaino-nfs",
- "zaino-persistence",
- "zaino-primitives",
- "zaino-source",
- "zaino-sync",
- "zaino-traffic",
- "zcash_protocol",
-]
-
-[[package]]
 name = "zaino-source"
 version = "0.11.0-alpha.2"
 dependencies = [
@@ -5401,6 +5401,7 @@ dependencies = [
  "unicode-ellipsis",
  "zaino-chainview",
  "zaino-grpc",
+ "zaino-grpc-snapshot",
  "zaino-header-chain",
  "zaino-index-compact-block",
  "zaino-index-transparent-address",
@@ -5412,7 +5413,6 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-proto",
- "zaino-snapshot",
  "zaino-source",
  "zaino-sync",
  "zaino-traffic",

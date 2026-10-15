@@ -31,7 +31,7 @@ pub enum IndexerError {
     #[error(transparent)]
     Follow(#[from] zaino_sync::FollowError),
     #[error(transparent)]
-    GrpcSnapshot(#[from] zaino_snapshot::GrpcSnapshotError),
+    GrpcSnapshot(#[from] zaino_grpc_snapshot::GrpcSnapshotError),
     #[error(transparent)]
     Grpc(#[from] zaino_grpc::GrpcServeError),
     #[error(transparent)]

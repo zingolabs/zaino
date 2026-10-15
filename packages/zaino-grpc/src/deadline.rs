@@ -306,7 +306,7 @@ mod tests {
         let genesis = chain.genesis();
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
         let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, genesis, views), ..routes() });
+            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() });
 
         let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();

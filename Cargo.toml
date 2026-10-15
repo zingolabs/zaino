@@ -2,7 +2,7 @@
 [workspace]
 members = [
     "packages/zaino-grpc",
-    "packages/zaino-snapshot",
+    "packages/zaino-grpc-snapshot",
     "packages/zaino-index-compact-block",
     "packages/zaino-index-tree-state",
     "packages/zaino-index-transparent-address",
@@ -117,7 +117,7 @@ zaino-proto = { path = "packages/zaino-proto", version = "0.11.0-alpha.2" }
 zaino-peers = { path = "packages/zaino-peers", version = "0.11.0-alpha.2" }
 zaino-traffic = { path = "packages/zaino-traffic", version = "0.11.0-alpha.2" }
 zaino-chainview = { path = "packages/zaino-chainview", version = "0.11.0-alpha.2" }
-zaino-snapshot = { path = "packages/zaino-snapshot", version = "0.11.0-alpha.2" }
+zaino-grpc-snapshot = { path = "packages/zaino-grpc-snapshot", version = "0.11.0-alpha.2" }
 zaino-grpc = { path = "packages/zaino-grpc", version = "0.11.0-alpha.2" }
 # p2p layer (zaino-peers): zebra main on the same librustzcash/orchard/sapling forks patched below
 zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0ad140b6b44b88cecf2385067568b7a575b", version = "14.0.0" }

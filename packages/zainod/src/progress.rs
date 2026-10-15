@@ -17,9 +17,9 @@ use std::{
 
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
+use zaino_grpc_snapshot::{GrpcSnapshots, Tips};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::display::{ByteSize, Human};
-use zaino_snapshot::{GrpcSnapshots, Tips};
 use zaino_sync::{IndexHandle, SyncProgress};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -92,7 +92,7 @@ impl Phase {
 
 /// Until `cancel`; each tick's blocks/s over the last two in `rate`
 pub(crate) async fn run(
-    snapshots: GrpcSnapshots<DiskView>,
+    grpc_snapshots: GrpcSnapshots<DiskView>,
     progress: SyncProgress,
     indexes: Vec<Index>,
     rate: watch::Sender<Option<f64>>,
@@ -104,7 +104,7 @@ pub(crate) async fn run(
         let served = tips.served.map_or(0, |served| served.height.into());
         Sample { at: Instant::now(), handed: progress.blocks(), served }
     };
-    let mut last = sample(&snapshots.load().tips());
+    let mut last = sample(&grpc_snapshots.load().tips());
     let mut before_last = last;
     let (mut last_phase, mut moved_at) = (None::<Phase>, last.at);
     let (mut disk, mut walked) = (Disk::new(), None::<Instant>);
@@ -122,7 +122,7 @@ pub(crate) async fn run(
         }
         let views = crate::disk_monitor::views(&indexes);
         tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
-        let tips = snapshots.load().tips();
+        let tips = grpc_snapshots.load().tips();
         let now = sample(&tips);
         let durable = indexes
             .iter()

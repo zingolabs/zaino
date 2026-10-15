@@ -60,26 +60,33 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     .expect("one validator");
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
-    let mut snapshots = publisher.handle();
-    assert_eq!((snapshots.load().seq(), snapshots.load().tips()), (0, Tips::default()));
+    let mut grpc_snapshots = publisher.handle();
+    assert_eq!((grpc_snapshots.load().seq(), grpc_snapshots.load().tips()), (0, Tips::default()));
 
     let cancel = CancellationToken::new();
     let running = tokio::spawn(publisher.run(cancel.clone()));
     let chain = builder.verified(a3);
     view.set_verified(Some(chain.clone()));
-    within("a publish", snapshots.changed()).await.expect("publisher running");
-    let snap = snapshots.load();
-    assert_eq!((snap.seq(), snap.tips().best, snap.tips().served), (1, Some(a3), None));
+    within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
+    let grpc_snapshot = grpc_snapshots.load();
+    assert_eq!(
+        (grpc_snapshot.seq(), grpc_snapshot.tips().best, grpc_snapshot.tips().served),
+        (1, Some(a3), None)
+    );
 
     let none: [(IndexKind, DiskView); 0] = [];
     for block in &path[1..] {
         let indexed = Indexed::fixed(Arc::new(chain.clone()), block.at(), params, none.clone());
         nfs.send_replace(Some(Arc::new(indexed)));
     }
-    within("a publish", snapshots.changed()).await.expect("publisher running");
-    let snap = snapshots.load();
-    let tips = snap.tips();
-    assert_eq!((snap.seq(), tips.served, tips.synced), (2, Some(a3), true), "coalesced burst");
+    within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
+    let grpc_snapshot = grpc_snapshots.load();
+    let tips = grpc_snapshot.tips();
+    assert_eq!(
+        (grpc_snapshot.seq(), tips.served, tips.synced),
+        (2, Some(a3), true),
+        "coalesced burst"
+    );
 
     cancel.cancel();
     let ended = within("the publisher stopped", running).await;
@@ -130,14 +137,14 @@ fn one_snapshot_renders_every_gauge() {
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
     let view = view.trusted_validator(1, Health::Degraded, 0);
-    let snap = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
+    let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let render = recorder.handle();
     metrics::with_local_recorder(&recorder, || {
         describe_metrics();
-        emit_gauges(&snap, &progress);
+        emit_gauges(&grpc_snapshot, &progress);
     });
     let rendered = render.render();
     let first = addresses[0];
@@ -185,16 +192,20 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)),
         DEPTH,
     );
-    let snapshots = core.handle();
+    let grpc_snapshots = core.handle();
     for tip in [&a[4], &a[8], &a[12]] {
         let (indexed, view) = served_at(tip);
         core.publish(Some(indexed), Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)));
-        let snap = snapshots.load();
+        let grpc_snapshot = grpc_snapshots.load();
         let height = u32::from(tip.header().height);
-        assert_eq!(snap.tips().served, snap.tips().best, "at {height}: served = best");
-        let target = snap.sync_target().map(u32::from);
         assert_eq!(
-            (snap.standing(now), target),
+            grpc_snapshot.tips().served,
+            grpc_snapshot.tips().best,
+            "at {height}: served = best"
+        );
+        let target = grpc_snapshot.sync_target().map(u32::from);
+        assert_eq!(
+            (grpc_snapshot.standing(now), target),
             (Standing::Syncing, Some(height + 1_200)),
             "{height}"
         );
@@ -240,8 +251,12 @@ fn each_holder_health_gives_its_standing_and_notes() {
             &[],
         );
         let view = view.trusted_validator(0, holder, behind).trusted_validator(1, other, 0);
-        let snap = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
-        assert_eq!((snap.standing(now), notes(&snap)), (standing, expected_notes), "{case}");
+        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+        assert_eq!(
+            (grpc_snapshot.standing(now), notes(&grpc_snapshot)),
+            (standing, expected_notes),
+            "{case}"
+        );
     }
 }
 
@@ -268,8 +283,12 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let unheld =
         ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
     for (why, view) in [(Down::NoValidatorReachable, all_down), (Down::TipNotHeld, unheld)] {
-        let snap = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
-        let standing = (snap.standing(now), snap.standing(stale - 1), snap.standing(stale));
+        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+        let standing = (
+            grpc_snapshot.standing(now),
+            grpc_snapshot.standing(stale - 1),
+            grpc_snapshot.standing(stale),
+        );
         let expected = (Standing::Degraded(why), Standing::Degraded(why), Standing::Down(why));
         assert_eq!(standing, expected, "{why:?}");
     }

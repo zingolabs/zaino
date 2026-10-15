@@ -11,7 +11,7 @@ use zaino_persistence::View;
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, TrustedValidatorId};
 
-use crate::snapshot::GrpcSnapshot;
+use crate::grpc_snapshot::GrpcSnapshot;
 
 mod names {
     pub(super) const BEST_TIP: &str = "zaino.best_tip";
@@ -87,8 +87,8 @@ const FINALITY_PAUSED: &str = "Finality paused: no trusted validator holds the b
 
 /// One sentence per raised alarm (zainod's `/status` `notes`): partition, eclipse, finality
 /// paused, stale tips, ending releases
-pub fn notes<V>(snap: &GrpcSnapshot<V>) -> Vec<String> {
-    let alarms = snap.view().alarms();
+pub fn notes<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Vec<String> {
+    let alarms = grpc_snapshot.view().alarms();
     let counted = |count: usize, one: &str, many: &str| match count {
         0 => None,
         1 => Some(format!("1 {one}")),
@@ -165,19 +165,19 @@ pub fn describe_metrics() {
     );
 }
 
-/// Every gauge from `snap` + `progress`, set at scrape (fresh, no mirror tasks)
-pub fn emit_gauges<V: View>(snap: &GrpcSnapshot<V>, progress: &SyncProgress) {
-    let tips = snap.tips();
+/// Every gauge from `grpc_snapshot` + `progress`, set at scrape (fresh, no mirror tasks)
+pub fn emit_gauges<V: View>(grpc_snapshot: &GrpcSnapshot<V>, progress: &SyncProgress) {
+    let tips = grpc_snapshot.tips();
     if let Some(best) = tips.best {
         metrics::gauge!(names::BEST_TIP).set(f64::from(u32::from(best.height)));
     }
     if let Some(handed) = progress.handed() {
         metrics::gauge!(names::FETCH_HEIGHT).set(f64::from(u32::from(handed)));
     }
-    for (kind, _) in snap.indexed().into_iter().flat_map(|indexed| indexed.durable()) {
+    for (kind, _) in grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable()) {
         metrics::gauge!(names::INDEX_SYNCED, "index" => kind.name()).set(f64::from(tips.synced));
     }
-    chain_view_gauges(snap.view());
+    chain_view_gauges(grpc_snapshot.view());
 }
 
 /// `zaino.chainview.*`: per endpoint, then the view's

@@ -78,7 +78,7 @@ futures.workspace = true
 bytes.workspace = true
 zaino-nfs.workspace = true
 zaino-traffic.workspace = true
-zaino-snapshot.workspace = true
+zaino-grpc-snapshot.workspace = true
 zcash_transparent.workspace = true
 
 [dev-dependencies]

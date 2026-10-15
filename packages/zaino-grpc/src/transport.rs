@@ -456,7 +456,7 @@ mod tests {
             indexed(IndexKind::CompactBlock, &chain, tip),
             indexed(IndexKind::TransparentAddress, &chain, tip),
         ];
-        let routes = Routes { snapshots: grpc_snapshots(&chain, tip, views), ..routes() };
+        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() };
 
         let server = GrpcService::new(ANY_PORT, crate::GrpcLimits::default()).with_routes(routes);
         let bound = server.bind().await.expect("binds");
@@ -516,7 +516,8 @@ mod tests {
         let genesis = chain.genesis();
         let serve = |limits: crate::GrpcLimits| {
             let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-            let routes = Routes { snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
+            let routes =
+                Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
             async move {
                 let server = GrpcService::new(ANY_PORT, limits).with_routes(routes);
                 let bound = server.bind().await.expect("binds");
@@ -609,7 +610,7 @@ mod tests {
             ..crate::GrpcLimits::default()
         };
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-        let routes = Routes { snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
+        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
         let server = GrpcService::new(ANY_PORT, forever).with_routes(routes);
         let retire = server.retire();
         let bound = server.bind().await.expect("binds");

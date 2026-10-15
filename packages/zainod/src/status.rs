@@ -11,8 +11,8 @@ use std::sync::{
 
 use serde::Serialize;
 use tokio::sync::watch;
+use zaino_grpc_snapshot::{Down, GrpcSnapshot, GrpcSnapshots, Standing};
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_snapshot::{Down, GrpcSnapshot, GrpcSnapshots, Standing};
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::NetworkType;
@@ -41,7 +41,7 @@ pub(crate) struct DaemonStatus {
 /// - `block_rate` = blocks handed per second over its last ~60 s (`None` before its first tick)
 /// - `egress` = last closed 10-min window
 pub(crate) struct Sources {
-    pub(crate) snapshots: GrpcSnapshots<DiskView>,
+    pub(crate) grpc_snapshots: GrpcSnapshots<DiskView>,
     pub(crate) progress: SyncProgress,
     pub(crate) block_rate: watch::Receiver<Option<f64>>,
     pub(crate) grpc_admission: Arc<zaino_grpc::AdmissionState>,
@@ -118,18 +118,18 @@ struct Booted {
 }
 
 impl Booted {
-    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>) -> Self {
-        let served = snap.tips().served.map(|tip| tip.height);
+    fn of(sources: &Sources, grpc_snapshot: &GrpcSnapshot<DiskView>) -> Self {
+        let served = grpc_snapshot.tips().served.map(|tip| tip.height);
         let (progress, rate) = (&sources.progress, *sources.block_rate.borrow());
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
-            standing: snap.standing(now),
+            standing: grpc_snapshot.standing(now),
             overloaded: sources.grpc_admission.report().overloaded,
             done: served.or(progress.handed()).map(u32::from),
-            target: snap.sync_target().map(u32::from),
+            target: grpc_snapshot.sync_target().map(u32::from),
             rate,
-            notes: zaino_snapshot::notes(snap),
+            notes: zaino_grpc_snapshot::notes(grpc_snapshot),
         }
     }
 }
@@ -230,7 +230,7 @@ impl DaemonStatus {
 
     fn current_readiness(&self) -> Readiness {
         let stage = match self.sources.get() {
-            Some(sources) => Stage::Booted(Booted::of(sources, &sources.snapshots.load())),
+            Some(sources) => Stage::Booted(Booted::of(sources, &sources.grpc_snapshots.load())),
             None => Stage::Starting {
                 bootstrap: self.bootstrap_bytes(),
                 awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
@@ -250,7 +250,7 @@ impl DaemonStatus {
     fn public_status_json(&self) -> String {
         let sources = self.sources.get();
         let chain =
-            sources.map(|sources| Chain::of(sources, &sources.snapshots.load(), self.network));
+            sources.map(|sources| Chain::of(sources, &sources.grpc_snapshots.load(), self.network));
         let status = public_status(self.current_readiness(), self.network, chain, &self.configured);
         serde_json::to_string(&status).unwrap_or_default()
     }
@@ -258,7 +258,7 @@ impl DaemonStatus {
     /// Every `GrpcSnapshot` gauge, set just before a scrape renders (nothing before boot)
     pub(crate) fn emit_gauges(&self) {
         if let Some(sources) = self.sources.get() {
-            zaino_snapshot::emit_gauges(&sources.snapshots.load(), &sources.progress);
+            zaino_grpc_snapshot::emit_gauges(&sources.grpc_snapshots.load(), &sources.progress);
         }
     }
 
@@ -269,10 +269,11 @@ impl DaemonStatus {
         let Some(sources) = self.sources.get() else {
             return Startup { started, progress: self.bootstrap_progress() };
         };
-        let snap = sources.snapshots.load();
-        let durable = snap.indexed().into_iter().flat_map(|indexed| indexed.durable());
+        let grpc_snapshot = sources.grpc_snapshots.load();
+        let durable = grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable());
         let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
-        let heights = [sources.progress.handed(), snap.tips().served.map(|tip| tip.height)];
+        let heights =
+            [sources.progress.handed(), grpc_snapshot.tips().served.map(|tip| tip.height)];
         let progress =
             heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
         Startup { started, progress: progress.collect() }
@@ -401,13 +402,13 @@ struct Chain {
 }
 
 impl Chain {
-    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
-        let tips = snap.tips();
-        let trusted_validators = snap.view().trusted_validators();
+    fn of(sources: &Sources, grpc_snapshot: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
+        let tips = grpc_snapshot.tips();
+        let trusted_validators = grpc_snapshot.view().trusted_validators();
         let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
-        let info = zaino_grpc::lightd_info(snap, network, env!("CARGO_PKG_VERSION"));
+        let info = zaino_grpc::lightd_info(grpc_snapshot, network, env!("CARGO_PKG_VERSION"));
         Self {
             tip: tips.best.map(|best| PublicBlock {
                 height: u32::from(best.height),

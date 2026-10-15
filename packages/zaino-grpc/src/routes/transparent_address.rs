@@ -309,7 +309,7 @@ mod tests {
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(chain.validator(tip));
         let (routes, balancing, _) = routes_over(&node);
-        let routes = Routes { snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
+        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
@@ -490,8 +490,8 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.pay(&alice, 500)));
         let genesis = chain.genesis();
         let index = indexed(IndexKind::TransparentAddress, &chain, genesis);
-        let snapshots = grpc_snapshots(&chain, genesis, vec![index]);
-        let mut router = dispatch(Routes { snapshots, ..routes() });
+        let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![index]);
+        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =

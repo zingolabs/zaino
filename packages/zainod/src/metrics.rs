@@ -1,7 +1,7 @@
 //! Prometheus `/metrics` endpoint
 //!
 //! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
-//!   `zaino-snapshot`'s, set from one `GrpcSnapshot` load per scrape
+//!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
 //!   ([`DaemonStatus::emit_gauges`])
 //! - Events emitted where they happen (`zaino-nfs` / `zaino-sync` / `zaino-grpc` /
 //!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), registered here via their
@@ -67,7 +67,7 @@ pub(crate) fn describe_all() {
     zaino_chainview::describe_metrics();
     zaino_source::describe_metrics();
     zaino_nfs::describe_metrics();
-    zaino_snapshot::describe_metrics();
+    zaino_grpc_snapshot::describe_metrics();
     zaino_sync::describe_metrics();
     zaino_persistence::describe_metrics();
     crate::disk_monitor::describe_metrics();

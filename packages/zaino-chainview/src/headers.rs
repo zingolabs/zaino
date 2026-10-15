@@ -39,9 +39,9 @@ use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
+use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::fold::ChainViewCore;
 use crate::netgroup::{self, ECLIPSE_NETGROUPS};
-use crate::snapshot::ChainViewSnapshot;
 
 /// Heights per fetch step (tree ≤ `depth` + this above the final tip)
 pub(crate) const HEADER_BATCH: u32 = 2_000;

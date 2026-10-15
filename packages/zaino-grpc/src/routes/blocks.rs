@@ -306,11 +306,11 @@ mod tests {
 
         let compact = indexed(IndexKind::CompactBlock, &chain, two);
         let unlocated = dispatch(Routes {
-            snapshots: grpc_snapshots(&chain, two, vec![compact.clone()]),
+            grpc_snapshots: grpc_snapshots(&chain, two, vec![compact.clone()]),
             ..routes()
         });
         let mut router = dispatch(Routes {
-            snapshots: grpc_snapshots(&chain, two, vec![compact, locator]),
+            grpc_snapshots: grpc_snapshots(&chain, two, vec![compact, locator]),
             ..routes()
         });
         let request = |hash: Vec<u8>, height: u64| {
@@ -360,8 +360,10 @@ mod tests {
         let mut chain = MockChain::regtest().network(MAINNET);
         let tip = chain.mine_empty(5);
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
+        let mut router = dispatch(Routes {
+            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
+            ..routes()
+        });
         let past = |h: u32| format!("block%20{h}%20is%20above%20the%20compact-block%20tip%205");
         let (range, nullifiers) = (Method::GetBlockRange, Method::GetBlockRangeNullifiers);
         let cases = [
@@ -426,8 +428,10 @@ mod tests {
         }
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
+        let mut router = dispatch(Routes {
+            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
+            ..routes()
+        });
 
         let id = service::BlockId { height: 3, hash: Vec::new() };
         let response = router
@@ -519,8 +523,10 @@ mod tests {
         }
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router =
-            dispatch(Routes { snapshots: grpc_snapshots(&chain, tip, vec![compact]), ..routes() });
+        let mut router = dispatch(Routes {
+            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
+            ..routes()
+        });
 
         let range = service::BlockRange {
             start: Some(service::BlockId { height: 1, hash: Vec::new() }),
@@ -577,7 +583,7 @@ mod tests {
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
         let mut router = dispatch(Routes {
-            snapshots: grpc_snapshots(&chain, genesis, vec![compact]),
+            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![compact]),
             ..routes()
         });
 

@@ -76,7 +76,7 @@ integration test as `<test>.proptest-regressions`, or under the crate's
 
 ### Heavy run
 
-A change to `zaino-persistence`, `zaino-header-chain`, `zaino-nfs`, `zaino-snapshot` or
+A change to `zaino-persistence`, `zaino-header-chain`, `zaino-nfs`, `zaino-grpc-snapshot` or
 `zaino-traffic` is done only once this passes for that crate. Each round runs the crate's whole
 suite on fresh seeds, so the timing-sensitive tests (background merges, failed I/O, crash
 states) repeat alongside the models. Then the crates built on it run once:
