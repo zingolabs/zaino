@@ -9,11 +9,13 @@ pub mod hash_to_height;
 pub mod headers;
 pub mod ironwood;
 pub mod orchard;
+pub mod output_value;
 pub mod sapling;
 pub mod subtrees;
 pub mod transparent_data;
 pub mod transparent_spends;
 pub mod tree_state;
+pub mod tx_set_members;
 pub mod txid_location;
 pub mod txids;
 pub mod txout_set;
@@ -78,6 +80,14 @@ mod key_order_tests {
         );
         assert_eq!(
             super::txid_location::TxidLocationIndex::KEY_ORDER,
+            KeyOrder::Scattered
+        );
+        assert_eq!(
+            super::output_value::OutputValueIndex::KEY_ORDER,
+            KeyOrder::Scattered
+        );
+        assert_eq!(
+            super::tx_set_members::TxSetMembersIndex::KEY_ORDER,
             KeyOrder::Scattered
         );
     }
