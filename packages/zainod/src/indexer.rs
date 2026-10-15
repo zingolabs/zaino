@@ -243,7 +243,7 @@ async fn boot_over<S: ChainDataSource>(
     spawn_infallible(tasks, "chainview", chainview_span.clone(), merge);
     for (member, watch) in wiring.watches {
         let (changed, linked) = (wiring.balancer.clone(), wiring.balancer.clone());
-        let on_change = move |_| changed.pushed(member, Push::Changed);
+        let on_change = move || changed.pushed(member, Push::Changed);
         let on_link = move |up| linked.pushed(member, Push::Link(up));
         let run = watch.run(cancel.child_token(), on_change, on_link);
         spawn_infallible(tasks, "push-stream", chainview_span.clone(), run);

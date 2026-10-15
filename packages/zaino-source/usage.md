@@ -111,8 +111,8 @@ as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
 `ZebraIndexerWatch::new(address, tls, timeouts)` names zebrad's indexer gRPC
 (`indexer_listen_addr`; `tls` as above). `run(cancel, on_change, on_link)` subscribes to
-`ChainTipChange` and `MempoolChange` until cancelled: every event calls
-`on_change(Change::Tip | Change::Mempool)`; `on_link(true)` fires once both
+`ChainTipChange` and `MempoolChange` until cancelled: every event on either calls
+`on_change()`; `on_link(true)` fires once both
 streams are open and `on_link(false)` when either ends after that (a refused
 connect is no edge), then it reconnects on a 500 ms → 30 s ladder. Events are
 hints only: zebrad ends a lagged stream rather than skip events, so a consumer

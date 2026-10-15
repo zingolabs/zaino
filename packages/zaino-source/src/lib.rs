@@ -34,7 +34,7 @@ pub use queries::{
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
 pub use standard_fee::StandardFee;
-pub use zebra_indexer::{Change, ZebraIndexerTls, ZebraIndexerWatch};
+pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};
 
 // `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

@@ -26,13 +26,6 @@ use crate::rpc::{validator_url, EndpointError, Timeouts};
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// What changed on the validator
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Change {
-    Tip,
-    Mempool,
-}
-
 /// Mutual TLS to a validator's indexer (zakurad refuses plaintext off loopback: `[rpc.indexer_tls]`)
 ///
 /// - `ca_path` verifies the server; `cert_path` (leaf first) + `key_path` (PKCS#8, PKCS#1 or SEC1)
@@ -109,7 +102,7 @@ impl ZebraIndexerWatch {
     pub async fn run(
         self,
         cancel: CancellationToken,
-        on_change: impl Fn(Change),
+        on_change: impl Fn(),
         on_link: impl Fn(bool),
     ) {
         let mut backoff = INITIAL_BACKOFF;
@@ -140,18 +133,18 @@ impl ZebraIndexerWatch {
     }
 
     /// One connection: both subscriptions, then events until either ends
-    async fn session(&self, on_change: &impl Fn(Change), on_link: &impl Fn(bool)) -> Session {
+    async fn session(&self, on_change: &impl Fn(), on_link: &impl Fn(bool)) -> Session {
         let channel: Channel = match self.endpoint.connect().await {
             Ok(channel) => channel,
             Err(e) => return Session::Refused(e.to_string()),
         };
         let mut client = IndexerClient::new(channel);
         let tips = match client.chain_tip_change(Empty {}).await {
-            Ok(response) => response.into_inner().map(|item| item.map(|_| Change::Tip)),
+            Ok(response) => response.into_inner().map(|item| item.map(drop)),
             Err(status) => return Session::Refused(status.to_string()),
         };
         let mempool = match client.mempool_change(Empty {}).await {
-            Ok(response) => response.into_inner().map(|item| item.map(|_| Change::Mempool)),
+            Ok(response) => response.into_inner().map(|item| item.map(drop)),
             Err(status) => return Session::Refused(status.to_string()),
         };
         on_link(true);
@@ -160,7 +153,7 @@ impl ZebraIndexerWatch {
         let mut events = stream::select(tips, mempool);
         loop {
             match events.next().await {
-                Some(Ok(change)) => on_change(change),
+                Some(Ok(())) => on_change(),
                 Some(Err(status)) => return Session::Streamed(status.to_string()),
                 None => return Session::Streamed("closed by the validator".to_owned()),
             }
@@ -265,7 +258,7 @@ mod tests {
         let watch = ZebraIndexerWatch::new(&address, None, Timeouts::default()).expect("address");
         let watching = tokio::spawn(watch.run(
             cancel.clone(),
-            move |change| changes.lock().expect("seen").push(format!("{change:?}")),
+            move || changes.lock().expect("seen").push("change".to_owned()),
             move |up| links.lock().expect("seen").push(format!("link {up}")),
         ));
         let events = || seen.lock().expect("seen").clone();
@@ -302,9 +295,8 @@ mod tests {
         pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("open");
         pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("open");
         until(4).await;
-        let mut hints = events().split_off(1);
-        hints.sort();
-        assert_eq!(hints, ["Mempool", "Mempool", "Tip"], "two streams, every event once");
+        let hints = events().split_off(1);
+        assert_eq!(hints, ["change", "change", "change"], "two streams, every event once");
 
         let (fresh_tip_tx, fresh_tip_rx) = mpsc::channel(8);
         let (fresh_pool_tx, fresh_pool_rx) = mpsc::channel(8);
@@ -315,7 +307,7 @@ mod tests {
         until(6).await;
         fresh_pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("resubscribed");
         until(7).await;
-        assert_eq!(events()[4..], ["link false", "link true", "Mempool"], "lag = one reconnect");
+        assert_eq!(events()[4..], ["link false", "link true", "change"], "lag = one reconnect");
         assert!(!fresh_tip_tx.is_closed(), "the new session holds the fresh tip stream");
 
         cancel.cancel();
@@ -391,7 +383,7 @@ mod tests {
                 ZebraIndexerWatch::new(&address, Some(&tls), Timeouts::default()).expect("pems");
             let watching = tokio::spawn(watch.run(
                 cancel.clone(),
-                move |change| seen_tx.send(format!("{change:?}")).expect("test listening"),
+                move || seen_tx.send("change".to_owned()).expect("test listening"),
                 move |up| links.send(format!("link {up}")).expect("test listening"),
             ));
             (seen_rx, cancel, watching)
@@ -410,7 +402,7 @@ mod tests {
         assert_eq!(linked.as_deref(), Some("link true"), "our CA's client: linked");
         tip_tx.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
         let tip = tokio::time::timeout(in_time, seen.recv()).await.expect("the tip in time");
-        assert_eq!(tip.as_deref(), Some("Tip"), "events flow over TLS");
+        assert_eq!(tip.as_deref(), Some("change"), "events flow over TLS");
         cancel.cancel();
         watching.await.expect("only cancel ends the watch");
 
