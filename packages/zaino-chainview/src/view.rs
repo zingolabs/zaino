@@ -49,9 +49,8 @@ impl<S> std::fmt::Debug for ChainView<S> {
 }
 
 impl<S: ChainDataSource> ChainView<S> {
-    /// The view over `balancer`'s trusted members (named by [`TrafficBalancer::addresses`]): its
-    /// tip from [`header_sync`](Self::header_sync), its polls from
-    /// [`observation_merge`](Self::observation_merge)
+    /// View over `balancer`'s trusted members (named by [`TrafficBalancer::addresses`]): tip from
+    /// [`header_sync`](Self::header_sync), polls from [`observation_merge`](Self::observation_merge)
     ///
     /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
     /// - `schedule` = the network's: the branch a transaction must be signed for at the next block
