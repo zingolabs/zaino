@@ -30,7 +30,7 @@ impl SyncProgress {
     }
 
     pub(crate) fn hand(&self, height: BlockHeight) {
-        self.0.handed.store(u64::from(u32::from(height)) + 1, Ordering::Relaxed);
+        self.0.handed.store(u64::from(height) + 1, Ordering::Relaxed);
         self.0.blocks.fetch_add(1, Ordering::Relaxed);
     }
 }

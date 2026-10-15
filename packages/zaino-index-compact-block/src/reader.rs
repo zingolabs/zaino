@@ -9,7 +9,7 @@ use zaino_persistence::{SequenceRead, View};
 use zaino_primitives::types::TreeSizes;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::{position, project::record_sizes, BLOCKS};
+use crate::{project::record_sizes, BLOCKS};
 
 /// Records one [`CompactBlockReader::range`] reads (one index walk + one readahead)
 pub(crate) const WINDOW_RECORDS: u32 = 256;
@@ -30,7 +30,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 
     /// Framed, wire-ready, every pool
     pub fn block(&self, at: BlockHeight) -> Option<Bytes> {
-        self.view.sequence(BLOCKS).record(position(at))
+        self.view.sequence(BLOCKS).record(u64::from(at))
     }
 
     /// Records from `first` toward `last` (both inclusive, both held, either direction) in walk
@@ -50,7 +50,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
             true => first.saturating_sub(WINDOW_RECORDS - 1).max(last),
         };
         let (low, high) = (first.min(far), first.max(far));
-        let mut records = self.view.sequence(BLOCKS).records(position(low)..position(high) + 1);
+        let mut records = self.view.sequence(BLOCKS).records(u64::from(low)..u64::from(high) + 1);
         if descending {
             records.reverse();
         }

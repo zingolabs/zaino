@@ -78,7 +78,7 @@ it).
 
 ## Blame: `report`
 
-The balancer cannot judge a value; the caller does (`zaino_sync::check_block`, the header rules,
+The balancer cannot judge a value; the caller does (`zaino_sync::fetch`'s body check, the header rules,
 txid recomputed from bytes). On failure:
 
 ```rust,ignore

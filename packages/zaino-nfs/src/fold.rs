@@ -2,7 +2,7 @@
 //!
 //! - The one place indexes meet: a new index = one fold call here
 
-use zaino_persistence::PerIndex;
+use crate::per_index::PerIndex;
 use zaino_persistence::{AppliedLayer, BlockChanges, IndexKind, MapRead, Overlay, SequenceRead};
 use zaino_primitives::types::Block;
 

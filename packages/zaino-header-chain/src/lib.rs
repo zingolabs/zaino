@@ -17,5 +17,5 @@ mod tests;
 pub use chain::{BestTip, HeaderChain, Inserted, Record};
 pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
-pub use rules::{validate, Ancestor, Rejected, CONTEXT};
+pub use rules::Rejected;
 pub use verified::VerifiedChain;

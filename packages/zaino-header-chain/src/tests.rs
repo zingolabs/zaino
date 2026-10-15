@@ -12,8 +12,9 @@ use zcash_protocol::BlockHash;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
+use crate::rules::{validate, Ancestor};
 use crate::testing::{insert, HeaderViews};
-use crate::{decode_header, validate, Ancestor, Header, HeaderChain, Inserted, Params};
+use crate::{decode_header, Header, HeaderChain, Inserted, Params};
 use crate::{DecodeError, Rejected};
 
 const HEADER_LEN: usize = 1487;

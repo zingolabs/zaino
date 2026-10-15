@@ -25,7 +25,7 @@ impl Checked {
     }
 
     pub fn block_ref(&self) -> BlockRef {
-        BlockRef { hash: self.0.header().hash, height: self.0.header().height }
+        self.0.block_ref()
     }
 }
 

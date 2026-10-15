@@ -17,7 +17,7 @@ use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
 
 /// Ancestors [`validate`] reads: the largest averaging window, then one more median span below it
-pub const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
+pub(crate) const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
 
 const DAMPING_FACTOR: i64 = 4;
 const MAX_ADJUST_UP_PERCENT: i64 = 16;
@@ -30,7 +30,7 @@ const MIN_VERSION: i32 = 4;
 
 /// One ancestor as the rules read it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ancestor {
+pub(crate) struct Ancestor {
     pub bits: u32,
     pub time: u32,
 }
@@ -77,7 +77,7 @@ impl Rejected {
 /// work), then against `ancestors` (newest first, up to `CONTEXT`; empty = genesis) and the clock
 ///
 /// - for an untrusted source only: a trusted validator's headers skip it (zebra ran it)
-pub fn validate(
+pub(crate) fn validate(
     params: &Params,
     header: &Header,
     height: BlockHeight,

@@ -46,7 +46,7 @@ impl<V: SequenceRead + MapRead> UtxoSetReader<V> {
         let record = self
             .view
             .sequence(FEES)
-            .record(u64::from(u32::from(height)))
+            .record(u64::from(height))
             .ok_or(FoldError::StoredFeesMissing { height })?;
         let fees = decode_fees(&record).ok_or(FoldError::StoredFeesUnreadable { height })?;
         let block_fees = BlockFees { height, hash: header.hash, fees };

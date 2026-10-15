@@ -15,7 +15,7 @@ use zaino_sync::{
     Subscription,
 };
 
-use crate::{encode_compact_block, position, CompactBlockReader, BLOCKS};
+use crate::{encode_compact_block, CompactBlockReader, BLOCKS};
 
 const NAME: &str = IndexKind::CompactBlock.name();
 
@@ -28,7 +28,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES))
     pub fn new(store: S) -> Self {
         let view = store.durable();
-        let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
+        let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
         assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per durable height");
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
@@ -210,7 +210,7 @@ mod tests {
             let (Step::Apply { height, .. } | Step::FinalizedTip { height, .. }) = step else {
                 panic!("Shutdown = `stop`");
             };
-            let fees = Arc::new(self.fees[position(height) as usize].clone());
+            let fees = Arc::new(self.fees[u32::from(height) as usize].clone());
             self.fee_sink.send(Step::Apply { height, data: fees }).await;
             self.writer.send(step).await;
         }

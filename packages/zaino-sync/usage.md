@@ -78,9 +78,11 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   the batch asked again). The body is the trusted member's word, not re-hashed; regressions in
   decoding are the job of the live sync test (`live-tests/sync`), which holds blocks, tree states
   and a wallet's scan to zebra.
-- `fetch(balancer, at, record, urgency)` / `check_block`: by hash, held to a verified header
-  (hash, coinbase height, `check_body`); the NFS's and the follower's.
-- `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch), Count}` names the check that failed.
+- `fetch(balancer, at, record, urgency)`: by hash, held to a verified header
+  (hash, coinbase height, `check_body`); the NFS's and the follower's. Its check alone:
+  `check_block` (feature `testing`).
+- `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch), Count}` (feature `testing`) names
+  the check that failed.
 - `SyncProgress`: `handed()` = last height sent, `blocks()` = blocks sent since boot (atomics).
 
 ## `IndexHandle`
