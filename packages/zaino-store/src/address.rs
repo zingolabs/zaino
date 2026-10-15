@@ -34,7 +34,7 @@ use zaino_address::{script_paying, transparent_address_key};
 use zaino_async::{run_blocking, TaskError, TaskName};
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::address_history::{self, read_receives, AddrId, ReceivesReadError};
-use zaino_indexes::indexes::transparent_spends::{self, OutpointKey};
+use zaino_indexes::indexes::transparent_spends::{self, read_spender, OutpointKey};
 use zaino_indexes::indexes::txid_location::{self, TxLocation, TxidLocationIndex};
 use zaino_persistence::Backend;
 use zaino_primitives::types::{
@@ -48,12 +48,12 @@ use zaino_sync::primitives::BlockHeight;
 use crate::spend_resolve::{resolve_spend, ResolveError};
 use crate::{read_keyed, serviceability_gate, StoreSnapshot};
 
-/// One receive of the queried address, joined with where it was spent if the
-/// finalised range spent it.
+/// One receive of the queried address, joined with its spend if the finalised
+/// range spent it, resolved to the detail `S` the read needs.
 ///
 /// The join every method projects from, so one call costs one receive scan and
 /// one spend resolution per receive rather than that much per method.
-struct Entry {
+struct Entry<S> {
     /// Height that mined the paying transaction.
     height: Height,
     /// The paying transaction.
@@ -62,8 +62,37 @@ struct Entry {
     output_index: OutputIndex,
     /// Amount received.
     value: Zatoshis,
-    /// Where it was spent, if this tier saw a spend.
-    spent: Option<SpendSite>,
+    /// The spend, if this tier saw one.
+    spent: Option<S>,
+}
+
+/// How much of a recorded spend a read resolves for each receive.
+///
+/// A balance or an unspent set needs only whether a receive was spent: one
+/// lookup in the spends index. A delta needs where: the spending transaction's
+/// location and which of its inputs it was, which also decodes the spending
+/// block's transparent data. Resolving the cheaper detail for the reads that
+/// need no more keeps a pool-scale balance from decoding a block per receive.
+trait SpendDetail: Sized {
+    /// The spend of `outpoint` recorded at or below the watermark, if any.
+    fn resolve<B: Backend + 'static>(
+        reader: &B::Reader,
+        outpoint: OutpointKey,
+    ) -> Result<Option<Self>, AddressReadError>;
+}
+
+/// The receive was spent; nothing more is resolved.
+struct Spent;
+
+impl SpendDetail for Spent {
+    fn resolve<B: Backend + 'static>(
+        reader: &B::Reader,
+        outpoint: OutpointKey,
+    ) -> Result<Option<Self>, AddressReadError> {
+        read_spender(reader, &outpoint)
+            .map(|spender| spender.map(|_| Spent))
+            .map_err(|e| transient(format!("read transparent_spends: {e}")))
+    }
 }
 
 /// Where a spend happened: the transaction, its block, and which input it was.
@@ -72,6 +101,28 @@ struct SpendSite {
     height: Height,
     block_index: u32,
     input_index: OutputIndex,
+}
+
+/// The shared [`resolve_spend`] walk — the spending transaction, its location,
+/// then which of its inputs consumed the outpoint — projected onto the site this
+/// read reports a delta at. A recorded spend whose transaction cannot be
+/// located, or whose block carries no transparent entry, is index corruption
+/// rather than absence — the engine commits all four indexes in one batch — so
+/// it is reported rather than read as unspent.
+impl SpendDetail for SpendSite {
+    fn resolve<B: Backend + 'static>(
+        reader: &B::Reader,
+        outpoint: OutpointKey,
+    ) -> Result<Option<Self>, AddressReadError> {
+        Ok(resolve_spend::<B>(reader, outpoint)
+            .map_err(address_read_error)?
+            .map(|resolved| SpendSite {
+                by: resolved.by,
+                height: resolved.height,
+                block_index: resolved.block_index,
+                input_index: resolved.input_index,
+            }))
+    }
 }
 
 /// The store answers address history wherever its index set builds the four
@@ -182,7 +233,7 @@ where
         // A balance counts only receives inside the range, and whether each is
         // spent (at any height) — never a spend's height — so the receive scan is
         // bounded to exactly `[range.start, range.end]`.
-        let arrived: Vec<Entry> = self
+        let arrived: Vec<Entry<Spent>> = self
             .entries(addr, receive_start(range), receive_end(range), budget)?
             .into_iter()
             .filter(|entry| covers(range, entry.height))
@@ -212,7 +263,7 @@ where
     ) -> Result<Vec<Utxo>, AddressReadError> {
         // Range-less by contract: every unspent output, whenever it arrived, so
         // the whole address prefix is read.
-        let unspent: Vec<Entry> = self
+        let unspent: Vec<Entry<Spent>> = self
             .entries(addr, whole_history_start(), whole_history_end(), budget)?
             .into_iter()
             .filter(|entry| entry.spent.is_none())
@@ -252,7 +303,9 @@ where
         // can contribute neither a receive delta (its height is out of range) nor
         // a spend delta (a spend is never below its receive).
         let mut deltas = Vec::new();
-        for entry in self.entries(addr, whole_history_start(), receive_end(range), budget)? {
+        for entry in
+            self.entries::<SpendSite>(addr, whole_history_start(), receive_end(range), budget)?
+        {
             if covers(range, entry.height) {
                 deltas.push(AddressDelta {
                     satoshis: positive(entry.value)?,
@@ -298,7 +351,9 @@ where
         // bound as `deltas`: a spend in range can belong to a receive from any
         // earlier height, so the scan is only upper-bounded by `range.end`.
         let mut txids: Vec<(Height, Option<u32>, TransactionId)> = Vec::new();
-        for entry in self.entries(addr, whole_history_start(), receive_end(range), budget)? {
+        for entry in
+            self.entries::<SpendSite>(addr, whole_history_start(), receive_end(range), budget)?
+        {
             if covers(range, entry.height) {
                 // The paying transaction's block position, from the location index.
                 txids.push((entry.height, self.block_index(entry.txid)?, entry.txid));
@@ -334,13 +389,13 @@ where
     /// `budget` is the request-scoped ceiling, charged entry by entry during the
     /// scan and shared across the addresses one query reads, so the request is
     /// bounded as a whole rather than per address.
-    fn entries(
+    fn entries<S: SpendDetail>(
         &self,
         addr: &TransparentAddress,
         start: BlockHeight,
         end: BlockHeight,
         budget: &mut ReadBudget,
-    ) -> Result<Vec<Entry>, AddressReadError> {
+    ) -> Result<Vec<Entry<S>>, AddressReadError> {
         let Some((script_type, hash)) = transparent_address_key(addr) else {
             // Not a transparent address, so nothing was ever keyed under it.
             // A well-formed question with an empty answer, not a failure.
@@ -380,33 +435,10 @@ where
                     txid: receive.txid,
                     output_index: receive.output_index,
                     value: receive.value,
-                    spent: self.spend_site(&reader, outpoint)?,
+                    spent: S::resolve::<B>(&reader, outpoint)?,
                 })
             })
             .collect()
-    }
-
-    /// Where the finalised range spent `outpoint`, if it did.
-    ///
-    /// The shared [`resolve_spend`] walk — the spending transaction, its
-    /// location, then which of its inputs consumed the outpoint — projected onto
-    /// the [`SpendSite`] this read reports a delta at. A recorded spend whose
-    /// transaction cannot be located, or whose block carries no transparent entry,
-    /// is index corruption rather than absence — the engine commits all four
-    /// indexes in one batch — so it is reported rather than read as unspent.
-    fn spend_site(
-        &self,
-        reader: &B::Reader,
-        outpoint: OutpointKey,
-    ) -> Result<Option<SpendSite>, AddressReadError> {
-        Ok(resolve_spend::<B>(reader, outpoint)
-            .map_err(address_read_error)?
-            .map(|resolved| SpendSite {
-                by: resolved.by,
-                height: resolved.height,
-                block_index: resolved.block_index,
-                input_index: resolved.input_index,
-            }))
     }
 
     /// The canonical script paying `addr`.

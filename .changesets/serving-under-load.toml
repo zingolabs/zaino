@@ -47,3 +47,13 @@ description = """
 next snapshot shares every unchanged block with the previous one instead of \
 deep-copying the whole window.
 """
+
+[[changes]]
+crate = "zaino-store"
+kind = "fix"
+description = """
+`balance` and `unspent_outpoints` resolve only whether each receive was spent, \
+one lookup in the spends index, instead of locating the spending transaction \
+and decoding its block's transparent data. `deltas` and `tx_ids`, which report \
+where a spend happened, still resolve the full site.
+"""
