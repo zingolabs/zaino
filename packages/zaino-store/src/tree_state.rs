@@ -19,7 +19,14 @@
 //!
 //! [`NotServiceable`]: TreestateReadError::NotServiceable
 
+mod rendered;
+
+pub(crate) use rendered::RenderedTreestates;
+
 use std::ops::ControlFlow;
+use std::sync::Arc;
+
+use zaino_async::{run_blocking, TaskError, TaskName};
 
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
@@ -52,6 +59,10 @@ where
             _ => return Err(TreestateReadError::NotServiceable(Capability::Treestate)),
         }
 
+        if let Some(rendered) = self.rendered.get(at) {
+            return Ok((*rendered).clone());
+        }
+
         let reader = self.treestate_reader()?;
         // Defensive readiness gate: WalkOrdered namespaces never defer, but the
         // completeness probe keeps this read honest if that ever changes, and
@@ -79,15 +90,27 @@ where
                 ))
             })?;
 
-        let (sapling, orchard, ironwood) = value.pool_treestates(&self.activations, at);
-        Ok(Treestate {
-            block_hash: header.hash,
-            height: at,
-            time: header.time,
-            sapling,
-            orchard,
-            ironwood,
+        // Rendering computes each pool's root, milliseconds of hashing, so it
+        // runs on the blocking pool.
+        let activations = self.activations;
+        let treestate = run_blocking(TaskName("store-treestate-render"), move || {
+            let (sapling, orchard, ironwood) = value.pool_treestates(&activations, at);
+            Treestate {
+                block_hash: header.hash,
+                height: at,
+                time: header.time,
+                sapling,
+                orchard,
+                ironwood,
+            }
         })
+        .await
+        .map_err(|e| match e {
+            TaskError::Panicked { .. } => TreestateReadError::Fatal(e.to_string()),
+            TaskError::Cancelled { .. } => TreestateReadError::Transient(e.to_string()),
+        })?;
+        self.rendered.insert(at, Arc::new(treestate.clone()));
+        Ok(treestate)
     }
 
     async fn subtree_roots(

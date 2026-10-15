@@ -47,6 +47,8 @@ mod watermark_repair;
 pub use index_coverage::{IndexCoverageError, UnstampedIndexes};
 pub use watermark_repair::{WatermarkRepair, WatermarkRepairError};
 
+use tree_state::RenderedTreestates;
+
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -91,6 +93,8 @@ pub struct StoreReader<B, M> {
     /// The per-pool activation schedule the treestate read renders against,
     /// learned from the validator at boot. Pinned into every snapshot.
     activations: PoolActivations,
+    /// Rendered treestates, shared by every snapshot this reader takes.
+    rendered: Arc<RenderedTreestates>,
     index_set: PhantomData<M>,
 }
 
@@ -110,6 +114,7 @@ impl<B, M> StoreReader<B, M> {
         Self {
             backend,
             activations,
+            rendered: Arc::default(),
             index_set: PhantomData,
         }
     }
@@ -123,6 +128,7 @@ impl<B, M> Clone for StoreReader<B, M> {
         Self {
             backend: Arc::clone(&self.backend),
             activations: self.activations,
+            rendered: Arc::clone(&self.rendered),
             index_set: PhantomData,
         }
     }
@@ -155,6 +161,7 @@ where
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
         let backend = self.backend.clone();
         let activations = self.activations;
+        let rendered = Arc::clone(&self.rendered);
         async move {
             // Consume the writer's watermark — the finalised tip this view can
             // answer up to — and pin it. Reads through the snapshot hit live
@@ -184,6 +191,7 @@ where
                 watermark,
                 pinned_tip,
                 activations,
+                rendered,
                 index_set: PhantomData,
             })
         }
@@ -200,6 +208,8 @@ pub struct StoreSnapshot<B, M> {
     pinned_tip: Option<BlockRef>,
     /// The per-pool activation schedule, pinned from the reader.
     activations: PoolActivations,
+    /// Rendered treestates, shared with the reader and its other snapshots.
+    rendered: Arc<RenderedTreestates>,
     index_set: PhantomData<M>,
 }
 
@@ -211,6 +221,7 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
             watermark: self.watermark,
             pinned_tip: self.pinned_tip,
             activations: self.activations,
+            rendered: Arc::clone(&self.rendered),
             index_set: PhantomData,
         }
     }

@@ -96,3 +96,13 @@ The window's treestate read also keeps each block's rendered per-pool \
 treestates, so a repeated read near the tip (every wallet's \
 `GetLatestTreeState`) no longer recomputes the pool roots.
 """
+
+[[changes]]
+crate = "zaino-store"
+kind = "fix"
+description = """
+The finalised treestate read renders on the blocking pool and keeps up to \
+2,048 rendered treestates by height, shared across snapshots, so the seed the \
+composer reads at the watermark and heights several wallets ask for are not \
+re-rendered.
+"""
