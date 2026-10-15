@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Zaino's p2p layer: zebra-network peers for headers, blocks, mempool sightings and isolated submission pushes"
+description = "Zaino's p2p layer: zebra-network peers for headers, blocks, mempool sightings and submission pushes over the peer set"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
