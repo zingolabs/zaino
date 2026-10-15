@@ -16,8 +16,8 @@ zebra-network. It serves no peer (listener on loopback, no services advertised).
   them list, from more than 5 netgroups, is served once it passes Zaino's consensus checks against
   the served UTXO set (needs `index.compact_block`).
 - **Submission:** `SendTransaction` relays through the peer set (see the submission entry).
-- With every trusted validator down and a best block less than 30 minutes old, zainod keeps
-  serving as `degraded` (`/readyz` `200`). A stale tip is `down`.
+- With every trusted validator down and a best block less than 24 target spacings old (30 minutes
+  at 75 s), zainod keeps serving as `degraded` (`/readyz` `200`). A stale tip is `down`.
 
 | Key | Default | |
 | --- | --- | --- |
