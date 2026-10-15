@@ -9,7 +9,6 @@ mod blockchain_info;
 mod decode;
 mod error;
 mod grpc_client;
-mod indexer;
 mod legacy_rpc;
 mod node_release;
 mod parse;
@@ -17,12 +16,12 @@ mod peer_info;
 mod queries;
 mod rpc;
 mod standard_fee;
+mod zebra_indexer;
 
 pub use blockchain_info::BlockchainInfo;
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZebraIndexerGrpcClient;
-pub use indexer::{Change, ZebraIndexerTls, ZebraIndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use node_release::{EndOfService, NodeRelease};
 pub use peer_info::PeerInfo;
@@ -35,6 +34,7 @@ pub use queries::{
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
 pub use standard_fee::StandardFee;
+pub use zebra_indexer::{Change, ZebraIndexerTls, ZebraIndexerWatch};
 
 // `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

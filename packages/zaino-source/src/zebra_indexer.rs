@@ -49,7 +49,7 @@ pub struct ZebraIndexerTls {
 
 /// `address`'s indexer endpoint, plaintext or mutual TLS; unprobed (PEMs read here: unreadable
 /// = refused at boot, a rotated file = read on restart)
-pub(crate) fn indexer_endpoint(
+pub(crate) fn zebra_indexer_endpoint(
     address: &str,
     tls: Option<&ZebraIndexerTls>,
     timeouts: Timeouts,
@@ -98,7 +98,7 @@ impl ZebraIndexerWatch {
         tls: Option<&ZebraIndexerTls>,
         timeouts: Timeouts,
     ) -> Result<Self, EndpointError> {
-        let endpoint = indexer_endpoint(address, tls, timeouts)?;
+        let endpoint = zebra_indexer_endpoint(address, tls, timeouts)?;
         Ok(Self { address: address.to_owned(), endpoint })
     }
 
@@ -120,14 +120,17 @@ impl ZebraIndexerWatch {
             match ended {
                 Session::Streamed(why) => {
                     on_link(false);
-                    warn!(indexer = %self.address, %why, "Push stream ended, polling meanwhile");
+                    let zebra_indexer = &self.address;
+                    warn!(%zebra_indexer, %why, "Push stream ended, polling meanwhile");
                     backoff = INITIAL_BACKOFF;
                 }
                 Session::Refused(why) if !announced => {
-                    info!(indexer = %self.address, %why, "Push stream unavailable, polling");
+                    info!(zebra_indexer = %self.address, %why, "Push stream unavailable, polling");
                     announced = true;
                 }
-                Session::Refused(why) => debug!(indexer = %self.address, %why, "Push stream retry"),
+                Session::Refused(why) => {
+                    debug!(zebra_indexer = %self.address, %why, "Push stream retry")
+                }
             }
             if cancel.run_until_cancelled(tokio::time::sleep(backoff)).await.is_none() {
                 return;
@@ -152,7 +155,7 @@ impl ZebraIndexerWatch {
             Err(status) => return Session::Refused(status.to_string()),
         };
         on_link(true);
-        info!(indexer = %self.address, "Push stream up");
+        info!(zebra_indexer = %self.address, "Push stream up");
 
         let mut events = stream::select(tips, mempool);
         loop {

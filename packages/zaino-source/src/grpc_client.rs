@@ -19,8 +19,8 @@ use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::indexer::{indexer_endpoint, ZebraIndexerTls};
 use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
+use crate::zebra_indexer::{zebra_indexer_endpoint, ZebraIndexerTls};
 use crate::{
     decode, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
     MempoolListed, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
@@ -57,19 +57,19 @@ pub struct ZebraIndexerGrpcClient {
 }
 
 impl ZebraIndexerGrpcClient {
-    /// Blocks from the indexer at `indexer_address` (`host:port`; `tls` = mutual TLS), the rest
-    /// through `rpc`; unprobed
+    /// Blocks from the zebra indexer at `zebra_indexer_address` (`host:port`; `tls` = mutual TLS),
+    /// the rest through `rpc`; unprobed
     ///
     /// - connections = `max_connections` streams at zebrad's 20 per connection; each opens on its
     ///   first call (inside a tokio runtime)
     pub fn at(
         rpc: ZcashLegacyRpcClient,
-        indexer_address: &str,
+        zebra_indexer_address: &str,
         tls: Option<&ZebraIndexerTls>,
         timeouts: Timeouts,
         limits: LinkLimits,
     ) -> Result<Self, EndpointError> {
-        let endpoint = indexer_endpoint(indexer_address, tls, timeouts)?
+        let endpoint = zebra_indexer_endpoint(zebra_indexer_address, tls, timeouts)?
             .initial_stream_window_size(STREAM_WINDOW)
             .initial_connection_window_size(CONNECTION_WINDOW)
             .http2_keep_alive_interval(KEEPALIVE_INTERVAL)
@@ -84,7 +84,7 @@ impl ZebraIndexerGrpcClient {
     }
 
     /// Round-robin over `connections`
-    fn indexer(&self) -> IndexerClient<Channel> {
+    fn zebra_indexer(&self) -> IndexerClient<Channel> {
         let turn = self.next.fetch_add(1, Ordering::Relaxed);
         self.connections[turn % self.connections.len()].clone()
     }
@@ -97,8 +97,8 @@ impl ZebraIndexerGrpcClient {
     ) -> Result<(), QueryError<GetAtHeightError>> {
         let (Some(first), Some(last)) = (run.first(), run.last()) else { return Ok(()) };
         let request = BlockRangeRequest { start: u32::from(*first), end: u32::from(*last) };
-        let mut indexer = self.indexer();
-        let opened = self.within(indexer.get_block_range(request)).await?;
+        let mut zebra_indexer = self.zebra_indexer();
+        let opened = self.within(zebra_indexer.get_block_range(request)).await?;
         let opened = opened.map_err(|status| QueryError::NonDomain(failed(status)))?;
         let mut stream = opened.into_inner();
         for height in run {
@@ -181,8 +181,8 @@ impl ChainDataSource for ZebraIndexerGrpcClient {
             let mut display = hash.0;
             display.reverse();
             let request = BlockRequest { hash_or_height: display.to_vec() };
-            let mut indexer = self.indexer();
-            match self.within(indexer.get_block(request)).await? {
+            let mut zebra_indexer = self.zebra_indexer();
+            match self.within(zebra_indexer.get_block(request)).await? {
                 Ok(block) => {
                     let block = block.into_inner();
                     self.rpc.rpc.received(block.data.len()).await;
