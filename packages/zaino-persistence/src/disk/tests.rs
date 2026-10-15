@@ -29,9 +29,8 @@ const ROOT: &str = "/idx";
 const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
 const HEIGHTS: SequenceTable = SequenceTable::new(1, "heights", Width::fixed(8));
 const NODES: SequenceTable = SequenceTable::new(2, "pool/nodes", Width::fixed(4));
-const SCANNED: MapTable =
-    MapTable::scoped(0, "scanned", Width::fixed(12), Width::fixed(8), 8).deletes();
-const PROBED: MapTable = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(4));
+const SCANNED: MapTable = MapTable::scoped(0, "scanned", 12, 8, 8).deletes();
+const PROBED: MapTable = MapTable::point(1, "probed", 16, 4);
 
 /// Every shape an index declares: variable sequence, fixed one, one in a sub-directory, scoped map
 /// with removals (`account ‖ seq`, read per account), insert-only point-lookup map (hash-like ids)
@@ -781,14 +780,14 @@ fn a_write_to_a_sequence_outside_the_schema_panics() {
 #[test]
 #[should_panic(expected = "compact_block: map probed not in its schema")]
 fn a_write_to_a_map_outside_the_schema_panics() {
-    let stray = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(8));
+    let stray = MapTable::point(1, "probed", 16, 8);
     BlockChanges::new(block_ref(1), SCHEMA).map(stray).insert(&[0; 16], &[0; 8]);
 }
 
 #[test]
 #[should_panic(expected = "compact_block: map probed not in its schema")]
 fn a_read_of_a_map_outside_the_schema_panics() {
-    let stray = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(8));
+    let stray = MapTable::point(1, "probed", 16, 8);
     open(&DiskEngine::with_fanout(SimFs::new(), 2)).durable().map(stray).value(&[0; 16]);
 }
 
@@ -1005,7 +1004,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
 fn a_manifest_body_is_its_golden_bytes() {
     const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(4));
     const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-    const MAP: MapTable = MapTable::point(0, "map", Width::fixed(8), Width::fixed(1));
+    const MAP: MapTable = MapTable::point(0, "map", 8, 1);
     const TABLES: Tables = Tables::new(&[FIXED, VARIABLE], &[MAP]);
     let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
     let sealed =

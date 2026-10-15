@@ -16,7 +16,7 @@ use crate::{
     overlay::{AppliedLayer, Entry, OverlayView},
     port::{
         table_slot, BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId,
-        SequenceTable, Width,
+        SequenceTable,
     },
 };
 
@@ -143,10 +143,7 @@ impl MapRows {
             }
             let first = self.keys.len(table.key);
             self.keys.extend_one(table.key, key);
-            let zeros = match table.value {
-                Width::Fixed(n) => vec![0; n.get() as usize],
-                Width::Variable => Vec::new(),
-            };
+            let zeros = vec![0; table.value.get() as usize];
             self.values.extend_one(table.value, &zeros);
             self.kinds.push(Row::Tombstone);
             self.index(table, first, hasher);

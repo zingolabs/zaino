@@ -26,7 +26,7 @@ There are two kinds of table:
 
 ```rust
 const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
-const SPENT: MapTable = MapTable::point(0, "spent", Width::fixed(36), Width::fixed(36));
+const SPENT: MapTable = MapTable::point(0, "spent", 36, 36);  // key, value bytes
 pub const FORMAT: u16 = 1;
 pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]); // ids = positions, checked at compile time
 
@@ -133,10 +133,9 @@ when its tier has fallen two windows behind, which bounds how many segments a re
 merge streams: a few 1 MiB buffers plus the segment summary and the filter's shard table, whatever
 the inputs' size (fences and fingerprints spill to scratch files).
 
-Rows are fixed-stride, so the LSM holds only `Width::Fixed` keys and values, and its filter shards
-on 8 key bytes, so a map filters at least 8 (its whole key when `point`, else its `scope`). These
-are the LSM's limits, not the port's (`Width::Variable` maps are expressible for another engine):
-`DiskEngine::open` panics on a map outside them, naming it.
+Map keys and values are fixed widths in the type (`MapTable` declares bytes), so rows are
+fixed-stride. The filter shards on 8 key bytes, so a map filters at least 8 (its whole key when
+`point`, else its `scope`): `DiskEngine::open` panics on a map below that, naming it.
 
 ## The commit and crash contract
 

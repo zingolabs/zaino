@@ -8,7 +8,7 @@ use crate::{
 };
 
 const RECORDS: SequenceTable = SequenceTable::new(0, "records", Width::Variable);
-const IDS: MapTable = MapTable::point(0, "ids", Width::fixed(16), Width::fixed(4)).deletes();
+const IDS: MapTable = MapTable::point(0, "ids", 16, 4).deletes();
 const SCHEMA: Schema =
     Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[RECORDS], &[IDS]));
 const OTHER: Schema =

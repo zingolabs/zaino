@@ -20,7 +20,7 @@ use crate::{
     fs::{Access, Fs, SimFs},
     manifest::IndexKind,
     pages::{sums_path, PageError},
-    port::{MapTable, Width},
+    port::MapTable,
 };
 
 /// Two same-tier segments merge (a merge in a handful of writes)
@@ -28,12 +28,12 @@ const FANOUT: Fanout = Fanout(2);
 
 /// `account ‖ seq → seq · 1000`, ranges read per account (scope = the account)
 fn scanned() -> MapTable {
-    MapTable::scoped(0, "scanned", Width::fixed(12), Width::fixed(8), 8)
+    MapTable::scoped(0, "scanned", 12, 8, 8)
 }
 
 /// Hash-like id → position
 fn probed() -> MapTable {
-    MapTable::point(0, "probed", Width::fixed(16), Width::fixed(4))
+    MapTable::point(0, "probed", 16, 4)
 }
 
 /// Uniform 8 bytes per account (the filter shards on them)
@@ -59,18 +59,6 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
 }
 
 #[test]
-#[should_panic(expected = "LSM map scanned: no Variable keys in the LSM")]
-fn a_map_with_variable_keys_panics() {
-    Shape::of(&MapTable { key: Width::Variable, ..scanned() });
-}
-
-#[test]
-#[should_panic(expected = "LSM map scanned: no Variable values in the LSM")]
-fn a_map_with_variable_values_panics() {
-    Shape::of(&MapTable { value: Width::Variable, ..scanned() });
-}
-
-#[test]
 #[should_panic(expected = "LSM map scanned: scope 13 > its 12-byte key")]
 fn a_map_scoped_past_its_key_panics() {
     Shape::of(&MapTable { scope: 13, ..scanned() });
@@ -85,7 +73,7 @@ fn a_map_scoped_under_the_filter_shard_panics() {
 #[test]
 #[should_panic(expected = "filter shards on 8 key bytes")]
 fn a_map_keyed_under_the_filter_shard_panics() {
-    Shape::of(&MapTable { key: Width::fixed(6), scope: 0, ..scanned() });
+    Shape::of(&MapTable::point(0, "keyed", 6, 8));
 }
 
 #[test]

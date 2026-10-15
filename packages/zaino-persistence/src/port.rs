@@ -215,20 +215,31 @@ pub(crate) fn table_slot<Id: Into<usize> + Copy + fmt::Debug, T>(per_table: &[T]
     per_table.get(id.into()).unwrap_or_else(|| panic!("{id:?} not in the schema"))
 }
 
-/// Bytes per record, key or value
+/// Bytes per sequence record
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Width {
     Fixed(NonZeroU32),
     Variable,
 }
 
+impl From<NonZeroU32> for Width {
+    fn from(bytes: NonZeroU32) -> Self {
+        Self::Fixed(bytes)
+    }
+}
+
+/// `n` bytes, `n` > 0 (checked at compile time when `const`)
+const fn fixed_bytes(n: u32) -> NonZeroU32 {
+    match NonZeroU32::new(n) {
+        Some(n) => n,
+        None => panic!("a fixed width is at least one byte"),
+    }
+}
+
 impl Width {
     /// `Fixed(n)` (`n` > 0, checked at compile time when `const`)
     pub const fn fixed(n: u32) -> Self {
-        match NonZeroU32::new(n) {
-            Some(n) => Self::Fixed(n),
-            None => panic!("a fixed width is at least one byte"),
-        }
+        Self::Fixed(fixed_bytes(n))
     }
 }
 
@@ -261,28 +272,31 @@ impl SequenceTable {
 /// - `scope` = leading key bytes every range read shares (0 = [`point`](Self::point); partition
 ///   hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
+/// - `key`, `value` = fixed widths in bytes (rows = fixed stride)
 /// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
 /// - `deletes` = keys removable ([`deletes`](Self::deletes))
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTable {
     pub(crate) id: MapId,
     pub(crate) name: &'static str,
-    pub key: Width,
-    pub(crate) value: Width,
+    pub key: NonZeroU32,
+    pub(crate) value: NonZeroU32,
     pub(crate) scope: u32,
     pub(crate) cache_writes: bool,
     pub(crate) deletes: bool,
 }
 
 impl MapTable {
-    /// Point lookups only (scope 0); `id` = position in its [`Tables`]
-    pub const fn point(id: u16, name: &'static str, key: Width, value: Width) -> Self {
+    /// Point lookups only (scope 0); `id` = position in its [`Tables`]; `key`, `value` = bytes
+    /// (> 0, checked at compile time when `const`)
+    pub const fn point(id: u16, name: &'static str, key: u32, value: u32) -> Self {
+        let (key, value) = (fixed_bytes(key), fixed_bytes(value));
         Self { id: MapId(id), name, key, value, scope: 0, cache_writes: false, deletes: false }
     }
 
     /// Range reads within `scope` leading key bytes (panics: `scope` 0, checked at compile time
     /// when `const`)
-    pub const fn scoped(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
+    pub const fn scoped(id: u16, name: &'static str, key: u32, value: u32, scope: u32) -> Self {
         assert!(scope > 0, "a scoped map shares at least one key byte per range");
         Self { scope, ..Self::point(id, name, key, value) }
     }
@@ -522,8 +536,8 @@ pub(crate) struct Items {
 }
 
 impl Items {
-    fn push(&mut self, table: &str, width: Width, item: &[u8]) {
-        match width {
+    fn push(&mut self, table: &str, width: impl Into<Width>, item: &[u8]) {
+        match width.into() {
             Width::Fixed(n) => {
                 let len = item.len();
                 assert_eq!(len, n.get() as usize, "{table}: a {len}-byte item, width {n}");
@@ -533,14 +547,15 @@ impl Items {
         self.bytes.extend_from_slice(item);
     }
 
-    pub(crate) fn len(&self, width: Width) -> usize {
-        match width {
+    pub(crate) fn len(&self, width: impl Into<Width>) -> usize {
+        match width.into() {
             Width::Fixed(n) => self.bytes.len() / n.get() as usize,
             Width::Variable => self.ends.len(),
         }
     }
 
-    pub(crate) fn get(&self, width: Width, at: usize) -> Option<&[u8]> {
+    pub(crate) fn get(&self, width: impl Into<Width>, at: usize) -> Option<&[u8]> {
+        let width = width.into();
         if at >= self.len(width) {
             return None;
         }
@@ -553,7 +568,8 @@ impl Items {
         Some(&self.bytes[range])
     }
 
-    pub(crate) fn items(&self, width: Width) -> impl Iterator<Item = &[u8]> {
+    pub(crate) fn items(&self, width: impl Into<Width>) -> impl Iterator<Item = &[u8]> {
+        let width = width.into();
         (0..self.len(width)).filter_map(move |at| self.get(width, at))
     }
 
@@ -570,7 +586,7 @@ impl Items {
     }
 
     /// `item` after these (one item)
-    pub(crate) fn extend_one(&mut self, width: Width, item: &[u8]) {
+    pub(crate) fn extend_one(&mut self, width: impl Into<Width>, item: &[u8]) {
         self.push("", width, item);
     }
 

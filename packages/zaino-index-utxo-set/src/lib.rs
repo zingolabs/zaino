@@ -29,9 +29,7 @@ pub const WRITE_BUFFER: std::num::NonZeroUsize =
 const OUTPOINT: usize = 32 + 4;
 const VALUE: usize = 8;
 const OUTPUTS: MapTable =
-    MapTable::point(0, "outputs", Width::fixed(OUTPOINT as u32), Width::fixed(VALUE as u32))
-        .cache_writes()
-        .deletes();
+    MapTable::point(0, "outputs", OUTPOINT as u32, VALUE as u32).cache_writes().deletes();
 const FEES: SequenceTable = SequenceTable::new(0, "fees", Width::Variable);
 
 /// `txid ‖ vout` big-endian

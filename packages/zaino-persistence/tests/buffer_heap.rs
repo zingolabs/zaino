@@ -51,7 +51,7 @@ static GLOBAL: Counting = Counting;
 
 const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32));
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-const MAP: MapTable = MapTable::point(0, "map", Width::fixed(36), Width::fixed(8));
+const MAP: MapTable = MapTable::point(0, "map", 36, 8);
 const SCHEMA: Schema = Schema::new(
     IndexKind::UtxoSet,
     1,

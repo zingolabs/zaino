@@ -20,10 +20,7 @@ use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
     spill::Spill,
 };
-use crate::{
-    pages::PagedFile,
-    port::{MapTable, Width},
-};
+use crate::{pages::PagedFile, port::MapTable};
 
 const BLOCK_BYTES: usize = 4096;
 
@@ -80,19 +77,13 @@ pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<Row<'a>> {
 
 impl Shape {
     /// Panics: map the LSM cannot hold (schema = constant: mismatch = bug)
-    ///
-    /// - `Width::Variable` key or value = LSM limitation (fixed-stride rows), not a port rule
     pub(crate) fn of(table: &MapTable) -> Self {
         let name = &table.name;
-        let unsupported =
-            |part: &str| -> ! { panic!("LSM map {name}: no Variable {part} in the LSM") };
-        let Width::Fixed(key) = table.key else { unsupported("keys") };
-        let Width::Fixed(value) = table.value else { unsupported("values") };
-        let (key_len, scope) = (key.get() as usize, table.scope as usize);
+        let (key_len, scope) = (table.key.get() as usize, table.scope as usize);
         assert!(scope <= key_len, "LSM map {name}: scope {scope} > its {key_len}-byte key");
         let filtered = if scope == 0 { key_len } else { scope };
         assert!(filtered >= 8, "LSM map {name}: filter shards on 8 key bytes, has {filtered}");
-        let value_len = value.get() as usize;
+        let value_len = table.value.get() as usize;
         let stride = key_len + value_len + usize::from(table.deletes);
         Self {
             stride,
@@ -271,7 +262,7 @@ mod tests {
     /// - each decodes back; an unknown flag or a non-zero tombstone value decodes to `None`
     #[test]
     fn rows_encode_to_golden_bytes_and_a_corrupt_flag_decodes_to_none() {
-        let table = MapTable::point(0, "rows", Width::fixed(8), Width::fixed(4));
+        let table = MapTable::point(0, "rows", 8, 4);
         let (plain, removable) = (Shape::of(&table), Shape::of(&table.deletes()));
         let key = [7u8; 8];
         let cases: [(Shape, Row<'_>, &[u8]); 3] = [

@@ -22,7 +22,7 @@ use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_persistence::{
     fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine,
-    SequenceRead, Store, View, Width,
+    SequenceRead, Store, View,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
 use zaino_primitives::types::{Block, BlockFees};
@@ -83,8 +83,7 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
         records.iter().map(|record| record.to_vec()).collect()
     });
     let maps = schema.maps().iter().map(|&table| {
-        let Width::Fixed(key) = table.key else { panic!("fixed-width keys") };
-        let past = vec![0xff; key.get() as usize + 1];
+        let past = vec![0xff; table.key.get() as usize + 1];
         let rows = view.map(table).range(&[], &past, usize::MAX).expect("under the limit");
         rows.iter().map(|(key, value)| [&key[..], &value[..]].concat()).collect()
     });
