@@ -32,11 +32,13 @@ use crate::indexes::hash_to_height::HashToHeightIndex;
 use crate::indexes::headers::HeadersIndex;
 use crate::indexes::ironwood::IronwoodIndex;
 use crate::indexes::orchard::OrchardIndex;
+use crate::indexes::output_value::OutputValueIndex;
 use crate::indexes::sapling::SaplingIndex;
 use crate::indexes::subtrees::{IronwoodSubtreesIndex, OrchardSubtreesIndex, SaplingSubtreesIndex};
 use crate::indexes::transparent_data::TransparentDataIndex;
 use crate::indexes::transparent_spends::TransparentSpendsIndex;
 use crate::indexes::tree_state::TreeStateIndex;
+use crate::indexes::tx_set_members::TxSetMembersIndex;
 use crate::indexes::txid_location::TxidLocationIndex;
 use crate::indexes::txids::TxidsIndex;
 use crate::indexes::txout_set::TxOutSetIndex;
@@ -62,6 +64,8 @@ index_set! {
         SaplingSubtreesIndex,
         OrchardSubtreesIndex,
         IronwoodSubtreesIndex,
+        OutputValueIndex,
+        TxSetMembersIndex,
         TxOutSetIndex,
     }
 }
