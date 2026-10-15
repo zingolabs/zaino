@@ -15,6 +15,8 @@
 //! ([`RunLoop`](zaino_component::RunLoop)).
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod bench_compact_block;
 #[cfg(feature = "prometheus")]
 mod emit;
 mod error;
