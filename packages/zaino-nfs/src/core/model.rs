@@ -24,7 +24,7 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::testing::{encode_header, h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
-use zaino_sync::{check_block, Checked};
+use zaino_sync::{testing::check_block, Checked};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 

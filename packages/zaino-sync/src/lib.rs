@@ -21,8 +21,6 @@ mod writer;
 
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use fetch::fetch_at;
-#[cfg(any(test, feature = "testing"))]
-pub use fetch::{check_block, Misanswer};
 pub use fetch::{fetch, Checked};
 pub use finalized_stream::{FinalizedStream, Run, Step, Subscription, Weight};
 pub use follower::{FinalizedFollower, FollowError};

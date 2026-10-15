@@ -30,7 +30,7 @@ impl Checked {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Misanswer {
+pub(crate) enum Misanswer {
     #[error("served block {got}")]
     WrongBlock { got: BlockHash },
     #[error("served a block whose coinbase says height {got:?}")]
@@ -45,7 +45,7 @@ pub enum Misanswer {
 ///
 /// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
-pub fn check_block(
+pub(crate) fn check_block(
     block: Block,
     height: BlockHeight,
     record: &Record,

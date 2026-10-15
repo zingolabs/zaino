@@ -10,7 +10,7 @@ use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::Lie;
-use zaino_sync::check_block;
+use zaino_sync::testing::check_block;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
