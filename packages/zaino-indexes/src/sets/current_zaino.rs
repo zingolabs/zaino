@@ -20,12 +20,14 @@ use crate::indexes::hash_to_height::{HashToHeightCtx, HashToHeightIndex};
 use crate::indexes::headers::{HeaderCtx, HeadersIndex};
 use crate::indexes::ironwood::{IronwoodCtx, IronwoodIndex};
 use crate::indexes::orchard::{OrchardCtx, OrchardIndex, OrchardTxCompact};
+use crate::indexes::output_value::OutputValueCtx;
 use crate::indexes::sapling::{SaplingCtx, SaplingIndex, SaplingTxCompact};
 use crate::indexes::transparent_data::{
     TransparentDataCtx, TransparentDataIndex, TransparentTxCompact,
 };
 use crate::indexes::transparent_spends::{SpendCtx, TransparentSpendsIndex};
 use crate::indexes::tree_state::TreeStateCtx;
+use crate::indexes::tx_set_members::TxSetMembersCtx;
 use crate::indexes::txid_location::{TxidLocationCtx, TxidLocationIndex};
 use crate::indexes::txids::{TxidsCtx, TxidsIndex};
 use crate::indexes::txout_set::TxOutSetCtx;
@@ -311,6 +313,25 @@ impl ProvideContext<SpendCtx> for CurrentZainoContext {
     fn context(&self) -> SpendCtx {
         SpendCtx {
             spends: self.spends.clone(),
+        }
+    }
+}
+
+impl ProvideContext<OutputValueCtx> for CurrentZainoContext {
+    fn context(&self) -> OutputValueCtx {
+        OutputValueCtx {
+            height: self.height,
+            txids: self.txids.clone(),
+            txs: self.transparent_txs.clone(),
+        }
+    }
+}
+
+impl ProvideContext<TxSetMembersCtx> for CurrentZainoContext {
+    fn context(&self) -> TxSetMembersCtx {
+        TxSetMembersCtx {
+            txids: self.txids.clone(),
+            txs: self.transparent_txs.clone(),
         }
     }
 }
