@@ -15,12 +15,12 @@ use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
 # fn wire<S: zaino_source::ChainDataSource>(balancer: TrafficBalancer<S>, chain: HeaderChain, shutdown: tokio_util::sync::CancellationToken) -> Result<(), Box<dyn std::error::Error>> {
-// addresses[i] = the balancer's trusted member i (logs, status); depth = the header chain's
-// finality depth (zainod passes `sync.finalised_depth`); schedule = the network's (the branch
-// a transaction must be signed for at the next block; regtest's = its validator's)
-let addresses = vec!["127.0.0.1:8232".to_owned()];
+// - trusted validators named by `balancer.addresses()` (logs, status)
+// - depth = the header chain's finality depth (zainod passes `sync.finalised_depth`)
+// - schedule = the network's (branch a transaction is signed for at the next block, regtest's
+//   = its validator's)
 let schedule = compiled_schedule(NetworkType::Main).ok_or("mainnet compiled in")?;
-let view = ChainView::new(addresses, balancer, FinalityDepth::CONSENSUS, schedule, shutdown.child_token())?;
+let view = ChainView::new(balancer, FinalityDepth::CONSENSUS, schedule, shutdown.child_token());
 let view = view.with_submit_policy(SubmitPolicy::default());
 // the tip comes only from header sync, the polls from the merge (the balancer's driver runs
 // beside them)
@@ -43,9 +43,9 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 
 ## Membership
 
-- `ChainView::new` takes one address per trusted member of the balancer
-  (`ConfigError::AddressCountMismatch` otherwise). The balancer itself holds 1 ..=
-  `TrustedValidatorId::MAX` = 64 members; zainod refuses a config outside that before boot.
+- `ChainView::new` names each trusted member by its `TrustedValidator::address`
+  (`TrafficBalancer::addresses()`). The balancer itself holds 1 ..= `TrustedValidatorId::MAX` = 64
+  members; zainod refuses a config outside that before boot.
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
 
@@ -112,8 +112,7 @@ positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
 
 `TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
 peers (every 60 s), release (build, user agent, end-of-service
-height), push-stream state, `blocks_to_end_of_service()`. Latency and failures are the balancer's
-(`TrafficBalancer::members()`).
+height), push-stream state, `blocks_to_end_of_service()`.
 
 `Agreement` from its claim and `getblockhash` answer, as of its last answered poll: `Agreed` (claim
 = best), `Ahead` (claims higher, answer on our chain), `Behind` (claim on our chain, below best),

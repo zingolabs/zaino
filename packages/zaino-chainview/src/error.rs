@@ -1,14 +1,6 @@
-//! Why the view could not be built or a broadcast failed
+//! Why a broadcast failed
 
 use zaino_source::{NonDomainError, SendRawTransactionError};
-
-/// Empty or over-[`TrustedValidatorId::MAX`](zaino_traffic::TrustedValidatorId) lists included
-/// (the balancer refuses both, so neither matches its members)
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ConfigError {
-    #[error("{addresses} trusted validator addresses for {trusted} balancer members")]
-    AddressCountMismatch { addresses: usize, trusted: usize },
-}
 
 /// Submission no trusted validator accepted or listed
 ///

@@ -391,7 +391,8 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
         Arc::new(member)
     });
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = members.iter().map(|member| TrustedValidator {
+    let trusted = members.iter().enumerate().map(|(index, member)| TrustedValidator {
+        address: format!("member{index}"),
         source: Arc::clone(member),
         priority: 0,
         limits,
@@ -453,7 +454,8 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let mut headers = blocks.header_chain(DEPTH);
     let member = Arc::new(blocks.validator(genesis));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![TrustedValidator { source: Arc::clone(&member), priority: 0, limits }];
+    let (address, source) = ("member".to_owned(), Arc::clone(&member));
+    let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
@@ -516,8 +518,8 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let source = Arc::new(blocks.validator(a5));
-    let (balancer, _never_driven) =
-        TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
+    let trusted = TrustedValidator { address: "unpolled".to_owned(), source, priority: 0, limits };
+    let (balancer, _never_driven) = TrafficBalancer::new(vec![trusted], None);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let store = engine.open(
         Path::new("block_hash"),

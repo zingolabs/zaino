@@ -203,13 +203,12 @@ impl TrafficCore {
             let sent = ask.sends.iter().position(|sent| sent.member == ticket.member)?;
             Some(ask.sends.remove(sent))
         });
-        let sent = sent.expect("a reply for a send in flight");
+        sent.expect("a reply for a send in flight");
         let member = self
             .members
             .get_mut(&ticket.member)
             .expect("member registered while its send is in flight");
         member.in_flight[ticket.class.lane().index()] -= 1;
-        member.latency = self.now.saturating_duration_since(sent.at);
         member.outcome(reply != Reply::NonDomain);
         if reply == Reply::Value {
             self.close(ticket.ask);
@@ -235,8 +234,6 @@ impl TrafficCore {
         let member = member.expect("a poll result for a poll in flight");
         let poller = member.poller.as_mut().expect("trusted members poll");
         poller.finished(read.is_some());
-        let started = poller.last.expect("a poll in flight started");
-        member.latency = self.now.saturating_duration_since(started);
         member.outcome(read.is_some());
         member.synced = read.or(member.synced);
     }
@@ -358,17 +355,6 @@ impl TrafficCore {
     pub(crate) fn health(&self, validator: TrustedValidatorId) -> Health {
         let member = self.members.get(&MemberId::TrustedValidator(validator));
         member.expect("a configured validator").health()
-    }
-
-    pub(crate) fn table(&self) -> crate::MemberTable {
-        let rows = self.members.iter().map(|(id, member)| crate::MemberRow {
-            id: *id,
-            failures: member.failures,
-            benched_until: member.bench.filter(|_| member.benched(self.now)).map(|b| b.until),
-            latency: member.latency,
-            in_flight: member.load(),
-        });
-        crate::MemberTable { rows: rows.collect() }
     }
 
     /// T1, T2, T4, T5, T10 (the rest = the model's)

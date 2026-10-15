@@ -21,18 +21,18 @@ fn routes() -> RouteDeps<MockValidator, DiskView> {
     let chain = MockChain::regtest();
     let validator = Arc::new(chain.validator(chain.genesis()));
     let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = zaino_traffic::TrustedValidator { source: validator, priority: 0, limits };
+    let address = "unpolled:18232".to_owned();
+    let trusted =
+        zaino_traffic::TrustedValidator { address, source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
     let depth = zaino_primitives::types::FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
     let schedule = zaino_primitives::protocol::compiled_schedule(network);
     let chain = zaino_chainview::ChainView::new(
-        vec!["unpolled:18232".to_owned()],
         validators.clone(),
         depth,
         schedule.expect("testnet compiled in"),
         tokio_util::sync::CancellationToken::new(),
     );
-    let chain = chain.expect("one endpoint");
     RouteDeps {
         grpc_snapshots: zaino_grpc_snapshot::GrpcSnapshots::fixed(
             None,

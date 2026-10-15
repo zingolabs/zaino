@@ -110,18 +110,12 @@ pub(super) fn routes_over(
     ObservationMerge<MockValidator>,
 ) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = TrustedValidator { source: Arc::clone(node), priority: 0, limits };
+    let address = "node:8232".to_owned();
+    let trusted = TrustedValidator { address, source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let schedule = compiled_schedule(MAINNET).expect("mainnet compiled in");
-    let address = vec!["node:8232".to_owned()];
-    let view = ChainView::new(
-        address,
-        validators.clone(),
-        FinalityDepth::CONSENSUS,
-        schedule,
-        tokio_util::sync::CancellationToken::new(),
-    );
-    let view = view.expect("one endpoint");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = ChainView::new(validators.clone(), FinalityDepth::CONSENSUS, schedule, shutdown);
     let merge = view.observation_merge();
     let routes = RouteDeps {
         grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),

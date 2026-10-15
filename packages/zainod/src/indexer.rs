@@ -215,7 +215,7 @@ async fn boot_over<S: ChainDataSource>(
     let schedule = schedule.instrument(chainview_span.clone()).await?;
     let viewed = chainview_span.in_scope(|| {
         crate::chainview::view(config, &wiring.balancer, wiring.p2p, schedule, cancel.child_token())
-    })?;
+    });
     let inputs = Inputs {
         fs: RealFs::shared(),
         chain: viewed.header_sync.subscribe(),
@@ -736,17 +736,15 @@ mod tests {
         let validator = Arc::new(blocks.validator(a8));
         let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted =
-            zaino_traffic::TrustedValidator { source: Arc::clone(&validator), priority: 0, limits };
+        let trusted = zaino_traffic::TrustedValidator {
+            address: "mock".to_owned(),
+            source: Arc::clone(&validator),
+            priority: 0,
+            limits,
+        };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
-        let view = ChainView::new(
-            vec!["mock".to_owned()],
-            balancer.clone(),
-            depth,
-            schedule,
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let view = Arc::new(view.expect("one endpoint"));
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let view = Arc::new(ChainView::new(balancer.clone(), depth, schedule, shutdown));
         let merge = view.observation_merge();
         let fs = zaino_persistence::fs::SimFs::new();
         let inputs = Inputs { fs, chain, view: Arc::clone(&view), balancer, schedule };

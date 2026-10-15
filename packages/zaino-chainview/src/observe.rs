@@ -31,13 +31,13 @@ use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorRep
 pub struct ObservationMerge<S> {
     pub(crate) core: Arc<ChainViewCore>,
     pub(crate) balancer: TrafficBalancer<S>,
-    pub(crate) addresses: Vec<String>,
 }
 
 impl<S: ChainDataSource> ObservationMerge<S> {
     /// Until `cancel`: each validator's latest poll, as it lands (validators independent)
     pub async fn run(self, cancel: CancellationToken) {
-        let followers = self.addresses.iter().enumerate().map(|(index, address)| {
+        let addresses = self.balancer.addresses().iter().enumerate();
+        let followers = addresses.map(|(index, address)| {
             let validator =
                 TrustedValidatorId::new(index).expect("configured below TrustedValidatorId::MAX");
             let merging = ValidatorFollower {

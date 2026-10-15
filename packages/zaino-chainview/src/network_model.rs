@@ -144,22 +144,16 @@ async fn run(n: usize, moves: Vec<Move>) {
     });
     let mut sim = Sim { nodes: nodes.collect(), chain };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = sim.nodes.iter().map(|node| TrustedValidator {
+    let trusted = sim.nodes.iter().enumerate().map(|(index, node)| TrustedValidator {
+        address: format!("v{index}"),
         source: Arc::clone(&node.validator),
         priority: 0,
         limits,
     });
     let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
-    let addresses = (0..n).map(|index| format!("v{index}")).collect();
     let schedule = sim.chain.schedule().upgrades;
-    let view = ChainView::new(
-        addresses,
-        balancer.clone(),
-        depth,
-        schedule,
-        tokio_util::sync::CancellationToken::new(),
-    );
-    let view = view.expect("1..=5 trusted validators");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = ChainView::new(balancer.clone(), depth, schedule, shutdown);
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_merge().run(cancel.clone()));

@@ -28,13 +28,15 @@ use zcash_protocol::{BlockHash, TxId};
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
-use crate::member::{Health, Limits, MemberId, MemberTable, Synced, TrustedValidatorId};
+use crate::member::{Health, Limits, MemberId, Synced, TrustedValidatorId};
 
 /// Block ask open this long without an answer → warn, and again each period after
 const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …)
+/// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …, `address` = its name in
+/// logs and status)
 pub struct TrustedValidator<S> {
+    pub address: String,
     pub source: Arc<S>,
     pub priority: u8,
     pub limits: Limits,
@@ -135,12 +137,12 @@ type Polled = (PollOrder, Option<BlockHeight>, Result<PollReading, NonDomainErro
 
 struct Shared<S> {
     state: Mutex<State>,
+    addresses: Vec<String>,
     trusted: Vec<Arc<S>>,
     peers: Option<Arc<dyn PeerTransport>>,
     best: OnceLock<PollBest>,
     changed: Notify,
     observations: Vec<watch::Sender<Option<Arc<Observation>>>>,
-    table: watch::Sender<Arc<MemberTable>>,
 }
 
 struct State {
@@ -166,7 +168,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         let config: Vec<(u8, Limits)> = trusted.iter().map(|t| (t.priority, t.limits)).collect();
         let in_flight = peers.as_ref().map(|peers| peers.in_flight);
         let core = TrafficCore::new(&config, in_flight, Instant::now().into_std());
-        let table = watch::Sender::new(Arc::new(core.table()));
+        let (addresses, trusted) = trusted.into_iter().map(|t| (t.address, t.source)).unzip();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 core,
@@ -174,12 +176,12 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                 polls: Vec::new(),
                 next_ask: 0,
             }),
-            observations: trusted.iter().map(|_| watch::Sender::new(None)).collect(),
-            trusted: trusted.into_iter().map(|t| t.source).collect(),
+            observations: config.iter().map(|_| watch::Sender::new(None)).collect(),
+            addresses,
+            trusted,
             peers: peers.map(|peers| peers.transport),
             best: OnceLock::new(),
             changed: Notify::new(),
-            table,
         });
         (Self { shared: Arc::clone(&shared) }, TrafficDriver { shared })
     }
@@ -368,8 +370,9 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         observation.expect("a configured validator").subscribe()
     }
 
-    pub fn members(&self) -> watch::Receiver<Arc<MemberTable>> {
-        self.shared.table.subscribe()
+    /// `addresses()[i]` = `TrustedValidatorId(i)`'s
+    pub fn addresses(&self) -> &[String] {
+        &self.shared.addresses
     }
 
     /// `ticket`'s value failed the caller's check: a trusted sender benched, and only it (the peer
@@ -572,12 +575,11 @@ impl<S: ChainDataSource> TrafficDriver<S> {
         let mut polls = FuturesUnordered::new();
         shared.step(Input::Tick);
         loop {
-            let (orders, table, wake) = {
+            let (orders, wake) = {
                 let mut state = shared.lock();
-                (std::mem::take(&mut state.polls), state.core.table(), state.core.wake())
+                (std::mem::take(&mut state.polls), state.core.wake())
             };
             polls.extend(orders.into_iter().map(|order| shared.poll(order)));
-            shared.table.send_replace(Arc::new(table));
             let timer = async {
                 match wake {
                     Some(at) => tokio::time::sleep_until(Instant::from_std(at)).await,

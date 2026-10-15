@@ -25,8 +25,6 @@ pub(crate) enum IndexerError {
     #[error(transparent)]
     OpenIndex(#[from] zaino_persistence::StoreError),
     #[error(transparent)]
-    ChainView(#[from] zaino_chainview::ConfigError),
-    #[error(transparent)]
     Nfs(#[from] zaino_nfs::NfsError),
     #[error(transparent)]
     Follow(#[from] zaino_sync::FollowError),

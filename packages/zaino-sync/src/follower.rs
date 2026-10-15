@@ -217,7 +217,8 @@ mod tests {
             Arc::new(member)
         });
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = members.iter().map(|member| TrustedValidator {
+        let trusted = members.iter().enumerate().map(|(index, member)| TrustedValidator {
+            address: format!("member{index}"),
             source: Arc::clone(member),
             priority: 0,
             limits,
@@ -292,8 +293,8 @@ mod tests {
         let b11 = chain.fork(h(4)).mine_empty(7).tip();
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let validator = Arc::new(chain.validator(a7));
-        let trusted =
-            vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
+        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let (balancer, balancing) = TrafficBalancer::new(trusted, None);
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
@@ -367,8 +368,8 @@ mod peers {
         let validator = Arc::new(chain.validator(a11));
         validator.reachable(&Port::ALL, false);
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted =
-            vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
+        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
@@ -410,8 +411,8 @@ mod peers {
         let b11 = chain.fork(h(2)).mine_empty(9).tip();
         let validator = Arc::new(chain.validator(b11));
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted =
-            vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
+        let (address, source) = ("validator".to_owned(), Arc::clone(&validator));
+        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();

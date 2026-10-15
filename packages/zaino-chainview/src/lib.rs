@@ -31,7 +31,7 @@ pub use chain_view_snapshot::{
     ChainViewSnapshot, MempoolEntry, MempoolState, MempoolView, Projection,
 };
 pub use config::STALE_TIP_BLOCKS;
-pub use error::{ConfigError, SubmitError};
+pub use error::SubmitError;
 pub use headers::HeaderSync;
 pub use observe::ObservationMerge;
 pub use peer_mempool::PeerMempool;

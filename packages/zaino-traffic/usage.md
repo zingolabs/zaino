@@ -17,6 +17,7 @@ use zaino_traffic::{Limits, Peers, TrafficBalancer, TrustedValidator};
 let trusted = validators
     .iter()
     .map(|v| TrustedValidator {
+        address: v.address.clone(),                            // its name in logs and status
         source: Arc::new(ZcashLegacyRpcClient::new(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections)?,               // None below 5
@@ -29,7 +30,7 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 
 - `trusted[i]` is `TrustedValidatorId(i)`: configured order, 1 ..= `TrustedValidatorId::MAX`
   (64); `TrafficBalancer::new` panics outside that, so a config is refused before (zainod's
-  `validate`).
+  `validate`). `addresses()[i]` = its address, the chain view's name for it.
 - `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in
   production (one type per balancer: zainod's `validator_client`),
   `zaino_source::testing::MockValidator` in tests.
@@ -109,15 +110,12 @@ let checked = loop {
   stale fact, re-asked next poll). `observe(member)` is a `watch` of the latest
   `Observation { polled, asked, streaming, health }` (`asked` = that `f()`; latest only: a
   slow consumer never stalls a poll; `health` = the member's right after that poll, so a
-  consumer folds `Degraded` vs `Down` without the table).
+  consumer folds `Degraded` vs `Down` from it).
   A consumer subscribing after the driver started marks the watch changed to read the poll
   already there.
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `ZebraIndexerWatch::run`'s callbacks
   here; an event polls within 200 ms.
-- `members()`: `watch` of the `MemberTable` (consecutive failures, bench, last reply's latency,
-  in flight; trusted first in configured order, then the peer set) for the chain view and
-  metrics, refreshed by the driver. `entries()`: trusted members a submission may enter by
-  (live, not benched).
+- `entries()`: trusted members a submission may enter by (live, not benched).
 
 ## Health
 

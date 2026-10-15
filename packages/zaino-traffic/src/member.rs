@@ -103,21 +103,6 @@ impl Health {
     }
 }
 
-/// Every member as the balancer sees it (chain view, metrics)
-#[derive(Debug, Clone, PartialEq)]
-pub struct MemberTable {
-    pub rows: Vec<MemberRow>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MemberRow {
-    pub id: MemberId,
-    pub failures: u32,
-    pub benched_until: Option<Instant>,
-    pub latency: Duration,
-    pub in_flight: u32,
-}
-
 /// Last answered poll (peers: `Live` always)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Synced {
@@ -131,7 +116,6 @@ const BENCH: Duration = Duration::from_secs(60);
 const BENCH_MAX: Duration = Duration::from_secs(3600);
 const PEER_TIER: u16 = u8::MAX as u16 + 1;
 
-/// `latency` = last reply's
 #[derive(Debug, Clone)]
 pub(crate) struct Member {
     pub(crate) tier: u16,
@@ -139,7 +123,6 @@ pub(crate) struct Member {
     pub(crate) failures: u32,
     pub(crate) down: bool,
     pub(crate) bench: Option<Bench>,
-    pub(crate) latency: Duration,
     pub(crate) in_flight: PerLane<u32>,
     pub(crate) permits: Permits,
     pub(crate) poller: Option<Poller>,
@@ -173,7 +156,6 @@ impl Member {
             failures: 0,
             down: false,
             bench: None,
-            latency: Duration::ZERO,
             in_flight: [0; LANES],
             permits,
             poller: None,

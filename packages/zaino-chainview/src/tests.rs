@@ -36,23 +36,18 @@ fn running(
     addresses: &[&str],
     peer_set: Option<Arc<dyn PeerTransport>>,
 ) -> (ChainView<MockValidator>, TrafficBalancer<MockValidator>, CancellationToken) {
+    assert_eq!(validators.len(), addresses.len(), "one address per validator");
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = validators.iter().map(|validator| TrustedValidator {
+    let trusted = validators.iter().zip(addresses).map(|(validator, address)| TrustedValidator {
+        address: (*address).to_owned(),
         source: Arc::clone(validator),
         priority: 0,
         limits,
     });
     let peers = peer_set.map(|transport| Peers { transport, in_flight: 4 });
     let (balancer, driver) = TrafficBalancer::new(trusted.collect(), peers);
-    let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
-    let view = ChainView::new(
-        addresses,
-        balancer.clone(),
-        depth(),
-        regtest(),
-        tokio_util::sync::CancellationToken::new(),
-    )
-    .expect("a valid set");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = ChainView::new(balancer.clone(), depth(), regtest(), shutdown);
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_merge().run(cancel.clone()));
@@ -62,7 +57,7 @@ fn running(
 /// Every member polled again (cadence, ladder or a wake) and that poll merged (paused clock: the
 /// 1 ms timer fires once every task idles)
 async fn polled(balancer: &TrafficBalancer<MockValidator>) {
-    let members = balancer.members().borrow().rows.len();
+    let members = balancer.addresses().len();
     let mut watches: Vec<_> = (0..members).map(|at| balancer.observe(v(at))).collect();
     for watch in &mut watches {
         watch.borrow_and_update();
@@ -210,8 +205,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let meta = &catching_up.trusted_validators()[0];
     let answered = (meta.health, meta.tip(), meta.stale_blocks(), meta.agreement);
     let expected = (Health::CatchingUp, Some(at(11)), Some(29), Agreement::Agreed);
-    assert_eq!(answered, expected, "an answer, no failure");
-    assert_eq!(balancer.members().borrow().rows[0].failures, 0);
+    assert_eq!(answered, expected, "an answer, no failure (a failure = Degraded)");
     assert!(catching_up.mempool().is_none(), "no mempool served");
     assert_eq!(catching_up.sighting(&one), None, "its only listing retracted: dropped");
 
@@ -813,11 +807,8 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
 
     validator.metadata(None, None);
     tokio::time::sleep(Duration::from_secs(60)).await;
-    let health = (
-        reader.current().trusted_validators()[0].health,
-        balancer.members().borrow().rows[0].failures,
-    );
-    assert_eq!(health, (Health::Live, 0), "a metadata failure is not a poll failure");
+    let health = reader.current().trusted_validators()[0].health;
+    assert_eq!(health, Health::Live, "a metadata failure is not a poll failure (else Degraded)");
     assert_eq!((peers(), build().as_deref()), (first, Some("v6.4.2")), "last answers kept");
 
     validator.metadata(Some(Vec::new()), Some(release("v6.5.0", 3_700_000)));

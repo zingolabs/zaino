@@ -44,18 +44,12 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let params = ChainParams::of(&builder);
     let source = Arc::new(builder.validator(a3));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let (balancer, _never_driven) =
-        TrafficBalancer::new(vec![TrustedValidator { source, priority: 0, limits }], None);
-    let address = vec!["10.0.0.1:8232".to_owned()];
+    let address = "10.0.0.1:8232".to_owned();
+    let trusted = TrustedValidator { address, source, priority: 0, limits };
+    let (balancer, _never_driven) = TrafficBalancer::new(vec![trusted], None);
     let schedule = builder.schedule().upgrades;
-    let view = ChainView::new(
-        address,
-        balancer,
-        DEPTH,
-        schedule,
-        tokio_util::sync::CancellationToken::new(),
-    )
-    .expect("one validator");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = ChainView::new(balancer, DEPTH, schedule, shutdown);
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
     let mut grpc_snapshots = publisher.handle();

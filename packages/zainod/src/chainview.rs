@@ -58,6 +58,7 @@ pub(crate) fn connect<S: ChainDataSource>(
     let trusted = validators.iter().map(|validator| {
         let source = Arc::new(client(validator)?);
         Ok(TrustedValidator {
+            address: validator.jsonrpc_address.clone(),
             source,
             priority: validator.priority,
             limits: validator.max_connections,
@@ -89,11 +90,9 @@ pub(crate) fn view<S: ChainDataSource>(
     p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
     schedule: LocalNetwork,
     shutdown: CancellationToken,
-) -> Result<Viewed<S>, IndexerError> {
-    let validators = &config.trusted_validators;
+) -> Viewed<S> {
     let depth = FinalityDepth::new(config.sync.finalised_depth);
-    let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
-    let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule, shutdown)?;
+    let view = ChainView::new(balancer.clone(), depth, schedule, shutdown);
     let mut view = view.with_submit_policy(config.submission);
     let mut starting = None;
     if let Some((port, start)) = p2p {
@@ -105,9 +104,9 @@ pub(crate) fn view<S: ChainDataSource>(
     let header_sync = view.header_sync(HeaderChain::new(depth));
     let merge = view.observation_merge();
     let p2p = config.p2p.enabled;
-    info!(validators = validators.len(), p2p, "Chain view configured");
+    info!(validators = config.trusted_validators.len(), p2p, "Chain view configured");
 
-    Ok(Viewed { view: Arc::new(view), merge, header_sync, peers })
+    Viewed { view: Arc::new(view), merge, header_sync, peers }
 }
 
 /// `validator_client = "legacy_rpc"`: every question over its JSON-RPC

@@ -13,13 +13,13 @@ use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
 };
-use zaino_traffic::{MemberId, TrafficBalancer};
+use zaino_traffic::TrafficBalancer;
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
 use crate::chain_view_snapshot::ChainViewSnapshot;
-use crate::error::{ConfigError, SubmitError};
+use crate::error::SubmitError;
 use crate::headers::HeaderSync;
 use crate::merge::ChainViewCore;
 use crate::observe::ObservationMerge;
@@ -36,7 +36,6 @@ use crate::trusted_validators::TrustedValidatorMeta;
 pub struct ChainView<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
-    addresses: Vec<String>,
     schedule: LocalNetwork,
     policy: SubmitPolicy,
     peers: Option<Arc<dyn PeerSource>>,
@@ -50,8 +49,8 @@ impl<S> std::fmt::Debug for ChainView<S> {
 }
 
 impl<S: ChainDataSource> ChainView<S> {
-    /// The view over `balancer`'s trusted members (`addresses[i]` = `TrustedValidatorId(i)`'s, for logs
-    /// and status); its tip comes from [`header_sync`](Self::header_sync), its polls from
+    /// The view over `balancer`'s trusted members (named by [`TrafficBalancer::addresses`]): its
+    /// tip from [`header_sync`](Self::header_sync), its polls from
     /// [`observation_merge`](Self::observation_merge)
     ///
     /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
@@ -59,25 +58,18 @@ impl<S: ChainDataSource> ChainView<S> {
     /// - `shutdown` cancels in-flight submissions (their callers read "submission ended")
     /// - each poll asks `getblockhash` at this view's best ([`TrafficBalancer::poll_best`])
     pub fn new(
-        addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
         depth: FinalityDepth,
         schedule: LocalNetwork,
         shutdown: CancellationToken,
-    ) -> Result<Self, ConfigError> {
-        let trusted = (balancer.members().borrow().rows.iter())
-            .filter(|row| matches!(row.id, MemberId::TrustedValidator(_)))
-            .count();
-        if trusted != addresses.len() {
-            return Err(ConfigError::AddressCountMismatch { addresses: addresses.len(), trusted });
-        }
+    ) -> Self {
         let trusted_validators =
-            addresses.iter().map(|address| TrustedValidatorMeta::new(address.clone()));
+            balancer.addresses().iter().map(|address| TrustedValidatorMeta::new(address.clone()));
         let core = Arc::new(ChainViewCore::new(trusted_validators.collect(), depth));
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
         let policy = SubmitPolicy::default();
-        Ok(Self { core, balancer, addresses, schedule, policy, peers: None, shutdown })
+        Self { core, balancer, schedule, policy, peers: None, shutdown }
     }
 
     /// How hard each submission pushes (default: 15 s threshold, 4 attempts)
@@ -119,7 +111,7 @@ impl<S: ChainDataSource> ChainView<S> {
     /// The runnable merging each trusted member's polls into this view
     pub fn observation_merge(&self) -> ObservationMerge<S> {
         let (core, balancer) = (Arc::clone(&self.core), self.balancer.clone());
-        ObservationMerge { core, balancer, addresses: self.addresses.clone() }
+        ObservationMerge { core, balancer }
     }
 
     /// Reader onto the same published cell
