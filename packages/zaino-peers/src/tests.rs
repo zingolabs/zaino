@@ -145,16 +145,17 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     assert_eq!(seen, [Some(PeerServices::empty())], "Zaino advertises no services, still admitted");
 
     let hash = |block: &Arc<Block>| wire::block_hash(block.hash());
-    let headers = peers.find_headers(&[hash(&blocks[0])], None).await.expect("headers");
+    let headers = peers.find_headers(&[hash(&blocks[0])]).await.expect("headers");
     let expected: Vec<Vec<u8>> =
         blocks.iter().map(|block| block.header.zcash_serialize_to_vec().expect("vec")).collect();
     assert_eq!(headers, expected, "every header byte-identical, in order");
 
-    let unknown = BlockHash([7; 32]);
-    let fetched = peers.blocks_by_hash(&[hash(&blocks[1]), unknown]).await.expect("blocks");
+    let fetched = peers.block_by_hash(hash(&blocks[1])).await.expect("block");
     let vector = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.to_vec();
     let supplied = Supplied { bytes: vector, peer: Some(fake) };
-    assert_eq!(fetched, [(hash(&blocks[1]), Some(supplied)), (unknown, None)], "sender named");
+    assert_eq!(fetched, Some(supplied), "sender named");
+    let unknown = peers.block_by_hash(BlockHash([7; 32])).await.expect("answered");
+    assert_eq!(unknown, None, "not supplied");
 
     let listed: HashSet<PeerTxId> =
         peers.mempool_of(fake).await.expect("its mempool").into_iter().collect();

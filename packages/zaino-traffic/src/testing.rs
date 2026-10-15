@@ -54,7 +54,6 @@ impl PeerTransport for MockPeerSet {
     fn headers(
         &self,
         locator: Vec<BlockHash>,
-        _: Option<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>> {
         let held = self.held();
         let known = |hash: &BlockHash| held.iter().position(|block| block.header().hash == *hash);

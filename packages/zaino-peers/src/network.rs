@@ -47,13 +47,11 @@ const ANNOUNCED_BUFFER: usize = 4_096;
 /// Outbound peers kept by default (each = one inbound slot on a public node: stay modest)
 pub const DEFAULT_PEER_TARGET: NonZeroUsize = NonZeroUsize::new(8).expect("8 is non-zero");
 
-/// - `listen_addr` = zebra's listener (Zaino serves no peer: keep it on loopback)
 /// - `initial_peers` `None` = the network's DNS seeders (regtest: loopback addresses only)
 /// - `cache_dir` = zebra's peer address cache (`None` = every start re-seeds)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerConfig {
     pub network: NetworkType,
-    pub listen_addr: SocketAddr,
     pub initial_peers: Option<Vec<String>>,
     pub peer_target: NonZeroUsize,
     pub request_timeout: Duration,
@@ -64,7 +62,6 @@ impl PeerConfig {
     pub fn new(network: NetworkType) -> Self {
         Self {
             network,
-            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             initial_peers: None,
             peer_target: DEFAULT_PEER_TARGET,
             request_timeout: Duration::from_secs(20),
@@ -114,6 +111,7 @@ impl PeerNetwork {
     /// timeout for a seed never answering `getaddr`); crawling continues in the background
     ///
     /// - multi-thread runtime required (zebra's codec parses in `block_in_place`)
+    /// - listener on loopback (zebra always opens one, Zaino serves no peer)
     pub async fn start(config: PeerConfig) -> Self {
         let network = match config.network {
             NetworkType::Main => Network::Mainnet,
@@ -122,7 +120,7 @@ impl PeerNetwork {
         };
         let mut zebra = Config {
             network,
-            listen_addr: config.listen_addr,
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             cache_dir: config.cache_dir.map_or(CacheDir::disabled(), CacheDir::custom_path),
             peerset_initial_target_size: config.peer_target.get(),
             ..Config::default()
@@ -164,38 +162,31 @@ impl PeerNetwork {
             .collect()
     }
 
-    /// Headers after the first of `known` a peer holds (best-chain order), up to `stop`
-    pub async fn find_headers(
-        &self,
-        known: &[BlockHash],
-        stop: Option<BlockHash>,
-    ) -> Result<Vec<Vec<u8>>, PeerError> {
+    /// Headers after the first of `known` a peer holds (best-chain order), as many as it sends
+    pub async fn find_headers(&self, known: &[BlockHash]) -> Result<Vec<Vec<u8>>, PeerError> {
         let known_blocks = known.iter().copied().map(wire::zebra_block_hash).collect();
-        let stop = stop.map(wire::zebra_block_hash);
-        match self.call(Request::FindHeaders { known_blocks, stop }).await? {
+        match self.call(Request::FindHeaders { known_blocks, stop: None }).await? {
             Response::BlockHeaders(headers) => Ok(headers.iter().map(wire::header_bytes).collect()),
             other => Err(unexpected("FindHeaders", &other)),
         }
     }
 
-    /// Each asked block, in `hashes` order (`None` = not supplied)
+    /// `hash`'s block (`None` = not supplied)
     ///
-    /// - block hashing to something not asked for → dropped, sender scored
+    /// - block hashing to something else → dropped, sender scored
     /// - body vs its header = the caller's check ([`blame`](Self::blame) the sender on a lie)
-    pub async fn blocks_by_hash(
-        &self,
-        hashes: &[BlockHash],
-    ) -> Result<Vec<(BlockHash, Option<Supplied>)>, PeerError> {
-        let asked = hashes.iter().copied().map(wire::zebra_block_hash).collect();
+    pub async fn block_by_hash(&self, hash: BlockHash) -> Result<Option<Supplied>, PeerError> {
+        let asked = [wire::zebra_block_hash(hash)].into_iter().collect();
         let items = match self.inventory(Request::BlocksByHash(asked)).await? {
             Some(Response::Blocks(items)) => items,
             Some(other) => return Err(unexpected("BlocksByHash", &other)),
             None => Vec::new(),
         };
-        Ok(self.answered(hashes, items, "a block not asked for", |block, peer| {
+        let answered = self.answered(&[hash], items, "a block not asked for", |block, peer| {
             let supplied = Supplied { bytes: wire::block_bytes(&block), peer: peer.map(|p| *p) };
             (wire::block_hash(block.hash()), supplied)
-        }))
+        });
+        Ok(answered.into_iter().find_map(|(_, supplied)| supplied))
     }
 
     /// `peer` served something its own bytes refute (scored like any lie: zebra bans past its

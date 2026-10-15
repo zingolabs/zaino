@@ -55,10 +55,9 @@ impl PeerTransport for ZebraPeers {
     fn headers(
         &self,
         locator: Vec<BlockHash>,
-        stop: Option<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>> {
         let network = self.up_or_fail();
-        Box::pin(async move { network?.find_headers(&locator, stop).await.map_err(failed) })
+        Box::pin(async move { network?.find_headers(&locator).await.map_err(failed) })
     }
 
     /// Body vs its own header checked here: a mismatch blames its sender, never returned
@@ -66,8 +65,7 @@ impl PeerTransport for ZebraPeers {
         let network = self.up_or_fail();
         Box::pin(async move {
             let network = network?;
-            let answered = network.blocks_by_hash(&[hash]).await.map_err(failed)?;
-            let supplied = answered.into_iter().find_map(|(_, supplied)| supplied);
+            let supplied = network.block_by_hash(hash).await.map_err(failed)?;
             let supplied = supplied
                 .ok_or_else(|| NonDomainError::new(FailureMode::Connection, "no peer had it"))?;
             let block = decode_block(&supplied.bytes)

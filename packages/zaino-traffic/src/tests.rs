@@ -328,7 +328,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     balancer.report(served.ticket, &std::fmt::Error);
     let after = within("a block", balancer.block(chain.at(h(2)).hash, Urgency::Tip)).await;
     assert_eq!(after.ticket.member, MemberId::Peers, "a report never benches the peer set");
-    let ask = HeaderAsk::Peers { locator: vec![chain.genesis().hash], stop: None };
+    let ask = HeaderAsk::Peers { locator: vec![chain.genesis().hash] };
     let headers =
         within("peer headers", balancer.headers(ask)).await.expect("the peer set answers");
     let header =

@@ -72,7 +72,7 @@ pub enum Urgency {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
     Pinned { validator: TrustedValidatorId, heights: Vec<BlockHeight> },
-    Peers { locator: Vec<BlockHash>, stop: Option<BlockHash> },
+    Peers { locator: Vec<BlockHash> },
 }
 
 /// The p2p peer set as one member (zainod implements it over `zaino-peers`)
@@ -84,7 +84,6 @@ pub trait PeerTransport: Send + Sync + 'static {
     fn headers(
         &self,
         locator: Vec<BlockHash>,
-        stop: Option<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>>;
     fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>>;
 }
@@ -247,13 +246,13 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                 self.ask(Class::Headers, Route::Only(MemberId::TrustedValidator(validator)), send)
                     .await
             }
-            HeaderAsk::Peers { locator, stop } => {
+            HeaderAsk::Peers { locator } => {
                 let send = move |to| {
                     assert_eq!(to, MemberId::Peers, "Route::Peers reaches the peer set only");
                     let links = |headers: Vec<Vec<u8>>| {
                         headers.into_iter().map(|header| Ok(BlockLink { header })).collect()
                     };
-                    let headers = shared.peers().headers(locator.clone(), stop);
+                    let headers = shared.peers().headers(locator.clone());
                     headers.map_ok(links).map_err(QueryError::NonDomain).boxed()
                 };
                 self.ask(Class::Headers, Route::Peers, send).await

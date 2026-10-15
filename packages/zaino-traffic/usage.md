@@ -58,7 +58,7 @@ it).
 | `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then the peer set | never unanswered: every member tried → next round after 1 s, a warning each minute it stays unserved |
 | `blocks_at(heights, urgency)` | same classes | trusted only (peers answer by hash): `getblock <h> 0` batches (sized by `ResponseSizeCap`), or one `GetBlockRange` per run over gRPC | never unanswered, as `block` |
 | `headers(HeaderAsk::Pinned { validator, heights })` | `Headers` (control) | that trusted validator only | unanswered if it fails or is out |
-| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
+| `headers(HeaderAsk::Peers { locator })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
 | `standard_fee()` | `Lookup` (interactive) | trusted only, `Unsupported` → next | unanswered once every one is tried |

@@ -321,7 +321,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     async fn extend_from_peers(&mut self) {
         let verified = self.verified.borrow().clone();
         let locator = verified.map(|verified| verified.locator()).unwrap_or_default();
-        let asked = self.balancer.headers(HeaderAsk::Peers { locator, stop: None }).await;
+        let asked = self.balancer.headers(HeaderAsk::Peers { locator }).await;
         let progressed = match asked {
             Ok(answered) => self.insert_from_peers(answered),
             Err(unanswered) => {

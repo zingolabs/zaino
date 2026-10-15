@@ -9,8 +9,8 @@ from its bytes, never by what a peer claimed.
 use zaino_peers::{PeerConfig, PeerNetwork};
 
 let peers = PeerNetwork::start(PeerConfig::new(NetworkType::Main)).await; // seeds dialed + crawled
-let headers = peers.find_headers(&locator, None).await?;                 // raw header bytes
-let blocks = peers.blocks_by_hash(&hashes).await?;                       // (hash, Option<Supplied>)
+let headers = peers.find_headers(&locator).await?;                       // raw header bytes
+let block = peers.block_by_hash(hash).await?;                            // Option<Supplied>
 let listed = peers.mempool_of(peers.live()[0]).await?;                   // that peer's whole mempool
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
 let mut heard = peers.announcements();                                   // Announced { peer, hash }
@@ -32,8 +32,7 @@ multi-thread tokio runtime.
 
 `PeerNetwork::start(config)` wraps zebra-network's `init`:
 
-- `listen_addr` defaults to `127.0.0.1:0`: zebra always opens a listener, and Zaino
-  serves no peer. The inbound service answers every request with nothing (`Nil`)
+- zebra always opens a listener: `127.0.0.1:0`, since Zaino serves no peer. The inbound service answers every request with nothing (`Nil`)
 - `initial_peers = None` uses the network's DNS seeders; `Some(list)` replaces them
   (regtest keeps loopback addresses only, as zebrad does)
 - `peer_target` (`DEFAULT_PEER_TARGET`, 8) is zebra's initial outbound target. Each
@@ -56,8 +55,8 @@ several.
 
 | Method | Request | Returns |
 |---|---|---|
-| `find_headers(known, stop)` | `FindHeaders` | consensus bytes per header, best-chain order |
-| `blocks_by_hash(hashes)` | `BlocksByHash` | `(hash, Some(Supplied { bytes, peer }) / None)` in request order |
+| `find_headers(known)` | `FindHeaders` | consensus bytes per header, best-chain order |
+| `block_by_hash(hash)` | `BlocksByHash` | `Some(Supplied { bytes, peer })` / `None` (not supplied) |
 | `mempool_of(peer)` | `MempoolTransactionIdsFrom(peer)` | that peer's whole mempool: `PeerTxId`s (txid + v5 auth digest) |
 | `transactions_by_id(ids)` | `TransactionsById` | `(id, Some(bytes) / None)` in request order |
 | `push(raw)` | `PushTransaction` | the bytes' own txid |
