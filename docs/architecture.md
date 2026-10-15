@@ -46,7 +46,7 @@ possible, take everything else from as many peers as possible.**
        ▼                  ▼         │
   FinalizedFollower        Nfs (RAM)    │
   (zaino-sync)         tip overlay  │
-       │ IndexerDataSink     │ Indexed
+       │ FinalizedStream     │ Indexed
        ▼                     ▼      ▼
   5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
   (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
@@ -91,12 +91,12 @@ netgroups (/16 IPv4, /32 IPv6; one operator ≈ one netgroup).
 ## 4. The best chain
 
 The **Validated Header tree** (`zaino-header-chain`, memory only) holds every valid branch above the
-final tip; the best tip is the leaf with the most cumulative work. `HeaderSync`
+finalized tip; the best tip is the leaf with the most cumulative work. `HeaderSync`
 (`zaino-chainview`) is its only writer and publishes an immutable `VerifiedChain` on a watch that
-the NFS, the final path and the `GrpcSnapshot` publisher read.
+the NFS, the finalized path and the `GrpcSnapshot` publisher read.
 
 ```text
-  final tip                          best tip (most work)
+  finalized tip                          best tip (most work)
   ───●──●──●──●──●──●──●──●──●──●──●  A  ◀─
                  └──●──●──●            B  kept: may still win; overtaking A = a reorg
 ```
@@ -112,21 +112,21 @@ the NFS, the final path and the `GrpcSnapshot` publisher read.
   2 h of our clock (a future header is deferred, not blamed). On regtest proof of work is off and
   nBits fixed at the limit, as zebrad does. A header failing a rule gets its sender blamed.
 - **Bounds.** 32 side tips and 4 · depth side nodes; past either the lowest-work side leaf goes.
-  The newest max(2 · depth, 113) final headers are kept. `depth` = `[sync] finalised_depth`,
+  The newest max(2 · depth, 113) finalized headers are kept. `depth` = `[sync] finalised_depth`,
   default and minimum 1,000 (lower only on regtest).
 
 ### Finality
 
-A header proves work, not that its block's transactions are valid. A final block is never reorged
+A header proves work, not that its block's transactions are valid. A finalized block is never reorged
 (the indexes hold it on disk), so finality is where Zaino stops being able to change its mind.
 
 - **Vouched.** A trusted validator that had a block on its best chain vouches for it and every
   ancestor, for good (zebra commits only valid blocks). Vouches come from the last header of each
   trusted run, each validator's claimed tip, and its `getblockhash` answer at our best.
-  **final = min(highest vouched, best − depth).** Peer headers never vouch.
-- **On peers' word** (`[p2p]` on, nothing vouched that deep): best − depth still goes final when
+  **finalized = min(highest vouched, best − depth).** Peer headers never vouch.
+- **On peers' word** (`[p2p]` on, nothing vouched that deep): best − depth is still finalized when
   live outbound peers in > 5 netgroups last announced a block on our best chain at or above it,
-  **and** no unfinal best-chain block has under half the work of the last vouched block. An
+  **and** no non-finalized best-chain block has under half the work of the last vouched block. An
   attacker who eclipses us can feed a private chain, but its difficulty retargets to their
   hashrate, which shows up as that collapse. Both checks fail safe: a thin peer set or a real
   hashrate drop only delays finality.
@@ -208,9 +208,9 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 ## 7. Indexing
 
-### Final path (`zaino-sync`)
+### Finalized path (`zaino-sync`)
 
-`FinalizedFollower` streams `lowest durable tip + 1 ..= final tip` into one `IndexerDataSink<Block>`:
+`FinalizedFollower` streams `lowest durable tip + 1 ..= finalized tip` into one `FinalizedStream<Block>`:
 
 - Heights the verified chain has a header for: fetched by hash from any member (peers included),
   checked against the header (hash, merkle root, coinbase height).
@@ -221,13 +221,13 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 - Queues are byte-bounded and a send reserves room in every queue first, so the slowest writer
   paces the fetch and memory stays bounded. A dropped queue or failed commit panics.
 - Utxo-set resolves each transaction's fee and feeds compact-block through a `FeeSink`.
-- A writer commits when its buffer fills, after a run ending at the final tip, and at shutdown.
+- A writer commits when its buffer fills, after a run ending at the finalized tip, and at shutdown.
 
 ### Tip path (`zaino-nfs`)
 
 - **Root** = the lowest durable tip across indexes.
 - The NFS folds only while the header just above the root is held and best is within 2 · depth of
-  the root. Otherwise (first sync, an index enabled late) the final path does the work and the
+  the root. Otherwise (first sync, an index enabled late) the finalized path does the work and the
   root is served.
 - Each best-chain block above the root is fetched by hash, checked against its header, and folded
   over the indexes' durable views (utxo-set first: its fees feed compact-block).
@@ -318,7 +318,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 | end of service    | a validator's release halts within 8,064 blocks (a week) of its tip                 |
 | partitioned       | two `Live` validators share no outbound peer                                        |
 | eclipsed          | `Live` validators reach 1–2 distinct outbound peers in total                        |
-| finality paused   | > depth unfinal blocks for 60 s with the final tip unmoved                          |
+| finality paused   | > depth non-finalized blocks for 60 s with the finalized tip unmoved                          |
 
 Per-transaction spread (`peers: x/y, trusted: x/y`) is tracked internally and feeds histograms
 (first seen → first trusted listing → every trusted listing, residence).

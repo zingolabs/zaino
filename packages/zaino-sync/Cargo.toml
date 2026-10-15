@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Zaino's index sync plumbing: the final stream every index writer follows, its byte-bounded queues and the writers' commit cadence."
+description = "Zaino's index sync plumbing: the finalized stream every index writer follows, its byte-bounded queues and the writers' commit cadence."
 
 [dependencies]
 futures.workspace = true

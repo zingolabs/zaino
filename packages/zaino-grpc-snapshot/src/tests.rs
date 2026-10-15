@@ -97,7 +97,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     assert!(matches!(stopped, Err(GrpcSnapshotError::IndexedGone)), "{stopped:?}");
 }
 
-/// A 0..=5 final through 2; one of two validators holds A5, the other degraded; block-hash
+/// A 0..=5 finalized through 2; one of two validators holds A5, the other degraded; block-hash
 /// durable through A5, served A5, handed 5; one relayed tx: the gauges a scrape renders
 #[test]
 fn one_snapshot_renders_every_gauge() {
@@ -387,10 +387,10 @@ fn check_catches_a_best_off_the_chain() {
 }
 
 #[test]
-#[should_panic(expected = "G3: final")]
-fn check_catches_a_final_tip_off_the_chain() {
+#[should_panic(expected = "G3: finalized")]
+fn check_catches_a_finalized_tip_off_the_chain() {
     let d = Drill::new();
-    let tips = Tips { final_tip: Some(d.a[1].at()), ..d.next.tips };
+    let tips = Tips { finalized_tip: Some(d.a[1].at()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 

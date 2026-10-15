@@ -1,4 +1,4 @@
-//! transparent_address writer: the final stream → one [`fold`] per block → its store
+//! transparent_address writer: the finalized stream → one [`fold`] per block → its store
 
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
     ///
-    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
     pub async fn run(self, mut blocks: Subscription<Block>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
@@ -48,7 +48,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -101,7 +101,7 @@ mod tests {
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
     use zaino_sync::testing::{
-        block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
+        block_on_paused, finalized, moves, open, step, FinalizedStreamFixture, Move, Writer, QUEUE,
     };
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::Zatoshis;
@@ -320,7 +320,7 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random spend graphs through random final streams (runs, restarts): once every move
+        /// Random spend graphs through random finalized streams (runs, restarts): once every move
         /// commits, each address's utxos, balance and transactions equal a naive UTXO set's
         #[test]
         fn random_histories_answer_like_a_naive_utxo_set(
@@ -423,7 +423,7 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let mut stream = FinalStream::new(&blocks);
+        let mut stream = FinalizedStreamFixture::new(&blocks);
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
         for (at, next) in moves.into_iter().enumerate() {
             if next == Move::Reopen {

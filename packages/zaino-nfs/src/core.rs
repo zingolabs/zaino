@@ -3,8 +3,8 @@
 //!
 //! - Pure: no I/O, no clock
 //! - Root = lowest durable tip of every index; nodes only above it
-//! - Active = root within `window` of best + its next header held: folds every index above its
-//!   own durable tip; else (bulk sync, or root below the chain's anchor) folds nothing, the final
+//! - Active = root within `window` of best + its next header held: folds every index above its own
+//!   durable tip; else (bulk sync, or root below the chain's anchor) folds nothing, the finalized
 //!   path does the work
 //! - Node at `h` folds each index durable below `h`
 //! - Served tip = deepest folded best block, else the root (reorg → fork point at once)
@@ -154,8 +154,8 @@ impl<F> NfsCore<F> {
         self.root().map_or(H0, |root| root.height + 1)
     }
 
-    /// Root within `window` of best + its next header held (else the final path alone: bulk sync,
-    /// or a chain anchored above the root, its gap fetched by height)
+    /// Root within `window` of best + its next header held (else the finalized path alone: bulk
+    /// sync, or a chain anchored above the root, its gap fetched by height)
     fn active(&self, chain: &VerifiedChain) -> bool {
         let (next, best) = (self.next_root(), chain.best().height);
         let headed = next > best || chain.header_at(next).is_some();

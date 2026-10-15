@@ -1,10 +1,10 @@
 //! One progress task: every [`REPORT_INTERVAL`], read from the `GrpcSnapshot` + `SyncProgress`
 //!
-//! - one line per tick for the [`Phase`] still outstanding: `Syncing blocks` (final, to the
+//! - one line per tick for the [`Phase`] still outstanding: `Syncing blocks` (finalized, to the
 //!   writers), then `Fetching non-finalized blocks` (served → best, above the finalized tip)
 //! - stall warning once that line has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
-//!   final blocks outstanding
+//!   finalized blocks outstanding
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)
 //! - the phase's blocks/s over the last two intervals (`/status` `progress.rate`)
 
@@ -52,39 +52,39 @@ impl Sample {
     /// `phase`'s blocks since `before` (a reorg lowering the served tip = none)
     fn advanced(&self, before: &Sample, phase: Phase) -> u64 {
         match phase {
-            Phase::Final { .. } => self.handed - before.handed,
+            Phase::Finalized { .. } => self.handed - before.handed,
             Phase::Window { .. } => u64::from(self.served.saturating_sub(before.served)),
         }
     }
 }
 
-/// Outstanding work, final blocks first (the NFS window opens above the writers' durable tips)
+/// Outstanding work, finalized blocks first (the NFS window opens above the writers' durable tips)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// handed, else the lowest durable tip (`None` = no block anywhere yet) → the final tip
-    Final { done: Option<u32>, target: u32 },
-    /// served → best, each counted above the final tip
+    /// handed, else the lowest durable tip (`None` = no block anywhere yet) → the finalized tip
+    Finalized { done: Option<u32>, target: u32 },
+    /// served → best, each counted above the finalized tip
     Window { fetched: u32, total: u32 },
 }
 
 impl Phase {
     /// `None` = nothing outstanding (synced, or no chain yet)
     fn of(tips: &Tips, handed: Option<u32>, durable: Option<u32>) -> Option<Self> {
-        let final_tip = u32::from(tips.final_tip?.height);
+        let finalized_tip = u32::from(tips.finalized_tip?.height);
         let done = handed.max(durable);
-        if done.is_none_or(|done| done < final_tip) {
-            return Some(Self::Final { done, target: final_tip });
+        if done.is_none_or(|done| done < finalized_tip) {
+            return Some(Self::Finalized { done, target: finalized_tip });
         }
         let (served, best) = (u32::from(tips.served?.height), u32::from(tips.best?.height));
         (!tips.synced && served < best).then(|| Self::Window {
-            fetched: served.saturating_sub(final_tip),
-            total: best - final_tip,
+            fetched: served.saturating_sub(finalized_tip),
+            total: best - finalized_tip,
         })
     }
 
     fn remaining(self) -> u32 {
         match self {
-            Self::Final { done, target } => target - done.unwrap_or(0),
+            Self::Finalized { done, target } => target - done.unwrap_or(0),
             Self::Window { fetched, total } => total - fetched,
         }
     }
@@ -139,7 +139,7 @@ pub(crate) async fn run(
             }
             report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
-        if matches!(phase, Some(Phase::Final { .. })) {
+        if matches!(phase, Some(Phase::Finalized { .. })) {
             let column = |height: Option<BlockHeight>| HeightCol(height.map(u32::from));
             for index in &indexes {
                 let applied = column(index.handle.applied_height());
@@ -162,10 +162,10 @@ fn report(phase: Phase, advanced: u64, over: Duration, idle: Duration) {
     });
     let stalled = (idle >= REPORT_INTERVAL).then(|| display(Human(idle)));
     match (phase, stalled) {
-        (Phase::Final { done, target }, None) => {
+        (Phase::Finalized { done, target }, None) => {
             info!(height = %HeightCol(done), target, bps, eta, "Syncing blocks");
         }
-        (Phase::Final { done, target }, Some(stalled)) => {
+        (Phase::Finalized { done, target }, Some(stalled)) => {
             warn!(height = %HeightCol(done), target, %stalled, "Block fetch stalled");
         }
         (Phase::Window { fetched, total }, None) => {
@@ -240,17 +240,18 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
-    /// Final blocks first (handed, else the lowest durable tip), then the window up to best; the
-    /// us-west-1 restart (durable = final = anchor 3,515,519, best 1,003 above) = the window
+    /// Finalized blocks first (handed, else the lowest durable tip), then the window up to best;
+    /// the us-west-1 restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the
+    /// window
     #[test]
-    fn the_phase_is_final_blocks_then_the_non_finalized_window_then_nothing() {
+    fn the_phase_is_finalized_blocks_then_the_non_finalized_window_then_nothing() {
         use zaino_primitives::types::BlockRef;
         use zcash_protocol::BlockHash;
         let at =
             |height: u32| BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(height) };
-        let tips = |final_tip: u32, served: u32, best: u32, synced: bool| Tips {
+        let tips = |finalized_tip: u32, served: u32, best: u32, synced: bool| Tips {
             best: Some(at(best)),
-            final_tip: Some(at(final_tip)),
+            finalized_tip: Some(at(finalized_tip)),
             served: Some(at(served)),
             held_by: zaino_chainview::TrustedValidatorSet::default(),
             synced,
@@ -262,24 +263,24 @@ mod tests {
                 restart,
                 None,
                 None,
-                Some(Phase::Final { done: None, target: 3_515_519 }),
+                Some(Phase::Finalized { done: None, target: 3_515_519 }),
             ),
             (
-                "durable below final, follower idle",
+                "durable below finalized, follower idle",
                 restart,
                 None,
                 Some(3_515_000),
-                Some(Phase::Final { done: Some(3_515_000), target: 3_515_519 }),
+                Some(Phase::Finalized { done: Some(3_515_000), target: 3_515_519 }),
             ),
             (
                 "handed past the durable tip",
                 restart,
                 Some(3_515_100),
                 Some(3_515_000),
-                Some(Phase::Final { done: Some(3_515_100), target: 3_515_519 }),
+                Some(Phase::Finalized { done: Some(3_515_100), target: 3_515_519 }),
             ),
             (
-                "restart: durable = final, handed none",
+                "restart: durable = finalized, handed none",
                 restart,
                 None,
                 Some(3_515_519),
@@ -310,7 +311,7 @@ mod tests {
         for (case, tips, handed, durable, expected) in cases {
             assert_eq!(Phase::of(&tips, handed, durable), expected, "{case}");
         }
-        let no_chain = Tips { best: None, final_tip: None, ..restart };
+        let no_chain = Tips { best: None, finalized_tip: None, ..restart };
         assert_eq!(Phase::of(&no_chain, None, None), None, "no chain yet: nothing to report");
     }
 

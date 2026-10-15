@@ -146,7 +146,7 @@ shutdown_grace_secs = 10
 finalised_depth = 1000
 # Block fetches (and folds) in flight ahead of the next one needed, over every trusted validator
 concurrency = 32
-# MiB of final blocks one index may lag the fetch before it throttles the pipeline
+# MiB of finalized blocks one index may lag the fetch before it throttles the pipeline
 queue_mib = 256
 
 # The disk engine's map tables (one engine per process: every index shares merge_slots)

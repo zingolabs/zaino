@@ -1,4 +1,4 @@
-//! block_hash writer: the final stream → one [`fold`] per block → its store
+//! block_hash writer: the finalized stream → one [`fold`] per block → its store
 
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
     ///
-    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
     pub async fn run(self, mut blocks: Subscription<Block>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
@@ -47,7 +47,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -152,9 +152,9 @@ mod tests {
         assert_eq!(located, heights.chain([None]).collect::<Vec<_>>());
     }
 
-    /// Five final blocks, each its own commit, crashed after every operation: each state reopens
-    /// to an acknowledged or the attempted commit, locates every hash it holds and none past it,
-    /// and commits the next block
+    /// Five finalized blocks, each its own commit, crashed after every operation: each state
+    /// reopens to an acknowledged or the attempted commit, locates every hash it holds and none
+    /// past it, and commits the next block
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_durable_prefix_that_keeps_committing() {
         let (fs, recording) = SimFs::recording();

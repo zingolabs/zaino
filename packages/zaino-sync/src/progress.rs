@@ -1,4 +1,4 @@
-//! [`SyncProgress`]: final blocks handed to the index writers, sampled at report time
+//! [`SyncProgress`]: finalized blocks handed to the index writers, sampled at report time
 //!
 //! - Atomics, not a watch (bulk sync hands thousands of blocks a second; readers sample)
 
@@ -19,7 +19,7 @@ struct Tally {
 }
 
 impl SyncProgress {
-    /// Last block handed (sent on the final stream)
+    /// Last block handed (sent on the finalized stream)
     pub fn handed(&self) -> Option<BlockHeight> {
         BlockHeight::try_from(self.0.handed.load(Ordering::Relaxed).checked_sub(1)?).ok()
     }

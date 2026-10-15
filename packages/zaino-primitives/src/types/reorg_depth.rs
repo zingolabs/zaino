@@ -2,7 +2,7 @@
 
 use core::num::NonZeroU32;
 
-/// Blocks below the tip kept reorg-able (non-final); consensus bound = 1000
+/// Blocks below the tip kept reorg-able (non-finalized); consensus bound = 1000
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReorgDepth(NonZeroU32);
 

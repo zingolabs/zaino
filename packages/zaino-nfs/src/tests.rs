@@ -1,5 +1,5 @@
-//! [`Nfs`] end to end over the real final path: `FinalizedFollower` + every index writer, `SimFs`
-//! stores, mock validators (`usage.md`)
+//! [`Nfs`] end to end over the real finalized path: `FinalizedFollower` + every index writer,
+//! `SimFs` stores, mock validators (`usage.md`)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
 //! - Every publication seen: tip on its best; `at` of every mined block (served, side, root): each
@@ -296,12 +296,12 @@ impl Pipeline {
         }
     }
 
-    /// Every new publish `verify`'d (+ `each`) until every index durable at `final_height` and the
-    /// served tip at `best` (a day of virtual time, else panic)
+    /// Every new publish `verify`'d (+ `each`) until every index durable at `finalized_height` and
+    /// the served tip at `best` (a day of virtual time, else panic)
     async fn settle(
         &mut self,
         best: BlockRef,
-        final_height: Option<BlockHeight>,
+        finalized_height: Option<BlockHeight>,
         mut each: impl FnMut(&Indexed<DiskView>),
         check: &mut impl FnMut(&Indexed<DiskView>, &str),
         context: &str,
@@ -316,7 +316,7 @@ impl Pipeline {
                     each(&latest);
                     seen = Some(latest);
                 }
-                let durable = self.durable().iter().all(|tip| *tip == final_height);
+                let durable = self.durable().iter().all(|tip| *tip == finalized_height);
                 if durable && seen.as_ref().is_some_and(|seen| seen.served().tip() == best) {
                     return;
                 }
@@ -330,7 +330,9 @@ impl Pipeline {
         };
         if tokio::time::timeout(Duration::from_secs(86_400), settled).await.is_err() {
             let durable = self.durable();
-            panic!("{context}: never settled: {best:?}, durable {durable:?} != {final_height:?}");
+            panic!(
+                "{context}: never settled: {best:?}, durable {durable:?} != {finalized_height:?}"
+            );
         }
     }
 }
@@ -372,7 +374,7 @@ fn mine(
     mined
 }
 
-/// Two pipelines over the same stores, each move settled (durable through final, served = best)
+/// Two pipelines over the same stores, each move settled (durable through finalized, served = best)
 ///
 /// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20; run 1: restart, E21..=24
 /// - bodies from an honest member + a `Lie::Poisoned` liar (each lie reported, never folded)
@@ -446,23 +448,26 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
             }
             verified.send_replace(headers.verified().map(Arc::new));
             let best = headers.best().expect("verified").block;
-            let final_height = headers.final_tip().map(|tip| tip.height);
-            pipeline.settle(best, final_height, |_| {}, &mut check, &context).await;
+            let finalized_height = headers.finalized_tip().map(|tip| tip.height);
+            pipeline.settle(best, finalized_height, |_| {}, &mut check, &context).await;
             let sent_since_boot =
-                final_height.filter(|final_height| Some(*final_height) > booted_at);
+                finalized_height.filter(|finalized_height| Some(*finalized_height) > booted_at);
             let handed = pipeline.progress.handed();
-            assert_eq!(handed, sent_since_boot, "{context}: final path handed through final");
+            assert_eq!(
+                handed, sent_since_boot,
+                "{context}: finalized path handed through finalized"
+            );
         }
         pipeline.stop().await;
     }
     stop_balancing.cancel();
 }
 
-/// - Run 0: four indexes synced through A8 (final 5)
-/// - Run 1: tree-state enabled on a fresh store; A 9..=16 one at a time (final = best − 3)
+/// - Run 0: four indexes synced through A8 (finalized 5)
+/// - Run 1: tree-state enabled on a fresh store; A 9..=16 one at a time (finalized = best − 3)
 /// - Served tip = the lowest durable tip until the window holds it, never back; tree-state
 ///   readable in every publication; every publication = folding from genesis (`verify`)
-/// - Settled: every index durable through final, served at best
+/// - Settled: every index durable through finalized, served at best
 #[tokio::test(start_paused = true)]
 async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let miner = p2pkh([0xad; 20]);
@@ -500,12 +505,12 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
             member.follow(&blocks, tip.at());
         }
         verified.send_replace(headers.verified().map(Arc::new));
-        (headers.best().expect("verified").block, headers.final_tip().map(|tip| tip.height))
+        (headers.best().expect("verified").block, headers.finalized_tip().map(|tip| tip.height))
     };
 
     let mut pipeline = Pipeline::start(&engine, &four, &verified_rx, &balancer, params);
-    let (best, final_height) = add(&trunk[1..=8]);
-    pipeline.settle(best, final_height, |_| {}, &mut check, "run 0").await;
+    let (best, finalized_height) = add(&trunk[1..=8]);
+    pipeline.settle(best, finalized_height, |_| {}, &mut check, "run 0").await;
     pipeline.stop().await;
 
     let five = [&four[..3], &[IndexKind::TreeState], &four[3..]].concat();
@@ -513,7 +518,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let mut served = H0;
     for at in 9..=16 {
         let context = format!("run 1 A{at}");
-        let (best, final_height) = add(&trunk[at..=at]);
+        let (best, finalized_height) = add(&trunk[at..=at]);
         let each = |indexed: &Indexed<DiskView>| {
             let tip = indexed.served().tip().height;
             assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
@@ -521,7 +526,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
             let readable = indexed.served().views().tree_state().is_some();
             assert!(readable, "{context}: tree-state readable at {tip:?}");
         };
-        pipeline.settle(best, final_height, each, &mut check, &context).await;
+        pipeline.settle(best, finalized_height, each, &mut check, &context).await;
     }
     pipeline.stop().await;
     stop_balancing.cancel();
@@ -547,7 +552,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let params = ChainParams::of(&blocks);
     let mut nfs: Nfs<_, DiskView> = Nfs::new(verified_rx, balancer, params, DEPTH, lookahead);
     nfs.add(IndexKind::BlockHash, writer.handle());
-    let mut sink = zaino_sync::IndexerDataSink::new();
+    let mut sink = zaino_sync::FinalizedStream::new();
     let blocks = sink.subscribe(IndexKind::BlockHash.name(), NonZeroUsize::MAX);
     let run = tokio::spawn(nfs.run(CancellationToken::new()));
     sink.shutdown();

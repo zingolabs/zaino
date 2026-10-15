@@ -1,8 +1,8 @@
 //! Publisher model (`usage.md`): random inputs through [`Core::publish`], `check()`
 //! after every publish (inside it), every snapshot against a naive model
 //!
-//! - Chain view: header moves (extend, reorg above final, finalize), holders (some claiming past
-//!   best), mempool (relays, drops), a block mining a held tx while the view still lists it
+//! - Chain view: header moves (extend, reorg above finalized, finalize), holders (some claiming
+//!   past best), mempool (relays, drops), a block mining a held tx while the view still lists it
 //!   (listings lag a block)
 //! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet;
 //!   root = genesis (every served block above it)
@@ -33,7 +33,7 @@ use crate::{Down, MempoolTail, Standing, Tips};
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
-/// - `Reorg`: top `depth` (above final) replaced by `len` blocks, the first outweighing them
+/// - `Reorg`: top `depth` (above finalized) replaced by `len` blocks, the first outweighing them
 /// - `Ahead` = holders in `mask` claim a block past best (header sync short of them); `read` =
 ///   their hash at best polled (still holders), else not yet (no longer holders)
 /// - `Relay` = ours (held, served); `Mine` = one block on best carrying that txid (kept held)
@@ -166,7 +166,7 @@ impl Model {
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
             }
             Input::Reorg { depth, len } => {
-                let floor = self.headers.final_tip().map_or(0, |tip| u32::from(tip.height));
+                let floor = self.headers.finalized_tip().map_or(0, |tip| u32::from(tip.height));
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
                 let parent = self.builder.ancestor(best, h(at));
                 let tip = self.builder.branch(parent).outweigh().mine_empty(len).tip();
@@ -235,7 +235,7 @@ impl Model {
         self.synced = synced;
         Tips {
             best: Some(best),
-            final_tip: Some(chain.final_tip()),
+            finalized_tip: Some(chain.finalized_tip()),
             served: self.served,
             held_by: self.held_by(),
             synced,

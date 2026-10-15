@@ -1,4 +1,4 @@
-//! [`IndexerDataSink<T>`]: one publisher, the same [`Step`]s to every subscriber, in order
+//! [`FinalizedStream<T>`]: one publisher, the same [`Step`]s to every subscriber, in order
 //!
 //! - One byte-bounded queue per subscriber (a slow one holds the publisher back, never grows
 //!   memory)
@@ -7,7 +7,7 @@
 //! ```
 //! use std::{num::NonZeroUsize, sync::Arc};
 //! use zcash_protocol::consensus::BlockHeight;
-//! use zaino_sync::{IndexerDataSink, Step, Weight};
+//! use zaino_sync::{FinalizedStream, Step, Weight};
 //!
 //! struct Blob;
 //! impl Weight for Blob {
@@ -17,7 +17,7 @@
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
 //! let budget = NonZeroUsize::new(1 << 20).expect("non-zero");
-//! let mut sink = IndexerDataSink::new();
+//! let mut sink = FinalizedStream::new();
 //! let mut first = sink.subscribe("first", budget);
 //! let mut second = sink.subscribe("second", budget);
 //!
@@ -45,7 +45,7 @@ pub trait Weight {
 
 /// One step, the same for every subscriber
 ///
-/// - `FinalizedTip` = the block at the chain's final tip (apply, then commit: caught up)
+/// - `FinalizedTip` = the block at the chain's finalized tip (apply, then commit: caught up)
 /// - `Shutdown` last: commit what is held, stop
 #[derive(Debug)]
 pub enum Step<T> {
@@ -85,10 +85,10 @@ pub(crate) struct Queued<T> {
 
 /// One batch of work off a [`Subscription`], in height order
 ///
-/// - `finalized_tip` = its last block = `Step::FinalizedTip` (the chain's final tip)
+/// - `ends_at_finalized_tip` = its last block = `Step::FinalizedTip` (the chain's finalized tip)
 pub struct Run<T> {
     pub blocks: Vec<(BlockHeight, Arc<T>)>,
-    pub finalized_tip: bool,
+    pub ends_at_finalized_tip: bool,
 }
 
 /// One consumer's end: its queue, in stream order
@@ -138,7 +138,7 @@ impl<T: Weight> Subscription<T> {
 
     /// `first` + queued `Apply`s to `budget` bytes; `Shutdown` ends it (the next `next` = it again)
     fn run(&mut self, first: Step<T>, budget: NonZeroUsize) -> Run<T> {
-        let mut run = Run { blocks: Vec::new(), finalized_tip: false };
+        let mut run = Run { blocks: Vec::new(), ends_at_finalized_tip: false };
         let mut bytes = 0usize;
         let mut step = Some(first);
         while let Some(next) = step.take() {
@@ -149,7 +149,7 @@ impl<T: Weight> Subscription<T> {
                 }
                 Step::FinalizedTip { height, data } => {
                     run.blocks.push((height, data));
-                    run.finalized_tip = true;
+                    run.ends_at_finalized_tip = true;
                     break;
                 }
                 Step::Shutdown => break,
@@ -184,17 +184,17 @@ impl<T> Subscriber<T> {
 /// - Subscribed before it is handed to its publisher (taken by value: no subscriber joins
 ///   mid-stream)
 /// - Ends with [`shutdown`](Self::shutdown) (dropped without it = subscribers panic)
-pub struct IndexerDataSink<T> {
+pub struct FinalizedStream<T> {
     subscribers: Vec<Subscriber<T>>,
 }
 
-impl<T> Default for IndexerDataSink<T> {
+impl<T> Default for FinalizedStream<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> IndexerDataSink<T> {
+impl<T> FinalizedStream<T> {
     pub fn new() -> Self {
         Self { subscribers: Vec::new() }
     }
@@ -220,7 +220,7 @@ impl<T> IndexerDataSink<T> {
     }
 }
 
-impl<T: Weight> IndexerDataSink<T> {
+impl<T: Weight> FinalizedStream<T> {
     /// `step` to every queue or to none (a full queue delays it: what bounds memory)
     ///
     /// - every queue's share held before any push: a send cancelled mid-wait delivers nowhere
@@ -270,7 +270,7 @@ mod tests {
     /// reaches neither; `Shutdown` lands last and stays popped
     #[tokio::test]
     async fn every_subscriber_sees_the_same_steps_a_cancelled_send_none_then_shutdown_forever() {
-        let mut sink = IndexerDataSink::<Blob>::new();
+        let mut sink = FinalizedStream::<Blob>::new();
         let (roomy, tight) = (1 << 20, size_of::<Step<Blob>>() + 1);
         let nz = |bytes| NonZeroUsize::new(bytes).expect("nz");
         let (mut one, mut two) =
@@ -297,7 +297,7 @@ mod tests {
     /// (included, `true`) or by `Shutdown` (the next one out)
     #[tokio::test]
     async fn a_run_gathers_queued_applies_to_its_budget_ends_at_a_finalized_block_or_shutdown() {
-        let mut sink = IndexerDataSink::<Blob>::new();
+        let mut sink = FinalizedStream::<Blob>::new();
         let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
         for height in 0..5 {
             sink.send(apply(height, 10)).await;
@@ -309,7 +309,7 @@ mod tests {
         let heights = |run: Run<Blob>| -> (Vec<u32>, bool) {
             (
                 run.blocks.into_iter().map(|(height, _)| u32::from(height)).collect(),
-                run.finalized_tip,
+                run.ends_at_finalized_tip,
             )
         };
         let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
@@ -334,7 +334,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "subscriber one dropped its queue before Shutdown")]
     async fn a_queue_dropped_before_shutdown_panics_the_sink() {
-        let mut sink = IndexerDataSink::<Blob>::new();
+        let mut sink = FinalizedStream::<Blob>::new();
         drop(sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz")));
         sink.send(apply(0, 1)).await;
     }
@@ -343,7 +343,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "sink dropped without Shutdown")]
     async fn a_sink_dropped_without_shutdown_panics_the_subscriber() {
-        let mut sink = IndexerDataSink::<Blob>::new();
+        let mut sink = FinalizedStream::<Blob>::new();
         let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
         drop(sink);
         sub.next().await;
@@ -355,7 +355,7 @@ mod tests {
     async fn a_byte_budget_bounds_the_queue_and_never_holds_back_shutdown() {
         let step = size_of::<Step<Blob>>() + 100;
         let oversize = 10 * 3 * step;
-        let mut sink = IndexerDataSink::<Blob>::new();
+        let mut sink = FinalizedStream::<Blob>::new();
         let mut sub = sink.subscribe("one", NonZeroUsize::new(3 * step).expect("nz"));
 
         for height in 0..3 {

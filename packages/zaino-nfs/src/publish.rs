@@ -64,7 +64,7 @@ pub struct At<V> {
 }
 
 impl<V: View> At<V> {
-    /// Highest height `kind` answers: its durable tip when past a best block (final), else the
+    /// Highest height `kind` answers: its durable tip when past a best block (finalized), else the
     /// block (side branch: durable data past it = best chain, not this branch)
     pub fn answers_through(&self, kind: IndexKind) -> BlockHeight {
         let durable = self.views.durable.get(kind).and_then(View::tip).map(|tip| tip.height);
@@ -125,7 +125,7 @@ impl<V: View> Indexed<V> {
 
     /// Every enabled index as of `hash`: a folded node (best or side) or the root, no I/O
     ///
-    /// - `None` = final below the root, never folded, or unknown
+    /// - `None` = finalized below the root, never folded, or unknown
     /// - an index durable at or past the block: its durable view alone (reads at heights `<=`)
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;

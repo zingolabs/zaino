@@ -4,19 +4,19 @@
 //! - Only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ final stream ─┬─▶ utxo_set ─fees─┐
-//!   validators ──▶ getblock <hash> (checked) ───┤                                  ├─▶ compact_block ◀──────┘
-//!                                               │                                  ├─▶ block_hash
-//!                                               │                                  ├─▶ tree_state
-//!                                               │                                  └─▶ transparent_address
-//!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──┘
+//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ finalized stream ─┬─▶ utxo_set ─fees───────┐
+//!   validators ──▶ getblock <hash> (checked) ───┤                                          ├─▶ compact_block ◀──────┘
+//!                                               │                                          ├─▶ block_hash
+//!                                               │                                          ├─▶ tree_state
+//!                                               │                                          └─▶ transparent_address
+//!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──────────┘
 //!                                                    ▼
 //!                                   Indexed ─┐
 //!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ Routes ─▶ GrpcService
 //!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘    └▶ admin, logs
 //! ```
 //!
-//! - Final path: follower → writers (disk); tip path: NFS (RAM); one `GrpcSnapshot` per request
+//! - Finalized path: follower → writers (disk); tip path: NFS (RAM); one `GrpcSnapshot` per request
 //! - Each writer = its own task over its subscription; a disabled index is never opened
 //! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
 
@@ -265,7 +265,7 @@ fn pipeline<S: ChainDataSource>(
     Ok(run_pipeline(config, indexes, inputs, serving, status, cancel, tasks))
 }
 
-/// Every enabled index opened, subscribed to the final stream, added to the NFS
+/// Every enabled index opened, subscribed to the finalized stream, added to the NFS
 fn open_indexes<S: ChainDataSource>(
     config: &DaemonConfig,
     inputs: &Inputs<S>,
@@ -391,7 +391,7 @@ fn run_pipeline<S: ChainDataSource>(
     tasks
 }
 
-/// Final path + tip overlay + every index opened so far (its writer queued, spawned by
+/// Finalized path + tip overlay + every index opened so far (its writer queued, spawned by
 /// [`run_pipeline`])
 struct Indexes<S> {
     follower: FinalizedFollower<S>,
@@ -404,7 +404,7 @@ struct Indexes<S> {
 
 impl<S: ChainDataSource> Indexes<S> {
     /// `config.path` opened as `kind`'s store (at its crate's write buffer) under its component
-    /// span → `writer`'s handle to the follower + NFS, its `run` over the final stream queued
+    /// span → `writer`'s handle to the follower + NFS, its `run` over the finalized stream queued
     fn open<W, F>(
         &mut self,
         kind: IndexKind,
@@ -610,7 +610,7 @@ mod tests {
     }
 
     /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3):
-    /// - A 0..=8 at once (0..=5 final: bulk, committed on idle; 6..=8 folded at the tip)
+    /// - A 0..=8 at once (0..=5 finalized: bulk, committed on idle; 6..=8 folded at the tip)
     /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's, `GetLightdInfo` B8 under
     ///   zainod's version (not zaino-grpc's)
     /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block

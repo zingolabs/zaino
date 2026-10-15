@@ -2,7 +2,7 @@
 //!
 //! - Best nodes = one contiguous run from the root (folded parent first)
 //! - Side nodes = earlier best runs, kept while the header chain holds them (`holds`: side
-//!   branches forking at or above the final tip, its own H4 bound)
+//!   branches forking at or above the finalized tip, its own H4 bound)
 
 use std::sync::Arc;
 
@@ -106,7 +106,8 @@ impl<F> Graph<F> {
         self.nodes.retain(|_, node| Some(node.at.height) > root_height && chain.holds(node.at));
     }
 
-    /// `hash` = the root or a node (`None` = neither: final below the root, never folded, unknown)
+    /// `hash` = the root or a node (`None` = neither: finalized below the root, never folded,
+    /// unknown)
     pub(crate) fn at(
         &self,
         chain: &VerifiedChain,

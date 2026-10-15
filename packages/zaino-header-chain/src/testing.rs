@@ -12,12 +12,12 @@ use crate::{decode_header, HeaderChain, Params, Rejected, VerifiedChain};
 pub trait HeaderViews {
     /// Rules `validate` runs this chain's headers under (Blossom / NU7 at its schedule's heights)
     fn header_params(&self) -> Params;
-    /// Anchored at genesis (its final tip), nothing above
+    /// Anchored at genesis (its finalized tip), nothing above
     fn header_chain(&self, depth: ReorgDepth) -> HeaderChain;
-    /// Genesis ..= `tip`, final at genesis
+    /// Genesis ..= `tip`, finalized at genesis
     fn verified(&self, tip: BlockRef) -> VerifiedChain;
-    /// Genesis ..= `tip`, final through `final_at` (< `tip`)
-    fn verified_final(&self, tip: BlockRef, final_at: BlockHeight) -> VerifiedChain;
+    /// Genesis ..= `tip`, finalized through `finalized_at` (< `tip`)
+    fn verified_finalized(&self, tip: BlockRef, finalized_at: BlockHeight) -> VerifiedChain;
 }
 
 impl HeaderViews for MockChain {
@@ -43,11 +43,12 @@ impl HeaderViews for MockChain {
         chain.verified().expect("anchored")
     }
 
-    fn verified_final(&self, tip: BlockRef, final_at: BlockHeight) -> VerifiedChain {
-        let deep = u32::from(tip.height).checked_sub(u32::from(final_at)).and_then(NonZeroU32::new);
-        let mut chain = self.header_chain(ReorgDepth::new(deep.expect("final_at below tip")));
+    fn verified_finalized(&self, tip: BlockRef, finalized_at: BlockHeight) -> VerifiedChain {
+        let deep =
+            u32::from(tip.height).checked_sub(u32::from(finalized_at)).and_then(NonZeroU32::new);
+        let mut chain = self.header_chain(ReorgDepth::new(deep.expect("finalized_at below tip")));
         insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");
-        chain.finalize(chain.finalizable().expect("tip = final_at + depth"));
+        chain.finalize(chain.finalizable().expect("tip = finalized_at + depth"));
         chain.verified().expect("anchored")
     }
 }
@@ -77,16 +78,16 @@ mod tests {
     use super::*;
     use crate::Inserted;
 
-    /// Varied chain: views follow it as built, final where asked; the header chain follows its
+    /// Varied chain: views follow it as built, finalized where asked; the header chain follows its
     /// outweigh (work decides, not height)
     #[test]
     fn a_mock_chain_verifies_as_built_and_its_header_chain_follows_the_work() {
         let mut chain = MockChain::regtest().varied_work();
         let twelve = chain.mine_empty(12);
         let verified = chain.verified(twelve);
-        assert_eq!((verified.best(), verified.final_tip()), (twelve, chain.genesis()));
-        let pinned = chain.verified_final(twelve, h(9));
-        assert_eq!((pinned.best(), pinned.final_tip()), (twelve, chain.at(h(9))));
+        assert_eq!((verified.best(), verified.finalized_tip()), (twelve, chain.genesis()));
+        let pinned = chain.verified_finalized(twelve, h(9));
+        assert_eq!((pinned.best(), pinned.finalized_tip()), (twelve, chain.at(h(9))));
         assert_eq!(pinned.hash_at(h(5)), Some(chain.at(h(5)).hash));
 
         let retreat = chain.fork(h(10)).outweigh().mine_empty(1).tip();

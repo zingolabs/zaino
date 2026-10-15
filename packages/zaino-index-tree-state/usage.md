@@ -63,7 +63,7 @@ tokio::spawn(writer.run(blocks));
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine`.
-- `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
+- `run` follows the finalized stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
   It folds each run's not-yet-held blocks together, one delta per block, then
   `zaino_sync::apply`s each. It commits on a `FinalizedTip` block, a full buffer
   (`WRITE_BUFFER` = 16 MiB) and `Shutdown`.

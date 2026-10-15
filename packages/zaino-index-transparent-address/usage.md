@@ -75,7 +75,7 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
   with `S::View: MapRead`. zainod picks `DiskEngine`.
-- `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)):
+- `run` follows the finalized stream ([the writer shape](../zaino-sync/usage.md#writer-loop)):
   each block it does not yet hold is folded onto `applied()`, then
   `zaino_sync::apply`d. `handle()` is the `IndexHandle` the NFS reads.
 - Fallible only at boot (`StoreError` from `open`). `run` panics on a failed

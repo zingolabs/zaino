@@ -367,7 +367,7 @@ pub(crate) struct SyncConfig {
     pub(crate) finalised_depth: NonZeroU32,
     /// Block fetches + folds in flight ahead of the next block needed
     pub(crate) concurrency: NonZeroUsize,
-    /// Per index: final blocks it may trail the fetch by before the pipeline throttles
+    /// Per index: finalized blocks it may trail the fetch by before the pipeline throttles
     queue_mib: NonZeroU32,
     pub(crate) lsm_store: LsmConfig,
 }

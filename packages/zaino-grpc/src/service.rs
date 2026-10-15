@@ -2,8 +2,8 @@
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
-//! - one global [`GrpcSnapshot`](zaino_grpc_snapshot::GrpcSnapshot) per request or stream (G1), pinned for
-//!   its life: no height named = its served tip; a height named = `At::answers_through`
+//! - one global [`GrpcSnapshot`](zaino_grpc_snapshot::GrpcSnapshot) per request or stream (G1),
+//!   pinned for its life: no height named = its served tip; a height named = `At::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a row whose index `Routes::indexes` lacks = `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`

@@ -223,9 +223,9 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
         let time = chain.header_at(tip.height).map_or(0, |record| record.time);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
         let age = Human(Duration::from_secs(now.saturating_sub(u64::from(time))));
-        let finalized = u32::from(chain.final_tip().height);
+        let finalized_tip = u32::from(chain.finalized_tip().height);
         let (height, hash) = (u32::from(tip.height), tip.hash);
-        info!(height, %hash, %age, finalized, "Chain tip advanced");
+        info!(height, %hash, %age, finalized_tip, "Chain tip advanced");
     }
 }
 

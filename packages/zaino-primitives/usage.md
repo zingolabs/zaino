@@ -36,7 +36,7 @@ use zaino_primitives::types::{Block, HeaderBytes, Treestate};
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
-  on the final stream and in every NFS node; `at()` = its `BlockRef`), `DecodedHeader`
+  on the finalized stream and in every NFS node; `at()` = its `BlockRef`), `DecodedHeader`
   (`extends(parent: Option<BlockRef>)` = one height above `parent` and linked to
   it by `prev_hash`, genesis on `None`: every fold's precondition), `Transaction` and its parts
   (`TransparentData`, `SaplingData`, `OrchardData`, `SproutData`, …; Sprout's
@@ -195,14 +195,14 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 
 | View | Crate | Gives |
 |---|---|---|
-| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_final(tip, final_at)` |
+| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_finalized(tip, finalized_at)` |
 | `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
 | `PeerSetViews` (trait on `MockChain`) | `zaino-traffic` | `peer_set(tip)`: a `MockPeerSet` (`PeerTransport`) over one path, `hold(height)` to move its tip |
 | `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
 | `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
 | `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
 
-Finality is the header chain's, never the builder's: ask for it with `verified_final`.
+Finality is the header chain's, never the builder's: ask for it with `verified_finalized`.
 
 ### Invariants
 

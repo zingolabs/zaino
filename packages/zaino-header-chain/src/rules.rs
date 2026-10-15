@@ -58,8 +58,8 @@ pub enum Rejected {
     Solution,
     #[error("parent unknown (fetch it first)")]
     Orphan,
-    #[error("parent below the final boundary, off the final chain")]
-    BelowFinal,
+    #[error("parent below the finalized boundary, off the finalized chain")]
+    BelowFinalized,
     #[error("cumulative work past 128 bits")]
     WorkOverflow,
     #[error("{held} ancestors held, the rules read {needed}")]

@@ -1,4 +1,5 @@
-//! Sink + final-stream metrics (fetch names = ztest's `zainod` families: a rename breaks its probes)
+//! Sink + finalized-stream metrics (fetch names = ztest's `zainod` families: a rename breaks its
+//! probes)
 
 use std::time::Duration;
 
@@ -43,7 +44,9 @@ pub fn describe_metrics() {
     ] {
         metrics::describe_counter!(
             name,
-            format!("{what} sent to the index writers on the final stream; a restart counts again")
+            format!(
+                "{what} sent to the index writers on the finalized stream; a restart counts again"
+            )
         );
     }
     metrics::describe_gauge!(
@@ -61,7 +64,7 @@ pub fn describe_metrics() {
     metrics::describe_histogram!(
         names::INDEX_RUN_SECONDS,
         metrics::Unit::Seconds,
-        "One run of final blocks through an index writer, taken off its queue → published \
+        "One run of finalized blocks through an index writer, taken off its queue → published \
          (fold + write + any wait for input), by index"
     );
     metrics::describe_histogram!(
@@ -98,7 +101,7 @@ pub(crate) fn index_tips(
     }
 }
 
-/// `block` sent on the final stream
+/// `block` sent on the finalized stream
 pub(crate) fn handed(block: &Block) {
     let txs = block.transactions();
     let sum = |count: fn(&Transaction) -> usize| txs.iter().map(count).sum::<usize>() as u64;

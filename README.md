@@ -29,9 +29,9 @@ packages/                          Cargo workspace members
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
   zaino-grpc-snapshot/               One GrpcSnapshot of everything served, its standing
   # indexing
-  zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, publications
+  zaino-nfs/                         Non-finalized state: fetch, fold at the tip, finalized stream, publications
   zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
-  zaino-sync/                        Final stream (sink + queues) + the writers' apply / commit / publish
+  zaino-sync/                        Finalized stream (sink + queues) + the writers' apply / commit / publish
   zaino-index-compact-block/         Height → gRPC-framed compact block (one sequence)
   zaino-internal-block-hash-to-height/  Hash ↔ height, the by-hash locator
   zaino-index-utxo-set/              Outpoint → value: each transaction's fee for compact blocks
@@ -106,9 +106,9 @@ prevents.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers and blocks (checked by proof of work and merkle root, so the tip follows the network while every trusted validator is down), each peer's own mempool listing (the chain view's peer quorum: the mempool keeps serving while every trusted validator is down), attributed block announcements (finality on peers' word) and the isolated per-attempt submission push; advertises no services.
 - [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the Validated Header tree, each header validated by the trusted validator that served it or by Zaino, anchored at a trusted tip − depth (no history from genesis) — the most-work tip, vouched finality, and `validate`, the consensus rules kept as the fallback for an untrusted source.
-- [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the final stream (lockstep finality), and publishes one `Indexed` across every index that moves to the fork point the moment a reorg lands.
+- [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the finalized stream (lockstep finality), and publishes one `Indexed` across every index that moves to the fork point the moment a reorg lands.
 - [`zaino-grpc-snapshot`](./packages/zaino-grpc-snapshot/usage.md): one published `GrpcSnapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the serving `Standing`, the gauges and the alarm logs derived from it.
-- [`zaino-sync`](./packages/zaino-sync/usage.md): the final stream (`Step`, `Run`), byte-bounded queues, fees from one index to another, and the `apply` / `commit` / `IndexPublisher` every writer's loop runs on.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): the finalized stream (`Step`, `Run`), byte-bounded queues, fees from one index to another, and the `apply` / `commit` / `IndexPublisher` every writer's loop runs on.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
 - [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash ↔ height locator every by-hash request resolves through, and why the serving index confirms it.

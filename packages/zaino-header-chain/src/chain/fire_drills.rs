@@ -12,8 +12,8 @@ use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
 use crate::{decode_header, Inserted};
 
-/// Depth 9; `trunk[h]` = trunk at height `h`, 0..=12, final through 3; `side` = a header at 12 on
-/// 11 (equal work, received after the trunk's 12); `builder` mined both
+/// Depth 9; `trunk[h]` = trunk at height `h`, 0..=12, finalized through 3; `side` = a header at 12
+/// on 11 (equal work, received after the trunk's 12); `builder` mined both
 struct Valid {
     chain: HeaderChain,
     trunk: [BlockHash; 13],
@@ -53,7 +53,7 @@ fn clone_side(chain: &mut HeaderChain, of: BlockHash, salt: u8) {
 fn the_unplanted_chain_passes_every_check_and_knows_its_side_header() {
     let Valid { mut chain, side, builder, .. } = valid();
     chain.check();
-    assert_eq!(chain.final_tip().map(|tip| u32::from(tip.height)), Some(3));
+    assert_eq!(chain.finalized_tip().map(|tip| u32::from(tip.height)), Some(3));
     let header = decode_header(&builder.header_bytes(side)).expect("real header");
     assert_eq!(chain.insert(&header), Ok(Inserted::Known));
 }
@@ -68,8 +68,8 @@ fn check_catches_a_best_that_is_not_the_max_work_leaf() {
 }
 
 #[test]
-#[should_panic(expected = "does not descend from the final tip")]
-fn check_catches_a_node_off_the_final_tip() {
+#[should_panic(expected = "does not descend from the finalized tip")]
+fn check_catches_a_node_off_the_finalized_tip() {
     let Valid { mut chain, trunk, .. } = valid();
     chain.nodes.get_mut(&trunk[4]).expect("held").parent = BlockHash([9u8; 32]);
     chain.check();
@@ -87,15 +87,15 @@ fn check_catches_a_height_gap() {
 #[should_panic(expected = "H2: nothing held before an anchor")]
 fn check_catches_a_chain_without_an_anchor() {
     let Valid { mut chain, .. } = valid();
-    chain.finals.clear();
+    chain.finalized_headers.clear();
     chain.check();
 }
 
 #[test]
-#[should_panic(expected = "H2: finals one height apart")]
+#[should_panic(expected = "H2: finalized headers one height apart")]
 fn check_catches_a_gap_in_the_finals() {
     let Valid { mut chain, .. } = valid();
-    chain.finals.remove(1);
+    chain.finalized_headers.remove(1);
     chain.check();
 }
 
@@ -166,14 +166,14 @@ fn check_catches_a_vouched_node_under_an_unvouched_parent() {
 }
 
 #[test]
-#[should_panic(expected = "H2: only a best-branch block becomes final")]
+#[should_panic(expected = "H2: only a best-branch block becomes finalized")]
 fn finalizing_a_block_off_the_best_branch_panics() {
     let Valid { mut chain, side, .. } = valid();
     chain.finalize(BlockRef { hash: side, height: h(12) });
 }
 
 #[test]
-#[should_panic(expected = "H2: the final boundary stays `depth` below the best")]
+#[should_panic(expected = "H2: the finalized boundary stays `depth` below the best")]
 fn finalizing_within_depth_of_the_best_panics() {
     let Valid { mut chain, trunk, .. } = valid();
     chain.finalize(BlockRef { hash: trunk[5], height: h(5) });

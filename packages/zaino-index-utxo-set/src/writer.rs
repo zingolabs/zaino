@@ -1,4 +1,4 @@
-//! utxo_set writer: the final stream → one [`fold_run`] per run → its store
+//! utxo_set writer: the finalized stream → one [`fold_run`] per run → its store
 //!
 //! - one [`BlockFees`] per step into the [`FeeSink`], held heights' fees read back from `fees`
 //!   (compact-block may be behind this index)
@@ -47,7 +47,7 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
     ///
     /// - one `fold_run` per run (every block the store lacks: one prevout probe), held blocks'
     ///   fees read back
-    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
     /// - a failure panics (dropped `sink` = no `Shutdown`: compact-block panics too)
     pub async fn run(self, mut blocks: Subscription<Block>, sink: FeeSink) {
         let Self { mut store, publisher } = self;
@@ -71,7 +71,7 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
                 for changes in out {
                     write += apply(&mut store, changes);
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, paid, write)

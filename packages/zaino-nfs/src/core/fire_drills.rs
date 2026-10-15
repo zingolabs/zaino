@@ -57,13 +57,13 @@ impl World {
         Node { at, parent, block: self.block(hash), folded: Arc::new(at.height) }
     }
 
-    /// Header chain over `blocks` (genesis first), finalized through `final_height`
-    fn verified(&self, blocks: &[BlockHash], final_height: u32) -> Arc<VerifiedChain> {
+    /// Header chain over `blocks` (genesis first), finalized through `finalized_height`
+    fn verified(&self, blocks: &[BlockHash], finalized_height: u32) -> Arc<VerifiedChain> {
         let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nz"));
         let mut headers = self.builder.header_chain(depth);
         let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
         insert(&mut headers, &path).expect("valid");
-        let through = self.at(blocks[final_height as usize]);
+        let through = self.at(blocks[finalized_height as usize]);
         headers.finalize(through);
         Arc::new(headers.verified().expect("verified"))
     }
@@ -90,8 +90,8 @@ impl World {
         }
     }
 
-    /// - Window 10; durable A1 / A1; best S6, then A9 (final 4); durable A3 / A2 (root A2)
-    /// - nodes A3..=A6 + side S5, S6 (fork A4 = final); A7 folding, A8 ready, A9 asked
+    /// - Window 10; durable A1 / A1; best S6, then A9 (finalized 4); durable A3 / A2 (root A2)
+    /// - nodes A3..=A6 + side S5, S6 (fork A4 = finalized); A7 folding, A8 ready, A9 asked
     fn valid(&self) -> NfsCore<BlockHeight> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };

@@ -54,7 +54,7 @@ tokio::spawn(writer.run(blocks, fee_sink));
 - Generic over the persistence port: `UtxoSetIndexWriter<S: Store>` with
   `S::View: SequenceRead + MapRead`. zainod enables it with
   `index.compact_block`, its directory beside compact-block's.
-- `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop))
+- `run` follows the finalized stream ([the writer shape](../zaino-sync/usage.md#writer-loop))
   and sends one `BlockFees` per step into the fee sink, then ends the sink.
 - Fallible only at boot (`StoreError` from `open`). A failed commit or an
   unresolvable fee panics

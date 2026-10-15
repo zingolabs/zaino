@@ -17,7 +17,7 @@ pub(crate) fn compose<V>(
     let served = indexed.map(|indexed| indexed.served().tip());
     Tips {
         best: chain.map(VerifiedChain::best),
-        final_tip: chain.map(VerifiedChain::final_tip),
+        finalized_tip: chain.map(VerifiedChain::finalized_tip),
         served,
         held_by: view.held_by(),
         synced: chain.is_some_and(|chain| {
@@ -60,8 +60,8 @@ pub(crate) fn check<V>(
     let tips = next.tips;
     let chain = next.view.chain();
     assert_eq!(tips.best, chain.map(|chain| chain.best()), "G3: best = the view chain's");
-    let final_tip = chain.map(|chain| chain.final_tip());
-    assert_eq!(tips.final_tip, final_tip, "G3: final = the view chain's");
+    let finalized_tip = chain.map(|chain| chain.finalized_tip());
+    assert_eq!(tips.finalized_tip, finalized_tip, "G3: finalized = the view chain's");
     let held_by = next.view.held_by();
     assert_eq!(tips.held_by, held_by, "G3: held_by = the view's holders of best");
     let served = next.indexed.as_ref().map(|indexed| indexed.served().tip());

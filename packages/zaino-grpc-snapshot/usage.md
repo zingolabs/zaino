@@ -20,7 +20,7 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
   (`subscribe_published()` + `current()`), nothing else; `depth` = the header chain's reorg depth.
 - Each change of either → one publish from the latest of both (`watch`-coalesced: a burst
   publishes once). A publish = two `Arc` clones + `Copy` tips + the feed: never torn.
-- The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `final_tip`, `held_by`
+- The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `finalized_tip`, `held_by`
   and `synced` are judged under it; the NFS's own chain stays inside its `at()`.
 
 ## Readers: `GrpcSnapshots` → `GrpcSnapshot`
@@ -37,7 +37,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | Method                  | Answer                                                                        |
 | ----------------------- | ----------------------------------------------------------------------------- |
 | `seq()`                 | +1 per publish                                                                |
-| `tips()`                | `Tips { best, final_tip, served, held_by, synced }`                           |
+| `tips()`                | `Tips { best, finalized_tip, served, held_by, synced }`                           |
 | `chain()`               | the chain view's `VerifiedChain`                                              |
 | `served()`              | the NFS's served `At` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
@@ -108,7 +108,7 @@ emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then rend
 | --- | --- | --- |
 | G1 | a request or stream reads one `GrpcSnapshot` (routes get `&GrpcSnapshot` / `&At`, never the handle) | types; route tests |
 | G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
-| G3 | `best`, `final_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
+| G3 | `best`, `finalized_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |

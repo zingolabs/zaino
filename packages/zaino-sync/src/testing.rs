@@ -1,4 +1,4 @@
-//! Index-writer test kit: a store on `SimFs`, steps, a spawned writer, random final streams
+//! Index-writer test kit: a store on `SimFs`, steps, a spawned writer, random finalized streams
 //! (`usage.md` "Testing a writer")
 
 use std::{future::Future, num::NonZeroUsize, path::Path, sync::Arc};
@@ -14,9 +14,9 @@ use zaino_persistence::{
 use zaino_primitives::types::Block;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::{IndexHandle, IndexerDataSink, Step, Subscription};
+use crate::{FinalizedStream, IndexHandle, Step, Subscription};
 
-/// Final-stream queue budget (one run = every step already queued)
+/// Finalized-stream queue budget (one run = every step already queued)
 pub const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("1 MiB is non-zero");
 
 /// `schema`'s store at `/<index name>` on `fs`
@@ -33,14 +33,14 @@ pub fn step(block: &Arc<Block>) -> Step<Block> {
     Step::Apply { height: block.header().height, data: Arc::clone(block) }
 }
 
-/// `block` as the chain's final tip (the writer commits after it)
+/// `block` as the chain's finalized tip (the writer commits after it)
 pub fn finalized(block: &Arc<Block>) -> Step<Block> {
     Step::FinalizedTip { height: block.header().height, data: Arc::clone(block) }
 }
 
-/// Writer task on its own final stream, read through its handle
+/// Writer task on its own finalized stream, read through its handle
 pub struct Writer<V> {
-    sink: IndexerDataSink<Block>,
+    sink: FinalizedStream<Block>,
     handle: IndexHandle<V>,
     task: JoinHandle<()>,
 }
@@ -55,7 +55,7 @@ impl<V: View> Writer<V> {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let mut sink = IndexerDataSink::new();
+        let mut sink = FinalizedStream::new();
         let task = tokio::spawn(run(sink.subscribe("writer", queue)));
         Self { sink, handle, task }
     }
@@ -84,7 +84,7 @@ impl<V: View> Writer<V> {
     }
 }
 
-/// One move of a random final stream over a fixed chain
+/// One move of a random finalized stream over a fixed chain
 ///
 /// - `Send(n)`: next `n` blocks, the last `FinalizedTip`
 /// - `Reopen`: writer restarted, the last block sent resent (held: skipped)
@@ -105,13 +105,13 @@ pub fn write_buffers() -> impl Strategy<Value = NonZeroUsize> {
     prop_oneof![Just(NonZeroUsize::MIN), Just(NonZeroUsize::MAX)]
 }
 
-/// Random final stream's progress through `blocks` (genesis first)
-pub struct FinalStream<'a> {
+/// Random finalized stream's progress through `blocks` (genesis first)
+pub struct FinalizedStreamFixture<'a> {
     blocks: &'a [Arc<Block>],
     sent: usize,
 }
 
-impl<'a> FinalStream<'a> {
+impl<'a> FinalizedStreamFixture<'a> {
     pub fn new(blocks: &'a [Arc<Block>]) -> Self {
         Self { blocks, sent: 0 }
     }

@@ -116,7 +116,7 @@ mod tests {
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{all_at, h, p2pkh, MockChain};
 
-    use zaino_sync::{FeeSink, IndexerDataSink, Step};
+    use zaino_sync::{FeeSink, FinalizedStream, Step};
     use zcash_protocol::consensus::NetworkType;
 
     /// Five indexes from one chain, scrubbed through the daemon's own config:
@@ -149,7 +149,7 @@ mod tests {
             NetworkType::Main,
         );
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let (mut block_sink, mut fee_sink) = (IndexerDataSink::new(), FeeSink::new());
+        let (mut block_sink, mut fee_sink) = (FinalizedStream::new(), FeeSink::new());
         let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
         let (compact_blocks, fee_blocks) =
             (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::UtxoSet));

@@ -1,13 +1,13 @@
 # `zaino-sync` — usage
 
-The final path: `FinalizedFollower` fetches every final block in order onto one byte-bounded
-broadcast (`IndexerDataSink<Block>`); each index writer runs its own loop over its store
+The finalized path: `FinalizedFollower` fetches every finalized block in order onto one byte-bounded
+broadcast (`FinalizedStream<Block>`); each index writer runs its own loop over its store
 (`apply` / `commit`) and publishes it through an `IndexPublisher`. Where it fits:
-[architecture §7](../../docs/architecture.md#final-path-zaino-sync).
+[architecture §7](../../docs/architecture.md#finalized-path-zaino-sync).
 
 ```text
- VerifiedChain ─▶ FinalizedFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ utxo-set ─▶ FeeSink ┐
- (final_tip)      fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
+ VerifiedChain ─▶ FinalizedFollower ─▶ FinalizedStream<Block> ─┬─▶ [queue] ─▶ utxo-set ─▶ FeeSink ┐
+ (finalized_tip)  fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
                                                            ├─▶ [queue] ─▶ tree-state
                                                            ├─▶ [queue] ─▶ block-hash
                                                            └─▶ [queue] ─▶ transparent-address
@@ -44,7 +44,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
                         apply(&mut store, changes);     // full buffer = the store commits
                     }
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     commit(&mut store);                 // caught up: durable now
                 }
                 store
@@ -62,9 +62,9 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.view().tip(), queue)` per index;
   `progress()`; `run(cancel)`.
-- Streams `lowest durable + 1 ..= final tip`, `lookahead` blocks in flight, delivered in order;
-  waits for the next chain past the final tip.
-- A height the verified chain holds a header for (the final window and above) is fetched by
+- Streams `lowest durable + 1 ..= finalized tip`, `lookahead` blocks in flight, delivered in order;
+  waits for the next chain past the finalized tip.
+- A height the verified chain holds a header for (the finalized window and above) is fetched by
   hash from any member, peers included (`fetch`), checked against that header. Below it (bulk
   sync) it goes by height to trusted members only (`fetch_at` → `TrafficBalancer::blocks_at`,
   as many per request as one reply at `ResponseSizeCap::MAX` holds): no header there to hold a
@@ -89,7 +89,7 @@ What the rest of the daemon knows about one index: `view()` (durable view),
 `durable_height()` (its tip), `applied_height()` (last block folded into the store, durable or
 not), `changed()` (after each commit; `false` = writer gone).
 
-## `IndexerDataSink<T>`
+## `FinalizedStream<T>`
 
 - `new()`, then `subscribe(name, budget)` per subscriber (`name` = its panic messages); every
   subscriber joins first.
@@ -99,8 +99,8 @@ not), `changed()` (after each commit; `false` = writer gone).
 - `Subscription::next()`; `next_run()` → `Some(Run)` = next step + every `Apply` already
   queued, to the queue's budget (one batch of work, no wait past the first step) | `None` at
   `Shutdown`.
-- `Run { blocks, finalized_tip }`: `finalized_tip` = its last block = `Step::FinalizedTip` (the
-  chain's final tip; ends the run).
+- `Run { blocks, ends_at_finalized_tip }`: `ends_at_finalized_tip` = its last block = `Step::FinalizedTip` (the
+  chain's finalized tip; ends the run).
 
 ## Writer loop
 
@@ -127,7 +127,7 @@ not), `changed()` (after each commit; `false` = writer gone).
 
 ## Fees: `FeeSink`
 
-`FeeSink` = `IndexerDataSink<BlockFees>`: utxo-set publishes one per step (held heights read
+`FeeSink` = `FinalizedStream<BlockFees>`: utxo-set publishes one per step (held heights read
 back from its stored fees), compact-block pops one per step, so the two stay in step with either
 one ahead.
 
@@ -147,7 +147,7 @@ tests use; each crate keeps only its own fold oracle.
 
 ```rust,ignore
 use zaino_sync::testing::{block_on_paused, finalized, moves, open, step, write_buffers,
-    FinalStream, Move, Writer, QUEUE};
+    FinalizedStreamFixture, Move, Writer, QUEUE};
 
 fn start(store: DiskStore) -> Writer<DiskView> {
     let writer = MyIndexWriter::new(store);
@@ -165,7 +165,7 @@ let handle = writer.stop().await.expect("stops at Shutdown"); // Err = the write
 - `Writer::stop` → `Err(JoinError)` on a writer panic: `#[should_panic]` tests re-raise it with
   `std::panic::resume_unwind(error.into_panic())`.
 - Random histories: `moves()` (1..16 of `Move::Send(1..=3)` / `Move::Reopen`, 4 : 1) and
-  `write_buffers()` (MIN | MAX) as proptest strategies; `FinalStream::new(&blocks).steps(next)`
+  `write_buffers()` (MIN | MAX) as proptest strategies; `FinalizedStreamFixture::new(&blocks).steps(next)`
   = the steps a move sends (a `Send`'s last `FinalizedTip`, a `Reopen`'s = the last sent block
   again, into the restarted writer), `tip()` = the durable tip to wait for; `block_on_paused(history)`
   runs the async body on a current-thread runtime, clock paused.

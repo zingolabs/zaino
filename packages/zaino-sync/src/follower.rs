@@ -1,15 +1,15 @@
-//! [`FinalizedFollower`]: every final block, in order, onto the final stream (`usage.md`)
+//! [`FinalizedFollower`]: every finalized block, in order, onto the finalized stream (`usage.md`)
 //!
-//! - Target = the chain's final tip height
+//! - Target = the chain's finalized tip height
 //! - A height the verified chain holds a header for: by hash, from any member (peers included),
 //!   checked against that header; below the headers held (bulk): by height from a trusted
 //!   member, batched (trusted = trusted)
 //! - Starts after the lowest durable tip (an index ahead skips what it holds)
 //! - Each block's parent = the block sent before it, and = the durable tip of each index it
 //!   extends (else `Unlinked` / `Diverged`: stop, never skip)
-//! - Bulk and tip alike: each block once, after it turns final (the NFS never sends)
-//! - The block at the chain's final tip = `FinalizedTip` (writers commit after it, else on a full
-//!   buffer)
+//! - Bulk and tip alike: each block once, after it is finalized (the NFS never sends)
+//! - The block at the chain's finalized tip = `FinalizedTip` (writers commit after it, else on a
+//!   full buffer)
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::{emit, fetch, fetch_at, IndexerDataSink, Step, Subscription, SyncProgress};
+use crate::{emit, fetch, fetch_at, FinalizedStream, Step, Subscription, SyncProgress};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FollowError {
@@ -44,7 +44,7 @@ pub struct FinalizedFollower<S> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: TrafficBalancer<S>,
     lookahead: NonZeroUsize,
-    sink: IndexerDataSink<Block>,
+    sink: FinalizedStream<Block>,
     durable: Vec<(IndexKind, Option<BlockRef>)>,
     progress: SyncProgress,
 }
@@ -60,7 +60,7 @@ impl<S: ChainDataSource> FinalizedFollower<S> {
             chain,
             balancer,
             lookahead,
-            sink: IndexerDataSink::new(),
+            sink: FinalizedStream::new(),
             durable: Vec::new(),
             progress: SyncProgress::default(),
         }
@@ -100,7 +100,7 @@ async fn follow<S: ChainDataSource>(
     mut chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: &TrafficBalancer<S>,
     lookahead: NonZeroUsize,
-    sink: &IndexerDataSink<Block>,
+    sink: &FinalizedStream<Block>,
     durable: Vec<(IndexKind, Option<BlockRef>)>,
     progress: &SyncProgress,
 ) -> Result<(), FollowError> {
@@ -111,8 +111,8 @@ async fn follow<S: ChainDataSource>(
     let mut in_flight = 0;
     loop {
         let verified = chain.borrow_and_update().clone();
-        let final_height = verified.as_ref().map(|chain| chain.final_tip().height);
-        while in_flight < lookahead.get() && Some(wanted) <= final_height {
+        let finalized_height = verified.as_ref().map(|chain| chain.finalized_tip().height);
+        while in_flight < lookahead.get() && Some(wanted) <= finalized_height {
             let held = verified.as_ref().and_then(|chain| chain.header_at(wanted));
             // own task: fetches progress while `send` waits on a full queue (else every in-flight
             // reply sits unread); abort on drop: no fetch outlives the follower
@@ -127,7 +127,7 @@ async fn follow<S: ChainDataSource>(
                 None => {
                     let room = BLOCKS_PER_REQUEST.min(lookahead.get() - in_flight);
                     let mut heights = Vec::with_capacity(room);
-                    while heights.len() < room && Some(wanted) <= final_height {
+                    while heights.len() < room && Some(wanted) <= finalized_height {
                         heights.push(wanted);
                         wanted = wanted + 1;
                     }
@@ -149,8 +149,9 @@ async fn follow<S: ChainDataSource>(
                     last_sent = Some(block.header().hash);
                     emit::handed(&block);
                     progress.hand(height);
-                    let final_tip = chain.borrow().as_ref().map(|chain| chain.final_tip().height);
-                    let step = match Some(height) == final_tip {
+                    let finalized_tip =
+                        chain.borrow().as_ref().map(|chain| chain.finalized_tip().height);
+                    let step = match Some(height) == finalized_tip {
                         true => Step::FinalizedTip { height, data: block },
                         false => Step::Apply { height, data: block },
                     };
@@ -195,15 +196,14 @@ mod tests {
 
     use super::*;
 
-    /// Chain A 0..=11, final 5 then 8; an honest member + a `Lie::Poisoned` liar (by height
+    /// Chain A 0..=11, finalized 5 then 8; an honest member + a `Lie::Poisoned` liar (by height
     /// too); two subscribers, one durable at A2, one fresh:
     /// - both queues = A0..=A8, once each, in order, the honest bodies (a lie never sent)
-    /// - the final tip's block (A5, then A8) `FinalizedTip`, every other `Apply`
-    /// - nothing above the final tip; progress = the last height sent, blocks counted
+    /// - the finalized tip's block (A5, then A8) `FinalizedTip`, every other `Apply`
+    /// - nothing above the finalized tip; progress = the last height sent, blocks counted
     /// - cancel → `Ok`, `Shutdown` last in every queue
     #[tokio::test(start_paused = true)]
-    async fn every_final_block_reaches_every_subscriber_once_in_order_from_the_lowest_durable_tip()
-    {
+    async fn finalized_blocks_reach_every_subscriber_once_in_order_from_the_lowest_durable_tip() {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
@@ -221,8 +221,8 @@ mod tests {
         let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
-        let final_at_five = Arc::new(chain.verified_final(a11, h(5)));
-        let (verified, verified_rx) = watch::channel(Some(final_at_five));
+        let finalized_at_five = Arc::new(chain.verified_finalized(a11, h(5)));
+        let (verified, verified_rx) = watch::channel(Some(finalized_at_five));
 
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
@@ -246,19 +246,23 @@ mod tests {
             }
             sent
         };
-        let steps = |range: std::ops::RangeInclusive<usize>, final_tip: usize| -> Vec<_> {
-            range.map(|at| (trunk[at].at(), at == final_tip)).collect()
+        let steps = |range: std::ops::RangeInclusive<usize>, finalized_tip: usize| -> Vec<_> {
+            range.map(|at| (trunk[at].at(), at == finalized_tip)).collect()
         };
 
         let first = steps(0..=5, 5);
         assert_eq!(sent(&mut durable_at_a2, 6).await, first, "from the lowest durable tip (fresh)");
         assert_eq!(sent(&mut fresh, 6).await, first, "the same steps to every subscriber");
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        assert_eq!(progress.handed(), Some(h(5)), "nothing above the final tip");
+        assert_eq!(progress.handed(), Some(h(5)), "nothing above the finalized tip");
 
-        verified.send_replace(Some(Arc::new(chain.verified_final(a11, h(8)))));
+        verified.send_replace(Some(Arc::new(chain.verified_finalized(a11, h(8)))));
         let next = steps(6..=8, 8);
-        assert_eq!(sent(&mut durable_at_a2, 3).await, next, "the final tip moved: its blocks next");
+        assert_eq!(
+            sent(&mut durable_at_a2, 3).await,
+            next,
+            "the finalized tip moved: its blocks next"
+        );
         assert_eq!(sent(&mut fresh, 3).await, next);
         assert_eq!((progress.handed(), progress.blocks()), (Some(h(8)), 9));
 
@@ -273,10 +277,10 @@ mod tests {
     }
 
     /// Broken links stop the follower, naming what broke:
-    /// - durable X1 (A1's sibling), final 5: A2's parent ≠ X1 → `Diverged` naming the index,
+    /// - durable X1 (A1's sibling), finalized 5: A2's parent ≠ X1 → `Diverged` naming the index,
     ///   before any step
-    /// - A0..=A5 sent, then the validator's history moves (B 5..=11 off A4), final 8: B6's parent
-    ///   ≠ A5 → `Unlinked` at 6, nothing past A5 sent
+    /// - A0..=A5 sent, then the validator's history moves (B 5..=11 off A4), finalized 8: B6's
+    ///   parent ≠ A5 → `Unlinked` at 6, nothing past A5 sent
     #[tokio::test(start_paused = true)]
     async fn a_block_off_the_chain_already_sent_or_committed_stops_the_follower() {
         let mut chain = MockChain::regtest();
@@ -291,8 +295,8 @@ mod tests {
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
 
-        let final_at_five = Some(Arc::new(chain.verified_final(a7, h(5))));
-        let (_verified, verified_rx) = watch::channel(final_at_five);
+        let finalized_at_five = Some(Arc::new(chain.verified_finalized(a7, h(5))));
+        let (_verified, verified_rx) = watch::channel(finalized_at_five);
         let mut follower = FinalizedFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
         let durable_tip_a4 = Some(chain.blocks(a7)[4].at());
         let mut above = follower.subscribe(IndexKind::TreeState, durable_tip_a4, NonZeroUsize::MAX);
@@ -311,7 +315,7 @@ mod tests {
         }
 
         let (verified, verified_rx) =
-            watch::channel(Some(Arc::new(chain.verified_final(a7, h(5)))));
+            watch::channel(Some(Arc::new(chain.verified_finalized(a7, h(5)))));
         let mut follower = FinalizedFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
         let running = tokio::spawn(follower.run(CancellationToken::new()));
@@ -326,7 +330,7 @@ mod tests {
         let trunk: Vec<BlockRef> = chain.blocks(a7)[..=5].iter().map(|block| block.at()).collect();
         assert_eq!(sent, trunk, "A0..=A5");
         validator.follow(&chain, b11);
-        verified.send_replace(Some(Arc::new(chain.verified_final(b11, h(8)))));
+        verified.send_replace(Some(Arc::new(chain.verified_finalized(b11, h(8)))));
         let stopped = within("the follower stopped", running).await.expect("follower task");
         let stopped = stopped.expect_err("B6 does not extend A5");
         assert!(matches!(stopped, FollowError::Unlinked { height } if height == h(6)), "{stopped}");
@@ -348,11 +352,11 @@ mod peers {
 
     use super::*;
 
-    /// The trusted validator unreachable throughout, the peer set holding A0..=A11; final 8 on a
-    /// chain naming every header: A0..=A8 reach the stream from the peer set alone (each checked
+    /// The trusted validator unreachable throughout, the peer set holding A0..=A11; finalized 8 on
+    /// a chain naming every header: A0..=A8 reach the stream from the peer set alone (each checked
     /// against its verified header; the validator, asked first, never answers)
     #[tokio::test(start_paused = true)]
-    async fn final_blocks_the_verified_chain_names_come_from_peers_when_no_validator_answers() {
+    async fn finalized_blocks_the_verified_chain_names_come_from_peers_when_no_validator_answers() {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
@@ -365,8 +369,8 @@ mod peers {
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
         tokio::spawn(balancing.run(cancel.clone()));
-        let final_at_eight = Some(Arc::new(chain.verified_final(a11, h(8))));
-        let (_verified, verified_rx) = watch::channel(final_at_eight);
+        let finalized_at_eight = Some(Arc::new(chain.verified_finalized(a11, h(8))));
+        let (_verified, verified_rx) = watch::channel(finalized_at_eight);
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
         let mut queue = follower.subscribe(IndexKind::BlockHash, None, NonZeroUsize::MAX);
@@ -375,7 +379,7 @@ mod peers {
         let mut sent = Vec::new();
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
-            match step.expect("a final block within a minute") {
+            match step.expect("a finalized block within a minute") {
                 Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => sent.push(data.at()),
                 Step::Shutdown => panic!("Shutdown early"),
             }

@@ -19,7 +19,7 @@ use crate::feed::{Feed, MempoolTail};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tips {
     pub best: Option<BlockRef>,
-    pub final_tip: Option<BlockRef>,
+    pub finalized_tip: Option<BlockRef>,
     pub served: Option<BlockRef>,
     pub held_by: TrustedValidatorSet,
     pub synced: bool,

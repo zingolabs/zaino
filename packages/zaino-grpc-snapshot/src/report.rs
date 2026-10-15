@@ -117,7 +117,7 @@ pub fn describe_metrics() {
     describe_gauge!(names::BEST_TIP, "Height of the header chain's most-work verified block");
     describe_gauge!(
         names::FETCH_HEIGHT,
-        "Last final block height the follower sent to the index writers"
+        "Last finalized block height the follower sent to the index writers"
     );
     describe_gauge!(
         names::INDEX_SYNCED,
@@ -152,7 +152,7 @@ pub fn describe_metrics() {
     );
     describe_gauge!(
         names::FINALITY_PAUSED,
-        "1 while the final boundary waits for a trusted validator to hold it"
+        "1 while the finalized boundary waits for a trusted validator to hold it"
     );
     describe_gauge!(
         names::SHARED_OUTBOUND_MIN,

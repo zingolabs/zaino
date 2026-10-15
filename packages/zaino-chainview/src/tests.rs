@@ -885,10 +885,10 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never {what}");
 }
 
-/// Finality stall alarm (telemetry, depth 10): final = best − depth never raises it; a block
-/// `depth` deep owed finality raises it only past 60 s; the final tip moving clears it
+/// Finality stall alarm (telemetry, depth 10): finalized = best − depth never raises it; a block
+/// `depth` deep owed finality raises it only past 60 s; the finalized tip moving clears it
 #[tokio::test(start_paused = true)]
-async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_final_moves() {
+async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_finalized_moves() {
     let mut chain = MockChain::regtest();
     let tip_30 = chain.mine_empty(30);
     let tip_45 = chain.mine_empty(15);
@@ -897,24 +897,24 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_final_mov
     let reader = view.subscriber();
     let stalled = || reader.current().alarms().finality_paused();
 
-    view.set_verified(Some(chain.verified_final(tip_30, h(20))));
+    view.set_verified(Some(chain.verified_finalized(tip_30, h(20))));
     tokio::time::sleep(Duration::from_secs(61)).await;
-    assert!(!stalled(), "final = best − depth: nothing owed");
-    view.set_verified(Some(chain.verified_final(tip_45, h(20))));
+    assert!(!stalled(), "finalized = best − depth: nothing owed");
+    view.set_verified(Some(chain.verified_finalized(tip_45, h(20))));
     tokio::time::sleep(Duration::from_secs(59)).await;
     assert!(!stalled(), "unmoved 59 s: not yet");
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(stalled(), "unmoved past 60 s, 25 unfinal");
-    view.set_verified(Some(chain.verified_final(tip_45, h(35))));
-    assert!(!stalled(), "final moved: cleared at once");
+    assert!(stalled(), "unmoved past 60 s, 25 non-finalized");
+    view.set_verified(Some(chain.verified_finalized(tip_45, h(35))));
+    assert!(!stalled(), "finalized moved: cleared at once");
     cancel.cancel();
 }
 
 /// Real regtest header bytes through header sync, two trusted validators, depth 10
 ///
 /// - a at 5,000: the chain anchors at its claim − max(depth, CONTEXT) (4,887), never reading
-///   history below, then follows a's 113 headers; final = 4,990, held by a (b's claim 3,000 =
-///   below final, held by definition, nothing fetched)
+///   history below, then follows a's 113 headers; finalized = 4,990, held by a (b's claim 3,000 =
+///   below finalized, held by definition, nothing fetched)
 /// - b moves to a fork of a's at 4,999 with more work → the tip follows the work to b, held by b
 /// - a published chain never changes; cancel ends header sync
 #[tokio::test(start_paused = true)]
@@ -934,7 +934,7 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let sync = view.header_sync(HeaderChain::new(depth()));
     let verified = sync.subscribe();
     let syncing = tokio::spawn(sync.run(cancel.clone()));
-    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
 
     until("anchored below a's claim, a's tip followed", || published() == Some((a, at_4_990)))
         .await;
@@ -943,7 +943,7 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let first = verified.borrow().clone().expect("a VerifiedChain");
     let anchored = (first.hash_at(at_4_887.height), first.hash_at(at_4_886.height));
     assert_eq!(anchored, (Some(at_4_887.hash), None), "no history below the anchor");
-    assert!(first.on_best(at_3_000), "b's claim: below final, final by definition");
+    assert!(first.on_best(at_3_000), "b's claim: below finalized, finalized by definition");
     let fetched: Vec<usize> = validators.iter().map(|validator| validator.calls().links).collect();
     assert_eq!(fetched, [114, 0], "the anchor + 113 headers from a, nothing from b");
     assert!(!reader.current().alarms().finality_paused());
@@ -963,12 +963,13 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
 /// A validator far ahead, a poll forced after every publish: the chain re-anchors at its claim
 /// − depth instead of syncing headers toward it
 ///
-/// - a at 20: anchored at genesis (20 − max(depth, CONTEXT), saturated), followed to 20, final 10
-/// - a jumps to 20,500 (past the ceiling: depth + `HEADER_BATCH` above final) → re-anchored at
-///   20,387, followed to 20,500, final 20,490: 135 headers fetched in all, none of the 20,366
+/// - a at 20: anchored at genesis (20 − max(depth, CONTEXT), saturated), followed to 20,
+///   finalized 10
+/// - a jumps to 20,500 (past the ceiling: depth + `HEADER_BATCH` above finalized) → re-anchored at
+///   20,387, followed to 20,500, finalized 20,490: 135 headers fetched in all, none of the 20,366
 ///   between
-/// - every published chain: best − final ≤ depth + `HEADER_BATCH` (H9), finality alarm down; the
-///   view's tip held by a
+/// - every published chain: best − finalized ≤ depth + `HEADER_BATCH` (H9), finality alarm
+///   down; the view's tip held by a
 #[tokio::test(start_paused = true)]
 async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it() {
     use zaino_header_chain::HeaderChain;
@@ -989,28 +990,30 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
     loop {
         let changed = tokio::time::timeout(Duration::from_secs(60), verified.changed()).await;
         changed.expect("header sync progresses").expect("header sync running");
-        let (best, final_tip) = {
+        let (best, finalized_tip) = {
             let published = verified.borrow_and_update();
             let published = published.as_ref().expect("a chain once published");
-            (published.best(), published.final_tip())
+            (published.best(), published.finalized_tip())
         };
-        let unfinal = u32::from(best.height) - u32::from(final_tip.height);
+        let non_finalized = u32::from(best.height) - u32::from(finalized_tip.height);
         let bound = DEPTH + crate::headers::HEADER_BATCH;
-        assert!(unfinal <= bound, "{best:?}: H9, {unfinal} unfinal > {bound}");
+        assert!(non_finalized <= bound, "{best:?}: H9, {non_finalized} non-finalized > {bound}");
         assert!(!reader.current().alarms().finality_paused(), "{best:?}: alarm");
-        followed.push((best, final_tip));
+        followed.push((best, finalized_tip));
         balancer.pushed(v(0), Push::Changed);
-        if (best, final_tip) == (at_20, at_10) {
+        if (best, finalized_tip) == (at_20, at_10) {
             validator.follow(&chain, tip);
         }
-        if (best, final_tip) == (tip, at_20_490) {
+        if (best, finalized_tip) == (tip, at_20_490) {
             break;
         }
     }
-    let finals: Vec<BlockRef> = followed.iter().map(|(_, final_tip)| *final_tip).collect();
-    let anchors_and_finals = [genesis, at_10, at_20_387, at_20_490];
-    let jumped = finals.iter().all(|final_tip| anchors_and_finals.contains(final_tip));
-    assert!(jumped, "final only ever the two anchors or their runs' finals: {finals:?}");
+    let finalized_tips: Vec<BlockRef> =
+        followed.iter().map(|(_, finalized_tip)| *finalized_tip).collect();
+    let anchors_and_finalized = [genesis, at_10, at_20_387, at_20_490];
+    let jumped =
+        finalized_tips.iter().all(|finalized_tip| anchors_and_finalized.contains(finalized_tip));
+    assert!(jumped, "finalized tip = an anchor or its run's end only: {finalized_tips:?}");
     let links = validator.calls().links;
     assert_eq!(links, 1 + 20 + 1 + 113, "two anchors + their runs, nothing between");
     until("the view's tip, held", || reader.current().held_by() == TrustedValidatorSet::at([0]))
@@ -1019,10 +1022,10 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
 }
 
 /// Two trusted validators at 30, depth 10; a then serves a longer chain forked at 5, below our
-/// final tip
+/// finalized tip
 ///
 /// - a's forked claim: given up on (never fetched again while it stands), `Diverged`, never the
-///   tip (no re-anchor onto a chain leaving ours below final)
+///   tip (no re-anchor onto a chain leaving ours below finalized)
 /// - b's 31 and 32 followed within one poll each meanwhile (a's standing is a's alone)
 #[tokio::test(start_paused = true)]
 async fn a_forked_validator_never_delays_the_honest_one() {
@@ -1040,10 +1043,10 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     let sync = view.header_sync(HeaderChain::new(depth()));
     let verified = sync.subscribe();
     tokio::spawn(sync.run(cancel.clone()));
-    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
-    let followed = async |tip: BlockRef, final_tip: BlockRef| {
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
+    let followed = async |tip: BlockRef, finalized_tip: BlockRef| {
         let asked = tokio::time::Instant::now();
-        until("followed", || published() == Some((tip, final_tip))).await;
+        until("followed", || published() == Some((tip, finalized_tip))).await;
         asked.elapsed()
     };
 
@@ -1062,16 +1065,16 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     assert_eq!(validators[0].calls().links, links, "a's forked claim never fetched again");
     let pinned = reader.current();
     let standing = (pinned.best(), pinned.trusted_validators()[0].agreement);
-    assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below final: never followed");
+    assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below finalized: never followed");
     cancel.cancel();
 }
 
 /// One trusted validator + the peer set, both at 40, depth 10, real regtest headers:
-/// - a anchors and leads to 40, final 30
+/// - a anchors and leads to 40, finalized 30
 /// - a down, the network moves on to 60: the peer set's 41..=60 each pass every rule; best = 60,
-///   never vouched, so final stops at 40 = a's last vouch (best − depth would be 50), best held
+///   never vouched, so finalized stops at 40 = a's last vouch (best − depth would be 50), best held
 ///   by no one
-/// - a back at 60: it vouches the peers' chain, final = 50, held by a
+/// - a back at 60: it vouches the peers' chain, finalized = 50, held by a
 #[tokio::test(start_paused = true)]
 async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_return() {
     use zaino_header_chain::{HeaderChain, Params};
@@ -1091,7 +1094,7 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     let sync = view.header_sync(HeaderChain::new(depth())).with_peers(rules);
     let verified = sync.subscribe();
     tokio::spawn(sync.run(cancel.clone()));
-    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
 
     until("anchored, a followed", || published() == Some((at_40, at_30))).await;
 
@@ -1109,9 +1112,9 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     cancel.cancel();
 }
 
-/// a at 40 (final 40 once best ≥ 50), the peer set's best path above it; each row = what the
+/// a at 40 (finalized 40 once best ≥ 50), the peer set's best path above it; each row = what the
 /// peers' path ends in, where the tip stops, whether the peers were blamed:
-/// - 2,100 good headers: the ceiling (final + depth + `HEADER_BATCH` = 2,050) exactly
+/// - 2,100 good headers: the ceiling (finalized + depth + `HEADER_BATCH` = 2,050) exactly
 /// - block 45 from the future: 44, no blame (only the clock is behind)
 /// - block 45 with nBits the rules refuse: 44, each refusal a misanswer on the peer set
 #[tokio::test(start_paused = true)]
@@ -1130,7 +1133,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         ("from the future", |chain| chain.mine(|b| b.time(4_000_000_000)), (44, 34), false),
         ("broken nBits", |chain| chain.mine(|b| b.bits(0x1d00_ffff)), (44, 34), true),
     ];
-    for (row, path_end, (tip, final_tip), blamed) in rows {
+    for (row, path_end, (tip, finalized_tip), blamed) in rows {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let _recording = metrics::set_default_local_recorder(&recorder);
@@ -1147,9 +1150,9 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
             view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
         let verified = sync.subscribe();
         tokio::spawn(sync.run(cancel.clone()));
-        let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+        let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
 
-        let expected = Some((best[tip as usize], best[final_tip as usize]));
+        let expected = Some((best[tip as usize], best[finalized_tip as usize]));
         until(row, || published() == expected).await;
         tokio::time::sleep(Duration::from_secs(30)).await;
         assert_eq!(published(), expected, "{row}: stays (six peer polls later)");
@@ -1161,11 +1164,12 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 }
 
 /// The previous scenario's outage (a down at 40, peers on to 60, depth 10), now with peers' block
-/// `inv`s: final reaches best − depth = 50 on the peers' word once more than 5 netgroups carry it
-/// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, final stays 40
+/// `inv`s: finalized reaches best − depth = 50 on the peers' word once more than 5 netgroups
+/// carry it
+/// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, finalized stays 40
 /// - 10.7 announces a block off our chain; 10.8 (not live: inbound) announces 60; 10.6 announces
 ///   45 (ours, but below 50: its chain may leave ours after 45): none counts
-/// - 10.6 then announces 55 (ours, above 50): six netgroups → final 50, a still down
+/// - 10.6 then announces 55 (ours, above 50): six netgroups → finalized 50, a still down
 #[tokio::test(start_paused = true)]
 async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator_vouches() {
     use zaino_header_chain::{HeaderChain, Params};
@@ -1190,7 +1194,7 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     let sync = view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
     let verified = sync.subscribe();
     tokio::spawn(sync.run(cancel.clone()));
-    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
 
     until("anchored, a followed", || published() == Some((at_40, at_30))).await;
     validator.reachable(&Port::ALL, false);
@@ -1204,10 +1208,10 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     announcing.announce_block(peer(8, 1), at_60.hash);
     announcing.announce_block(peer(6, 1), at_45.hash);
     tokio::time::sleep(Duration::from_secs(5)).await;
-    assert_eq!(published(), Some((at_60, at_40)), "five netgroups: final unmoved");
+    assert_eq!(published(), Some((at_60, at_40)), "five netgroups: finalized unmoved");
 
     announcing.announce_block(peer(6, 1), at_55.hash);
-    until("final on six netgroups' word", || published() == Some((at_60, at_50))).await;
+    until("finalized on six netgroups' word", || published() == Some((at_60, at_50))).await;
     let held_by = view.subscriber().current().held_by();
     assert_eq!(held_by, TrustedValidatorSet::default(), "a still down: vouched nothing");
     cancel.cancel();

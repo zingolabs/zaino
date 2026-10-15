@@ -67,7 +67,7 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
 ## `HeaderSync`
 
 `HeaderSync::run(cancel)` owns the `HeaderChain` (no lock). `subscribe()` (take it before `run`) =
-`watch<Option<Arc<VerifiedChain>>>`, republished whenever best or final moves.
+`watch<Option<Arc<VerifiedChain>>>`, republished whenever best or finalized moves.
 
 - **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from the first answering
   validator whose claim the verified chain does not hold. Anchors at claim − `anchor_below()`
@@ -75,7 +75,7 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
   header is vouched.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
-  vouched. `FromTheFuture`, `Orphan`, `BelowFinal` and `ShortContext` end the run unblamed; any
+  vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
   other refusal → `report`.
 - **Vouches** after every poll fold: each answering validator's claim and its held `getblockhash`
   answer.

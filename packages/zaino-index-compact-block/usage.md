@@ -71,7 +71,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: a subscription to utxo-set's `F
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine` and enables it with
   `index.compact_block` (utxo-set comes with it).
-- `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
+- `run` follows the finalized stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
   It pops one fee step per block, held blocks included, so the two streams stay
   in step whichever index is ahead. Blocks it does not hold are folded and
   `zaino_sync::apply`d. It commits on a `FinalizedTip` block, a full buffer and

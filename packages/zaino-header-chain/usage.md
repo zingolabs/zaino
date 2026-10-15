@@ -2,7 +2,7 @@
 
 The Validated Header tree: each header validated either by the trusted validator that served it
 or by Zaino's `validate`. Anchored at a trusted validator's tip − `anchor_below()` (no history from
-genesis): the bounded tree of branches above the final boundary, the tip with the most cumulative
+genesis): the bounded tree of branches above the finalized boundary, the tip with the most cumulative
 work, and the immutable `VerifiedChain` everything downstream reads. A trusted header enters on
 its parent link and its nBits work alone (`insert`: its validator already ran the consensus
 rules); a peer's runs every rule first (`insert_untrusted`). Why and how it is driven:
@@ -36,9 +36,9 @@ let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds
 ## Insert (trusted)
 
 `HeaderChain::insert(&header)` refuses only what breaks the tree, each by name (`Rejected`):
-`Orphan` (parent unknown: no orphan pool), `BelowFinal` (parent final but off the final chain),
+`Orphan` (parent unknown: no orphan pool), `BelowFinalized` (parent finalized but off the finalized chain),
 `Bits` (nBits not a valid compact target: no work to count), `WorkOverflow`. Work is counted from
-the anchor (work 0). `anchor(header, height)` drops everything held and makes `header` the final
+the anchor (work 0). `anchor(header, height)` drops everything held and makes `header` the finalized
 tip: a start, or a jump to a trusted validator far ahead.
 
 ## `validate` (untrusted fallback)
@@ -62,26 +62,26 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 
 ## The tree, the best tip, finality
 
-- Every branch above the final tip is kept, within bounds (H4): at most `4 · depth` side-branch
+- Every branch above the finalized tip is kept, within bounds (H4): at most `4 · depth` side-branch
   nodes and 32 side-branch tips; past either, the lowest-work side leaf goes (last received on a
   tie). A driver fetching nothing above `ceiling(batch)` keeps the best branch within
-  `depth + batch` of the final tip (H9).
+  `depth + batch` of the finalized tip (H9).
 - The best tip is the leaf with the most cumulative work; a tie keeps the first received (H1).
 - Finality (H6): `vouch(block)` records that a trusted validator once had `block` on its best
   chain (it and every ancestor, for good). `finalizable()` names the best-chain block at
   `min(highest vouched, best − depth)`; `finalize(block)` moves every best-chain header up to it
-  into the finals and prunes every branch not descending from it. Finalizing a block off the best
+  into the finalized headers and prunes every branch not descending from it. Finalizing a block off the best
   branch, shallower than `depth` (H2) or above the highest vouched (H6) is a caller bug: it
   panics naming the invariant.
 - Finality on peers' word: with no vouch that deep, `peer_finalizable()` names best − depth
-  unless an unfinal best-chain block holds under half the work of the highest vouched block (or
+  unless a non-finalized best-chain block holds under half the work of the highest vouched block (or
   the anchor): a difficulty collapse, the mark of a minority miner's private chain. The caller
   adds its own evidence (`zaino-chainview`'s `HeaderSync`: live peers in more than 5 netgroups
   carrying the chain) and calls
   `finalize_by_peers(block)`, which panics on any other block. Peer-finalized blocks never move
   the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
-- Memory only: the newest max(`2 · depth`, `CONTEXT`) final headers stay, answering by height;
-  older finals are final by definition (`on_best` = true) and a header whose parent is one of
+- Memory only: the newest max(`2 · depth`, `CONTEXT`) finalized headers stay, answering by height;
+  older finalized headers are finalized by definition (`on_best` = true) and a header whose parent is one of
   them = `Orphan`.
 
 ## `VerifiedChain`
@@ -92,17 +92,17 @@ holder's answers never change (H5).
 | Method | Answer |
 | --- | --- |
 | `best()` | the most-work tip |
-| `final_tip()` | the last final block (always set: the anchor at least) |
-| `hash_at(h)` / `header_at(h)` | the best chain above the final tip and the finals kept; `None` above best or below the finals kept |
-| `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the final tip past the finals kept |
-| `holds(at)` | `on_best(at)`, or a side block held above the final tip (the NFS prunes by it) |
-| `locator()` | zcashd's `GetLocator`, ending at the final tip |
+| `finalized_tip()` | the last finalized block (always set: the anchor at least) |
+| `hash_at(h)` / `header_at(h)` | the best chain above the finalized tip and the finalized headers kept; `None` above best or below the finalized headers kept |
+| `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the finalized tip past the finalized headers kept |
+| `holds(at)` | `on_best(at)`, or a side block held above the finalized tip (the NFS prunes by it) |
+| `locator()` | zcashd's `GetLocator`, ending at the finalized tip |
 | `forks()` / `branch(tip)` | one `Fork` per side leaf (≤ 32, most work first) / its side blocks above `from` |
 
 ## Invariants, checked
 
-`HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finals contiguous and at most
-max(`2 · depth`, `CONTEXT`), every node descends from the final tip), H4, H5, H6 and the tree's
+`HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finalized headers contiguous and at most
+max(`2 · depth`, `CONTEXT`), every node descends from the finalized tip), H4, H5, H6 and the tree's
 bookkeeping (cumulative work, child counts, leaf set), naming the invariant in its panic.
 
 ## Tests
@@ -124,8 +124,8 @@ bookkeeping (cumulative work, child counts, leaf set), naming the invariant in i
 
   let mut headers = chain.header_chain(depth);         // anchored at genesis
   insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
-  let verified = chain.verified(tip);                  // final = genesis
-  let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
+  let verified = chain.verified(tip);                  // finalized = genesis
+  let pinned = chain.verified_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
   ```
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

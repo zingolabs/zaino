@@ -3,7 +3,7 @@
 //!
 //! ```text
 //!   view changed ─▶ answering validators' claims + getblockhash answers held ─▶ vouch, finalize
-//!               ─▶ first validator whose claim we lack (not backing off, not forked below final):
+//!               ─▶ first validator whose claim we lack (no back-off, not forked below finalized):
 //!                  no chain, or its claim − below past our ceiling ─▶ anchor at claim − below
 //!                  (below = max(depth, CONTEXT): `HeaderChain::anchor_below`)
 //!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
@@ -13,14 +13,15 @@
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
 //! - anchored below a trusted validator's claim, never synced from genesis (zebra validated
 //!   every block below it; bulk sync reads blocks by height, not this chain)
-//! - final = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
-//! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above final, H9)
+//! - finalized = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
+//! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above finalized,
+//!   H9)
 //! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`); a
-//!   chain forked below our final tip is not fetched again until its claim moves
+//!   chain forked below our finalized tip is not fetched again until its claim moves
 //! - peers ([`HeaderSync::with_peers`]): no trusted run due → the peer set asked past our best
 //!   (locator) every `PEER_POLL`, at once again after progress; every rule run per header
 //!   (untrusted), never vouched
-//! - peer finality: no vouch that deep → best − depth final anyway once live peers in more than
+//! - peer finality: no vouch that deep → best − depth finalized anyway once live peers in more than
 //!   `ECLIPSE_NETGROUPS` netgroups announced a block at or above it and no difficulty
 //!   collapsed since the last vouch (`HeaderChain::peer_finalizable`)
 
@@ -43,7 +44,7 @@ use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::fold::ChainViewCore;
 use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 
-/// Heights per fetch step (tree ≤ `depth` + this above the final tip)
+/// Heights per fetch step (tree ≤ `depth` + this above the finalized tip)
 pub(crate) const HEADER_BATCH: u32 = 2_000;
 
 /// One validator's back-off after a stalled run
@@ -71,7 +72,7 @@ struct Peers {
 /// One validator's fetch state
 ///
 /// - `next` = where its next run starts (`None` = above our best, capped at its claim)
-/// - `forked` = a claim whose chain leaves ours below the final tip (skipped while it stands)
+/// - `forked` = a claim whose chain leaves ours below the finalized tip (skipped while it stands)
 #[derive(Debug, Clone, Copy, Default)]
 struct FetchState {
     next: Option<BlockHeight>,
@@ -86,7 +87,7 @@ impl FetchState {
     }
 }
 
-/// - `Anchor` = the header at `at` becomes the final tip (no chain, or `validator` far ahead)
+/// - `Anchor` = the header at `at` becomes the finalized tip (no chain, or `validator` far ahead)
 /// - `Extend` = `validator`'s heights `from..=to`, toward its `claim`
 #[derive(Debug, Clone, Copy)]
 enum Run {
@@ -110,7 +111,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
     }
 
-    /// The verified chain, republished whenever its best or final tip moves (`None` = no anchor
+    /// The verified chain, republished whenever its best or finalized tip moves (`None` = no anchor
     /// yet)
     pub fn subscribe(&self) -> watch::Receiver<Option<Arc<VerifiedChain>>> {
         self.verified.subscribe()
@@ -158,7 +159,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     fn vouch(&mut self, view: &ChainViewSnapshot) {
         let verified = self.verified.borrow().clone();
         let Some(verified) = verified else { return };
-        let floor = verified.final_tip().height + 1;
+        let floor = verified.finalized_tip().height + 1;
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
         let answering = view.trusted_validators().iter().filter(|meta| meta.answering());
         let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.held));
@@ -167,13 +168,13 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.publish();
     }
 
-    /// First answering validator whose claim we lack, not backing off, not forked below final;
+    /// First answering validator whose claim we lack, not backing off, not forked below finalized;
     /// `Err` = none (the earliest back-off, if any)
     fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Result<Run, Option<Instant>> {
         let verified = self.verified.borrow().clone();
         let chain = &self.chain;
         let ceiling = chain.ceiling(HEADER_BATCH);
-        let floor = chain.final_tip().map_or(H0, |tip| tip.height + 1);
+        let floor = chain.finalized_tip().map_or(H0, |tip| tip.height + 1);
         let mut retry: Option<Instant> = None;
         for (at, meta) in view.trusted_validators().iter().enumerate() {
             let (Some(claim), Some(fetch), true) =
@@ -194,7 +195,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             }
             let id = TrustedValidatorId::new(at).expect("configured below TrustedValidatorId::MAX");
             let anchor = claim.height.saturating_sub(chain.anchor_below());
-            if chain.final_tip().is_none() || anchor > ceiling {
+            if chain.finalized_tip().is_none() || anchor > ceiling {
                 return Ok(Run::Anchor { validator: id, at: anchor });
             }
             let above_best = verified.as_ref().map_or(H0, |v| v.best().height + 1);
@@ -252,7 +253,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
     }
 
-    /// `validator`'s header at `at` = the final tip, everything held before dropped
+    /// `validator`'s header at `at` = the finalized tip, everything held before dropped
     async fn anchored(&mut self, validator: TrustedValidatorId, at: BlockHeight) -> FetchState {
         let header = match self.headers(validator, vec![at]).await {
             Ok(mut headers) => headers.remove(0),
@@ -288,14 +289,15 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let verified = self.verified.borrow().clone();
         let holds = |at: BlockRef| verified.as_ref().is_some_and(|v| v.holds(at));
         let on_best = verified.as_ref().is_some_and(|v| v.hash_at(to) == Some(top.hash));
-        let floor = verified.as_ref().map_or(H0, |v| v.final_tip().height + 1);
+        let floor = verified.as_ref().map_or(H0, |v| v.finalized_tip().height + 1);
         match refused {
             // its whole chain read, its claim still not held (an evicted side branch)
             None if to == claim.height && !holds(claim) => FetchState::stalled(),
             // off our best: its branch continued from there
             None => FetchState { next: (!on_best).then(|| to + 1), ..FetchState::default() },
-            // its chain leaves ours below `from`: from the final tip, then given up on this claim
-            Some(Rejected::Orphan | Rejected::BelowFinal) => match from <= floor {
+            // its chain leaves ours below `from`: from the finalized tip, then given up on this
+            // claim
+            Some(Rejected::Orphan | Rejected::BelowFinalized) => match from <= floor {
                 true => FetchState { forked: Some(claim), ..FetchState::default() },
                 false => FetchState { next: Some(floor), ..FetchState::default() },
             },
@@ -310,7 +312,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
 
     /// Peer path on and due, the chain anchored (a locator to ask from)
     fn peers_due(&self, now: Instant) -> bool {
-        let anchored = self.chain.final_tip().is_some();
+        let anchored = self.chain.finalized_tip().is_some();
         anchored && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
     }
 
@@ -361,7 +363,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
                     if refused.is_deferred()
                         || matches!(
                             refused,
-                            Rejected::Orphan | Rejected::BelowFinal | Rejected::ShortContext { .. }
+                            Rejected::Orphan
+                                | Rejected::BelowFinalized
+                                | Rejected::ShortContext { .. }
                         ) =>
                 {
                     break
@@ -384,8 +388,8 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.publish();
     }
 
-    /// Final → min(vouched, best − depth); peers on and no vouch that deep → best − depth on the
-    /// peers' word (no difficulty collapse, enough netgroups carrying it)
+    /// Finalized → min(vouched, best − depth); peers on and no vouch that deep → best −
+    /// depth on the peers' word (no difficulty collapse, enough netgroups carrying it)
     fn finalize(&mut self, view: &ChainViewSnapshot) {
         if let Some(boundary) = self.chain.finalizable() {
             self.chain.finalize(boundary);
@@ -397,7 +401,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let netgroups = self.netgroups_carrying(view, boundary.height);
         if netgroups > ECLIPSE_NETGROUPS {
             let height = u32::from(boundary.height);
-            debug!(height, hash = %boundary.hash, netgroups, "Final on peers' word, unvouched");
+            debug!(height, hash = %boundary.hash, netgroups, "Finalized on peers' word, unvouched");
             self.chain.finalize_by_peers(boundary);
         }
     }
@@ -411,10 +415,10 @@ impl<S: ChainDataSource> HeaderSync<S> {
         netgroup::count(carrying.map(|(peer, _)| *peer))
     }
 
-    /// `VerifiedChain` → watch + view when its best or final tip moved
+    /// `VerifiedChain` → watch + view when its best or finalized tip moved
     fn publish(&mut self) {
-        let tips = (self.chain.best().map(|best| best.block), self.chain.final_tip());
-        let moved = |old: &VerifiedChain| (Some(old.best()), Some(old.final_tip())) != tips;
+        let tips = (self.chain.best().map(|best| best.block), self.chain.finalized_tip());
+        let moved = |old: &VerifiedChain| (Some(old.best()), Some(old.finalized_tip())) != tips;
         let verified = self.chain.verified().map(Arc::new);
         let changed = self.verified.send_if_modified(|published| {
             let changed = published.as_deref().is_none_or(moved) && verified.is_some();

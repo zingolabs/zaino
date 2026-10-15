@@ -2,7 +2,7 @@
 
 The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block
 above the indexes' durable tips folded in RAM, one `Indexed` publish across every index (the index
-half of `zaino_grpc_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path
+half of `zaino_grpc_snapshot::GrpcSnapshot`). Finalized blocks reach the writers on the finalized path
 (`zaino-sync`), never through here.
 
 ## Wiring: `Nfs`
@@ -14,7 +14,7 @@ let params = ChainParams { network, schedule };                // activations() 
 let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth, lookahead);
 let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 
-// one per enabled index: its handle to both, its final stream out
+// one per enabled index: its handle to both, its finalized stream out
 let utxo_set_writer = UtxoSetIndexWriter::new(utxo_set_store);
 let utxo_set = utxo_set_writer.handle();
 let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.view().tip(), queue_bytes);
@@ -48,7 +48,7 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - One `Indexed` = one served tip across every enabled index: each view = the durable view +
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
 - `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
-  best-branch block (final data), else the block.
+  best-branch block (finalized data), else the block.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
   durable tip); a reorg moves it to the fork point at once. The publish is `None` (withdrawn) only
   with no folded best node and no root on the best chain.
@@ -67,9 +67,9 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 | Signal | Meaning |
 |---|---|
 | `zaino_reorgs_total` (0 from boot) + WARN `Chain reorg detected` (`from`, `to`) | a published tip that left the best chain |
-| INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized`) | each published tip that is the verified best |
+| INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized_tip`) | each published tip that is the verified best |
 
-Fetch counters come from the final path (`zaino-sync`); `zaino_best_tip` and `zaino_fetch_height`
+Fetch counters come from the finalized path (`zaino-sync`); `zaino_best_tip` and `zaino_fetch_height`
 from `zaino-grpc-snapshot`.
 
 ## Core and invariants

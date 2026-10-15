@@ -1,13 +1,13 @@
-//! [`NfsCore`] against naive final-path writers and an oracle fold (`usage.md`), `check()` after
-//! every step
+//! [`NfsCore`] against naive finalized-path writers and an oracle fold (`usage.md`), `check()`
+//! after every step
 //!
 //! - Chain moves (a real [`HeaderChain`], work varying per branch): extend, reorg at a random depth
-//!   above final onto a heavier branch (longer, same height, or a retreat), an earlier best made
-//!   heaviest again (nodes reused), finalize
+//!   above finalized onto a heavier branch (longer, same height, or a retreat), an earlier best
+//!   made heaviest again (nodes reused), finalize
 //! - Each move published or coalesced with the next (a `watch` keeps the latest)
 //! - Fetches answered late (random delay), out of order, or after their abandon (a stale body)
 //! - Folds answered after a random delay, in random order
-//! - Each writer commits the final prefix after its own random delay (the final path)
+//! - Each writer commits the finalized prefix after its own random delay (the finalized path)
 //! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too, then
 //!   re-anchored `DEPTH` below best like HeaderSync, possibly above every durable tip; `wipe` =
 //!   one index's directory deleted: it holds the served tip back until it catches up)
@@ -84,7 +84,7 @@ proptest! {
     /// - Folds: exactly the indexes durable below the block, each on its oracle parent (a node's,
     ///   or durable exactly below it); none while the root trails best past the window
     /// - Published tip on the best; every index = the oracle (node) or durable at or past it
-    /// - Settled: every index durable through the final tip, served at best
+    /// - Settled: every index durable through the finalized tip, served at best
     #[test]
     fn the_served_tip_follows_the_verified_best_through_reorgs_restarts_and_bulk_sync(
         moves in moves(),
@@ -120,7 +120,7 @@ fn fold(parent: Option<Toy>, block: &Block) -> Toy {
     Toy { height: header.height, digest }
 }
 
-/// Final-path writer: `durable` = durable tip (a final block), `committing` = a commit due
+/// Finalized-path writer: `durable` = durable tip (a finalized block), `committing` = a commit due
 #[derive(Debug)]
 struct Writer {
     durable: Option<BlockRef>,
@@ -204,8 +204,8 @@ impl Sim {
     fn change(&mut self, change: &Change) {
         let best = self.headers.best().expect("genesis verified").block;
         // reset header store forgets finality (durable tips still bound a fork)
-        let final_height = self.headers.final_tip().map_or(0, |tip| u32::from(tip.height));
-        let floor = final_height.max(self.durable_floor());
+        let finalized_height = self.headers.finalized_tip().map_or(0, |tip| u32::from(tip.height));
+        let floor = finalized_height.max(self.durable_floor());
         let (fork, tip) = match *change {
             Change::Extend(count) => {
                 (best.height, self.builder.branch(best).mine_empty(count).tip())
@@ -399,12 +399,12 @@ impl Sim {
         }
     }
 
-    /// Each writer behind the final tip, no commit due: one scheduled after its delay
+    /// Each writer behind the finalized tip, no commit due: one scheduled after its delay
     fn schedule_commits(&mut self) {
-        let final_tip = self.given.as_ref().map(|chain| chain.final_tip());
+        let finalized_tip = self.given.as_ref().map(|chain| chain.finalized_tip());
         for index in 0..self.writers.len() {
             let writer = &self.writers[index];
-            let behind = final_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height);
+            let behind = finalized_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height);
             if behind && !writer.committing {
                 let due = self.later(writer.delay);
                 self.writers[index].committing = true;
@@ -435,11 +435,11 @@ impl Sim {
                     Input::Folded { at, covers, folded: Arc::new(toys) }
                 }
                 Due::Commit(index) => {
-                    let final_tip = self.given.as_ref().map(|chain| chain.final_tip());
+                    let finalized_tip = self.given.as_ref().map(|chain| chain.finalized_tip());
                     let writer = &mut self.writers[index];
                     writer.committing = false;
-                    if final_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height) {
-                        writer.durable = final_tip;
+                    if finalized_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height) {
+                        writer.durable = finalized_tip;
                     }
                     Input::Durable(self.durable())
                 }
@@ -459,7 +459,7 @@ impl Sim {
     fn restart(&mut self, reset: bool, wipe: Option<u8>, context: &str) {
         if reset {
             // re-anchored like HeaderSync: one header `DEPTH` below best, nothing beneath (may
-            // sit above every durable tip: the final path closes that gap by height)
+            // sit above every durable tip: the finalized path closes that gap by height)
             let path = self.builder.blocks(self.headers.best().expect("anchored").block);
             let anchor = path.len().saturating_sub(1 + DEPTH.get() as usize);
             let header = path[anchor].header();
@@ -481,9 +481,9 @@ impl Sim {
         self.boot(context);
     }
 
-    /// Liveness: every index durable through the final tip, served at best
+    /// Liveness: every index durable through the finalized tip, served at best
     fn settle(&mut self) {
-        // final past every durable tip (a reset header store may sit below them)
+        // finalized past every durable tip (a reset header store may sit below them)
         self.change(&Change::Extend(DEPTH.get()));
         self.change(&Change::Finalize);
         self.publish("settle");
@@ -491,7 +491,7 @@ impl Sim {
         let best = chain.best();
         for second in 0..SETTLE {
             let durable =
-                self.writers.iter().all(|writer| writer.durable == Some(chain.final_tip()));
+                self.writers.iter().all(|writer| writer.durable == Some(chain.finalized_tip()));
             if durable && self.published == Some(best) {
                 return;
             }

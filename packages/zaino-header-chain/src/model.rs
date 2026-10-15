@@ -5,19 +5,20 @@
 //! - trusted runs (no rule run) and untrusted ones (every rule: the model predicts an edited time
 //!   not past the median; ancestors held are always enough, `KEPT` ≥ `CONTEXT`)
 //! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
-//!   the final chain as a list (the chain keeps only its newest `KEPT`); best = the max-work
+//!   the finalized chain as a list (the chain keeps only its newest `KEPT`); best = the max-work
 //!   leaf (first received on a tie), eviction = the lowest-work side leaf (last received on a
 //!   tie), both recomputed from scratch
 //! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`; a trusted run =
 //!   its last header vouched, then finality
 //! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
-//!   parent); final target = min(highest vouched on best, best − depth)
-//! - peer finality oracle: best − depth above the final tip, unless an unfinal best-path header's
-//!   work (from its own nBits) is under half the highest vouched header's (the anchor's at first)
-//! - checked after every move: `check()`, best, final tip, boundary, tree size + its bound (H9),
-//!   every height of the published chain (kept finals and above; older finals = on best by
-//!   definition), its locator, its forks and their branches, `holds` for every header ever mined,
-//!   and the chain published one move earlier still answering as it did (H5)
+//!   parent); finalized target = min(highest vouched on best, best − depth)
+//! - peer finality oracle: best − depth above the finalized tip, unless a non-finalized best-path
+//!   header's work (from its own nBits) is under half the highest vouched header's (the anchor's at
+//!   first)
+//! - checked after every move: `check()`, best, finalized tip, boundary, tree size + its bound
+//!   (H9), every height of the published chain (kept finalized headers and above; older finalized
+//!   headers = on best by definition), its locator, its forks and their branches, `holds` for every
+//!   header ever mined, and the chain published one move earlier still answering as it did (H5)
 //! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
@@ -38,7 +39,7 @@ use crate::{
 };
 
 const DEPTH: u32 = 3;
-/// Headers a fetch may reach past `depth` above the final tip (`HeaderSync`'s batch)
+/// Headers a fetch may reach past `depth` above the finalized tip (`HeaderSync`'s batch)
 const RUN: u32 = 6;
 const SIDE_NODES: usize = 4 * DEPTH as usize;
 const SIDE_TIPS: usize = 32;
@@ -97,7 +98,7 @@ struct Alive {
     received: u64,
 }
 
-/// - `finals[h]` = the final record at height `h`
+/// - `finalized_headers[h]` = the finalized record at height `h`
 /// - `vouched` = live headers vouched (their live ancestors too, derived)
 /// - `last_vouched` = (height, work) of the highest header ever vouched, else the anchor
 struct Model {
@@ -105,20 +106,23 @@ struct Model {
     by_hash: HashMap<BlockHash, Header>,
     alive: HashMap<BlockHash, Alive>,
     vouched: HashSet<BlockHash>,
-    finals: Vec<Record>,
+    finalized_headers: Vec<Record>,
     received: u64,
     last_vouched: (BlockHeight, u128),
 }
 
 impl Model {
-    fn final_tip(&self) -> Option<BlockRef> {
-        let record = self.finals.last()?;
-        Some(BlockRef { hash: record.hash, height: height(self.finals.len() as u32 - 1) })
+    fn finalized_tip(&self) -> Option<BlockRef> {
+        let record = self.finalized_headers.last()?;
+        Some(BlockRef {
+            hash: record.hash,
+            height: height(self.finalized_headers.len() as u32 - 1),
+        })
     }
 
-    /// Lowest final height the chain still answers by height
+    /// Lowest finalized height the chain still answers by height
     fn kept_from(&self) -> usize {
-        self.finals.len().saturating_sub(KEPT)
+        self.finalized_headers.len().saturating_sub(KEPT)
     }
 
     fn leaves(&self) -> Vec<BlockHash> {
@@ -137,9 +141,9 @@ impl Model {
                 let block = BlockRef { hash: leaf, height: alive.height };
                 Some(BestTip { block, cumulative_work: alive.record.cumulative_work })
             }
-            None => self.final_tip().map(|block| BestTip {
+            None => self.finalized_tip().map(|block| BestTip {
                 block,
-                cumulative_work: self.finals.last().expect("tip").cumulative_work,
+                cumulative_work: self.finalized_headers.last().expect("tip").cumulative_work,
             }),
         }
     }
@@ -153,13 +157,13 @@ impl Model {
             at = Some(alive.parent);
         }
         above.reverse();
-        let mut path = self.finals.clone();
+        let mut path = self.finalized_headers.clone();
         path.extend(above);
         path
     }
 
     fn tail(&self) -> &[Record] {
-        &self.finals[self.kept_from()..]
+        &self.finalized_headers[self.kept_from()..]
     }
 
     /// Height + work of `prev`'s child, or the linkage rejection
@@ -167,11 +171,14 @@ impl Model {
         if let Some(alive) = self.alive.get(&prev) {
             return Ok((alive.height + 1, alive.record.cumulative_work));
         }
-        if let Some(tip) = self.final_tip().filter(|tip| tip.hash == prev) {
-            return Ok((tip.height + 1, self.finals.last().expect("tip").cumulative_work));
+        if let Some(tip) = self.finalized_tip().filter(|tip| tip.hash == prev) {
+            return Ok((
+                tip.height + 1,
+                self.finalized_headers.last().expect("tip").cumulative_work,
+            ));
         }
         match self.tail().iter().any(|record| record.hash == prev) {
-            true => Err(Rejected::BelowFinal),
+            true => Err(Rejected::BelowFinalized),
             false => Err(Rejected::Orphan),
         }
     }
@@ -184,8 +191,8 @@ impl Model {
         median_time_past(ancestors.map(Header::time)).expect("`prev` mined")
     }
 
-    /// Ancestors of a child of `prev` the chain holds: live ones down to the final tip, then the
-    /// kept finals, up to `CONTEXT`
+    /// Ancestors of a child of `prev` the chain holds: live ones down to the finalized tip, then
+    /// the kept finalized headers, up to `CONTEXT`
     fn held_ancestors(&self, prev: BlockHash) -> usize {
         let mut live = 0;
         let mut at = prev;
@@ -253,7 +260,7 @@ impl Model {
     fn evict(&mut self) {
         loop {
             let best = self.best().map(|best| best.block.hash);
-            let on_best = self.best_path().len() - self.finals.len();
+            let on_best = self.best_path().len() - self.finalized_headers.len();
             let side_nodes = self.alive.len() - on_best;
             let side_tips = self.leaves().len() - usize::from(best.is_some());
             if side_nodes <= SIDE_NODES && side_tips <= SIDE_TIPS {
@@ -289,19 +296,19 @@ impl Model {
     fn peer_finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let boundary = u32::from(best.block.height).checked_sub(DEPTH)? as usize;
-        if boundary < self.finals.len() {
+        if boundary < self.finalized_headers.len() {
             return None;
         }
         let path = self.best_path();
         let reference = self.last_vouched.1;
-        let unfinal = &path[self.finals.len()..];
+        let non_finalized = &path[self.finalized_headers.len()..];
         let own = |record: &Record| header_work(record.bits).expect("palette bits");
-        let collapsed = unfinal.iter().any(|record| own(record) * 2 < reference);
+        let collapsed = non_finalized.iter().any(|record| own(record) * 2 < reference);
         let hash = path[boundary].hash;
         (!collapsed).then_some(BlockRef { hash, height: height(boundary as u32) })
     }
 
-    /// Highest best-path height some vouched header descends from, else the final tip's
+    /// Highest best-path height some vouched header descends from, else the finalized tip's
     fn vouched_height(&self) -> Option<BlockHeight> {
         let mut covered = HashSet::new();
         for vouched in &self.vouched {
@@ -312,20 +319,22 @@ impl Model {
             }
         }
         let path = self.best_path();
-        let top = (self.finals.len()..path.len()).rev().find(|h| covered.contains(&path[*h].hash));
-        top.map(|h| height(h as u32)).or(self.final_tip().map(|tip| tip.height))
+        let top = (self.finalized_headers.len()..path.len())
+            .rev()
+            .find(|h| covered.contains(&path[*h].hash));
+        top.map(|h| height(h as u32)).or(self.finalized_tip().map(|tip| tip.height))
     }
 
     /// Highest height `HeaderSync` fetches
     fn ceiling(&self) -> BlockHeight {
-        height(self.finals.len() as u32 + DEPTH + RUN - 1)
+        height(self.finalized_headers.len() as u32 + DEPTH + RUN - 1)
     }
 
     fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let below = BlockHeight::from(u32::from(best.block.height).checked_sub(DEPTH)?);
         let boundary = below.min(self.vouched_height()?);
-        (u32::from(boundary) >= self.finals.len() as u32).then(|| BlockRef {
+        (u32::from(boundary) >= self.finalized_headers.len() as u32).then(|| BlockRef {
             hash: self.best_path()[u32::from(boundary) as usize].hash,
             height: boundary,
         })
@@ -333,7 +342,7 @@ impl Model {
 
     fn finalize(&mut self, through: BlockRef) {
         let path = self.best_path();
-        self.finals = path[..=u32::from(through.height) as usize].to_vec();
+        self.finalized_headers = path[..=u32::from(through.height) as usize].to_vec();
         let descends = |model: &Model, mut at: BlockHash| loop {
             match model.alive.get(&at) {
                 _ if at == through.hash => return true,
@@ -351,14 +360,14 @@ impl Model {
         self.vouched.retain(|hash| keep.contains(hash));
     }
 
-    /// `holds`: on the best path (older finals than the chain keeps = on it by definition), or a
-    /// live side node
+    /// `holds`: on the best path (older finalized headers than the chain keeps = on it by
+    /// definition), or a live side node
     fn holds(&self, at: BlockRef, path: &[Record]) -> bool {
         let index = u32::from(at.height) as usize;
-        let final_unkept = index < self.kept_from();
+        let finalized_unkept = index < self.kept_from();
         let on_best = path.get(index).is_some_and(|record| record.hash == at.hash);
         let side = self.alive.get(&at.hash).is_some_and(|alive| alive.height == at.height);
-        final_unkept || on_best || side
+        finalized_unkept || on_best || side
     }
 
     /// zcashd's locator in closed form: 12 consecutive heights from the best, then best − 9 − 2^k
@@ -366,7 +375,7 @@ impl Model {
     fn locator(&self) -> Vec<BlockHash> {
         let Some(best) = self.best() else { return Vec::new() };
         let (best, path) = (i64::from(u32::from(best.block.height)), self.best_path());
-        let floor = self.final_tip().map_or(0, |tip| i64::from(u32::from(tip.height)));
+        let floor = self.finalized_tip().map_or(0, |tip| i64::from(u32::from(tip.height)));
         let consecutive = (0..12).map(|back| best - back);
         let doubling = (2..40).map(|k| best - 9 - (1i64 << k));
         let mut locator = Vec::new();
@@ -460,7 +469,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
     /// After every move the chain answers exactly like the model: every insert's outcome, best
-    /// tip and work, final tip, boundary, live tree, every height and header of the published
+    /// tip and work, finalized tip, boundary, live tree, every height and header of the published
     /// chain, its locator, forks, branches and `holds`; `check()` holds; old published chains
     /// never change
     #[test]
@@ -488,7 +497,7 @@ fn run(moves: Vec<Move>) {
         by_hash: HashMap::from([(genesis.hash(), genesis.clone())]),
         alive: HashMap::new(),
         vouched: HashSet::new(),
-        finals: vec![anchor],
+        finalized_headers: vec![anchor],
         received: 0,
         last_vouched: (H0, header_work(genesis.bits()).expect("regtest limit")),
     };
@@ -547,13 +556,16 @@ fn run(moves: Vec<Move>) {
                         chain.finalize(boundary);
                         model.finalize(boundary);
                     }
-                    // liveness: final = min(vouched, best − depth), no further input
-                    assert_eq!(chain.finalizable(), None, "{context}: final caught up");
+                    // liveness: finalized = min(vouched, best − depth), no further input
+                    assert_eq!(chain.finalizable(), None, "{context}: finalized caught up");
                     let best = chain.best().expect("anchored").block;
                     let deep = u32::from(best.height).checked_sub(DEPTH).map(BlockHeight::from);
-                    let final_height = chain.final_tip().map(|tip| tip.height);
-                    let caught = best != last || final_height >= deep;
-                    assert!(caught, "{context}: a run ending at the best = final at best − depth");
+                    let finalized_height = chain.finalized_tip().map(|tip| tip.height);
+                    let caught = best != last || finalized_height >= deep;
+                    assert!(
+                        caught,
+                        "{context}: a run ending at the best = finalized at best − depth"
+                    );
                 }
             }
             Move::Vouch { mined } => {
@@ -615,15 +627,18 @@ fn run(moves: Vec<Move>) {
 
         chain.check();
         assert_eq!(chain.best(), model.best(), "{context}: best");
-        assert_eq!(chain.final_tip(), model.final_tip(), "{context}: final tip");
+        assert_eq!(chain.finalized_tip(), model.finalized_tip(), "{context}: finalized tip");
         assert_eq!(chain.finalizable(), model.finalizable(), "{context}: boundary");
         let peer_boundary = model.peer_finalizable();
         assert_eq!(chain.peer_finalizable(), peer_boundary, "{context}: peer boundary");
         assert_eq!(chain.ceiling(RUN), model.ceiling(), "{context}: ceiling");
         assert_eq!(chain.tree_len(), model.alive.len(), "{context}: live tree");
-        let unfinal = model.best_path().len() - model.finals.len();
+        let non_finalized = model.best_path().len() - model.finalized_headers.len();
         let bound = (DEPTH + RUN) as usize;
-        assert!(unfinal <= bound, "{context}: H9, {unfinal} unfinal on best > {bound}");
+        assert!(
+            non_finalized <= bound,
+            "{context}: H9, {non_finalized} non-finalized on best > {bound}"
+        );
         let path = model.best_path();
         let kept_from = model.kept_from();
         let verified = chain.verified().expect("anchored");
@@ -664,8 +679,11 @@ fn run(moves: Vec<Move>) {
                 "{context}: H5, a published chain never changes"
             );
             assert_eq!(old.forks(), *old_forks, "{context}: H5, nor its forks");
-            let final_height = |chain: &VerifiedChain| chain.final_tip().height;
-            assert!(final_height(&verified) >= final_height(old), "{context}: H2, final moves up");
+            let finalized_height = |chain: &VerifiedChain| chain.finalized_tip().height;
+            assert!(
+                finalized_height(&verified) >= finalized_height(old),
+                "{context}: H2, finalized moves up"
+            );
         }
         published = Some((verified, path, kept_from, forks));
     }

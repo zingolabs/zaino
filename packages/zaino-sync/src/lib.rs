@@ -1,16 +1,16 @@
-//! The final path: [`FinalizedFollower`] → [`IndexerDataSink<Block>`] → each index's writer loop
-//! (`docs/architecture.md` §7)
+//! The finalized path: [`FinalizedFollower`] → [`FinalizedStream<Block>`] → each index's writer
+//! loop (`docs/architecture.md` §7)
 //!
-//! - One sender, every step final: each height once, ascending, never retracted
+//! - One sender, every step finalized: each height once, ascending, never retracted
 //! - Each writer: its own loop over its [`Subscription`]'s runs, its store published through an
 //!   [`IndexPublisher`]
 //! - An index's per-block output for another = a second sink (utxo-set → [`FeeSink`])
 
 #![forbid(unsafe_code)]
 
-mod data_sink;
 mod emit;
 mod fetch;
+mod finalized_stream;
 mod follower;
 mod handle;
 mod offload;
@@ -19,10 +19,10 @@ mod progress;
 pub mod testing;
 mod writer;
 
-pub use data_sink::{IndexerDataSink, Run, Step, Subscription, Weight};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use fetch::fetch_at;
 pub use fetch::{check_block, fetch, Checked, Misanswer};
+pub use finalized_stream::{FinalizedStream, Run, Step, Subscription, Weight};
 pub use follower::{FinalizedFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};
@@ -37,8 +37,8 @@ impl Weight for Block {
     }
 }
 
-/// Per-block transaction fees: utxo-set → compact-block, one per final step
-pub type FeeSink = IndexerDataSink<BlockFees>;
+/// Per-block transaction fees: utxo-set → compact-block, one per finalized step
+pub type FeeSink = FinalizedStream<BlockFees>;
 
 impl Weight for BlockFees {
     fn weight(&self) -> usize {

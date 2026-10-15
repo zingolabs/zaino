@@ -1,4 +1,4 @@
-//! tree_state writer: the final stream → one [`fold_run`] per run → its store
+//! tree_state writer: the finalized stream → one [`fold_run`] per run → its store
 //!
 //! - one run = one `Hashable::combine_pairs` per level across every block of it
 //!   (`Frontier::append_batch_visiting`; node types split wide levels across cores)
@@ -60,7 +60,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     /// Follows `blocks` through `Shutdown` (a failure panics)
     ///
     /// - one `fold_run` per run: every block the store lacks, hashed as one batch
-    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
     pub async fn run(self, mut blocks: Subscription<Block>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
@@ -77,7 +77,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
                 for changes in out {
                     write += apply(&mut store, changes);
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -285,8 +285,8 @@ mod tests {
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot};
     use zaino_sync::testing::{
-        block_on_paused, finalized, moves, open, step, write_buffers, FinalStream, Move, Writer,
-        QUEUE,
+        block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
+        Writer, QUEUE,
     };
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
     use zcash_protocol::consensus::NetworkType;
@@ -617,9 +617,9 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-        /// Random chains through random final streams (runs, restarts): once every move commits,
-        /// every height serves exactly the naive frontier's three trees and nothing past the tip
-        /// is served
+        /// Random chains through random finalized streams (runs, restarts): once every move
+        /// commits, every height serves exactly the naive frontier's three trees and nothing past
+        /// the tip is served
         #[test]
         fn random_histories_serve_the_naive_trees_at_every_height(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
@@ -664,7 +664,7 @@ mod tests {
         let trees_through = |height: usize| naive_trees(&chain[..=height]);
 
         let fs = SimFs::new();
-        let mut stream = FinalStream::new(&chain);
+        let mut stream = FinalizedStreamFixture::new(&chain);
         let mut writer = start(open(&fs, &SCHEMA, write_buffer));
         for (at, next) in moves.into_iter().enumerate() {
             if next == Move::Reopen {

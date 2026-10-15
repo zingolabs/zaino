@@ -77,9 +77,10 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
 /// Anchored mid-chain at mainnet 3,508,500 (no history below), the next 200 real headers inserted
 /// as a trusted validator's (no rule run), each the new best, vouched as it lands, finalized
 /// behind a 10-block bound:
-/// - work counted from the anchor; only the newest max(2 · depth, CONTEXT) = 113 finals answer by
-///   height, older ones = on the best chain by definition (final), a header below them = an orphan
-/// - the locator ends at the final tip; a re-anchor drops everything held before it
+/// - work counted from the anchor; only the newest max(2 · depth, CONTEXT) = 113 finalized headers
+///   answer by height, older ones = on the best chain by definition (finalized), a header below
+///   them = an orphan
+/// - the locator ends at the finalized tip; a re-anchor drops everything held before it
 #[test]
 fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() {
     let headers = headers(RECENT_RANGE);
@@ -104,11 +105,19 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
         }
         chain.check();
     }
-    assert_eq!(chain.final_tip(), Some(at(190)));
-    assert_eq!(chain.tree_len(), 10, "only the non-final window in the tree");
-    assert_eq!(chain.insert(&headers[185]), Ok(Inserted::Known), "a kept final");
-    assert_eq!(chain.insert(&headers[50]), Err(Rejected::Orphan), "below the finals kept");
-    assert_eq!(chain.finals_kept(), crate::rules::CONTEXT, "depth 10: the rules' context wins");
+    assert_eq!(chain.finalized_tip(), Some(at(190)));
+    assert_eq!(chain.tree_len(), 10, "only the non-finalized window in the tree");
+    assert_eq!(chain.insert(&headers[185]), Ok(Inserted::Known), "a kept finalized");
+    assert_eq!(
+        chain.insert(&headers[50]),
+        Err(Rejected::Orphan),
+        "below the finalized headers kept"
+    );
+    assert_eq!(
+        chain.finalized_headers_kept(),
+        crate::rules::CONTEXT,
+        "depth 10: the rules' context wins"
+    );
     let best = chain.best().expect("anchored");
     let work: u128 = headers[1..=200].iter().map(|h| header_work(h.bits()).expect("valid")).sum();
     assert_eq!((best.block, best.cumulative_work), (at(200), work), "work from the anchor");
@@ -119,22 +128,23 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
         let real = &headers[index];
         assert_eq!((header.hash, header.merkle_root), (real.hash(), real.merkle_root()), "{index}");
     }
-    assert_eq!(verified.header_at(at(77).height), None, "past the 113 finals kept");
-    assert!(verified.on_best(at(5)) && verified.on_best(at(77)), "final by definition");
+    assert_eq!(verified.header_at(at(77).height), None, "past the 113 finalized headers kept");
+    assert!(verified.on_best(at(5)) && verified.on_best(at(77)), "finalized by definition");
     let stranger = BlockRef { hash: BlockHash([7; 32]), height: at(195).height };
-    assert!(!verified.on_best(stranger) && !verified.holds(stranger), "not ours above final");
+    assert!(!verified.on_best(stranger) && !verified.holds(stranger), "not ours above finalized");
     assert_eq!(verified.hash_at(at(201).height), None, "above the best");
     let locator: Vec<BlockHash> = (190..=200).rev().map(|index| headers[index].hash()).collect();
-    assert_eq!(verified.locator(), locator, "tip, then consecutive down to the final tip");
+    assert_eq!(verified.locator(), locator, "tip, then consecutive down to the finalized tip");
 
     chain.anchor(&headers[250], at(250).height);
-    assert_eq!((chain.final_tip(), chain.tree_len()), (Some(at(250)), 0), "re-anchored");
+    assert_eq!((chain.finalized_tip(), chain.tree_len()), (Some(at(250)), 0), "re-anchored");
     assert_eq!(chain.insert(&headers[251]), Ok(Inserted::Best { reorg: false }));
     chain.check();
 }
 
 /// Anchored at mainnet 3,508,500, trusted 1..=27, then untrusted (every rule over the ancestors the
-/// chain holds), finalized behind a 10-block bound so the ancestors read cross into the finals:
+/// chain holds), finalized behind a 10-block bound so the ancestors read cross into the finalized
+/// headers:
 /// - right after the anchor: too few held to judge (`ShortContext`: the caller's, not the header's)
 /// - 28..=200: real headers, each the new best
 /// - at 201: a wrong nBits, a broken solution (both: hash above target), a local clock 2 h + 1 s
@@ -166,7 +176,11 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
         }
         chain.check();
     }
-    assert_eq!(chain.final_tip(), Some(at(190)), "ancestors read across the finals + 10 nodes");
+    assert_eq!(
+        chain.finalized_tip(),
+        Some(at(190)),
+        "ancestors read across the finalized headers + 10 nodes"
+    );
 
     let real = &headers[201];
     let mutated = |edit: &dyn Fn(&mut Vec<u8>)| {
@@ -199,7 +213,7 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
 /// - a regtest header: version > 4 valid, a non-minimal solution length refused by decode
 /// - testnet NU7: the 102-block window at 25 s decides nBits (the 17-block rule's is refused);
 ///   the minimum-difficulty gap stays 450 s across Blossom → NU7 (451 qualifies, 450 does not)
-/// - linkage in the chain: an unknown parent, a parent off the final chain
+/// - linkage in the chain: an unknown parent, a parent off the finalized chain
 #[test]
 fn each_mutation_is_refused_by_its_own_rule() {
     let mainnet = Params::mainnet();
@@ -301,7 +315,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let gaps = [(blossom, 450), (blossom, 451), (nu7, 450), (nu7, 451)];
     assert_eq!(gaps.map(|(at, g)| gap(&testnet, at, g)), [false, true, false, true]);
 
-    // linkage in the chain (trusted: no rule run): orphan, off the final chain
+    // linkage in the chain (trusted: no rule run): orphan, off the finalized chain
     let five = builder.mine_empty(5);
     let orphan = builder.mine_empty(2);
     let below = builder.fork(height(1)).mine_empty(1).tip();
@@ -310,7 +324,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     insert(&mut chain, &builder.blocks(five)).expect("trunk");
     chain.finalize(chain.finalizable().expect("6 headers, depth 2"));
     assert_eq!(insert(&mut chain, &one(&builder, orphan)), Err(Rejected::Orphan), "6 skipped");
-    assert_eq!(insert(&mut chain, &one(&builder, below)), Err(Rejected::BelowFinal));
+    assert_eq!(insert(&mut chain, &one(&builder, below)), Err(Rejected::BelowFinalized));
     chain.check();
 }
 

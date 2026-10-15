@@ -1,7 +1,7 @@
 //! NFS event counters (names = ztest's `zainod` families: a rename breaks its sync probes)
 //!
 //! - State gauges (`zaino_best_tip`, `zaino_fetch_height`) = `zaino-grpc-snapshot`'s, at scrape
-//! - Fetch counters = the final path's (`zaino-sync`)
+//! - Fetch counters = the finalized path's (`zaino-sync`)
 
 const REORGS_TOTAL: &str = "zaino.reorgs_total";
 

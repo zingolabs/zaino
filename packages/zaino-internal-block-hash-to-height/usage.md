@@ -38,7 +38,7 @@ tokio::spawn(writer.run(blocks));
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
   `S::View: MapRead`. zainod picks `DiskEngine`.
-- `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)):
+- `run` follows the finalized stream ([the writer shape](../zaino-sync/usage.md#writer-loop)):
   each block not yet held is folded into a delta opened for it, then
   `zaino_sync::apply`d. `fold` panics, naming the index, on a block that does
   not extend the parent's tip or a delta opened for another block.

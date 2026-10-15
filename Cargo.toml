@@ -107,7 +107,7 @@ tempfile = "3.2"
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.11.0-alpha.2" }
 zaino-persistence = { path = "packages/zaino-persistence", version = "0.11.0-alpha.2" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.11.0-alpha.2" }
-# Non-finalized state: fetch, folds above the durable root, the final stream
+# Non-finalized state: fetch, folds above the durable root, the finalized stream
 zaino-nfs = { path = "packages/zaino-nfs", version = "0.11.0-alpha.2" }
 # Validated Header tree: most-work tip above a trusted anchor
 zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.11.0-alpha.2" }

@@ -245,13 +245,14 @@ impl ChainViewSnapshot {
         }
     }
 
-    /// Header sync's word: `owed_since` restarts when the final tip moves, ends when nothing is
-    /// owed (≤ `depth` unfinal on the best)
+    /// Header sync's word: `owed_since` restarts when the finalized tip moves, ends when nothing is
+    /// owed (≤ `depth` non-finalized on the best)
     pub(crate) fn verified(&mut self, chain: Option<Arc<VerifiedChain>>, now: Instant) {
-        let final_tip = |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().map(|c| c.final_tip());
-        let moved = final_tip(&chain) != final_tip(&self.chain);
+        let finalized_tip =
+            |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().map(|c| c.finalized_tip());
+        let moved = finalized_tip(&chain) != finalized_tip(&self.chain);
         let owed = chain.as_deref().is_some_and(|chain| {
-            let base = u32::from(chain.final_tip().height) + 1;
+            let base = u32::from(chain.finalized_tip().height) + 1;
             (u32::from(chain.best().height) + 1).saturating_sub(base) > self.depth.get()
         });
         self.owed_since = match (owed, moved) {

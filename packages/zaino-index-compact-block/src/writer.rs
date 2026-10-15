@@ -1,4 +1,4 @@
-//! compact_block writer: the final stream → one [`fold`] per block → its store
+//! compact_block writer: the finalized stream → one [`fold`] per block → its store
 //!
 //! - fees: one [`BlockFees`] off utxo-set's sink per step, held heights included
 //!   (utxo-set re-folds them: both streams stay in step with either index ahead)
@@ -41,7 +41,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
 
     /// Follows `blocks` and `fees` (utxo-set's) through their `Shutdown` (a failure panics)
     ///
-    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
     pub async fn run(self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
@@ -61,7 +61,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized_tip {
+                if run.ends_at_finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -116,8 +116,8 @@ mod tests {
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
     use zaino_sync::testing::{
-        block_on_paused, finalized, moves, open, step, write_buffers, FinalStream, Move, Writer,
-        QUEUE,
+        block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
+        Writer, QUEUE,
     };
     use zaino_sync::FeeSink;
     use zcash_protocol::consensus::{NetworkType, H0};
@@ -189,7 +189,7 @@ mod tests {
         }
     }
 
-    /// Writer as zainod runs it: the final stream + utxo-set's fee stream, one fee per step
+    /// Writer as zainod runs it: the finalized stream + utxo-set's fee stream, one fee per step
     struct Running {
         writer: Writer<DiskView>,
         fee_sink: FeeSink,
@@ -297,10 +297,10 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random blocks through random final streams (runs, restarts; a resent held block's fees
-        /// popped, the block skipped): once every move commits, each height serves a record
-        /// whose hash and cumulative tree sizes equal an independently summed model and whose
-        /// fees are its own block's, and a full range read is those records in order
+        /// Random blocks through random finalized streams (runs, restarts; a resent held block's
+        /// fees popped, the block skipped): once every move commits, each height serves a record
+        /// whose hash and cumulative tree sizes equal an independently summed model and whose fees
+        /// are its own block's, and a full range read is those records in order
         #[test]
         fn random_histories_serve_records_with_the_models_tree_sizes_and_fees(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
@@ -341,7 +341,7 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let mut stream = FinalStream::new(&blocks);
+        let mut stream = FinalizedStreamFixture::new(&blocks);
         let mut index = Running::start(open(&fs, &SCHEMA, write_buffer), &fees_by_height);
         for (at, next) in moves.into_iter().enumerate() {
             if next == Move::Reopen {

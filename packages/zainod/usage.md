@@ -57,7 +57,7 @@ moments.
     - `done` is the served height, or the handed one before anything is served.
     - `total` is the verified best height, or a catching-up validator's network estimate when
       that is higher.
-    - `rate` is blocks per second over the last ~60 s of the phase still outstanding: final
+    - `rate` is blocks per second over the last ~60 s of the phase still outstanding: finalized
       blocks handed to the indexes, then the served height climbing through the non-finalized
       window.
   - `progress` is `null` before the first verified header.
@@ -336,10 +336,10 @@ zainod dies rather than serve from a state it cannot vouch for
   the index and its directory: `<index> index commit failed: disk <dir> full`,
   or `… failed at <dir>: <error>`
   ([zaino-sync: Failure](../zaino-sync/usage.md#failure-panic-never-err))
-- any other task that ends first (the final-stream follower, the NFS, the `GrpcSnapshot`
+- any other task that ends first (the finalized-stream follower, the NFS, the `GrpcSnapshot`
   publisher, gRPC), cleanly or not, cancels the rest and `zainod start` exits 1
   (`IndexerError::TaskEnded` or the task's own error, e.g. `FollowError::Diverged`
-  = the next final block does not extend an index's stored tip, as for a directory
+  = the next finalized block does not extend an index's stored tip, as for a directory
   from another chain: delete that index's directory to resync it)
 - a trusted validator going away never stops zainod: it is retried until it answers
 - SIGINT or SIGTERM: each index commits what it holds, then exit 0
@@ -384,7 +384,7 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
   into columns (between fields, never inside a value).
 - Components: `Zainod` (lifecycle), `Metrics`, `IndexSnapshot` (the `[snapshot]` bootstrap),
   `Traffic` (the balancer's driver), `ChainView` (polls folded, headers, peers, mempool,
-  submission), `ZainoSync` (the final-stream follower), `ZainoNFS` (tip-path fetch and folds,
+  submission), `ZainoSync` (the finalized-stream follower), `ZainoNFS` (tip-path fetch and folds,
   the served tip, reorgs, sync progress), `GrpcSnapshot` (the snapshot publisher), `Grpc`, and
   one per index (`UtxoSetIdx`, `CompactBlockIdx`, `BlockHashIdx`, `TreeStateIdx`,
   `TransparentAddrIdx`), which also owns that index's commits and compactions. In `json` the component is the `component` field of
@@ -423,13 +423,13 @@ What an operator sees at `info`:
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`work`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's final tip (`height` = the higher of the last block handed and the lowest durable index tip, `—` when neither exists; `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
-| `ZainoNFS` | `Fetching non-finalized blocks` | info | Every 30 s once the indexes reach the final tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the final tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end. |
+| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's finalized tip (`height` = the higher of the last block handed and the lowest durable index tip, `—` when neither exists; `target` = the finalized tip, `bps`, `eta`). Blocks above the finalized tip are folded by the NFS, not handed. |
+| `ZainoNFS` | `Fetching non-finalized blocks` | info | Every 30 s once the indexes reach the finalized tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the finalized tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end. |
 | `ZainoNFS` | `Block fetch stalled` / `Non-finalized block fetch stalled` | warn | The phase above has not moved for 30 s or more (`stalled` = for how long). |
-| `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
+| `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized_tip` = the header chain's finalized tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
 | `GrpcSnapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `applied` and `durable` (off the index writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
+| index | `Syncing` | info | Every 30 s while the indexes trail the finalized tip (the progress task): `applied` and `durable` (off the index writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 

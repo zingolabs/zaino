@@ -62,7 +62,7 @@ impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
 /// above it
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `reader` held for the whole stream: durable records, layer and seam frozen
-/// - `next` `None` = spent; `last` = final height served, inclusive
+/// - `next` `None` = spent; `last` = finalized height served, inclusive
 pub struct RangeCursor<V> {
     reader: CompactBlockReader<OverlayView<V>>,
     budget: usize,
