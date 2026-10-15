@@ -73,17 +73,31 @@ rules that keep it there:
 
 ### Assumptions behind the budget
 
-Estimates unless marked measured; recheck them when the hot path changes.
+Recheck these when the hot path changes.
 
 | Assumption | Value | Basis |
 |---|---|---|
 | Clock read (`Instant::now`) | ~20–30 ns | estimate (vDSO) |
 | Increment or record on a resolved handle | a few to a few tens of ns | estimate (atomic) |
-| Wire layer per call | under 1 µs: two clock reads, about six records, a walk of the 5-byte message prefixes | estimate |
-| Server time per `GetTreeState` | ~0.29 ms mean, 94% under 0.5 ms | measured, `zaino.grpc.first_message_seconds`, 32 clients, 2026-10-15 |
-| Wire layer as a share of that call | ~0.3% | derived from the two rows above |
+| Wire + read layers, server CPU per call | ~1–4 µs | measured, A/B below |
 | Shared-counter contention | negligible below ~10⁶ updates/s across cores; we run ~10⁵ | estimate |
-| Exporter memory | bounded: the recorder's upkeep folds buffered histogram samples into buckets | property of `metrics-exporter-prometheus` installed with `install()` |
+| Exporter memory | bounded; ~40–80 MB above a metrics-off build after ~3 M calls, not growing between rounds | measured, A/B below |
+
+### Measured: A/B, 2026-10-15
+
+Same commit (`bca766f7b`) built with and without `prometheus`, light-wallet-local
+on mainnet, alternating rounds on, off, on, off, 30 s per scenario. Server CPU
+per request from the container's cgroup `cpu.stat`:
+
+| Scenario | On | Off | Difference |
+|---|---|---|---|
+| `GetTreeState`, 32 clients (~35k rps) | 285.2, 284.5 µs | 280.7, 280.9 µs | +4 µs (+1.5%) |
+| `GetLatestBlock`, 32 clients (~72k rps) | 32.1, 30.7 µs | 30.4, 30.1 µs | +1.2 µs (+4%), noisy |
+| `GetTransaction`, 8 clients (validator-bound) | 242.7, 236.8 µs | 239.0, 240.1 µs | within noise |
+| `GetBlockRange` per block, 8 clients | 29.5, 28.6 µs | 29.1, 28.2 µs | within noise |
+
+Throughput did not move with the feature. The cost is per call, so it is
+visible only on calls that do almost nothing else.
 
 ## Checking that it holds
 
