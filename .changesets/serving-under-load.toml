@@ -38,3 +38,12 @@ folds only the blocks no earlier read has, on the blocking pool, instead of \
 replaying the whole window (about 1.3 s of hashing per read on mainnet). \
 Entries at or below the watermark are dropped as it advances.
 """
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+`MapBackedSnapshot` holds its retained blocks behind `Arc`, so publishing the \
+next snapshot shares every unchanged block with the previous one instead of \
+deep-copying the whole window.
+"""
