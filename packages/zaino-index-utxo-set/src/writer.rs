@@ -217,11 +217,13 @@ mod tests {
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
-    /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
-    /// the parent, its own block or an earlier run block; fees = the stated ones
+    /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0
     ///
+    /// - each prevout resolves from the parent, its own block or an earlier run block
+    /// - fees = the stated ones
     /// - rows = golden bytes: block 1 inserts what it leaves unspent (0x21:1 created + spent in
-    ///   it: neither row), removes genesis's 0x10:0; block 2 removes the run's 0x21:0
+    ///   it: neither row), removes genesis's 0x10:0
+    /// - block 2 removes the run's 0x21:0
     /// - the run = the same blocks folded one at a time (rows + fees records) = their fees read
     ///   back once held
     #[test]
@@ -308,9 +310,9 @@ mod tests {
         assert_eq!(stored, expected.map(Ok), "held: fees read back as folded");
     }
 
-    /// Every rejection names its block and tx; a run never lets a block spend a later one's
-    /// output, nor an output twice
+    /// Every rejection names its block and tx
     ///
+    /// - run never lets a block spend a later one's output, nor an output twice
     /// - lies (one field of a mined tx edited): a prevout never mined, a prevout three mints, one
     ///   prevout twice in a tx, two's prevout again in three, outputs past the inputs, sapling past
     ///   the inputs
@@ -402,8 +404,8 @@ mod tests {
         }
     }
 
-    /// Fees read back for a held block: as folded; a height with no record or a record not one fee
-    /// per the block's transactions = named error
+    /// - fees read back for a held block = as folded
+    /// - height with no record, or a record != one fee per the block's transactions = named error
     #[test]
     fn stored_fees_read_back_and_a_missing_or_mismatched_record_is_a_named_error() {
         let alice = p2pkh([0xaa; 20]);
@@ -490,7 +492,8 @@ mod tests {
             blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
         let tip_of = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height));
 
-        // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
+        // - commits of 0..=3 (4 only ever committed after a recovery)
+        // - tag = commits acknowledged
         let (fs, recording) = SimFs::recording();
         let (mut writer, mut consumer) = start(open(&fs, &SCHEMA, NonZeroUsize::MIN), QUEUE);
         for (acked, block) in (1u64..).zip(&blocks[..4]) {
@@ -526,9 +529,11 @@ mod tests {
     }
 
     /// Every prevout resolves wherever it lives (durable, buffered, earlier in its own run)
+    ///
     /// - 1: spends 0's output and one from earlier in its own block
-    /// - 2: enters orchard and sprout; 3: spends 1's outputs with value leaving sprout; 4: spends
-    ///   3's and enters ironwood
+    /// - 2: enters orchard and sprout
+    /// - 3: spends 1's outputs with value leaving sprout
+    /// - 4: spends 3's and enters ironwood
     ///
     /// - Boot 1: 0..=4 (4 `FinalizedTip`), one fee step each
     /// - Boot 2, compact-block durable at 0: 1..=4 resent, all held → re-folded, fees out again,

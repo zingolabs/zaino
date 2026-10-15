@@ -90,8 +90,9 @@ impl World {
         }
     }
 
-    /// - Window 10; durable A1 / A1; best S6, then A9 (finalized 4); durable A3 / A2 (root A2)
-    /// - nodes A3..=A6 + side S5, S6 (fork A4 = finalized); A7 folding, A8 ready, A9 asked
+    /// - Window 10, durable A1 / A1 → best S6, then A9 (finalized 4) → durable A3 / A2 (root A2)
+    /// - nodes A3..=A6 + side S5, S6 (fork A4 = finalized)
+    /// - A7 folding, A8 ready, A9 asked
     fn valid(&self) -> NfsCore<BlockHeight> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };

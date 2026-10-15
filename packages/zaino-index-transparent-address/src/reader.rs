@@ -59,8 +59,9 @@ impl<V: View> TransparentAddressReader<V> {
 }
 
 impl<V: MapRead> TransparentAddressReader<V> {
-    /// Receives of `address` from height `start` to the tip, both inclusive, ascending; `None` =
-    /// more than `limit` (the walk stops there, never truncates)
+    /// Receives of `address` from height `start` to the tip, both inclusive, ascending
+    ///
+    /// - `None` = more than `limit` (walk stops there, never truncates)
     pub(crate) fn receives(
         &self,
         address: AddressKey,
@@ -84,8 +85,9 @@ impl<V: MapRead> TransparentAddressReader<V> {
     }
 
     /// Each of `addresses`' [`receives`](Self::receives) from height `start` (inclusive) that
-    /// nothing has spent, in `addresses` order (one batched spend lookup across all of them);
-    /// `limit` = rows across all of them
+    /// nothing has spent, in `addresses` order (one batched spend lookup across all of them)
+    ///
+    /// - `limit` = rows across all of them
     pub(crate) fn unspent(
         &self,
         addresses: &[AddressKey],

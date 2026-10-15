@@ -25,7 +25,8 @@ pub const fn schema(network: NetworkType) -> Schema {
     Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)
 }
 
-/// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks; a `FinalizedTip` block
-/// commits at once)
+/// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks)
+///
+/// - `FinalizedTip` block commits at once
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(2 << 20).expect("2 MiB is non-zero");

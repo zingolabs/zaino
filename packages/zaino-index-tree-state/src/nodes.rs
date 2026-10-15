@@ -1,6 +1,7 @@
 //! Per-level node sequences (slot = address, no keys, no framing)
 //!
-//! - `l00` = every leaf (a leaf sits at either parity); `l01`..`l31` = even index only
+//! - `l00` = every leaf (a leaf sits at either parity)
+//! - `l01`..`l31` = even index only
 //! - odd internal index never retained (an ommer = sibling of a right child = a left child = even)
 
 use incrementalmerkletree::Address;
@@ -59,7 +60,7 @@ mod tests {
     /// Address → slot = the slot the retained counts imply
     #[test]
     fn retained_counts_match_the_nodes_a_fold_would_materialise() {
-        // level 0 = every leaf; higher levels = even indices only
+        // level 0 = every leaf, higher levels = even indices only
         assert_eq!(retained_nodes(0, 0), 0);
         assert_eq!(retained_nodes(0, 7), 7);
         assert_eq!(retained_nodes(5, 0), 0);

@@ -90,7 +90,8 @@ fn decode_fees(record: &[u8]) -> Option<Vec<Fee>> {
 mod tests {
     use super::*;
 
-    /// `outputs` row as inserted: key = `encode_outpoint`, value LE; out-of-supply refused
+    /// - `outputs` row as inserted: key = `encode_outpoint`, value LE
+    /// - out-of-supply refused
     #[test]
     fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
         let key = OutPoint::new([0xab; 32], 0x0102_0304);
@@ -108,7 +109,8 @@ mod tests {
         assert!(decode_value(&u64::MAX.to_le_bytes()).is_err(), "value past supply");
     }
 
-    /// `fees` record = tag ‖ value LE per fee; round-trips; anything else refused
+    /// - `fees` record = tag ‖ value LE per fee, round-trips
+    /// - anything else refused
     #[test]
     fn a_fees_record_is_its_golden_bytes_and_a_malformed_one_is_refused() {
         let fees = [Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(0x0102).expect("in supply"))];

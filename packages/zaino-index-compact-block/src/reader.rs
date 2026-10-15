@@ -70,7 +70,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
         (records, reached)
     }
 
-    /// Cumulative tree sizes after the tip (its record's `chainMetadata`; nothing held = zero)
+    /// Cumulative tree sizes after the tip (its record's `chainMetadata`), nothing held = zero
     pub(crate) fn tip_sizes(&self) -> TreeSizes {
         let Some(tip) = self.view.tip() else { return TreeSizes::ZERO };
         let record = self.block(tip.height);

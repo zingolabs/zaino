@@ -2,8 +2,9 @@
 //! `SimFs` stores, mock validators (`usage.md`)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
-//! - Every publication seen: tip on its best; `at` of every mined block (served, side, root): each
-//!   index = the oracle at its view's tip, that tip = the block's (or a durable-only view ahead)
+//! - Every publication seen: tip on its best
+//! - `at` of every mined block (served, side, root): each index = the oracle at its view's tip,
+//!   that tip = the block's (or a durable-only view ahead)
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -120,9 +121,10 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
 }
 
 /// - N4: tip on its chain's best = the lowest view (a root publication: the lowest durable tip)
-/// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
-///   block's path vs the chain's; every enabled index readable, through the block or (durable at
-///   or past it) its durable tip alone; either = the oracle there
+/// - G7: `at` of every mined block, served included: `Some` iff folded or the root
+/// - G7 branch = the block's path vs the chain's
+/// - G7 every enabled index readable, through the block or (durable at or past it) its durable tip
+///   alone, either = the oracle there
 /// - `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
     indexed: &NfsPublication<DiskView>,
@@ -311,9 +313,11 @@ impl Pipeline {
     }
 }
 
-/// `count` blocks on `parent`, the first outweighing the best when `outweigh`: each a coinbase
-/// paying 10 000 + a spend of its parent's coinbase (fee 1 000), one sapling output, one orchard
-/// action; `tag` = a counter unique per mined block (note commitment + nullifier)
+/// `count` blocks on `parent`, the first outweighing the best when `outweigh`
+///
+/// - each: coinbase paying 10 000 + a spend of its parent's coinbase (fee 1 000), one sapling
+///   output, one orchard action
+/// - `tag` = a counter unique per mined block (note commitment + nullifier)
 fn mine(
     blocks: &mut MockChain,
     tag: &mut u32,
@@ -350,7 +354,8 @@ fn mine(
 
 /// Two pipelines over the same stores, each move settled (durable through finalized, served = best)
 ///
-/// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20; run 1: restart, E21..=24
+/// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20
+/// - run 1: restart, E21..=24
 /// - bodies from an honest member + a `Lie::Poisoned` liar (each lie reported, never folded)
 #[tokio::test(start_paused = true)]
 async fn every_publication_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart()
@@ -439,9 +444,9 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
 }
 
 /// - Run 0: four indexes synced through A8 (finalized 5)
-/// - Run 1: tree-state enabled on a fresh store; A 9..=16 one at a time (finalized = best − 3)
-/// - Served tip = the lowest durable tip until the window holds it, never back; tree-state
-///   readable in every publication; every publication = folding from genesis (`verify`)
+/// - Run 1: tree-state enabled on a fresh store, A 9..=16 one at a time (finalized = best − 3)
+/// - Served tip = the lowest durable tip until the window holds it, never back
+/// - Every publication: tree-state readable, = folding from genesis (`verify`)
 /// - Settled: every index durable through finalized, served at best
 #[tokio::test(start_paused = true)]
 async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {

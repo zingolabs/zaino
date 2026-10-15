@@ -8,9 +8,10 @@
 //! - Fetches answered late (random delay), out of order, or after their abandon (a stale body)
 //! - Folds answered after a random delay, in random order
 //! - Each writer commits the finalized prefix after its own random delay (the finalized path)
-//! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too, then
-//!   re-anchored `DEPTH` below best like HeaderSync, possibly above every durable tip; `wipe` =
-//!   one index's directory deleted: it holds the served tip back until it catches up)
+//! - Restarts: fresh core from the writers' durable tips
+//! - `reset` = header store lost too, then re-anchored `DEPTH` below best like HeaderSync,
+//!   possibly above every durable tip
+//! - `wipe` = one index's directory deleted (holds the served tip back until it catches up)
 //! - Oracle ([`Toy`]) = fold from genesis along each block's own path
 
 use std::collections::{HashMap, HashSet};
@@ -81,8 +82,9 @@ proptest! {
     /// - `check()` after every step
     /// - One `Fetch` per want until its body or its `Abandon`
     /// - Folds: exactly the indexes durable below the block, each on its oracle parent (a node's,
-    ///   or durable exactly below it); none while the root trails best past the window
-    /// - Published tip on the best; every index = the oracle (node) or durable at or past it
+    ///   or durable exactly below it)
+    /// - No folds while the root trails best past the window
+    /// - Published tip on the best, every index = the oracle (node) or durable at or past it
     /// - Settled: every index durable through the finalized tip, served at best
     #[test]
     fn the_served_tip_follows_the_verified_best_through_reorgs_restarts_and_bulk_sync(
@@ -136,7 +138,8 @@ enum Due {
 
 /// - `fetching` = blocks with a `Fetch` out, neither answered nor abandoned
 /// - `decoy` = a block off every chain (G7: `at` of it = `None`)
-/// - `published` = last published tip; `told` = the durable tips last given to the core
+/// - `published` = last published tip
+/// - `told` = the durable tips last given to the core
 struct Sim {
     builder: MockChain,
     headers: HeaderChain,
@@ -294,7 +297,8 @@ impl Sim {
         self.pending.push((due, Due::Body(checked)));
     }
 
-    /// Its fetch dropped; the answer still lands half the time (a stale body: ignored)
+    /// - its fetch dropped
+    /// - answer still lands half the time (a stale body: ignored)
     fn abandon(&mut self, at: BlockRef, context: &str) {
         assert!(self.fetching.remove(&at.hash), "{context}: Abandon {at:?} with no Fetch out");
         if self.random(2) == 0 {
@@ -340,7 +344,7 @@ impl Sim {
         self.pending.push((due, Due::Folded { at, covers, toys }));
     }
 
-    /// - N4: on its chain's best; every index = the oracle (node) or durable at or past it
+    /// - N4: on its chain's best, every index = the oracle (node) or durable at or past it
     /// - G7: `at` of every node, the root and the decoy = the naive answer
     fn served(&mut self, tip: Publication<Toys>, context: &str) {
         let at = tip.tip;
@@ -367,7 +371,10 @@ impl Sim {
         self.published = Some(at);
     }
 
-    /// Naive `at`: the root unfolded; a node folded, on best iff its whole path is
+    /// Naive `at`
+    ///
+    /// - root = unfolded
+    /// - node = folded, on best iff its whole path is
     fn at(&self, tip: &Publication<Toys>, hash: BlockHash) -> Option<(BlockRef, bool, bool)> {
         if let Some(root) = tip.root.filter(|root| root.hash == hash) {
             return Some((root, true, false));
@@ -379,7 +386,7 @@ impl Sim {
         Some((path[path.len() - 1], on_best, true))
     }
 
-    /// After every step: every node's folds = the oracle; no node outside the window
+    /// After every step: every node's folds = the oracle, no node outside the window
     fn verify(&mut self, context: &str) {
         let chain = Arc::clone(self.given.as_ref().expect("a chain before any step"));
         let served = self.published;

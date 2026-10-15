@@ -64,7 +64,7 @@ pub struct Nfs<S, V> {
 }
 
 impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
-    /// - `balancer` = who serves each body (each answer checked; its driver runs elsewhere)
+    /// - `balancer` = who serves each body (each answer checked, its driver runs elsewhere)
     /// - `lookahead` = bodies fetched or folding ahead of the next fold
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
@@ -147,7 +147,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
         }
     }
 
-    /// Each index's durable view reloaded into `durable`; their durable tips
+    /// Each index's durable view reloaded into `durable` → their durable tips
     ///
     /// - `durable` changes only here: every fold and publication pairs layers with exactly the
     ///   durable tips the core was last told
@@ -260,7 +260,10 @@ impl Fetches {
         }
     }
 
-    /// Next checked body (an abandoned fetch's end skipped; none in flight = pending)
+    /// Next checked body
+    ///
+    /// - abandoned fetch's end skipped
+    /// - none in flight = pending
     async fn next(&mut self) -> Checked {
         loop {
             let Some(done) = self.tasks.join_next_with_id().await else {
@@ -281,7 +284,7 @@ impl Fetches {
     }
 }
 
-/// Task's value; its panic resumed here (a fold or fetch never half-done)
+/// Task's value, its panic resumed here (a fold or fetch never half-done)
 fn joined<T>(done: Result<T, JoinError>) -> T {
     match done {
         Ok(value) => value,

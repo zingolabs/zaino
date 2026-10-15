@@ -120,9 +120,11 @@ mod tests {
         Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
-    /// Block 1 spends alice's block-0 receive, paying bob: its `BlockChanges` = the spend under the
-    /// outpoint + bob's receive (nothing looked up); read over the parent + it, alice's receive
-    /// spent by block 1, bob's two unspent, the opaque output kept
+    /// Block 1 spends alice's block-0 receive, paying bob
+    ///
+    /// - its `BlockChanges` = spend under the outpoint + bob's receive (nothing looked up)
+    /// - read over parent + it: alice's receive spent by block 1, bob's two unspent, opaque output
+    ///   kept
     #[test]
     fn a_spend_folded_on_its_parent_retires_the_receive_the_parent_holds() {
         let zat = |n: u64| Zatoshis::from_u64(n).expect("in supply");
@@ -175,11 +177,11 @@ mod tests {
         assert_eq!(read.spends_of(&[alice_receive]), vec![Some(Spend { height: 1, spender })]);
     }
 
-    /// Ten one-block commits (write_buffer = 1 byte: each block commits as it arrives; the 9th
-    /// launches a background merge), crashed at every persistence point: each state reopens to a
-    /// durable prefix with its one unspent output and balance exact, takes the next block
+    /// Ten one-block commits, crashed at every persistence point: each state reopens to a durable
+    /// prefix with its one unspent output and balance exact, takes the next block
     ///
-    /// - block `h`'s coinbase pays alice `h + 1` zats (vout 0); its tx spends block `h - 1`'s
+    /// - write_buffer = 1 byte (each block commits as it arrives, 9th launches a background merge)
+    /// - block `h`'s coinbase pays alice `h + 1` zats (vout 0), its tx spends block `h - 1`'s
     #[tokio::test]
     async fn every_crash_state_of_commits_and_a_merge_reopens_to_a_durable_prefix() {
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
@@ -351,8 +353,9 @@ mod tests {
         };
         let address = |tag: u8| TransparentAddress::PublicKeyHash([0xa0 + tag; 20]);
 
-        // ledger first (spends pick from what is unspent then); block h = one tx `txid(h)`, its
-        // inputs + outputs, value balanced through a faucet output (untracked address 3, vout last)
+        // - ledger first (spends pick from what is unspent then)
+        // - block h = one tx `txid(h)`, its inputs + outputs, value balanced through a faucet
+        //   output (untracked address 3, vout last)
         const FAUCET: u8 = 3;
         let scripts = [0u8, 1, 2, 0x5f].map(|tag| p2pkh([0xa0 + tag; 20]));
         let mut ledger: Ledger = Vec::new();

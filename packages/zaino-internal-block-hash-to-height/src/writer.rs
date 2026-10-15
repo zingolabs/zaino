@@ -92,8 +92,8 @@ mod tests {
         Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
-    /// Each block → one golden row at its own tip; the reader locates every folded hash and
-    /// nothing else
+    /// - each block → one golden row at its own tip
+    /// - reader locates every folded hash and nothing else
     #[test]
     fn each_block_folds_to_its_golden_row_and_the_reader_locates_exactly_those() {
         let mut chain = MockChain::regtest();
@@ -118,8 +118,9 @@ mod tests {
         assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
-    /// 0..=3 (3 `FinalizedTip`: durable there), then a restart resending 2 and 3 (held: skipped)
-    /// before 4; every hash located at its height after a reopen, a never-sent one nowhere
+    /// - 0..=3 (3 `FinalizedTip`: durable there), then a restart resending 2 and 3 (held:
+    ///   skipped) before 4
+    /// - after a reopen: every hash located at its height, a never-sent one nowhere
     #[tokio::test]
     async fn every_block_locates_its_hash_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();

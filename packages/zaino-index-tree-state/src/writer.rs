@@ -1,8 +1,9 @@
 //! tree_state writer: the finalized stream → one [`fold_run`] per run → its store
 //!
 //! - one run = one `Hashable::combine_pairs` per level across every block of it
-//!   (`Frontier::append_batch_visiting`; node types split wide levels across cores)
-//! - pools fold concurrently; generic over the node type (ironwood reuses `MerkleHashOrchard`)
+//!   (`Frontier::append_batch_visiting`, node types split wide levels across cores)
+//! - pools fold concurrently
+//! - generic over the node type (ironwood reuses `MerkleHashOrchard`)
 //! - node / subtree root → the block holding its last leaf: any split into runs = same deltas
 //! - nothing carried between runs: each reads its parent frontiers off `Store::applied`
 
@@ -338,9 +339,11 @@ mod tests {
         #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
         /// Random blocks split into random runs, each run's frontier read back off the nodes
-        /// the runs before it retained: retained nodes + subtree roots = the naive tree's, each
-        /// under the block holding its last leaf; every frontier read = the library's
-        /// leaf-by-leaf one at that size
+        /// the runs before it retained
+        ///
+        /// - retained nodes + subtree roots = naive tree's, each under the block holding its last
+        ///   leaf
+        /// - every frontier read = library's leaf-by-leaf one at that size
         #[test]
         fn any_split_into_runs_retains_the_naive_trees_nodes_reading_each_frontier_back(
             blocks in proptest::collection::vec(0usize..40, 1..60),
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
         let mut mock = MockChain::regtest();
-        // (sapling, orchard, ironwood) leaves per block; nullifier = the leaf byte repeated
+        // (sapling, orchard, ironwood) leaves per block, nullifier = the leaf byte repeated
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -506,7 +509,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.tx(|t| t.sapling_output(1)));
         let two = chain.mine(|b| b.tx(|t| t.sapling_output(2)));
-        // lie: 2's cmu edited to 0xff.. (above both moduli; the builder's leaves are canonical)
+        // lie: 2's cmu edited to 0xff.. (above both moduli, builder's leaves = canonical)
         let mut txs = chain.block(two.hash).transactions().to_vec();
         txs[1].sapling.outputs[0].cmu = NoteCommitment([0xff; 32]);
         let uncommittable = Arc::new(Block::new(chain.block(two.hash).header().clone(), txs));
@@ -559,8 +562,9 @@ mod tests {
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {
         let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
-        // (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
-        // both parities (forces carries several levels up); nullifier = the leaf byte repeated
+        // - (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
+        //   both parities (forces carries several levels up)
+        // - nullifier = the leaf byte repeated
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -628,8 +632,10 @@ mod tests {
         }
     }
 
-    /// Genesis, then one block per `counts` entry; leaves unique per pool: sapling 1.., orchard
-    /// 10_001.., ironwood 20_001.. (nullifier = the leaf, little-endian)
+    /// Genesis, then one block per `counts` entry
+    ///
+    /// - leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
+    /// - nullifier = the leaf, little-endian
     async fn random_history(
         counts: Vec<(usize, usize, usize)>,
         moves: Vec<Move>,
@@ -689,16 +695,19 @@ mod tests {
         writer.stop().await.expect("stops at Shutdown");
     }
 
-    /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block; resumable from any `start_index` (`start_index == count` =
-    /// empty, pepper-sync's probe); a reopen appends the next boundary after the ones on disk
+    /// Real 2^16-leaf subtrees
+    ///
+    /// - each root = served tree's own level-16 root at its completing height, named by that block
+    /// - resumable from any `start_index` (`start_index == count` = empty, pepper-sync's probe)
+    /// - reopen appends the next boundary after the ones on disk
     #[tokio::test]
     async fn subtree_roots_resume_from_start_index() {
         const HALF: u32 = 1 << 15;
         let fs = SimFs::new();
         let mut chain = MockChain::regtest();
-        // orchard leaves (first, count) per height 1..: subtree 0 completes at height 2, subtree 1
-        // at 4, subtree 2 at 5 (sent after a reopen); nullifier = the leaf, little-endian
+        // - orchard leaves (first, count) per height 1..: subtree 0 completes at height 2,
+        //   subtree 1 at 4, subtree 2 at 5 (sent after a reopen)
+        // - nullifier = the leaf, little-endian
         let orchard = [
             (1, HALF),
             (1 + HALF, HALF),
@@ -755,7 +764,7 @@ mod tests {
         assert_eq!(view.subtree_roots(Orchard, 2, 0).expect("probe"), Vec::new());
         assert_eq!(view.subtree_roots(Sapling, 0, 0).expect("untouched pool"), Vec::new());
 
-        // reopen rebuilds the subtree cursor from the files; the next boundary follows it
+        // reopen rebuilds the subtree cursor from the files → next boundary follows it
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[5])).await;
         let handle = writer.stop().await.expect("stops at Shutdown");

@@ -31,8 +31,9 @@ mod tests {
 
     use super::*;
 
-    /// Classification total; a queried address keys onto exactly the rows its librustzcash script
-    /// was stored under (lets `GetAddressUtxos` return a script it never stored)
+    /// - classification total
+    /// - queried address keys onto exactly the rows its librustzcash script was stored under (lets
+    ///   `GetAddressUtxos` return a script it never stored)
     #[test]
     fn standard_scripts_round_trip_and_everything_else_is_opaque() {
         let p2pkh = [&[0x76, 0xa9, 0x14][..], &[0x41; 20], &[0x88, 0xac]].concat();

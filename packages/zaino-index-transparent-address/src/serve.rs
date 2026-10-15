@@ -15,9 +15,10 @@ use zcash_transparent::bundle::OutPoint;
 use crate::{key::AddressKey, TransparentAddressReader};
 
 /// - never an empty result (gap-limit walk must tell "no transactions" from "cannot tell")
-/// - transport maps these onto gRPC codes; this crate names no transport
-/// - `SupplyExceeded` = corrupt store; `TooManyRows` = an exchange's addresses, refused whole
-///   (never truncated: a short answer reads as a balance)
+/// - transport maps these onto gRPC codes (no transport named in this crate)
+/// - `SupplyExceeded` = corrupt store
+/// - `TooManyRows` = an exchange's addresses, refused whole (never truncated: a short answer reads
+///   as a balance)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("unspent total for this address exceeds the money supply")]
@@ -29,7 +30,8 @@ pub enum ServeError {
 
 /// Receives one request may walk unless an operator overrides it
 ///
-/// - a light wallet's addresses hold tens to thousands; ~10 ms of range walk at the limit
+/// - light wallet's addresses hold tens to thousands
+/// - ~10 ms of range walk at the limit
 pub const DEFAULT_MAX_ADDRESS_ROWS: NonZeroUsize =
     NonZeroUsize::new(100_000).expect("100000 is non-zero");
 
@@ -102,7 +104,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
     /// address or spending from it
     ///
     /// - scanned over all of history, not the range (an in-range spend consumes an output received
-    ///   at any earlier height; the outpoint = all the block carried)
+    ///   at any earlier height, outpoint = all the block carried)
     pub fn transactions(
         &self,
         address: &TransparentAddress,
@@ -155,7 +157,8 @@ mod tests {
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
     /// - 0, 1 durable, 2 buffered (durable view + layer): 1 pays `paid` 42, 2 spends it
-    /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
+    /// - Tip 2: spend counts
+    /// - `as_of(1)` hides it (view ahead of the served tip)
     /// - Stranger + heights past the tip → empty, never an error
     #[test]
     fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
@@ -209,15 +212,16 @@ mod tests {
     }
 
     /// - Row budget = receives across every address of a request, durable + buffered alike
-    /// - At the limit every method answers; one over, every method refuses whole (never a short
-    ///   list or a partial balance)
+    /// - At the limit every method answers
+    /// - One over → every method refuses whole (never a short list or a partial balance)
     #[test]
     fn a_request_over_its_row_budget_is_refused_whole_by_every_method() {
         let (first, second) = (
             TransparentAddress::PublicKeyHash([0x01; 20]),
             TransparentAddress::PublicKeyHash([0x02; 20]),
         );
-        // `first` paid at 1, 2 and 3, `second` at 2; 0..=2 durable, 3 buffered
+        // - `first` paid at 1, 2 and 3, `second` at 2
+        // - 0..=2 durable, 3 buffered
         let (pays_first, pays_second) = (p2pkh([0x01; 20]), p2pkh([0x02; 20]));
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
@@ -242,7 +246,7 @@ mod tests {
         let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
         let rows = |utxos: Result<Vec<Vec<AddressUtxo>>, _>| utxos.map(|all| all[0].len());
 
-        // `first` alone = 3 rows (2 durable + 1 buffered); both = 4
+        // `first` alone = 3 rows (2 durable + 1 buffered), both = 4
         let at = budget(3);
         assert_eq!(at.balances(&[first]), Ok(vec![zats(30)]));
         assert_eq!(rows(at.utxos_of(&[first], h(0))), Ok(3));

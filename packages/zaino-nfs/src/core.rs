@@ -2,10 +2,11 @@
 //! and the fetches and folds feeding it (`usage.md`)
 //!
 //! - Pure: no I/O, no clock
-//! - Root = lowest durable tip of every index; nodes only above it
+//! - Root = lowest durable tip of every index, nodes only above it
 //! - Active = root within `window` of best + its next header held: folds every index above its own
-//!   durable tip; else (bulk sync, or root below the chain's anchor) folds nothing, the finalized
-//!   path does the work
+//!   durable tip
+//! - Inactive (bulk sync, or root below the chain's anchor) = folds nothing, finalized path does
+//!   the work
 //! - Node at `h` folds each index durable below `h`
 //! - Served tip = deepest folded best block, else the root (reorg → fork point at once)
 
@@ -35,7 +36,7 @@ pub(crate) struct NfsCore<F> {
     shown: Option<Shown>,
 }
 
-/// Last publish; any part moved = republished
+/// Last publish (any part moved = republished)
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Shown {
     tip: BlockRef,
@@ -137,7 +138,8 @@ impl<F> NfsCore<F> {
         out
     }
 
-    /// A wanted body → ready; any other (abandoned while in flight) dropped
+    /// - wanted body → ready
+    /// - any other (abandoned while in flight) dropped
     fn body(&mut self, body: Checked) {
         let at = body.block_ref();
         if self.wanted.get(&at.height) == Some(&at.hash) {
@@ -224,8 +226,9 @@ impl<F> NfsCore<F> {
         self.folding.insert(hash, (block, covers));
     }
 
-    /// Deepest folded best block, else the root; `None` = nothing durable, or the root off the
-    /// best chain (a lost header store)
+    /// Deepest folded best block, else the root
+    ///
+    /// - `None` = nothing durable, or the root off the best chain (a lost header store)
     fn served(&self, chain: &VerifiedChain) -> Option<Shown> {
         let root = self.root();
         let top = self.graph.best_top(chain, root).map(|top| top.at);
@@ -233,7 +236,8 @@ impl<F> NfsCore<F> {
         Some(Shown { tip, durable: self.durable.clone() })
     }
 
-    /// Served tip or a durable tip moved → published; nothing servable after a publish → withdrawn
+    /// - served tip or a durable tip moved → published
+    /// - nothing servable after a publish → withdrawn
     fn publish(&mut self, chain: &Arc<VerifiedChain>, out: &mut Vec<Output<F>>) {
         let Some(shown) = self.served(chain) else {
             if self.shown.take().is_some() {
@@ -274,7 +278,7 @@ impl<F> NfsCore<F> {
         }
     }
 
-    /// N1–N4 and the fetch bookkeeping; panics naming the invariant broken
+    /// N1–N4 and the fetch bookkeeping (panics naming the invariant broken)
     #[cfg(test)]
     pub(crate) fn check(&self) {
         let Some(chain) = &self.chain else {

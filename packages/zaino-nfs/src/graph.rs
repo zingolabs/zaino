@@ -120,7 +120,7 @@ impl<F> Graph<F> {
         Some(Base { at: node.at, on_best: chain.on_best(node.at), folded })
     }
 
-    /// N1, N2, G8; panics naming the invariant broken
+    /// N1, N2, G8 (panics naming the invariant broken)
     #[cfg(test)]
     pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>) {
         for node in self.nodes.values() {

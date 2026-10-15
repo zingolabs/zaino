@@ -91,7 +91,7 @@ async fn next_fees(fees: &mut Subscription<BlockFees>, block: &Block) -> Arc<Blo
 /// `block` + its `fees` onto `parent`: its one record
 ///
 /// - sizes after it = parent tip record's `chainMetadata` + what it commits ([`Block`] carries
-///   none; `z_gettreestate` = one round trip per block, unaffordable in a full sync)
+///   none, `z_gettreestate` = one round trip per block = unaffordable in a full sync)
 pub fn fold<V: SequenceRead>(
     parent: &CompactBlockReader<V>,
     block: &Block,
@@ -132,9 +132,11 @@ mod tests {
         (blocks, fees)
     }
 
-    /// Genesis + three blocks folded one onto the next: each record = the block encoded with the
-    /// running sizes; a parent record claiming near-`u32::MAX` seeds the next fold (sizes read,
-    /// not carried), so one block more overflows
+    /// Genesis + three blocks folded one onto the next
+    ///
+    /// - each record = the block encoded with the running sizes
+    /// - parent record claiming near-`u32::MAX` seeds the next fold → one block more overflows
+    ///   (sizes read, not carried)
     #[test]
     fn sizes_advance_from_the_parent_record_and_overflow_past_u32() {
         let sizes = |sapling: u32, orchard: u32, ironwood: u32| TreeSizes {
@@ -293,10 +295,12 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random blocks through random finalized streams (runs, restarts; a resent held block's
-        /// fees popped, the block skipped): once every move commits, each height serves a record
-        /// whose hash and cumulative tree sizes equal an independently summed model and whose fees
-        /// are its own block's, and a full range read is those records in order
+        /// Random blocks through random finalized streams (runs, restarts, a resent held block's
+        /// fees popped + block skipped), once every move committed:
+        ///
+        /// - each height's record: hash + cumulative tree sizes = independently summed model
+        /// - each height's fees = its own block's
+        /// - full range read = those records in order
         #[test]
         fn random_histories_serve_records_with_the_models_tree_sizes_and_fees(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),

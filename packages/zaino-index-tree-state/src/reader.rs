@@ -80,10 +80,10 @@ impl<V: SequenceRead> TreeStateReader<V> {
         })
     }
 
-    /// Completed subtree roots `start_index` inclusive to `start_index + max_entries` exclusive;
-    /// `max_entries == 0` = to the last root; `start_index == count` = an empty list, never an
-    /// error (pepper-sync's probe pass)
+    /// Completed subtree roots `start_index` inclusive to `start_index + max_entries` exclusive
     ///
+    /// - `max_entries == 0` = to the last root
+    /// - `start_index == count` = an empty list, never an error (pepper-sync's probe pass)
     /// - completing block's hash = its height's record (a subtree completes at a held height)
     pub fn subtree_roots(
         &self,

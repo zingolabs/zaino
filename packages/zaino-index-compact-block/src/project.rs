@@ -1,6 +1,7 @@
 //! Pool pruning + single-field reads by walking protobuf framing (no decode)
 //!
-//! - record stored with every pool + every tx; `BlockRange.poolTypes` asks for a subset
+//! - record stored with every pool + every tx
+//! - `BlockRange.poolTypes` asks for a subset
 //! - tx left with no pool component dropped, every selection (lightwalletd `FilterTxPool`)
 //! - copies retained spans, skips dropped ones: each byte touched at most once (a decode +
 //!   re-encode = a `Vec` per field, every struct rebuilt)
@@ -81,8 +82,9 @@ pub(crate) fn project(records: &[Bytes], pools: Pools) -> Option<Bytes> {
 }
 
 /// One mempool `CompactTx` (encoded at slot 0: `index` absent) at `slot`, carrying only `pools`,
-/// framed; `None` = no component left (dropped, as from a block)
+/// framed
 ///
+/// - `None` = no component left (dropped, as from a block)
 /// - `encoded` = this process's own render: unwalkable = a bug, panics
 pub fn project_tx_at(encoded: &[u8], slot: u64, pools: Pools) -> Option<Bytes> {
     let mut out = Vec::with_capacity(FRAME_HEADER + encoded.len() + 11);
@@ -154,8 +156,9 @@ fn project_block(block: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
-/// `CompactTx` copied, fields of unrequested pools dropped; `true` = >= 1 component kept
-/// (repeated field on the wire = non-empty)
+/// `CompactTx` copied, fields of unrequested pools dropped
+///
+/// - `true` = >= 1 component kept (repeated field on the wire = non-empty)
 fn project_tx(tx: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<bool> {
     let mut cursor = 0usize;
     let mut has_component = false;
@@ -249,8 +252,8 @@ mod tests {
     use super::*;
     use crate::{compact_tx, encode_compact_block};
 
-    /// `record_hash` / `record_sizes` = the proto's own `hash` / `chainMetadata`, found by the
-    /// framing walk; a record cut short of the field = `None`
+    /// - `record_hash` / `record_sizes` = proto's own `hash` / `chainMetadata`, via framing walk
+    /// - record cut short of the field = `None`
     #[test]
     fn single_field_reads_walk_to_the_proto_fields_or_none() {
         let mut chain = MockChain::regtest();
@@ -272,7 +275,7 @@ mod tests {
     /// walk rewrites framing: an off-by-one corrupts an unrelated field)
     #[test]
     fn projection_drops_only_the_pools_not_requested() {
-        // coinbase pays (transparent only); the tx carries every pool
+        // coinbase pays (transparent only), tx carries every pool
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 17_345)));
@@ -317,9 +320,12 @@ mod tests {
         assert_eq!(projected(pools), expected, "orchard only");
     }
 
-    /// lightwalletd `FilterTxPool`: a tx left with no component after projection is dropped, for
-    /// every pool selection (`ALL` included), from a block and one at a time from the mempool; the
-    /// block stays, even with no tx left; the stored record (`GetBlock`) keeps every tx
+    /// lightwalletd `FilterTxPool`
+    ///
+    /// - tx left with no component after projection dropped: every pool selection (`ALL`
+    ///   included), from a block and one at a time from the mempool
+    /// - block stays, even with no tx left
+    /// - stored record (`GetBlock`) keeps every tx
     #[test]
     fn projection_drops_transactions_left_with_no_component() {
         // slots: coinbase (transparent), component-less, sapling only, orchard only, transparent

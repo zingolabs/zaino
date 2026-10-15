@@ -18,8 +18,9 @@ pub fn pool_activations(schedule: &LocalNetwork) -> PerPool<Option<BlockHeight>>
     }
 }
 
-/// Small (transport maps these onto gRPC codes; this crate names no transport)
+/// Small (transport maps these onto gRPC codes)
 ///
+/// - no transport named in this crate
 /// - `Inconsistent` = stored nodes rebuild no frontier (a fold bug, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
@@ -34,7 +35,8 @@ pub enum ServeError {
 mod tests {
     use super::*;
 
-    /// Sapling, NU5 (orchard), NU6.3 (ironwood) from the schedule; an unscheduled pool = `None`
+    /// - Sapling, NU5 (orchard), NU6.3 (ironwood) from the schedule
+    /// - unscheduled pool = `None`
     #[test]
     fn pool_activations_are_the_schedules_pool_upgrades() {
         use zaino_primitives::protocol::compiled_schedule;

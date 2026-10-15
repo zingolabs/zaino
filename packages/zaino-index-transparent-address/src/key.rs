@@ -137,7 +137,7 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
     }
 }
 
-/// `txid ‖ vout` big-endian (the spent output; a spend row's key)
+/// `txid ‖ vout` big-endian (spent output = spend row's key)
 pub(crate) fn encode_spent_key(txid: &TxId, vout: u32) -> [u8; SPENT_KEY] {
     let mut out = [0u8; SPENT_KEY];
     out[..TXID].copy_from_slice(txid.as_ref());
@@ -192,8 +192,9 @@ mod tests {
         decode_receive(&key, &5u64.to_le_bytes());
     }
 
-    /// `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
-    /// bytes: a disagreement silently reorders a scan); golden bytes of both maps' rows
+    /// - `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
+    ///   bytes: a disagreement silently reorders a scan)
+    /// - golden bytes of both maps' rows
     #[test]
     fn encoded_order_is_key_order_and_every_field_round_trips() {
         let addr = AddressKey::p2pkh([0x11; HASH160]);

@@ -17,8 +17,9 @@ use crate::{
 /// Ceiling on one range window's records (one chunk handed to the socket)
 const WINDOW_BYTES: usize = 1 << 20;
 
-/// Small (transport maps these onto gRPC codes; this crate names no transport)
+/// Small (transport maps these onto gRPC codes)
 ///
+/// - no transport named in this crate
 /// - `Malformed` = stored record that will not walk (corruption, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
@@ -62,7 +63,8 @@ impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
 /// above it
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `reader` held for the whole stream: durable records, layer and seam frozen
-/// - `next` `None` = spent; `last` = finalized height served, inclusive
+/// - `next` `None` = spent
+/// - `last` = finalized height served, inclusive
 pub struct RangeCursor<V> {
     reader: CompactBlockReader<OverlayView<V>>,
     budget: usize,
@@ -89,7 +91,8 @@ impl<V: SequenceRead> RangeCursor<V> {
     ///
     /// - `start > end` = descending, top down (proto: "decreasing height order")
     /// - top past `tip` = clamped, never refused (a wallet asking past the tip wants what exists)
-    /// - no length cap (pepper-sync asks a whole shard; work bounded per window)
+    /// - no length cap (pepper-sync asks a whole shard)
+    /// - work bounded per window
     /// - no read here (the first file window = the cursor's first blocking step)
     pub fn new(
         reader: CompactBlockReader<OverlayView<V>>,
@@ -178,9 +181,11 @@ mod tests {
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
-    /// Blocks 0..`count` (every upgrade from genesis), each: a coinbase paying 17 345, then one tx
-    /// spending it into every pool (transparent in + out, a sapling spend + output, one orchard,
-    /// two ironwood actions; fee 5 000); `chain(n)` = a prefix of `chain(n + k)`
+    /// Blocks 0..`count` (every upgrade from genesis)
+    ///
+    /// - each: coinbase paying 17 345, then one tx spending it into every pool, fee 5 000
+    ///   (transparent in + out, a sapling spend + output, one orchard, two ironwood actions)
+    /// - `chain(n)` = a prefix of `chain(n + k)`
     fn chain(count: u32) -> MockChain {
         let alice = p2pkh([0xaa; 20]);
         let every_pool = |at: u32| {
@@ -302,8 +307,10 @@ mod tests {
         assert_eq!(past, Err(ServeError::HashNotFound), "a height past the tip");
     }
 
-    /// Range crossing the seam (where an off-by-one hides): every height exactly once, in order,
-    /// no duplicate or gap at the boundary; files in one window, the layer per record
+    /// Range crossing the seam (where an off-by-one hides)
+    ///
+    /// - every height exactly once, in order, no duplicate or gap at the boundary
+    /// - files in one window, the layer per record
     #[test]
     fn a_range_spans_the_durable_records_and_the_layer_without_a_seam() {
         // durable 0 to 3 (both inclusive), layer from 4
@@ -351,8 +358,10 @@ mod tests {
         assert_eq!(heights(&drain(narrow.expect("narrow"))), [6, 5, 4, 3, 2, 1]);
     }
 
-    /// Bounds over 0..=6 held (0..=3 durable): top past the served tip = clamped, either
-    /// direction; bottom past it = a miss (served tip 4 = a root publication behind its reader)
+    /// Bounds over 0..=6 held (0..=3 durable)
+    ///
+    /// - top past the served tip = clamped, either direction
+    /// - bottom past it = a miss (served tip 4 = a root publication behind its reader)
     #[test]
     fn a_range_clamps_its_top_to_the_served_tip_and_misses_past_it() {
         let reader = four_durable_three_above(&chain(7));
