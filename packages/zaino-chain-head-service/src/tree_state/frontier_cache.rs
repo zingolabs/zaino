@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use zaino_indexes::indexes::tree_state::serve::WindowSubtree;
 use zaino_indexes::indexes::tree_state::TreeStateValue;
-use zaino_primitives::types::{BlockHash, Height, ShieldedPool};
+use zaino_primitives::types::{BlockHash, Height, PoolActivations, PoolTreestate, ShieldedPool};
 
 /// The cached fold results of one window block.
 struct Entry {
@@ -31,6 +31,22 @@ struct Entry {
     after: Arc<TreeStateValue>,
     /// The subtrees the block completes, per pool, once a read has asked.
     completions: HashMap<ShieldedPool, Arc<[WindowSubtree]>>,
+    /// The frontier rendered as per-pool treestates, once a read has asked.
+    rendered: Option<Rendered>,
+}
+
+/// The three pools' treestates (Sapling, Orchard, Ironwood) after a block.
+pub(crate) type RenderedPools = (
+    Option<PoolTreestate>,
+    Option<PoolTreestate>,
+    Option<PoolTreestate>,
+);
+
+/// A block's frontier rendered against one activation schedule. Rendering
+/// computes each pool's root, which is the bulk of a treestate read's cost.
+struct Rendered {
+    activations: PoolActivations,
+    pools: Arc<RenderedPools>,
 }
 
 /// Fold results for window blocks, shared by every snapshot of one chain head.
@@ -69,6 +85,7 @@ impl WindowFrontiers {
             height,
             after,
             completions: HashMap::new(),
+            rendered: None,
         });
     }
 
@@ -93,6 +110,31 @@ impl WindowFrontiers {
     ) {
         if let Some(entry) = self.entries().get_mut(block) {
             entry.completions.insert(pool, completions);
+        }
+    }
+
+    /// The treestates after `block` rendered against `activations`, if cached.
+    pub(crate) fn rendered(
+        &self,
+        block: &BlockHash,
+        activations: PoolActivations,
+    ) -> Option<Arc<RenderedPools>> {
+        self.entries()
+            .get(block)
+            .and_then(|entry| entry.rendered.as_ref())
+            .filter(|rendered| rendered.activations == activations)
+            .map(|rendered| Arc::clone(&rendered.pools))
+    }
+
+    /// Record the treestates after `block` rendered against `activations`.
+    pub(crate) fn insert_rendered(
+        &self,
+        block: &BlockHash,
+        activations: PoolActivations,
+        pools: Arc<RenderedPools>,
+    ) {
+        if let Some(entry) = self.entries().get_mut(block) {
+            entry.rendered = Some(Rendered { activations, pools });
         }
     }
 

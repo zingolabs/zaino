@@ -53,17 +53,27 @@ impl TreestateWindowRead for HeadSnapshot {
             // No block at `at`: a domain miss, not a failure.
             return Ok(None);
         }
+        self.prune_finalised(seed);
         let run = seam_run(self, seed, Some(at))?;
         let Some(last) = run.last() else {
             // `at` is at or below the watermark: not this tier's height.
             return Err(not_serviceable());
         };
         let (block_hash, time) = (last.reference.hash, last.block.header.time);
-        let after = self.frontiers_after(seed, &run).await?;
-        let folded = after.last().ok_or_else(|| {
-            TreestateReadError::Fatal("a non-empty window run folded to no value".to_owned())
-        })?;
-        let (sapling, orchard, ironwood) = folded.pool_treestates(&activations, at);
+        let cache = self.frontiers();
+        let pools = match cache.rendered(&block_hash, activations) {
+            Some(pools) => pools,
+            None => {
+                let after = self.frontiers_after(seed, &run).await?;
+                let folded = after
+                    .last()
+                    .ok_or_else(|| fatal("a non-empty window run folded to no value"))?;
+                let pools = Arc::new(folded.pool_treestates(&activations, at));
+                cache.insert_rendered(&block_hash, activations, Arc::clone(&pools));
+                pools
+            }
+        };
+        let (sapling, orchard, ironwood) = (*pools).clone();
         Ok(Some(Treestate {
             block_hash,
             height: at,
@@ -81,6 +91,7 @@ impl TreestateWindowRead for HeadSnapshot {
         start_index: u16,
         limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        self.prune_finalised(seed);
         // The whole window above the seam contributes completions.
         let run = seam_run(self, seed, None)?;
         let completions = self.completions(seed, &run, pool).await?;
@@ -100,6 +111,14 @@ impl TreestateWindowRead for HeadSnapshot {
 }
 
 impl HeadSnapshot {
+    /// Drop cached folds at or below the seed's height: the finalised store
+    /// answers those heights now.
+    fn prune_finalised(&self, seed: Option<&Treestate>) {
+        if let Some(seed) = seed {
+            self.frontiers().prune_through(seed.height);
+        }
+    }
+
     /// The frontier after each block of `run`, in order.
     ///
     /// Served from the cache where every block is already folded. Otherwise the
@@ -113,9 +132,6 @@ impl HeadSnapshot {
         run: &[&ChainHeadBlock],
     ) -> Result<Vec<Arc<TreeStateValue>>, TreestateReadError> {
         let cache = self.frontiers();
-        if let Some(seed) = seed {
-            cache.prune_through(seed.height);
-        }
         let mut after: Vec<Option<Arc<TreeStateValue>>> =
             run.iter().map(|block| cache.after(&block.hash())).collect();
         if after.iter().all(Option::is_some) {
@@ -618,6 +634,26 @@ mod tests {
                 .expect("read succeeds");
             assert_eq!(warm, cold, "height {at}: cached and cold folds agree");
         }
+    }
+
+    /// A repeated read at one height is served from the rendered cache and
+    /// answers exactly what the first read rendered.
+    #[tokio::test]
+    async fn a_repeated_read_is_served_from_the_rendered_cache() {
+        let frontiers = Arc::new(WindowFrontiers::default());
+        let head = HeadSnapshot::new(Arc::new(funded_chain(3)), Arc::clone(&frontiers));
+        let first = head
+            .window_treestate(None, active(), height(2))
+            .await
+            .expect("read succeeds");
+        assert!(frontiers
+            .rendered(&BlockHash::from([2; 32]), active())
+            .is_some());
+        let again = head
+            .window_treestate(None, active(), height(2))
+            .await
+            .expect("read succeeds");
+        assert_eq!(first, again);
     }
 
     /// The cache is keyed by block, not height: after a reorg the competing

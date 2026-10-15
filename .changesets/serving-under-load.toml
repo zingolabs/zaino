@@ -87,3 +87,12 @@ the served chain, answered `NOT_FOUND` when no block there has it. \
 `LightServe::get_tree_state` takes a `BlockSelector` and returns `None` for an \
 unknown hash.
 """
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The window's treestate read also keeps each block's rendered per-pool \
+treestates, so a repeated read near the tip (every wallet's \
+`GetLatestTreeState`) no longer recomputes the pool roots.
+"""
