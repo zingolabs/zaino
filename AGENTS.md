@@ -1,5 +1,7 @@
 # Zaino AI Contributor Guidelines
 
+Terms: [`CONTEXT.md`](CONTEXT.md) is the glossary; names, docs and logs use its words.
+
 ## Tool selection
 
 Always prefer Rust-native tools in domains where they are designed to operate.
@@ -75,6 +77,8 @@ failure — never `impl From` / `impl TryFrom`, which hide both behind `.into()`
 - Byte order (as zebra's state): a **locator** (height, transaction / output / subtree
   index) is big-endian everywhere, key or value; a **quantity** (amount, size, count, time)
   is little-endian, as the protocol encodes it; hashes and protocol structures as serialized.
+  Exempt: `zaino-persistence`'s engine-internal segment ids and page indexes (little-endian,
+  never a domain key).
 
 Error `From` impls used with `?`, and conversions between two domain types,
 are outside this rule.
