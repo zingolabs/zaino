@@ -351,7 +351,7 @@ mod peers {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_source::testing::{Port, ValidatorViews};
-    use zaino_traffic::testing::PeerSetViews;
+    use zaino_traffic::testing::MockPeerSet;
     use zaino_traffic::{Limits, Peers, TrustedValidator};
 
     use super::*;
@@ -369,7 +369,7 @@ mod peers {
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
             vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
-        let peers = Peers { transport: Arc::new(chain.peer_set(a11)), in_flight: 4 };
+        let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
         tokio::spawn(balancing.run(cancel.clone()));
@@ -412,7 +412,7 @@ mod peers {
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
             vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
-        let peers = Peers { transport: Arc::new(chain.peer_set(a11)), in_flight: 4 };
+        let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
         tokio::spawn(balancing.run(cancel.clone()));

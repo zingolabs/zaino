@@ -16,7 +16,7 @@ use zaino_source::testing::{
 use zaino_source::{
     EndOfService, GetMempoolListingError, NodeRelease, PeerInfo, SendRawTransactionError,
 };
-use zaino_traffic::testing::PeerSetViews;
+use zaino_traffic::testing::MockPeerSet;
 use zaino_traffic::{
     Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, TrustedValidator,
     TrustedValidatorId,
@@ -1084,7 +1084,7 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     let at_40 = chain.mine_empty(40);
     let at_60 = chain.mine_empty(20);
     let (at_30, at_50) = (chain.at(h(30)), chain.at(h(50)));
-    let peer_set = Arc::new(chain.peer_set(at_60));
+    let peer_set = Arc::new(MockPeerSet::new(&chain, at_60));
     peer_set.hold(h(40));
     let validator = Arc::new(chain.validator(at_40));
     let transport = Arc::clone(&peer_set) as _;
@@ -1146,7 +1146,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         let peers_tip = chain.mine_empty(1);
         let best: Vec<BlockRef> =
             chain.blocks(peers_tip).iter().map(|block| block.block_ref()).collect();
-        let peer_set = Arc::new(chain.peer_set(peers_tip));
+        let peer_set = Arc::new(MockPeerSet::new(&chain, peers_tip));
         let (view, _balancer, cancel) = running(&[validator], &["a:8232"], Some(peer_set));
         let sync =
             view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
@@ -1182,7 +1182,7 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     let (at_30, at_45) = (chain.at(h(30)), chain.at(h(45)));
     let (at_50, at_55) = (chain.at(h(50)), chain.at(h(55)));
     let elsewhere = chain.fork(h(45)).mine_empty(3).tip();
-    let peer_set = Arc::new(chain.peer_set(at_60));
+    let peer_set = Arc::new(MockPeerSet::new(&chain, at_60));
     peer_set.hold(h(40));
     let validator = Arc::new(chain.validator(at_40));
     let transport = Arc::clone(&peer_set) as _;

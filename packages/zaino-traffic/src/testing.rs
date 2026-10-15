@@ -12,22 +12,10 @@ use zcash_protocol::BlockHash;
 
 use crate::PeerTransport;
 
-/// [`MockPeerSet`]s on a [`MockChain`]
-pub trait PeerSetViews {
-    /// Genesis ..= `tip`, all held
-    fn peer_set(&self, tip: BlockRef) -> MockPeerSet;
-}
-
-impl PeerSetViews for MockChain {
-    fn peer_set(&self, tip: BlockRef) -> MockPeerSet {
-        let path = self.blocks(tip);
-        let held = Mutex::new(path.len() - 1);
-        MockPeerSet { path, held }
-    }
-}
-
-/// Genesis ..= `held` of its path served: headers after the first locator hash held (zebra's
-/// `FindHeaders`, ≤ 160), blocks by hash; a block unheld = `Connection` (as `ZebraPeers`)
+/// Genesis ..= `held` of its path served (as `ZebraPeers`)
+///
+/// - headers after the first locator hash held (zebra's `FindHeaders`, ≤ 160)
+/// - blocks by hash (unheld block = `Connection`)
 pub struct MockPeerSet {
     path: Vec<Arc<Block>>,
     held: Mutex<usize>,
@@ -36,6 +24,13 @@ pub struct MockPeerSet {
 impl MockPeerSet {
     /// zebra `FindHeaders` answer cap
     const HEADERS: usize = 160;
+
+    /// `chain`'s genesis ..= `tip`, all held
+    pub fn new(chain: &MockChain, tip: BlockRef) -> Self {
+        let path = chain.blocks(tip);
+        let held = Mutex::new(path.len() - 1);
+        Self { path, held }
+    }
 
     /// Its path held through `height` from now on (the network moving on, or not yet there)
     pub fn hold(&self, height: BlockHeight) {

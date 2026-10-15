@@ -13,7 +13,7 @@ use zaino_source::{
 };
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::testing::PeerSetViews;
+use crate::testing::MockPeerSet;
 use crate::{
     HeaderAsk, Health, Limits, MemberId, Peers, Push, TrafficBalancer, TrustedValidator,
     TrustedValidatorId, Urgency,
@@ -315,7 +315,8 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     let tip = chain.mine_empty(3);
     let validator = Arc::new(chain.validator(tip));
     validator.reachable(&Port::ALL, false);
-    let peers = Peers { transport: Arc::new(chain.peer_set(chain.at(h(2)))), in_flight: 4 };
+    let peers =
+        Peers { transport: Arc::new(MockPeerSet::new(&chain, chain.at(h(2)))), in_flight: 4 };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![TrustedValidator { source: Arc::clone(&validator), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));

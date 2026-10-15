@@ -10,7 +10,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# `testing::{MockPeerSet, PeerSetViews}`
+# `testing::MockPeerSet`
 testing = ["zaino-primitives/testing"]
 
 [dependencies]

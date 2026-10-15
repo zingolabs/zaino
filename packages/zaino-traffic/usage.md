@@ -148,14 +148,14 @@ its oracle checks T3 and T6 on every send.
 
 ## Tests
 
-- Feature `testing`: `testing::PeerSetViews` on a `MockChain` gives the peer set as a
-  `PeerTransport` over one path, as `ZebraPeers` answers: headers after the first locator hash
-  held (`FindHeaders`, ≤ 160), blocks by hash, an unheld block = `Connection`.
+- Feature `testing`: `testing::MockPeerSet::new(&chain, tip)` gives the peer set as a
+  `PeerTransport` over one `MockChain` path, as `ZebraPeers` answers: headers after the first
+  locator hash held (`FindHeaders`, ≤ 160), blocks by hash, an unheld block = `Connection`.
 
   ```rust,ignore
-  use zaino_traffic::testing::PeerSetViews;
+  use zaino_traffic::testing::MockPeerSet;
 
-  let peer_set = Arc::new(chain.peer_set(at_60));   // genesis ..= 60 held
+  let peer_set = Arc::new(MockPeerSet::new(&chain, at_60));   // genesis ..= 60 held
   peer_set.hold(h(40));                             // the network not past 40 yet
   let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
   ```
