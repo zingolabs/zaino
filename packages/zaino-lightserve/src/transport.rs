@@ -50,8 +50,11 @@ impl<S: LightWalletService + Clone + 'static> RunLoop for GrpcServer<S> {
     ) -> Result<(), GrpcServeError> {
         // Bind synchronously so a bind failure (EADDRINUSE) surfaces before we
         // report Ready, rather than being swallowed inside the serve future (#1081).
+        // Nagle off: a unary reply is one small frame, and holding it for the
+        // peer's delayed ACK adds ~40 ms to a sub-millisecond read.
         let incoming = TcpIncoming::bind(self.bind)
-            .map_err(|e| GrpcServeError::Serve(format!("bind failed: {e}")))?;
+            .map_err(|e| GrpcServeError::Serve(format!("bind failed: {e}")))?
+            .with_nodelay(Some(true));
         reporter.ready();
         let service = CompactTxStreamerServer::new(GrpcService::new(self.handler.clone()));
         Server::builder()
