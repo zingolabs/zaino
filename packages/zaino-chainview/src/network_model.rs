@@ -1,9 +1,10 @@
 //! Chain view over simulated zebrads through the real balancer, checked against a naive model
 //! after every poll
 //!
-//! - Nodes mine, relay (longest chain wins: regtest work per block is fixed; first seen on a tie),
-//!   fork (`invalidateblock` + `generate`), go unreachable; a node's poll woken in random order
-//!   (others poll on their own cadence too: every observation counts)
+//! - Nodes mine, relay (longest chain wins: regtest work per block fixed, first seen on a tie),
+//!   fork (`invalidateblock` + `generate`), go unreachable
+//! - node's poll woken in random order (others poll on their own cadence too: every observation
+//!   counts)
 //! - Paused clock: the sim stands still while any poll runs (moves land between waits)
 //! - Header chain = a real one, fed each polled chain (header sync's part, without its I/O)
 //! - Oracle = each trusted validator's chain *as last polled*, full length from genesis, and the
@@ -28,7 +29,8 @@ use crate::{ChainView, TrustedValidatorSet};
 const DEPTH: u32 = 3;
 const MAX_NODES: usize = 5;
 
-/// - `Mine` = `count` blocks on `node`'s own tip; `Relay` = `to` adopts `from`'s chain iff longer
+/// - `Mine` = `count` blocks on `node`'s own tip
+/// - `Relay` = `to` adopts `from`'s chain iff longer
 /// - `Fork` = top `drop` blocks invalidated, `mine` mined on the rest (`mine < drop` = retreat)
 #[derive(Debug, Clone)]
 enum Move {
@@ -61,7 +63,8 @@ proptest! {
     /// After every poll, best = the header chain's best
     ///
     /// - holders ⊆ reporting validators whose polled chain holds it, ⊇ those claiming it or
-    ///   polled under it; no holder = no mempool
+    ///   polled under it
+    /// - no holder = no mempool
     /// - each trusted validator's own tip = its polled chain's (none once `Down`)
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(

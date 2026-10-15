@@ -1,12 +1,15 @@
 //! Peers grouped by the operator plausibly behind them: one attacker = many addresses, few groups
 //!
-//! - submission: one entry per netgroup; finality: peers carrying the chain counted per netgroup
+//! - submission: one entry per netgroup
+//! - finality: peers carrying the chain counted per netgroup
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 
-/// Peers in more netgroups than this = not one operator (an eclipse needs addresses in that many
-/// /16s; 6 of the default 8 outbound peers): peer finality and a mempool quorum both need it
+/// Peers in more netgroups than this = not one operator (eclipse needs addresses in that many /16s,
+/// 6 of the default 8 outbound peers)
+///
+/// - required by peer finality & mempool quorum
 pub(crate) const ECLIPSE_NETGROUPS: usize = 5;
 
 /// Distinct netgroups among `peers`

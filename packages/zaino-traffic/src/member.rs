@@ -185,7 +185,7 @@ impl Member {
 
     /// Passive (any reply) or active (poll) check
     ///
-    /// - `Down` only with a poller (its probe = the way back up; the peer set has none)
+    /// - `Down` only with a poller (its probe = the way back up, the peer set has none)
     pub(crate) fn outcome(&mut self, answered: bool) {
         match answered {
             true => (self.failures, self.down) = (0, false),

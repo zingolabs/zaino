@@ -6,8 +6,8 @@
 //!     ─▶ candidates ─▶ bytes (held, else by wtxid from peers) ─▶ admission.rs ─▶ admitted
 //! ```
 //!
-//! - a consensus refusal kept [`REFUSED_TTL`] (never re-fetched each round); an unknown prevout
-//!   retried next round (the served tip, or its parent's admission, catching up)
+//! - consensus refusal kept [`REFUSED_TTL`] (never re-fetched each round)
+//! - unknown prevout retried next round (the served tip, or its parent's admission, catching up)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ use crate::ports::{PeerSource, UnspentOutputs};
 /// A transaction one of our checks refused stays refused this long
 pub(crate) const REFUSED_TTL: Duration = Duration::from_secs(600);
 
-/// Polls the peers' mempools into the view until cancelled; spawn [`run`](Self::run)
+/// Polls the peers' mempools into the view until cancelled (spawn [`run`](Self::run))
 pub struct PeerMempool {
     core: Arc<ChainViewCore>,
     peers: Arc<dyn PeerSource>,
@@ -101,7 +101,7 @@ impl PeerMempool {
         self.core.admit_by_quorum(admitted);
     }
 
-    /// Held bytes as they are; the rest asked of the peers, one request
+    /// Held bytes as they are, the rest asked of the peers in one request
     async fn bytes(&self, candidates: Vec<Candidate>) -> Vec<(PeerTxId, Bytes)> {
         let (held, missing): (Vec<Candidate>, Vec<Candidate>) =
             candidates.into_iter().partition(|(_, raw)| raw.is_some());

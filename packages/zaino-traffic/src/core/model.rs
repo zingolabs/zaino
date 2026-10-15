@@ -1,14 +1,15 @@
 //! [`TrafficCore`] against simulated members and a naive oracle (`usage.md`)
 //!
 //! - Trusted 1..=4 (priorities 0..=2, 5 connections) + maybe the peer set, one [`Kind`] each
-//! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent; polls catching
+//! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent, polls catching
 //!   up), flapping (fails in odd 20 s phases, lagging's polls too), silent (transport timeout)
 //! - Swarm: whole kinds off per case (an off one plays honest)
-//! - Model = the caller: a lie answered → `report` (+ a block re-asked); the peer set's never benched
+//! - Model = the caller: a lie answered → `report` (+ a block re-asked)
+//! - Peer set never benched
 //! - Own lanes, permits (poll's own outside them) and rounds: the oracle's ground truth
 //! - Per send: T2 kind + route, T3 bench + down, synced, T5 once per round, T6 pick, T7 priority
-//! - After every step: T7 no ready ask waits beside room; at quiescence (10 min): T9, liars
-//!   benched, T10 poll gaps ≤ the ladder's ceiling
+//! - After every step: T7 no ready ask waits beside room
+//! - At quiescence (10 min): T9, liars benched, T10 poll gaps ≤ the ladder's ceiling
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -500,7 +501,9 @@ impl World {
         }
     }
 
-    /// T2, T3, synced, T5 (eligible); T6 pick; T7 a shared permit never jumps a higher lane
+    /// - T2, T3, synced, T5 (eligible)
+    /// - T6 pick
+    /// - T7 a shared permit never jumps a higher lane
     fn oracle(&self, ticket: Ticket) {
         let asked = self.asks.get(&ticket.ask).expect("T4: a send for an open ask");
         let member = ticket.member;

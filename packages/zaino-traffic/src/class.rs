@@ -40,7 +40,7 @@ impl Class {
         }
     }
 
-    /// `None` = never hedged; else a second member once the latest send is this old
+    /// Second member once the latest send is this old (`None` = never hedged)
     pub(crate) fn hedge_floor(self) -> Option<Duration> {
         match self {
             Self::TipBlock => Some(Duration::from_secs(2)),
@@ -50,8 +50,9 @@ impl Class {
         }
     }
 
-    /// Headers + block bodies (checkable); trusted-only = the "only source" rows
-    /// (`docs/architecture.md` §3) + mempool bytes (peers serve by wtxid, never a listing's txid)
+    /// - `true` = headers + block bodies (checkable)
+    /// - trusted-only = the "only source" rows (`docs/architecture.md` §3) + mempool bytes (peers
+    ///   serve by wtxid, never a listing's txid)
     pub(crate) fn peers(self) -> bool {
         matches!(self, Self::Headers | Self::TipBlock | Self::BulkBlock)
     }
@@ -123,7 +124,8 @@ impl Permits {
 mod tests {
     use super::*;
 
-    /// - of 8, the poll keeps 1; a lane fills the shared permits, never another lane's reserve
+    /// - of 8, the poll keeps 1
+    /// - lane fills the shared permits, never another lane's reserve
     /// - each lane still admits its reserved one with every shared permit taken
     /// - peers: same lanes, no poll's permit
     #[test]

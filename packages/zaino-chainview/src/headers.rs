@@ -12,15 +12,15 @@
 //!
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
 //! - anchored below a trusted validator's claim, never synced from genesis (zebra validated
-//!   every block below it; bulk sync reads blocks by height, not this chain)
+//!   every block below it, bulk sync reads blocks by height, not this chain)
 //! - finalized = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
 //! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above finalized,
 //!   H9)
-//! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`); a
-//!   chain forked below our finalized tip is not fetched again until its claim moves
-//! - peers ([`HeaderSync::with_peers`]): no trusted run due → the peer set asked past our best
-//!   (locator) every `PEER_POLL`, at once again after progress; every rule run per header
-//!   (untrusted), never vouched
+//! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`)
+//! - chain forked below our finalized tip → not fetched again until its claim moves
+//! - peers ([`HeaderSync::with_peers`]): no trusted run due → peer set asked past our best
+//!   (locator) every `PEER_POLL`, at once again after progress
+//! - peer headers: every rule run per header (untrusted), never vouched
 //! - peer finality: no vouch that deep → best − depth finalized anyway once live peers in more than
 //!   `ECLIPSE_NETGROUPS` netgroups announced a block at or above it and no difficulty
 //!   collapsed since the last vouch (`HeaderChain::peer_finalizable`)
@@ -50,10 +50,10 @@ pub(crate) const HEADER_BATCH: u32 = 2_000;
 /// One validator's back-off after a stalled run
 const RETRY: Duration = Duration::from_secs(5);
 
-/// Peer set asked past our best this often (nothing newer = an empty answer; a block ≈ 75 s)
+/// Peer set asked past our best this often (nothing newer = an empty answer, a block ≈ 75 s)
 const PEER_POLL: Duration = Duration::from_secs(5);
 
-/// Feeds one header chain from every trusted validator (and the peer set, if any); owns it
+/// Feeds + owns one header chain from every trusted validator (and the peer set, if any)
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
@@ -168,8 +168,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.publish();
     }
 
-    /// First answering validator whose claim we lack, not backing off, not forked below finalized;
-    /// `Err` = none (the earliest back-off, if any)
+    /// First answering validator whose claim we lack, not backing off, not forked below finalized
+    ///
+    /// - `Err` = none (the earliest back-off, if any)
     fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Result<Run, Option<Instant>> {
         let verified = self.verified.borrow().clone();
         let chain = &self.chain;
@@ -210,7 +211,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Err(retry)
     }
 
-    /// One run from its validator; its fetch state follows the outcome
+    /// One run from its validator (its fetch state follows the outcome)
     async fn fetch(&mut self, run: Run) {
         let (validator, after) = match run {
             Run::Anchor { validator, at } => (validator, self.anchored(validator, at).await),
@@ -221,7 +222,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.fetch_states[validator.get()] = after;
     }
 
-    /// `validator`'s headers at `heights`, decoded; `Err` = its fetch state (stalled, reported)
+    /// `validator`'s headers at `heights`, decoded (`Err` = its fetch state: stalled, reported)
     async fn headers(
         &self,
         validator: TrustedValidatorId,
@@ -317,8 +318,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
         anchored && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
     }
 
-    /// One peer-set answer past our best, inserted under every rule; asked again at once after
-    /// progress, else after `PEER_POLL`
+    /// One peer-set answer past our best, inserted under every rule
+    ///
+    /// - asked again at once after progress, else after `PEER_POLL`
     async fn extend_from_peers(&mut self) {
         let verified = self.verified.borrow().clone();
         let locator = verified.map(|verified| verified.locator()).unwrap_or_default();
@@ -336,8 +338,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
     }
 
-    /// In order, each under every rule; `true` = one became new (stops at the first refused or
-    /// above the ceiling)
+    /// In order, each under every rule (stops at the first refused or above the ceiling)
+    ///
+    /// - `true` = one became new
     fn insert_from_peers(&mut self, answered: Answered<BlockLinks>) -> bool {
         let params = self.peers.as_ref().expect("the peer path is on").params;
         let ceiling = self.chain.ceiling(HEADER_BATCH);
@@ -389,8 +392,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.publish();
     }
 
-    /// Finalized → min(vouched, best − depth); peers on and no vouch that deep → best −
-    /// depth on the peers' word (no difficulty collapse, enough netgroups carrying it)
+    /// - finalized → min(vouched, best − depth)
+    /// - peers on + no vouch that deep → best − depth on the peers' word (no difficulty collapse,
+    ///   enough netgroups carrying it)
     fn finalize(&mut self, view: &ChainViewSnapshot) {
         if let Some(boundary) = self.chain.finalizable() {
             self.chain.finalize(boundary);

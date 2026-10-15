@@ -1,5 +1,6 @@
-//! [`MockPeers`]: the Zcash p2p network as a script (mempools and block `inv`s the test sets,
-//! pushes recorded); a `MockChain` [`Ledger`] as the UTXO set
+//! - [`MockPeers`] = Zcash p2p network as a script (mempools and block `inv`s the test sets,
+//!   pushes recorded)
+//! - `MockChain` [`Ledger`] = UTXO set
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -19,9 +20,8 @@ use zcash_transparent::bundle::OutPoint;
 
 use crate::{PeerSource, UnspentOutputs};
 
-/// `live` list their mempools, announce and take relays (answering nothing, as a peer does);
-/// `dead` refuse a connection
-///
+/// - `live` list their mempools, announce and take relays (answering nothing, as a peer does)
+/// - `dead` refuse a connection
 /// - a relayed transaction lands in no mempool by itself: the test lists it where it spread
 /// - no live peer = a relay fails (zebra's peer set, nobody ready)
 pub struct MockPeers {

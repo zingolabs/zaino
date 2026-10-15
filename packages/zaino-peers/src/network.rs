@@ -9,8 +9,8 @@
 //!                                  everything else ──▶ Nil (Zaino serves no peer)
 //! ```
 //!
-//! - every id or hash handed out = zebra's own from the bytes; a peer answering with something
-//!   not asked for is dropped and scored as misbehaviour (zebra's address book bans on it)
+//! - every id or hash handed out = zebra's own from the bytes
+//! - answer not asked for → dropped, scored as misbehaviour (zebra's address book bans on it)
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -108,8 +108,9 @@ pub struct PeerNetwork {
 
 impl PeerNetwork {
     /// Back once the seeds are dialed + crawled once (zebra's `init`: seconds, up to its crawl
-    /// timeout for a seed never answering `getaddr`); crawling continues in the background
+    /// timeout for a seed never answering `getaddr`)
     ///
+    /// - crawling continues in the background
     /// - multi-thread runtime required (zebra's codec parses in `block_in_place`)
     /// - listener on loopback (zebra always opens one, Zaino serves no peer)
     pub async fn start(config: PeerConfig) -> Self {
@@ -229,8 +230,9 @@ impl PeerNetwork {
     }
 
     /// `raw` relayed as zebrad relays: `PushTransaction` over the peer set's own connections to
-    /// ⌈ready/3⌉ random ready peers; txid = the bytes' own
+    /// ⌈ready/3⌉ random ready peers
     ///
+    /// - txid = the bytes' own
     /// - unattributed: zebra names no recipient, and a peer answers a push with nothing
     /// - no ready peer within the timeout = `Peers(Timeout)`
     pub async fn push(&self, raw: &[u8]) -> Result<TxId, PushError> {
@@ -240,10 +242,11 @@ impl PeerNetwork {
         Ok(txid)
     }
 
-    /// Inventory request; `None` = nothing asked for supplied
+    /// Inventory request (`None` = nothing asked for supplied)
     ///
     /// - zebra ends one in `SharedPeerError` (`notfound` or an unsolicited reply first:
-    ///   `peer/connection.rs`), not a `Missing` list; any other error = failed
+    ///   `peer/connection.rs`), not a `Missing` list
+    /// - any other error = failed
     async fn inventory(&self, request: Request) -> Result<Option<Response>, PeerError> {
         match self.call(request).await {
             Ok(answer) => Ok(Some(answer)),
@@ -256,7 +259,8 @@ impl PeerNetwork {
 
     /// Each `asked` key's value, `asked` order (`None` = not supplied)
     ///
-    /// - `keyed` = key from the item's own bytes; key not asked for = dropped, sender scored
+    /// - `keyed` = key from the item's own bytes
+    /// - key not asked for = dropped, sender scored
     fn answered<K, A, M, V>(
         &self,
         asked: &[K],
@@ -297,7 +301,8 @@ impl PeerNetwork {
     }
 }
 
-/// Answers every peer with nothing; reports each block `inv` with its sender
+/// - answers every peer with nothing
+/// - reports each block `inv` with its sender
 fn inbound(
     announced: broadcast::Sender<Announced>,
 ) -> impl Service<

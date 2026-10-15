@@ -11,9 +11,10 @@ fn trusted(index: usize) -> MemberId {
     MemberId::TrustedValidator(TrustedValidatorId::new(index).expect("small"))
 }
 
-/// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; the peer set (3 in flight)
-/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 lane permits); A2
-///   headers on the peer set
+/// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`
+/// - peer set (3 in flight)
+/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 lane permits)
+/// - in flight: A2 headers on the peer set
 fn valid(t0: Instant) -> TrafficCore {
     let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
     let mut core = TrafficCore::new(&[(0, limits), (1, limits)], Some(3), t0);

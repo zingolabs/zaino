@@ -33,11 +33,12 @@ impl Before {
     }
 }
 
-/// One id the peer quorum admits, not yet admitted here; `raw` = its bytes when held already
+/// One id the peer quorum admits, not yet admitted here (`raw` = its bytes when held already)
 pub(crate) type Candidate = (PeerTxId, Option<Bytes>);
 
-/// One txid a member listed; `raw` = `None` when the view already held it (bytes fetched once,
-/// never per member)
+/// One txid a member listed
+///
+/// - `raw` = `None` when the view already held it (bytes fetched once, never per member)
 #[derive(Debug, Clone)]
 pub(crate) struct Sighted {
     pub(crate) txid: TxId,
@@ -76,7 +77,7 @@ pub(crate) enum TrustedValidatorReport {
         listed: bool,
     },
     Listed(Listing),
-    /// `Down` = neither chain nor sightings; else sightings kept, holds no tip
+    /// `Down` = neither chain nor sightings, else sightings kept + holds no tip
     Failed(Health),
 }
 
@@ -122,8 +123,9 @@ impl ChainViewCore {
         self.published.load().sighting(txid).is_some()
     }
 
-    /// One member's poll merged, published; → txids not admitted (listed, bytes
-    /// nowhere: re-listed + re-fetched next poll, never lost)
+    /// One member's poll merged, published → txids not admitted
+    ///
+    /// - not admitted = listed, bytes nowhere (re-listed + re-fetched next poll, never lost)
     pub(crate) fn apply(
         &self,
         validator: TrustedValidatorId,
@@ -188,7 +190,7 @@ impl ChainViewCore {
         })
     }
 
-    /// One batch of block `inv`s + the live peer set; publishes only on a change
+    /// One batch of block `inv`s + the live peer set (publishes only on a change)
     ///
     /// - only live (outbound) peers carry the chain (inbound = anyone who dialed us)
     pub(crate) fn apply_heard(&self, batch: Vec<Announced>, live: Vec<SocketAddr>) {

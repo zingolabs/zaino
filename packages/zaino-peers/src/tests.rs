@@ -29,8 +29,9 @@ type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;
 
 /// Full zebra-network regtest node on a fresh loopback port, answering peers with `inbound`
-/// (no seeds: accepts only); its peer set reaches whoever connected
+/// (no seeds: accepts only)
 ///
+/// - its peer set reaches whoever connected
 /// - full node, not an isolated connection (those advertise no services: a peer set refuses
 ///   an outbound peer serving nothing)
 async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers, FakeBook)
@@ -73,9 +74,10 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 ///
 /// - Zaino admitted while advertising no services
 /// - headers + blocks byte-identical, unknown hash → `None`
-/// - its mempool asked by address = its three ids; a peer not in the set = a failure, never
-///   another's listing; lie = an answer, not a failure (A = `None`, B never labelled A)
-/// - its block `inv` attributed to its address (a transaction `inv` = nothing); peer = live
+/// - its mempool asked by address = its three ids
+/// - peer not in the set = a failure, never another's listing
+/// - lie = an answer, not a failure (A = `None`, B never labelled A)
+/// - its block `inv` attributed to its address (a transaction `inv` = nothing), peer = live
 // multi_thread required: zebra-network's codec parses blocks and txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_inv_is_attributed() {
@@ -190,7 +192,8 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
 
 /// - Push → lands at a peer the peer set is already connected to (an isolated second connection
 ///   from our IP = dropped by zebra's one-per-IP limit), exactly the bytes, named by their txid
-/// - Malformed bytes never sent; no ready peer = a `Peers` failure, not a verdict
+/// - Malformed bytes never sent
+/// - No ready peer = a `Peers` failure, not a verdict
 // multi_thread required: zebra-network's codec parses txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {

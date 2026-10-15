@@ -77,8 +77,9 @@ impl<S: ChainDataSource> ChainView<S> {
         Self { policy, ..self }
     }
 
-    /// Peers as submission entries, mempool listers and chain carriers; spawn
-    /// [`peer_watch`](Self::peer_watch) and [`peer_mempool`](Self::peer_mempool)
+    /// Peers as submission entries, mempool listers and chain carriers
+    ///
+    /// - spawn [`peer_watch`](Self::peer_watch) and [`peer_mempool`](Self::peer_mempool)
     pub fn with_peers(self, peers: Arc<dyn PeerSource>) -> Self {
         Self { peers: Some(peers), ..self }
     }

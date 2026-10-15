@@ -114,7 +114,7 @@ pub(crate) fn outbound(
         .collect()
 }
 
-/// Least pairwise overlap; `None` below two trusted validators with outbound peers
+/// Least pairwise overlap (`None` below two trusted validators with outbound peers)
 pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
     let pairs = outbound.iter().enumerate().flat_map(|(at, left)| {
         outbound[at + 1..].iter().map(move |right| left.intersection(right).count())
@@ -176,7 +176,7 @@ pub(crate) fn all_trusted(sighting: &Sighting) {
     }
 }
 
-/// Left the view; `at_block` = dropped as the tip moved (mined, most likely)
+/// Left the view (`at_block` = dropped as the tip moved: mined, most likely)
 pub(crate) fn left(sighting: &Sighting, at_block: bool) {
     let stayed = sighting.timeline().first_seen.elapsed().as_secs_f64();
     let how = if at_block { "block" } else { "unlisted" };

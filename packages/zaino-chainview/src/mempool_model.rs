@@ -1,15 +1,16 @@
-//! Mempool model: trusted validators polled, failing and killed, peers' listings churning (some
-//! peers byzantine), blocks, our sends; through the real merge (`ChainViewCore`) and the real
-//! checks (`peer_mempool::judge`), against a naive oracle after every move
-//! (`docs/architecture.md` §5)
+//! Mempool model: trusted validators polled / failing / killed, peers' listings churning (some
+//! peers byzantine), blocks, our sends → real merge (`ChainViewCore`) + real checks
+//! (`peer_mempool::judge`) vs a naive oracle after every move (`docs/architecture.md` §5)
 //!
 //! - held = exactly: listed by a trusted validator not `Down` | kept by the peer quorum | ours
-//!   (an unlisted `ours` gone at the next block); each at the first fee known
-//! - quorum: admitted iff > 2/3 of the fresh listings hold it, from > 5 netgroups, and it passes
-//!   the checks (a child once its parent is held); kept while > 1/3 list it
-//! - the gate: open iff a `Live` validator polled since the last block, or the peers quorate
-//! - a negative fee or an unknown prevout never held; two conflicting spends never both
-//!   quorum-held among honest peers, and become so only while a fresh peer lists both
+//!   (an unlisted `ours` gone at the next block), each at the first fee known
+//! - quorum admit iff > 2/3 of the fresh listings hold it, from > 5 netgroups, + passes the checks
+//!   (a child once its parent is held)
+//! - quorum retain while > 1/3 list it
+//! - gate: open iff a `Live` validator polled since the last block, or the peers quorate
+//! - negative fee / unknown prevout → never held
+//! - two conflicting spends: never both quorum-held among honest peers (only while a fresh peer
+//!   lists both)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -62,7 +63,7 @@ enum Move {
     Kill {
         validator: u8,
     },
-    /// Per peer: `None` = unanswered, else the txs its mempool holds; then `wait` seconds
+    /// Per peer: `None` = unanswered, else the txs its mempool holds (then `wait` seconds)
     Round {
         answers: Vec<Option<u8>>,
         wait: u8,
@@ -344,7 +345,8 @@ impl Run {
         let quorate = netgroups.len() > ECLIPSE_NETGROUPS;
         assert_eq!(view.mempool().is_some(), holder || quorate, "{step:?}: the gate");
 
-        // admission > 2/3 + retention > 1/3 → overlap; held on afterwards by an honest split
+        // - admission > 2/3 + retention > 1/3 → overlap
+        // - held on afterwards by an honest split
         let rivals = [B, RIVAL].iter().all(|tx| real.get(tx).is_some_and(|h| h.quorum));
         if rivals && !rivals_before {
             let lists_both = fresh.iter().any(|(_, txs)| txs.contains(&B) && txs.contains(&RIVAL));

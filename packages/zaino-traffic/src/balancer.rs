@@ -49,7 +49,7 @@ pub struct Answered<T> {
     pub ticket: Ticket,
 }
 
-/// First transport failure, else the last domain answer; `None` = no eligible member to ask
+/// First transport failure, else the last domain answer (`None` = no eligible member to ask)
 #[derive(Debug)]
 pub struct Unanswered<E: fmt::Debug + fmt::Display> {
     pub last: Option<QueryError<E>>,
@@ -70,7 +70,8 @@ pub enum Urgency {
     Bulk,
 }
 
-/// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, the peer set
+/// - `Pinned` = `getblockheader` per height, one trusted member
+/// - `Peers` = `FindHeaders`, the peer set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
     Pinned { validator: TrustedValidatorId, heights: Vec<BlockHeight> },
@@ -103,8 +104,9 @@ impl Peers {
     pub const MIN_IN_FLIGHT: u32 = crate::class::LANES as u32;
 }
 
-/// One trusted member's latest poll (raw reading, latest only); `health` = right after it
+/// One trusted member's latest poll (raw reading, latest only)
 ///
+/// - `health` = right after it
 /// - `asked` = where its `getblockhash` was asked ([`TrafficBalancer::poll_best`], read at start)
 #[derive(Debug)]
 pub struct Observation {
@@ -186,7 +188,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         (Self { shared: Arc::clone(&shared) }, TrafficDriver { shared })
     }
 
-    /// Pending until a member serves it (rounds retried); drop = abandon
+    /// Pending until a member serves it (rounds retried, drop = abandon)
     pub async fn block(&self, hash: BlockHash, urgency: Urgency) -> Answered<Block> {
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
@@ -200,7 +202,9 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     }
 
     /// Best-chain blocks at `heights`, one batched request to a trusted member (peers answer by
-    /// hash only); pending until one serves them all; drop = abandon
+    /// hash only)
+    ///
+    /// - pending until one serves them all (drop = abandon)
     pub async fn blocks_at(
         &self,
         heights: Arc<[BlockHeight]>,
@@ -303,7 +307,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.ask(Class::Lookup, Route::Any, send).await
     }
 
-    /// `sendrawtransaction` on `validator` alone (the caller's privacy choice); one attempt
+    /// `sendrawtransaction` on `validator` alone, one attempt (the caller's privacy choice)
     pub async fn submit(
         &self,
         validator: TrustedValidatorId,
@@ -316,7 +320,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         .await
     }
 
-    /// `checkadmission` on `validator` alone: the send's verdict, nothing relayed; one attempt
+    /// `checkadmission` on `validator` alone, one attempt (the send's verdict, nothing relayed)
     pub async fn check_admission(
         &self,
         validator: TrustedValidatorId,
@@ -351,7 +355,8 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// Where each poll asks `getblockhash`: `best()` as the poll starts (`None` = not asked)
     ///
     /// - never wakes a poll (an answer at a moved best = one stale fact, re-asked next poll)
-    /// - set once (one chain view per balancer); unset = nothing asked
+    /// - set once (one chain view per balancer)
+    /// - unset = nothing asked
     pub fn poll_best(&self, best: impl Fn() -> Option<BlockHeight> + Send + Sync + 'static) {
         let set = self.shared.best.set(Box::new(best)).is_ok();
         assert!(set, "poll_best set twice: one chain view per balancer");

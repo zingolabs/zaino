@@ -157,7 +157,12 @@ impl TrustedValidatorMeta {
         self.answering() && self.tip().is_some_and(|claim| claim.height > best.height) && !forked
     }
 
-    /// In order: claim = best; claims higher, `block_at_best` verified; claim verified, below; else
+    /// First match wins
+    ///
+    /// - `Agreed` = claim = best
+    /// - `Ahead` = claim higher + `block_at_best` verified
+    /// - `Behind` = claim lower + verified
+    /// - `Diverged` = else
     pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;

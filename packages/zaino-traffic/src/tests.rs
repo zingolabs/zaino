@@ -24,9 +24,11 @@ fn v(index: usize) -> TrustedValidatorId {
 }
 
 /// Ours (priority 0, lacks the transaction) + partner (priority 1, holds it):
-/// - lookup: absent on ours → partner; unknown everywhere → unanswered with the absence
+/// - lookup: absent on ours → partner
+/// - lookup: unknown everywhere → unanswered with the absence
 /// - pinned headers, bytes from the best tier (ours: not listed there = `NotFound` item)
-/// - submit: pinned, accepted; garbage = unanswered with the rejection
+/// - submit: pinned, accepted
+/// - submit: garbage = unanswered with the rejection
 #[tokio::test(start_paused = true)]
 async fn each_class_reaches_the_member_its_route_names() {
     let mut chain = MockChain::regtest();
@@ -94,8 +96,10 @@ async fn each_class_reaches_the_member_its_route_names() {
     cancel.cancel();
 }
 
-/// Two members at one tip: ours answers a block first; reported → benched (table, entries), the
-/// re-ask served by partner, by hash and by height alike
+/// Two members at one tip, ours answers a block first
+///
+/// - reported → benched (table, entries)
+/// - re-ask served by partner, by hash and by height alike
 #[tokio::test(start_paused = true)]
 async fn a_reported_liar_is_benched_until_another_serves() {
     let mut chain = MockChain::regtest();
@@ -202,8 +206,10 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     cancel.cancel();
 }
 
-/// One member whose block port is down (polls fine): the block ask retries its rounds, a warning
-/// each minute naming the member + last cause; served once reachable, one line saying so
+/// One member whose block port is down (polls fine)
+///
+/// - block ask retries its rounds, a warning each minute naming the member + last cause
+/// - served once reachable, one line saying so
 #[tokio::test(start_paused = true)]
 async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
     #[derive(Clone, Default)]
@@ -269,9 +275,9 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
 
 /// One member, its push stream up:
 /// - reconcile every 15 s, a push event polls within 200 ms
-/// - `poll_best` wakes nothing; the next poll asks `getblockhash` there
-/// - unreachable: `Degraded`, then `Down` after 10 failures (ladder); reachable: `Live` again,
-///   its first answer carrying the metadata the failures left due
+/// - `poll_best` wakes nothing, the next poll asks `getblockhash` there
+/// - unreachable: `Degraded`, then `Down` after 10 failures (ladder)
+/// - reachable: `Live` again, its first answer carrying the metadata the failures left due
 /// - each observation: the health right after it
 #[tokio::test(start_paused = true)]
 async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_ladder() {

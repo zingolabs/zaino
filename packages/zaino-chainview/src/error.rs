@@ -5,7 +5,8 @@ use zaino_source::{NonDomainError, SendRawTransactionError};
 /// Submission no trusted validator accepted or listed
 ///
 /// - one rejecting, another accepting = success (a refusal = usually local policy)
-/// - `Rejected` = precheck's refusal or the first trusted rejection; `Unreachable` = neither
+/// - `Rejected` = precheck's refusal or the first trusted rejection
+/// - `Unreachable` = neither
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitError {
     #[error("transaction rejected: {0}")]

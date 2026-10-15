@@ -1,6 +1,7 @@
 //! Scenarios against `MockValidator`s (+ `MockPeers`), through the real balancer, on a paused clock
 //!
-//! - Each poll = the balancer's (every second, or woken); [`polled`] waits out one per member
+//! - Each poll = the balancer's (every second, or woken)
+//! - [`polled`] waits out one per member
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,12 +92,13 @@ fn regtest() -> zcash_protocol::local_consensus::LocalNetwork {
     MockChain::regtest().schedule().upgrades
 }
 
-/// N=1, its window holding the verified tip; coinbases at 1..=3 fund txs 1..=3 (fee n · 1 000)
+/// N=1, its window holding the verified tip, coinbases at 1..=3 funding txs 1..=3 (fee n · 1 000)
 ///
-/// - mempool refused until a polled validator holds the verified best; then its listings, each
+/// - mempool refused until a polled validator holds the verified best, then its listings, each
 ///   at its validator's fee
 /// - `arrivals` since a pinned view = each transaction held now and absent then, once (a flap
-///   out and back, or a drop: nothing); ours served before any listing
+///   out and back, or a drop: nothing)
+/// - ours served before any listing
 /// - a mined block: the mempool as it now stands (ours listed)
 #[tokio::test(start_paused = true)]
 async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_new_transaction_once()
@@ -141,8 +143,9 @@ async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_ne
     assert_eq!(entries, listed, "each entry: its validator's fee");
 
     // - tx 2 flaps out and back (held in `pinned` → no arrival)
-    // - tx 1 dropped (propagation churn: no arrival); tx 3 arrives; ours (tx 9) served before
-    //   any listing
+    // - tx 1 dropped (propagation churn: no arrival)
+    // - tx 3 arrives
+    // - ours (tx 9) served before any listing
     validator.evict(two);
     polled(&balancer).await;
     validator.evict(one);
@@ -174,9 +177,10 @@ async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_ne
     cancel.cancel();
 }
 
-/// Mempool off below the network tip → `CatchingUp`: still holds the tip it claims (a trusted
-/// validator's blocks are served whatever its sync state), no mempool served; listings again once
-/// active
+/// Mempool off below the network tip → `CatchingUp`
+///
+/// - still holds the tip it claims (a trusted validator's blocks served whatever its sync state)
+/// - no mempool served, listings again once active
 #[tokio::test(start_paused = true)]
 async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let mut chain = MockChain::regtest();
@@ -299,8 +303,10 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 /// Three validators holding the verified tip, no peers
 ///
 /// - expired = refused by the precheck: nothing checked, nothing pushed
-/// - one holder's `checkadmission` decides: admissible = `Ok` at once, `ours` (servable before
-///   any listing, unpriced), then pushed to a trusted entry; refused = that refusal, nothing pushed
+/// - one holder's `checkadmission` decides
+/// - admissible = `Ok` at once, `ours` (servable before any listing, unpriced), then pushed to a
+///   trusted entry
+/// - refused = that refusal, nothing pushed
 #[tokio::test(start_paused = true)]
 async fn a_checked_submission_answers_at_once_on_the_check() {
     let mut chain = MockChain::regtest();
@@ -385,7 +391,10 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
 }
 
 /// Three validators holding the verified tip, none answering `checkadmission` (zcashd, stock
-/// zebrad): each entry tried once; unanimous rejection = the rejection, none reachable = no answer
+/// zebrad)
+///
+/// - each entry tried once
+/// - unanimous rejection = the rejection, none reachable = no answer
 #[tokio::test(start_paused = true)]
 async fn an_unchecked_submission_tries_every_entry_before_its_verdict() {
     let mut chain = MockChain::regtest();
@@ -462,10 +471,12 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
 
 /// Paused clock, two trusted validators, four live peers in four netgroups + one dead
 ///
-/// - each peer's mempool polled: `peers: x/4` = its listers; four netgroups = no quorum, so a
-///   peer listing alone holds nothing (a trusted listing does: `peers: 2/4, trusted: 1/2`)
+/// - each peer's mempool polled: `peers: x/4` = its listers
+/// - four netgroups = no quorum → peer listing alone holds nothing (a trusted listing does:
+///   `peers: 2/4, trusted: 1/2`)
 /// - checked submission → `Ok` at once, then relayed through the peers, never pushed to a trusted
-///   validator; unseen past the threshold = relayed again; a trusted listing = spread, job over
+///   validator
+/// - unseen past the threshold = relayed again, a trusted listing = spread + job over
 /// - unchecked + nobody relays: the budget spent on peer relays, then one trusted verdict
 #[tokio::test(start_paused = true)]
 async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchecked() {
@@ -554,10 +565,11 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
 /// - every peer lists `a`, `parent`, `child` (spends `parent`'s output) and `bad` (pays 6,000 of
 ///   5,000): `parent` at its fee, `child` one round later (unknown prevout: retried, not refused),
 ///   `bad` never (a negative fee: refused once, never re-fetched while it stays listed)
-/// - listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an empty
-///   mempool served
-/// - a submission with no trusted validator: nothing to check with, one peer relay, answered once
-///   6 of 7 list it; no longer listed = still served (ours) until the next block, then gone
+/// - listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view
+/// - quorum still reads → empty mempool served
+/// - submission with no trusted validator: nothing to check with, one peer relay, answered once
+///   6 of 7 list it
+/// - no longer listed = still served (ours) until the next block, then gone
 #[tokio::test(start_paused = true)]
 async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_takes_sends() {
     let alice = p2pkh([0xaa; 20]);
@@ -654,7 +666,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let gone = [a, parent, child].map(|txid| first_seen(&txid));
     assert_eq!(gone, [None, None, None], "gone from the view");
 
-    // a send with no trusted validator: a peer first; the quorum listing it = the answer
+    // send with no trusted validator: a peer first, the quorum listing it = the answer
     let (sent, sent_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_500)]);
     peers.hold(id(sent), Bytes::from(sent_raw.clone()));
     let submitting = Arc::clone(&view);
@@ -680,8 +692,8 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
 
 /// Holding re-asked every poll (`getblockhash`, never a walk)
 ///
-/// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`; slow mempool
-///   bytes never delay the hold
+/// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`
+/// - slow mempool bytes never delay the hold
 /// - its only holder gone → no holder, no mempool (fail closed: nothing proves the block valid)
 /// - a heavier fork only one validator holds → it alone holds the tip, the others `Diverged`
 /// - that one reorging away mid-poll → one wrong poll, dropped at the next
@@ -708,8 +720,8 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     view.set_verified(Some(chain.verified(at_100)));
     assert_eq!(tip(), Some((at_100, held_by(&[0, 1, 2]))));
 
-    // a mines 101, a new transaction's bytes 20 s away; its header verifies: the tip moves at
-    // once, held by a alone (its poll's hold merged before its bytes are fetched)
+    // - a mines 101, a new transaction's bytes 20 s away
+    // - its header verifies → tip moves at once, held by a alone (hold merged before bytes fetched)
     validators[0].follow(&chain, at_101);
     validators[0].latency(&[Port::MempoolBytes], Duration::from_secs(20));
     let unmined = chain.submit(decoded(raw_transaction(1, 0).1));
@@ -730,7 +742,8 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     assert!(reader.current().mempool().is_none(), "no holder: refused");
     assert_eq!(reader.current().best(), Some(at_101), "the header chain still says 101");
 
-    // b catches up: 101 served again; a returns: a holders-only change
+    // - b catches up: 101 served again
+    // - a returns: a holders-only change
     validators[1].follow(&chain, at_101);
     polled(&balancer).await;
     assert_eq!(tip(), Some((at_101, held_by(&[1]))));
@@ -767,10 +780,10 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     cancel.cancel();
 }
 
-/// Peers + release ride the poll every 60 s; the push stream's state, every poll
+/// Peers + release ride the poll every 60 s, the push stream's state every poll
 ///
 /// - failed half → validator still live, last answer kept
-/// - release halting within a week of the tip raises `ending`; an upgrade clears it
+/// - release halting within a week of the tip raises `ending`, an upgrade clears it
 /// - stream up / down (the balancer's) shown from the next poll
 #[tokio::test(start_paused = true)]
 async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
@@ -877,8 +890,11 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never {what}");
 }
 
-/// Finality stall alarm (telemetry, depth 10): finalized = best − depth never raises it; a block
-/// `depth` deep owed finality raises it only past 60 s; the finalized tip moving clears it
+/// Finality stall alarm (telemetry, depth 10)
+///
+/// - finalized = best − depth never raises it
+/// - block `depth` deep owed finality raises it only past 60 s
+/// - finalized tip moving clears it
 #[tokio::test(start_paused = true)]
 async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_finalized_moves() {
     let mut chain = MockChain::regtest();
@@ -904,11 +920,13 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_finalized
 
 /// Real regtest header bytes through header sync, two trusted validators, depth 10
 ///
-/// - a at 5,000: the chain anchors at its claim − max(depth, CONTEXT) (4,887), never reading
-///   history below, then follows a's 113 headers; finalized = 4,990, held by a (b's claim 3,000 =
-///   below finalized, held by definition, nothing fetched)
+/// - a at 5,000: chain anchors at its claim − max(depth, CONTEXT) (4,887), never reading history
+///   below, then follows a's 113 headers
+/// - finalized = 4,990, held by a (b's claim 3,000 = below finalized, held by definition, nothing
+///   fetched)
 /// - b moves to a fork of a's at 4,999 with more work → the tip follows the work to b, held by b
-/// - a published chain never changes; cancel ends header sync
+/// - published chain never changes
+/// - cancel ends header sync
 #[tokio::test(start_paused = true)]
 async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     use zaino_header_chain::HeaderChain;
@@ -960,8 +978,8 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
 /// - a jumps to 20,500 (past the ceiling: depth + `HEADER_BATCH` above finalized) → re-anchored at
 ///   20,387, followed to 20,500, finalized 20,490: 135 headers fetched in all, none of the 20,366
 ///   between
-/// - every published chain: best − finalized ≤ depth + `HEADER_BATCH` (H9), finality alarm
-///   down; the view's tip held by a
+/// - every published chain: best − finalized ≤ depth + `HEADER_BATCH` (H9), finality alarm down
+/// - view's tip held by a
 #[tokio::test(start_paused = true)]
 async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it() {
     use zaino_header_chain::HeaderChain;
@@ -1013,7 +1031,7 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
     cancel.cancel();
 }
 
-/// Two trusted validators at 30, depth 10; a then serves a longer chain forked at 5, below our
+/// Two trusted validators at 30, depth 10, then a serves a longer chain forked at 5, below our
 /// finalized tip
 ///
 /// - a's forked claim: given up on (never fetched again while it stands), `Diverged`, never the
@@ -1063,9 +1081,9 @@ async fn a_forked_validator_never_delays_the_honest_one() {
 
 /// One trusted validator + the peer set, both at 40, depth 10, real regtest headers:
 /// - a anchors and leads to 40, finalized 30
-/// - a down, the network moves on to 60: the peer set's 41..=60 each pass every rule; best = 60,
-///   never vouched, so finalized stops at 40 = a's last vouch (best − depth would be 50), best held
-///   by no one
+/// - a down, the network moves on to 60: the peer set's 41..=60 each pass every rule
+/// - best = 60, never vouched → finalized stops at 40 = a's last vouch (best − depth would be 50),
+///   best held by no one
 /// - a back at 60: it vouches the peers' chain, finalized = 50, held by a
 #[tokio::test(start_paused = true)]
 async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_return() {
@@ -1104,8 +1122,10 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     cancel.cancel();
 }
 
-/// a at 40 (finalized 40 once best ≥ 50), the peer set's best path above it; each row = what the
-/// peers' path ends in, where the tip stops, whether the peers were blamed:
+/// a at 40 (finalized 40 once best ≥ 50), the peer set's best path above it
+///
+/// Each row = what the peers' path ends in, where the tip stops, whether the peers were blamed:
+///
 /// - 2,100 good headers: the ceiling (finalized + depth + `HEADER_BATCH` = 2,050) exactly
 /// - block 45 from the future: 44, no blame (only the clock is behind)
 /// - block 45 with nBits the rules refuse: 44, each refusal a misanswer on the peer set
@@ -1160,8 +1180,10 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 /// `inv`s: finalized reaches best − depth = 50 on the peers' word once more than 5 netgroups
 /// carry it
 /// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, finalized stays 40
-/// - 10.7 announces a block off our chain; 10.8 (not live: inbound) announces 60; 10.6 announces
-///   45 (ours, but below 50: its chain may leave ours after 45): none counts
+/// - none counts
+///   - 10.7 announces a block off our chain
+///   - 10.8 (not live: inbound) announces 60
+///   - 10.6 announces 45 (ours, but below 50: its chain may leave ours after 45)
 /// - 10.6 then announces 55 (ours, above 50): six netgroups → finalized 50, a still down
 #[tokio::test(start_paused = true)]
 async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator_vouches() {

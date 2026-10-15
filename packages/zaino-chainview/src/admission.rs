@@ -101,8 +101,10 @@ mod tests {
 
     use super::*;
 
-    /// Real bytes against the block above mainnet 3,428,142 (NU6.3's first): the spend of a known
-    /// prevout passes with its fee; each rule refuses by name, an unknown prevout alone retried
+    /// Real bytes vs the block above mainnet 3,428,142 (NU6.3's first)
+    ///
+    /// - known-prevout spend passes with its fee
+    /// - each rule refuses by name (unknown prevout alone retried)
     #[test]
     fn each_consensus_rule_refuses_by_name_and_only_an_unknown_prevout_is_retried() {
         let mainnet = compiled_schedule(NetworkType::Main).expect("compiled");

@@ -6,7 +6,8 @@
 //!   a flap)
 //! - fresh = listed within [`LISTING_FRESH`] of the last round (a busy peer keeps its last)
 //! - conflicting transactions never both held while every peer is honest (> 2/3 and > 1/3 overlap,
-//!   one mempool holds one); a peer listing both can get both held (`mempool_model.rs`)
+//!   one mempool holds one)
+//! - peer listing both → both may be held (`mempool_model.rs`)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -25,7 +26,7 @@ pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
 /// Listing counted this long after it was read (three rounds)
 pub(crate) const LISTING_FRESH: Duration = Duration::from_secs(15);
 
-/// Each live peer's latest listing; `imbl` (published with the `ChainViewSnapshot`)
+/// Each live peer's latest listing, `imbl` (published with the `ChainViewSnapshot`)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Listings {
     by_peer: OrdMap<SocketAddr, Listed>,
@@ -39,8 +40,9 @@ struct Listed {
 }
 
 impl Listings {
-    /// One round at `now`: each live peer's answer (`None` = failed: its last kept while fresh);
-    /// a peer no longer live dropped
+    /// One round at `now`: each live peer's answer (`None` = failed: its last kept while fresh)
+    ///
+    /// - peer no longer live → dropped
     pub(crate) fn round(
         &mut self,
         answers: Vec<(SocketAddr, Option<Vec<PeerTxId>>)>,
@@ -215,9 +217,9 @@ mod tests {
         }
     }
 
-    /// 9 peers, 9 netgroups: 7 listing = > 2/3 → admitted, retained down to 4 (> 1/3), gone at 3;
-    /// the same 7 inside 5 netgroups = never admitted; another witness of the txid = not this id,
-    /// still a lister of the txid
+    /// - 9 peers, 9 netgroups: 7 listing = > 2/3 → admitted, retained down to 4 (> 1/3), gone at 3
+    /// - same 7 inside 5 netgroups = never admitted
+    /// - another witness of the txid = not this id, still a lister of the txid
     #[test]
     fn admission_needs_two_thirds_in_six_netgroups_and_retention_one_third() {
         let start = Instant::now();

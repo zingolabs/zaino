@@ -4,8 +4,8 @@
 //! - Reading (claim, `getblockhash`) merged first, then the listing (holder facts never wait on
 //!   bytes)
 //! - Bytes = only what the view lacks, through `bytes(..)` with this validator preferred
-//! - A transaction leaves a validator's listing one way: unlisted (mined or evicted); a new tip
-//!   clears nothing (an unmined transaction survives a block)
+//! - Transaction leaves a validator's listing one way: unlisted (mined or evicted)
+//! - New tip clears nothing (an unmined transaction survives a block)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use zcash_protocol::{BlockHash, TxId};
 use crate::config::CATCHING_UP_WARN_INTERVAL;
 use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 
-/// Merges every trusted validator's observations into the view; spawn [`run`](Self::run)
+/// Merges every trusted validator's observations into the view (spawn [`run`](Self::run))
 pub struct ObservationMerge<S> {
     pub(crate) core: Arc<ChainViewCore>,
     pub(crate) balancer: TrafficBalancer<S>,
@@ -55,7 +55,8 @@ impl<S: ChainDataSource> ObservationMerge<S> {
     }
 }
 
-/// `listed` = its last listing as admitted (the diff's left side); `health` = as last merged
+/// - `listed` = its last listing as admitted (the diff's left side)
+/// - `health` = as last merged
 struct ValidatorFollower<'a, S> {
     validator: TrustedValidatorId,
     address: &'a str,
@@ -165,7 +166,8 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         }
     }
 
-    /// `Degraded`: holds no tip, sightings kept; `Down`: neither (its next answer re-lists all)
+    /// - `Degraded`: holds no tip, sightings kept
+    /// - `Down`: neither (its next answer re-lists all)
     fn failed(&mut self, cause: &NonDomainError, health: Health) {
         match health {
             Health::Down => {

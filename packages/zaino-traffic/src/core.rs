@@ -4,8 +4,10 @@
 //! - One dispatch per step: due polls (own permit), then open asks by lane (control →
 //!   interactive → bulk), FIFO
 //! - Pick = eligible members with room → best tier (T6) → `Prefer`, else least in flight
-//! - One policy: domain reply or failure → next member; silent past the hedge floor → a second
-//!   member; every eligible member tried → retry the round (blocks) or unanswered
+//! - One policy
+//!   - domain reply or failure → next member
+//!   - silent past the hedge floor → a second member
+//!   - every eligible member tried → retry the round (blocks) or unanswered
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -19,8 +21,9 @@ const RETRY: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AskId(pub(crate) u64);
 
-/// One send of one ask: a misanswer report charges `member` and only it (T8; the peer set: no
-/// one, its transport blames the peer)
+/// One send of one ask: a misanswer report charges `member` and only it (T8)
+///
+/// - peer set → charges no one (its transport blames the peer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ticket {
     pub(crate) ask: AskId,
@@ -138,7 +141,8 @@ enum Next {
 }
 
 impl TrafficCore {
-    /// `trusted[i]` = `TrustedValidatorId(i)`: (priority, limits); `peers` = the peer set's in flight
+    /// - `trusted[i]` = `TrustedValidatorId(i)`: (priority, limits)
+    /// - `peers` = the peer set's in flight
     pub(crate) fn new(trusted: &[(u8, Limits)], peers: Option<u32>, now: Instant) -> Self {
         assert!(!trusted.is_empty(), "a trusted validator to ask");
         assert!(

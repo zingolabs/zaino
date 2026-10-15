@@ -26,8 +26,8 @@ use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
 /// One unconfirmed transaction, as served
 ///
-/// - `fee` = a validator's listing, or ours from the served UTXO set (a peer quorum's); `None` =
-///   our own broadcast, not yet listed or admitted
+/// - `fee` = a validator's listing, or ours from the served UTXO set (a peer quorum's)
+/// - `fee: None` = our own broadcast, not yet listed or admitted
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolEntry {
     pub txid: TxId,
@@ -44,7 +44,8 @@ pub struct MempoolEntry {
 pub struct Projection(Arc<OnceLock<Bytes>>);
 
 impl Projection {
-    /// Racing first readers may both render (same bytes; one kept); a failed render is not kept
+    /// - racing first readers may both render (same bytes, one kept)
+    /// - failed render never kept
     pub fn get_or_render<E>(&self, render: impl FnOnce() -> Result<Bytes, E>) -> Result<Bytes, E> {
         if let Some(rendered) = self.0.get() {
             return Ok(rendered.clone());
@@ -145,7 +146,7 @@ impl Sighting {
         self.timeline
     }
 
-    /// Records `all_trusted` the first time `readers` (non-empty) all list it; `true` = now
+    /// Records `all_trusted` the first time `readers` (non-empty) all list it (`true` = now)
     pub(crate) fn reached_all(&mut self, readers: TrustedValidatorSet) -> bool {
         let everywhere = !readers.is_empty() && self.trusted.covers(readers);
         let first = everywhere && self.timeline.all_trusted.is_none();
@@ -188,7 +189,7 @@ impl Sighting {
         self.quorum
     }
 
-    /// Admitted by a peer quorum (`true`) or no longer retained by one (`false`); `true` = changed
+    /// Admitted by a peer quorum (`true`) or no longer retained by one (`false`) → `true` = changed
     pub(crate) fn set_quorum(&mut self, quorum: bool) -> bool {
         std::mem::replace(&mut self.quorum, quorum) != quorum
     }
@@ -266,9 +267,10 @@ impl ChainViewSnapshot {
         self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_STALL)
     }
 
-    /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
-    /// trusted validator per address; `ours` served (our relay)
+    /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best
     ///
+    /// - one fresh trusted validator per address
+    /// - `ours` served (our relay)
     /// - each holder `Live` + `Agreed`, its `getblockchaininfo` = the best block, no upgrade,
     ///   branch id 0
     #[cfg(any(test, feature = "testing"))]
@@ -323,8 +325,8 @@ impl ChainViewSnapshot {
 
     /// Consumers' tests: holder `at` claims `by` blocks past best (header sync short of its tip)
     ///
-    /// - `read` = its hash at best polled: `Ahead`, still a holder; else no poll since the chain
-    ///   moved: `Diverged`, no longer a holder (as a merge would)
+    /// - `read` = its hash at best polled → `Ahead`, still a holder
+    /// - `!read` = no poll since the chain moved → `Diverged`, not a holder (as a merge would)
     #[cfg(any(test, feature = "testing"))]
     pub fn ahead(mut self, at: usize, by: u32, read: bool) -> Self {
         let best = self.best().expect("ahead of a verified best");
@@ -395,8 +397,9 @@ impl ChainViewSnapshot {
         telemetry::shared_outbound_min(&telemetry::outbound(&self.trusted_validators))
     }
 
-    /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch;
-    /// the mempool RPCs go through [`mempool`](Self::mempool))
+    /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch)
+    ///
+    /// - mempool RPCs → [`mempool`](Self::mempool)
     pub(crate) fn sighting(&self, txid: &TxId) -> Option<&Sighting> {
         self.mempool.get(txid)
     }
@@ -411,14 +414,15 @@ impl ChainViewSnapshot {
             .collect()
     }
 
-    /// Every held transaction's [`MempoolState`], in txid order (telemetry; never gates serving)
+    /// Every held transaction's [`MempoolState`], in txid order (telemetry, never gates serving)
     pub fn mempool_states(&self) -> impl Iterator<Item = MempoolState> + '_ {
         self.mempool.values().map(Sighting::state)
     }
 
-    /// The served mempool; `None` while neither a `Live` trusted validator (its mempool
-    /// listing) holds the best block nor [`peers_quorate`](Self::peers_quorate) (fail closed: no
-    /// empty stand-in)
+    /// Served mempool
+    ///
+    /// - `None` while neither a `Live` trusted validator (its mempool listing) holds the best block
+    ///   nor [`peers_quorate`](Self::peers_quorate) (fail closed: no empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
         let live =
             |at: usize| self.trusted_validators.get(at).is_some_and(|m| m.health == Health::Live);
@@ -445,7 +449,8 @@ impl MempoolView<'_> {
 
     /// `GetMempoolTx`'s filter (`service.proto:293-305`): all but the entries a suffix identifies
     ///
-    /// - suffix vs protocol-order txid bytes; one excluded only on a unique match (ambiguous → kept)
+    /// - suffix vs protocol-order txid bytes
+    /// - entry excluded only on a unique match (ambiguous → kept)
     pub fn excluding<B: AsRef<[u8]>>(&self, suffixes: &[B]) -> Vec<MempoolEntry> {
         let servable: Vec<MempoolEntry> = self.entries().collect();
         let mut excluded: Vec<TxId> = Vec::new();

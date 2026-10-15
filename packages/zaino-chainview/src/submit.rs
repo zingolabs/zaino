@@ -11,7 +11,8 @@
 //! - pure: time and observations come in, steps go out (the driver in `view.rs` executes them)
 //! - `checked` = a trusted `checkadmission` accepted it first (the wallet's answer, already given)
 //! - peers first: a trusted validator relays it only past the budget, unspread (Dandelion++'s
-//!   fail-safe); unchecked, that one trusted push = the verdict (a peer answers with nothing)
+//!   fail-safe)
+//! - unchecked → that one trusted push = the verdict (a peer answers with nothing)
 
 use std::num::NonZeroU8;
 use std::time::Duration;
@@ -50,8 +51,10 @@ pub(crate) enum Entry {
     Trusted(TrustedValidatorId),
 }
 
-/// One push's answer: `Accepted` = trusted validator admitted it; `Delivered` = the peers took the
-/// bytes (a peer answers nothing either way)
+/// One push's answer
+///
+/// - `Accepted` = trusted validator admitted it
+/// - `Delivered` = the peers took the bytes (a peer answers nothing either way)
 #[derive(Debug)]
 pub(crate) enum Pushed {
     Accepted,
@@ -75,8 +78,9 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    /// `listing` ⊆ `readers`; `quorum` = a peer quorum admitted it; `quorate` = the peers'
-    /// listings can make one
+    /// - `listing` ⊆ `readers`
+    /// - `quorum` = a peer quorum admitted it
+    /// - `quorate` = the peers' listings can make one
     pub(crate) fn of(
         listing: TrustedValidatorSet,
         quorum: bool,
@@ -131,8 +135,8 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    /// `peers` = live peers to relay through (none = trusted entries only); `checked` = a trusted
-    /// `checkadmission` accepted it
+    /// - `peers` = live peers to relay through (none = trusted entries only)
+    /// - `checked` = a trusted `checkadmission` accepted it
     pub(crate) fn new(
         peers: bool,
         trusted: Vec<TrustedValidatorId>,
@@ -271,7 +275,7 @@ mod tests {
     }
 
     /// Who holds the transaction at `at`, from who took it when (one gossip hop from a relaying
-    /// holder reaches everyone honest; a second hop adds nobody)
+    /// holder reaches everyone honest, a second hop adds nobody)
     ///
     /// - one `Peers` push = ⌈n/3⌉ peers, the next ⌈n/3⌉ on each push (zebra samples at random)
     /// - every peer in its own netgroup: quorate from 6 peers, quorum = > 2/3 of them hold it
@@ -341,14 +345,21 @@ mod tests {
 
         /// Simulated peers + trusted validators (every `Node`), virtual clock until `Done`
         ///
-        /// - privacy: with peers, the budget all relays through them; at most one trusted push,
-        ///   past the budget; no trusted validator pushed twice
-        /// - bounded: <= max_attempts pushes, + 1 only for that trusted push; ends within
-        ///   (max_attempts + 1) × threshold
-        /// - patience: no push inside a delivered / accepted push's threshold; none once spread
-        ///   + accepted; a checked transaction pushed at least once
-        /// - answer: accepted iff checked, a trusted entry accepted or it was listed; rejected only
-        ///   from a trusted rejection; unreachable only when no trusted validator answered
+        /// - privacy
+        ///   - with peers, the budget all relays through them
+        ///   - <= 1 trusted push, past the budget
+        ///   - no trusted validator pushed twice
+        /// - bounded
+        ///   - <= max_attempts pushes, + 1 only for that trusted push
+        ///   - ends within (max_attempts + 1) × threshold
+        /// - patience
+        ///   - no push inside a delivered / accepted push's threshold
+        ///   - none once spread + accepted
+        ///   - checked transaction pushed >= once
+        /// - answer
+        ///   - accepted iff checked, a trusted entry accepted or it was listed
+        ///   - rejected only from a trusted rejection
+        ///   - unreachable only when no trusted validator answered
         /// - fast honest relay pushed + honest reader outside the entries = spread
         #[test]
         fn a_job_relays_through_peers_first_waits_out_each_threshold_and_ends_on_a_trusted_verdict(
@@ -473,8 +484,10 @@ mod tests {
 
     /// `Seen::of` case by case
     ///
-    /// - a trusted entry's own listing = listed, never spread; an untried trusted listing = both
-    /// - a peer quorum = listed + spread, no trusted validator needed; quorate peers = observable
+    /// - trusted entry's own listing = listed, never spread
+    /// - untried trusted listing = both
+    /// - peer quorum = listed + spread, no trusted validator needed
+    /// - quorate peers = observable
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
         let t = |i: usize| TrustedValidatorId::new(i).expect("< MAX");
