@@ -7,10 +7,10 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
-use zaino_persistence::{AppliedView, BlockChanges, SequenceRead, SequenceTable, Store, View};
+use zaino_persistence::{BlockChanges, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, BlockRef};
 
-use crate::{blocking, emit, IndexHandle, Subscription};
+use crate::{emit, IndexHandle};
 
 /// Fold's preconditions, panic naming the index: `out` opened for `block`, `block` next above
 /// `parent` (`None` = empty parent: genesis)
@@ -68,46 +68,6 @@ pub fn commit<S: Store>(store: &mut S) -> Duration {
 /// (`zaino_index_{run,write}_seconds`)
 pub fn ran<S: Store>(store: &S, started: Instant, write: Duration) {
     emit::index_run(store.schema().kind.name(), started.elapsed(), write);
-}
-
-/// Writer loop of an index whose fold reads only `block` + its own applied state: `blocks`
-/// through `Shutdown`, each block not [`held`] → `fold` → [`apply`]
-///
-/// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
-/// - failure panics
-pub async fn fold_each<S: Store>(
-    mut store: S,
-    publisher: IndexPublisher<S::View>,
-    mut blocks: Subscription<Block>,
-    fold: fn(AppliedView<'_, S::View>, &Block, &mut BlockChanges),
-) {
-    while let Some(run) = blocks.next_run().await {
-        let started = Instant::now();
-        let write;
-        (store, write) = blocking(move || {
-            let mut write = Duration::ZERO;
-            for block in &run.blocks {
-                if !held(&store, block) {
-                    let mut changes = store.changes(block.block_ref());
-                    fold(store.applied(), block, &mut changes);
-                    write += apply(&mut store, changes);
-                }
-            }
-            if run.ends_at_finalized_tip {
-                write += commit(&mut store);
-            }
-            (store, write)
-        })
-        .await;
-        publisher.publish(&store);
-        ran(&store, started, write);
-    }
-    store = blocking(move || {
-        commit(&mut store);
-        store
-    })
-    .await;
-    publisher.publish(&store);
 }
 
 /// Writer's end of its [`IndexHandle`]: applied tip after every hop, durable view on each commit

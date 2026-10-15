@@ -108,9 +108,6 @@ not), `changed()` (after each commit; `false` = writer gone).
 
 ## Writer loop
 
-- `fold_each(store, publisher, blocks, fold)`: the whole loop above, for an index whose fold reads
-  only the block and its own applied state (block_hash, transparent_address). Writers with a
-  second input (compact-block's fees) or a batched fold (tree-state, utxo-set) write their own.
 - `held(store, block)`: `block` at or below the applied tip (a restart resends from the lowest durable
   tip).
 - `apply` / `commit` return the time spent in the store; `ran(&store, started, write)` after each
