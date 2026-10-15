@@ -34,6 +34,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use crate::emit::{Outcome, Port};
 use crate::error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 
 /// Seals the canonical (resilient) ports so only [`ValidatorClient`] can implement
@@ -165,33 +166,46 @@ impl<V> ValidatorClient<V> {
     /// Generic over the adapter's own non-domain error `N`: this is the one place
     /// it is erased to the seam [`NonDomainError`] (via `N: Into<NonDomainError>`),
     /// so the consumer-facing [`SourceError`] never carries the adapter type.
-    pub(crate) async fn with_retry<T, E, N, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
+    pub(crate) async fn with_retry<T, E, N, F, Fut>(
+        &self,
+        port: &'static Port,
+        mut f: F,
+    ) -> Result<T, SourceError<E>>
     where
         E: core::fmt::Debug + core::fmt::Display,
         N: std::error::Error + Into<NonDomainError>,
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, QueryError<E, N>>>,
     {
+        let trip = port.trip();
         let mut attempt = 0u32;
 
         loop {
             attempt += 1;
 
             match f().await {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    trip.finish(Outcome::Ok, attempt);
+                    return Ok(value);
+                }
 
-                Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
+                Err(QueryError::Domain(e)) => {
+                    trip.finish(Outcome::Domain, attempt);
+                    return Err(SourceError::Domain(e));
+                }
 
                 Err(QueryError::NonDomain(n)) => {
                     // Erase the adapter's type to the seam here, once.
                     let e: NonDomainError = n.into();
                     if !is_retryable(&e.mode) || attempt >= self.policy.max_attempts {
                         if is_retryable(&e.mode) {
+                            trip.finish(Outcome::Unavailable, attempt);
                             return Err(SourceError::Unavailable(UnavailableError {
                                 attempts: attempt,
                                 last_error: e,
                             }));
                         }
+                        trip.finish(Outcome::NonDomain, attempt);
                         return Err(SourceError::NonDomain(e));
                     }
 

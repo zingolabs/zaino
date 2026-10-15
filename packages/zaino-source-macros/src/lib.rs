@@ -106,10 +106,13 @@ fn expand(one_shot: &ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
                 > + Send;
         });
 
+        // The method's name is its `port` metric label: fixed at compile time.
+        let port_name = name.to_string();
         impl_methods.push(quote! {
             async fn #name(&self #(, #arg_decls)*)
                 -> ::core::result::Result<#ok_ty, crate::SourceError<#err_ty>> {
-                self.with_retry(|| self.inner().#name(#(#arg_names.clone()),*)).await
+                static PORT: crate::emit::Port = crate::emit::Port::new(#port_name);
+                self.with_retry(&PORT, || self.inner().#name(#(#arg_names.clone()),*)).await
             }
         });
     }

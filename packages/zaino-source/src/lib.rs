@@ -9,6 +9,7 @@
 //! ```
 
 mod arc_forward;
+mod emit;
 mod error;
 mod get_address_balance;
 mod get_address_deltas;
@@ -56,6 +57,8 @@ mod subscribe_chain_tip;
 
 pub mod validator_client;
 
+#[cfg(feature = "prometheus")]
+pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
 pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};

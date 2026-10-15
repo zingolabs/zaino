@@ -179,3 +179,14 @@ description = """
 The `prometheus` feature enables the light-wallet gRPC metrics and exports \
 their histograms with explicit bucket edges.
 """
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+A non-default `prometheus` feature times every trip through a resilient \
+validator port in `ValidatorClient::with_retry`: \
+`zaino.source.request_seconds` by port and outcome (ok, domain, non_domain, \
+unavailable), retries and backoff included, and `zaino.source.attempts` by \
+port. `describe_metrics` and `METRIC_BUCKETS` register them with the exporter.
+"""

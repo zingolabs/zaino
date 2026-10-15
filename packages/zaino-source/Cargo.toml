@@ -12,12 +12,18 @@ license.workspace = true
 zaino-primitives = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+metrics = { workspace = true, optional = true }
 zaino-source-macros.workspace = true
 
 [features]
 testing = []
+# Validator-trip metrics (duration by port and outcome, attempts by port),
+# recorded once per trip in `ValidatorClient::with_retry`. Off by default:
+# observability is opt-in. Labels are the port name and outcome only.
+prometheus = ["dep:metrics"]
 
 [dev-dependencies]
+metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints.rust]

@@ -28,7 +28,7 @@ slow call into where its time went.
 |---|---|---|---|---|
 | Wire | What did the client get: status, time to first message, duration, messages, bytes, hang-ups? | `zaino-lightserve` tower layer around the gRPC service; close-out when the response body drops | `zaino.grpc.*` | built |
 | Read | Which read, under which placement and tier, with which outcome, and how long? | the placement dispatch in `zaino-core` | `zaino.read.*` | planned |
-| Source port | How long did a trip to the validator take, retries included, and how did it end? | `ValidatorClient::with_retry`, the funnel every resilient port goes through | `zaino.source.*` | planned |
+| Source port | How long did a trip to the validator take, retries included, and how did it end? | `ValidatorClient::with_retry`, the funnel every resilient port goes through; each generated port method owns a static `Port` | `zaino.source.*` | built |
 | Transport | What did each JSON-RPC call cost on the wire? | the `zaino-rpc` client | `zaino.rpc.outbound.*` | built |
 
 A wire call minus the reads behind it is encoding and network. A passthrough
@@ -98,4 +98,4 @@ Estimates unless marked measured; recheck them when the hot path changes.
 - **The exporter runs on the serving runtime.** A scrape under overload
   competes with the requests it is measuring. Serving `/metrics` from its own
   thread and runtime removes that.
-- **Read and source layers.** Planned, under the rules above.
+- **Read layer.** Planned, under the rules above.

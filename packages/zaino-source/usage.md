@@ -131,6 +131,22 @@ nothing to retry — transience is retried on the query ports a wake triggers.
 risks a double-submit, so its canonical name is reserved for a send that is safe
 to retry.
 
+With the `prometheus` feature, `with_retry` also times each trip — the source
+layer of [Zaino's metrics](../../docs/observability.md). A trip runs from the
+first attempt to the answer the port returns, every retry and backoff sleep
+included, and records once at its end:
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `zaino.source.request_seconds` | histogram | `port`, `outcome` |
+| `zaino.source.attempts` | histogram | `port` |
+
+`port` is the resilient method's name (`get_block`, `get_treestate`, …), fixed
+at compile time by `#[resilient_port]`; `outcome` is `ok`, `domain`,
+`non_domain` or `unavailable`, the four ways a trip can end. A trip with more
+than one attempt is retries, not the validator. Subscriptions are not trips and
+are not timed.
+
 ## Capability is structural
 
 An adapter implements only the ports it can answer.
