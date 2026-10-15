@@ -25,7 +25,7 @@ use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use tracing::debug;
-use zaino_primitives::types::PeerTxId;
+use zaino_primitives::types::{Announced, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::{BlockHash, TxId};
 use zebra_chain::chain_tip::NoChainTip;
@@ -78,17 +78,6 @@ impl PeerConfig {
 pub struct Supplied {
     pub bytes: Vec<u8>,
     pub peer: Option<SocketAddr>,
-}
-
-/// One peer's block `inv`, its sender attached by zebra: the peer's new tip (which chain it
-/// carries: peer finality's netgroup count)
-///
-/// - transaction `inv`s ignored: a node announces each to a third of its peers, once (mempool
-///   membership = [`PeerNetwork::mempool_of`] instead)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Announced {
-    pub peer: SocketAddr,
-    pub hash: BlockHash,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -158,6 +147,9 @@ impl PeerNetwork {
     }
 
     /// Every block `inv` a connected peer sends from now on
+    ///
+    /// - transaction `inv`s ignored: a node announces each to a third of its peers, once (mempool
+    ///   membership = [`PeerNetwork::mempool_of`] instead)
     pub fn announcements(&self) -> broadcast::Receiver<Announced> {
         self.announced.subscribe()
     }

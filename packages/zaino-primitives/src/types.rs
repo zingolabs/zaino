@@ -1,5 +1,6 @@
 //! Chain vocabulary shared across the Zaino stack
 
+mod announced;
 mod block;
 mod block_commitments;
 mod block_ref;
@@ -22,6 +23,7 @@ mod tree_root;
 mod tree_size;
 mod treestate;
 
+pub use announced::Announced;
 pub use block::{Block, BodyMismatch, DecodedHeader};
 pub use block_commitments::BlockCommitments;
 pub use block_ref::BlockRef;

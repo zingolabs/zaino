@@ -88,7 +88,7 @@ several.
 ## Announcements: the chain each peer carries
 
 `announcements()` subscribes to every block `inv` a connected peer sends, the
-sender's address attached by zebra: `Announced { peer, hash }`, the peer's new tip
+sender's address attached by zebra: `zaino_primitives::types::Announced { peer, hash }`, the peer's new tip
 (one block per `inv`; zebra drops multi-block ones), which the chain view counts by
 netgroup toward finality on peers' word.
 

@@ -13,9 +13,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+use zaino_primitives::types::Announced;
 
 use crate::fold::ChainViewCore;
-use crate::ports::{Heard, PeerSource};
+use crate::ports::PeerSource;
 
 /// Announcements folded at most this often (one publish per batch, not per `inv`)
 pub(crate) const PEER_FOLD: Duration = Duration::from_millis(250);
@@ -35,7 +36,7 @@ impl PeerWatch {
         let mut heard = self.peers.heard();
         let mut fold = tokio::time::interval(PEER_FOLD);
         fold.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut batch: Vec<Heard> = Vec::new();
+        let mut batch: Vec<Announced> = Vec::new();
         let mut ended = false;
         loop {
             tokio::select! {

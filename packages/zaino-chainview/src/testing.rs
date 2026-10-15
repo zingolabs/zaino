@@ -11,13 +11,13 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use zaino_primitives::testing::Ledger;
-use zaino_primitives::types::PeerTxId;
+use zaino_primitives::types::{Announced, PeerTxId};
 use zaino_source::{FailureMode, NonDomainError};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::BlockHash;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::{Heard, PeerSource, UnspentOutputs};
+use crate::{PeerSource, UnspentOutputs};
 
 /// `live` list their mempools, announce and take relays (answering nothing, as a peer does);
 /// `dead` refuse a connection
@@ -31,7 +31,7 @@ pub struct MockPeers {
     mempools: Mutex<BTreeMap<SocketAddr, Vec<PeerTxId>>>,
     bytes: Mutex<BTreeMap<PeerTxId, Bytes>>,
     fetched: Mutex<Vec<PeerTxId>>,
-    announce: broadcast::Sender<Heard>,
+    announce: broadcast::Sender<Announced>,
 }
 
 impl MockPeers {
@@ -62,7 +62,7 @@ impl MockPeers {
 
     /// One block `inv` from `peer`: its new tip (a watch subscribed first: `heard()`)
     pub fn announce_block(&self, peer: SocketAddr, hash: BlockHash) {
-        let heard = Heard { peer, hash };
+        let heard = Announced { peer, hash };
         self.announce.send(heard).expect("a peer watch subscribed before the announcement");
     }
 
@@ -78,7 +78,7 @@ impl MockPeers {
 }
 
 impl PeerSource for MockPeers {
-    fn heard(&self) -> BoxStream<'static, Heard> {
+    fn heard(&self) -> BoxStream<'static, Announced> {
         let rx = self.announce.subscribe();
         futures::stream::unfold(rx, |mut rx| async move { Some((rx.recv().await.ok()?, rx)) })
             .boxed()

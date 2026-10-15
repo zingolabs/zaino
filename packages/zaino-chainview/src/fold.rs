@@ -11,14 +11,13 @@ use imbl::{OrdSet, Vector};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
+use zaino_primitives::types::{Announced, BlockRef, PeerTxId, ReorgDepth};
 use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
 use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
-use crate::ports::Heard;
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
 
@@ -189,7 +188,7 @@ impl ChainViewCore {
     /// One batch of block `inv`s + the live peer set; publishes only on a change
     ///
     /// - only live (outbound) peers carry the chain (inbound = anyone who dialed us)
-    pub(crate) fn apply_heard(&self, batch: Vec<Heard>, live: Vec<SocketAddr>) {
+    pub(crate) fn apply_heard(&self, batch: Vec<Announced>, live: Vec<SocketAddr>) {
         self.fold(|state| {
             let live: OrdSet<SocketAddr> = live.into_iter().collect();
             let mut changed = live != state.peers_live;
@@ -199,7 +198,7 @@ impl ChainViewCore {
                 carrying.into_iter().filter(|(peer, _)| live.contains(peer)).collect();
             changed |= state.peers_carrying.len() != carriers;
             state.peers_live = live;
-            for Heard { peer, hash } in batch {
+            for Announced { peer, hash } in batch {
                 if state.peers_live.contains(&peer) {
                     changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
                 }

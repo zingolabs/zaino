@@ -33,7 +33,7 @@ pub use headers::HeaderSync;
 pub use observe::ObservationFold;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
-pub use ports::{Heard, PeerSource, UnspentOutputs};
+pub use ports::{PeerSource, UnspentOutputs};
 pub use snapshot::{ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread};
 pub use submit::SubmitPolicy;
 pub use telemetry::{describe_metrics, Alarms, METRIC_BUCKETS};

@@ -9,7 +9,7 @@ use std::time::Duration;
 use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
-use zaino_primitives::types::PeerTxId;
+use zaino_primitives::types::{Announced, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::BlockHash;
 use zebra_chain::block::{Block, CountedHeader};
@@ -23,7 +23,7 @@ use zebra_network::{BoxError, InventoryResponse, Request, Response};
 use zaino_source::testing::raw_transaction;
 
 use crate::wire;
-use crate::{Announced, PeerConfig, PeerError, PeerNetwork, PushError, Supplied};
+use crate::{PeerConfig, PeerError, PeerNetwork, PushError, Supplied};
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;

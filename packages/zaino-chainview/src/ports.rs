@@ -15,19 +15,10 @@ use std::net::SocketAddr;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use zaino_primitives::types::PeerTxId;
+use zaino_primitives::types::{Announced, PeerTxId};
 use zaino_source::NonDomainError;
 use zcash_protocol::value::Zatoshis;
-use zcash_protocol::BlockHash;
 use zcash_transparent::bundle::OutPoint;
-
-/// One peer's block `inv`, attributed by the p2p layer: its new tip (peer finality counts the
-/// netgroups carrying ours)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Heard {
-    pub peer: SocketAddr,
-    pub hash: BlockHash,
-}
 
 /// Zcash p2p network as the view uses it: mempool listings, submission relays, and which
 /// chain each peer carries; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
@@ -36,7 +27,7 @@ pub struct Heard {
 pub trait PeerSource: Send + Sync + 'static {
     /// Fresh subscription per call: every block `inv` from now on (lag drops some: peer finality
     /// waits for the next block)
-    fn heard(&self) -> BoxStream<'static, Heard>;
+    fn heard(&self) -> BoxStream<'static, Announced>;
     /// Outbound peers live now (each one's mempool polled, `peers: x/y`'s `y`)
     fn live(&self) -> Vec<SocketAddr>;
     /// One relay to ~a third of the live peers, unattributed (delivery only: a peer answers a

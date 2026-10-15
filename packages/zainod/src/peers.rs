@@ -17,9 +17,9 @@ use futures::StreamExt as _;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use tracing::{info, warn};
-use zaino_chainview::{Heard, PeerSource};
-use zaino_peers::{Announced, PeerConfig, PeerError, PeerNetwork, PushError};
-use zaino_primitives::types::{Block, PeerTxId};
+use zaino_chainview::PeerSource;
+use zaino_peers::{PeerConfig, PeerError, PeerNetwork, PushError};
+use zaino_primitives::types::{Announced, Block, PeerTxId};
 use zaino_source::{decode_block, FailureMode, NonDomainError};
 use zaino_traffic::PeerTransport;
 use zcash_protocol::BlockHash;
@@ -93,7 +93,7 @@ fn failed(cause: PeerError) -> NonDomainError {
 }
 
 impl PeerSource for ZebraPeers {
-    fn heard(&self) -> BoxStream<'static, Heard> {
+    fn heard(&self) -> BoxStream<'static, Announced> {
         let mut network = self.network.clone();
         let subscribed = async move {
             let up = network.wait_for(Option::is_some).await.ok()?;
@@ -105,7 +105,7 @@ impl PeerSource for ZebraPeers {
                 futures::stream::unfold(announcements, |mut announcements| async move {
                     loop {
                         match announcements.recv().await {
-                            Ok(announced) => return Some((heard(announced), announcements)),
+                            Ok(announced) => return Some((announced, announcements)),
                             Err(RecvError::Lagged(missed)) => {
                                 warn!(missed, "Peer announcements lagged, peer counts undercount");
                             }
@@ -152,8 +152,4 @@ impl PeerSource for ZebraPeers {
             Ok(found.into_iter().map(|(_, raw)| raw.map(Bytes::from)).collect())
         })
     }
-}
-
-fn heard(announced: Announced) -> Heard {
-    Heard { peer: announced.peer, hash: announced.hash }
 }

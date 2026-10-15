@@ -7,7 +7,5 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use network::{
-    Announced, PeerConfig, PeerError, PeerNetwork, PushError, Supplied, DEFAULT_PEER_TARGET,
-};
+pub use network::{PeerConfig, PeerError, PeerNetwork, PushError, Supplied, DEFAULT_PEER_TARGET};
 pub use wire::WireError;

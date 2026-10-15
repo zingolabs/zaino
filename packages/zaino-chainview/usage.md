@@ -81,7 +81,7 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
   claim): that validator alone backs off 5 s. A trusted run orphaned at or below the floor marks
   the member `forked` for that claim: not fetched again until the claim moves.
 - **Peer finality** (`with_peers`): `peer_finalizable()` + live outbound peers in > 5 netgroups
-  whose last block `inv` (`Heard::Block` via `PeerWatch`) is on our best at or above it.
+  whose last block `inv` (`PeerSource::heard` via `PeerWatch`) is on our best at or above it.
 
 ## Read handle: `ChainViewSubscriber`
 
@@ -181,7 +181,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 | Method | Answer |
 |---|---|
-| `heard()` | a fresh stream of every block `inv` (`Heard { peer, hash }`) |
+| `heard()` | a fresh stream of every block `inv` (`zaino_primitives::types::Announced { peer, hash }`) |
 | `live()` | connected outbound peers (each one's mempool polled) |
 | `push(raw)` | one relay to ~⅓ of them, unattributed; `Ok` = delivered (a peer answers nothing) |
 | `mempool(peer)` | `peer`'s whole mempool, that peer alone answering (`PeerTxId`s) |

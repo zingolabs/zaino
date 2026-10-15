@@ -44,7 +44,8 @@ use zaino_primitives::types::{Block, HeaderBytes, Treestate};
   (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool:
   `Transaction::fee(spent)`, `spent` = Σ its prevouts' values; `FeeError::Negative`
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
-  `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
+  `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Announced`
+  (a peer's block `inv`, its sender attached),
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `MerkleRoot`,
   `HeaderBytes` and `TransactionLocation`, plus `CompactDifficulty` below.
