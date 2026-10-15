@@ -1,6 +1,6 @@
-//! Reading across one map's committed segments
+//! Reading across one map's durable segments
 //!
-//! - [`SegmentsView`] = one committed list, mapped; immutable (a commit builds the next one)
+//! - [`SegmentsView`] = one durable list, mapped; immutable (a commit builds the next one)
 //! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 //! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
 //!   (insert-once / remove-once: at most one value + one tombstone exist)
@@ -25,7 +25,7 @@ use crate::{
 /// rows: 2-16 keys 5-10× slower on rayon (wake-up), crossover ≈ 64, 256 keys 3× faster)
 const PARALLEL_FROM: usize = 64;
 
-/// Map's committed segments, mapped for reads
+/// Map's durable segments, mapped for reads
 pub(crate) struct SegmentsView {
     shape: Shape,
     segments: Vec<Arc<SegmentFile>>,
@@ -69,7 +69,7 @@ impl SegmentsView {
         Ok(Self { shape, segments })
     }
 
-    /// `listed` mapped, sharing the segments this snapshot already maps
+    /// `listed` mapped, sharing the segments this view already maps
     pub(crate) fn next(&self, dir: &SegmentDir, listed: &[SegmentMeta]) -> Result<Self> {
         let mut segments = Vec::with_capacity(listed.len());
         for meta in listed {
@@ -109,7 +109,7 @@ impl SegmentsView {
             match held {
                 [(key, Some(value))] => found.push((key.clone(), value.clone())),
                 [(_, None)] | [(_, Some(_)), (_, None)] | [(_, None), (_, Some(_))] => {}
-                many => panic!("a key held {} times across committed segments", many.len()),
+                many => panic!("a key held {} times across durable segments", many.len()),
             }
         }
         (found.len() <= limit).then_some(found)
@@ -235,12 +235,12 @@ impl SegmentsView {
         value
     }
 
-    /// Every committed segment's file
+    /// Every durable segment's file
     pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
         self.segments.iter().map(|file| file.pages())
     }
 
-    /// Committed segments in list order (the merge policy's input)
+    /// Durable segments in list order (the merge policy's input)
     pub(crate) fn segments(&self) -> Vec<SegmentMeta> {
         self.segments.iter().map(|file| file.meta).collect()
     }

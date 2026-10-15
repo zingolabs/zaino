@@ -81,7 +81,7 @@ routing.route(routes);
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
-- `V` = the indexes' `zaino_persistence::DurableView` (zainod: `DiskView`): every read = an
+- `V` = the indexes' `zaino_persistence::PinnedView` (zainod: `DiskView`): every read = an
   index's reader over its durable view + the NFS's layers, on a read lane (any thread).
   Any engine's durable view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the

@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! <dir>/
-//!   MANIFEST            committed tip ‖ each sequence's seals ‖ each map's segment list
+//!   MANIFEST            durable tip ‖ each sequence's seals ‖ each map's segment list
 //!   <sequence>.dat      (+ <sequence>.idx when Variable)        `sequence.rs`
 //!   <map>/<id>.seg      one sorted segment per batch or merge   `lsm`
 //! ```
@@ -32,11 +32,11 @@ use crate::{
         self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, SegmentsView,
         Slots,
     },
-    manifest::{self, BodyReader, Committed, Identity, ManifestError},
-    overlay::{OverlayView, Uncommitted},
+    manifest::{self, BodyReader, DurableTip, Identity, ManifestError},
+    overlay::{AppliedLayer, OverlayView},
     pages::{footprint, scrub, PageError, Sealed},
     port::{
-        table_slot, BlockChanges, DurableView, MapId, MapRead, PersistenceEngine, Schema,
+        table_slot, BlockChanges, MapId, MapRead, PersistenceEngine, PinnedView, Schema,
         SequenceId, SequenceRead, Store, Verification, View,
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
@@ -76,7 +76,7 @@ pub struct DiskStore {
     failed: bool,
 }
 
-/// Committed state of a [`DiskStore`] (shared by clones)
+/// Durable state of a [`DiskStore`] (shared by clones)
 #[derive(Debug, Clone)]
 pub struct DiskView {
     state: Arc<State>,
@@ -93,7 +93,7 @@ struct State {
 /// Manifest body: what one commit made durable
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Body {
-    committed: Committed,
+    durable: DurableTip,
     sequences: Vec<Seals>,
     maps: Vec<Vec<SegmentMeta>>,
 }
@@ -111,16 +111,16 @@ pub fn manifest_fits(schema: &Schema, fanout: Fanout) -> bool {
 impl Body {
     fn empty(schema: &Schema) -> Self {
         Self {
-            committed: Committed::EMPTY,
+            durable: DurableTip::EMPTY,
             sequences: schema.sequences().iter().map(|table| Seals::empty(table.record)).collect(),
             maps: vec![Vec::new(); schema.maps().len()],
         }
     }
 
-    /// `committed ‖ seals per sequence ‖ segment list per map`, in schema order
+    /// `durable ‖ seals per sequence ‖ segment list per map`, in schema order
     fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        self.committed.encode(&mut out);
+        self.durable.encode(&mut out);
         for seals in &self.sequences {
             seals.encode(&mut out);
         }
@@ -132,7 +132,7 @@ impl Body {
 
     fn decode(bytes: &[u8], schema: &Schema) -> Result<Self, ManifestError> {
         let mut body = BodyReader::new(bytes);
-        let committed = Committed::decode(&mut body)?;
+        let durable = DurableTip::decode(&mut body)?;
         let sequences = schema
             .sequences()
             .iter()
@@ -141,7 +141,7 @@ impl Body {
         let maps =
             schema.maps().iter().map(|_| decode_list(&mut body)).collect::<Result<_, _>>()?;
         body.finish()?;
-        Ok(Self { committed, sequences, maps })
+        Ok(Self { durable, sequences, maps })
     }
 
     /// Every file this body seals, by path under the index directory
@@ -226,9 +226,9 @@ impl PersistenceEngine for DiskEngine {
         }
         let state = State {
             schema: *schema,
-            tip: body.committed.tip,
+            tip: body.durable.tip,
             sequences: sequences.iter().map(|file| file.pages(None)).collect::<io::Result<_>>()?,
-            maps: maps.iter().map(|log| Arc::clone(log.snapshot())).collect(),
+            maps: maps.iter().map(|log| Arc::clone(log.segments_view())).collect(),
         };
         Ok(DiskStore {
             dir,
@@ -246,21 +246,21 @@ impl PersistenceEngine for DiskEngine {
     /// Read only, no lock: safe beside a live writer
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError> {
         let fs = self.fs.as_ref();
-        verify_committed(fs, path, schema, || dir::read_committed(fs, path, identity(schema)))
+        verify_durable(fs, path, schema, || dir::read_durable(fs, path, identity(schema)))
     }
 }
 
-/// Every file the manifest `committed` reads names, scrubbed
+/// Every file the manifest `read_manifest` returns names, scrubbed
 ///
 /// - live writer's merge may retire a listed segment mid-scrub: lost file + manifest moved since
 ///   = scrub again against the newer one
-fn verify_committed(
+fn verify_durable(
     fs: &dyn Fs,
     path: &Path,
     schema: &Schema,
-    mut committed: impl FnMut() -> Result<Option<Vec<u8>>, ManifestError>,
+    mut read_manifest: impl FnMut() -> Result<Option<Vec<u8>>, ManifestError>,
 ) -> Result<Verification, StoreError> {
-    let mut manifest = committed()?;
+    let mut manifest = read_manifest()?;
     loop {
         let Some(bytes) = &manifest else {
             return Ok(Verification { heights: 0, units: Vec::new() });
@@ -272,13 +272,13 @@ fn verify_committed(
             .map(|(name, sealed)| scrub(fs, path, &name, sealed))
             .collect::<Result<Vec<_>, PageError>>()?;
         if units.iter().any(|unit| unit.lost) {
-            let newer = committed()?;
+            let newer = read_manifest()?;
             if newer != manifest {
                 manifest = newer;
                 continue;
             }
         }
-        return Ok(Verification { heights: body.committed.count(), units });
+        return Ok(Verification { heights: body.durable.count(), units });
     }
 }
 
@@ -309,7 +309,7 @@ impl DiskStore {
             self.sequences[at].flush()?;
         }
 
-        let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps };
+        let body = Body { durable: DurableTip { tip: Some(tip) }, sequences, maps };
         self.dir.commit(&body.encode())?;
         for log in &mut self.maps {
             log.on_manifest_durable()?;
@@ -325,7 +325,7 @@ impl DiskStore {
                 .zip(&previous.sequences)
                 .map(|(file, old)| file.pages(Some(old)))
                 .collect::<io::Result<_>>()?,
-            maps: self.maps.iter().map(|log| Arc::clone(log.snapshot())).collect(),
+            maps: self.maps.iter().map(|log| Arc::clone(log.segments_view())).collect(),
         };
         self.view = DiskView { state: Arc::new(state) };
         Ok(())
@@ -400,7 +400,7 @@ impl Store for DiskStore {
     }
 }
 
-/// One table's committed files: bytes on disk, bytes of them in page cache (`None` = not
+/// One table's durable files: bytes on disk, bytes of them in page cache (`None` = not
 /// knowable: a simulated filesystem, or the kernel refused)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableFootprint {
@@ -418,7 +418,7 @@ impl DiskView {
         let sequences = schema.sequences().iter().zip(&self.state.sequences);
         let sequences = sequences.map(|(table, pages)| (table.name, footprint(pages.pages())));
         let maps = schema.maps().iter().zip(&self.state.maps);
-        let maps = maps.map(|(table, snapshot)| (table.name, footprint(snapshot.pages())));
+        let maps = maps.map(|(table, segments)| (table.name, footprint(segments.pages())));
         let tables = sequences.chain(maps);
         tables.map(|(table, (bytes, cached))| TableFootprint { table, bytes, cached }).collect()
     }
@@ -428,7 +428,7 @@ impl DiskView {
         table_slot(&self.state.sequences, table)
     }
 
-    fn map_snapshot(&self, table: MapId) -> &SegmentsView {
+    fn map_segments(&self, table: MapId) -> &SegmentsView {
         table_slot(&self.state.maps, table).as_ref()
     }
 }
@@ -443,7 +443,7 @@ impl View for DiskView {
     }
 }
 
-impl DurableView for DiskView {}
+impl PinnedView for DiskView {}
 
 impl SequenceRead for DiskView {
     fn len(&self, table: SequenceId) -> u64 {
@@ -461,11 +461,11 @@ impl SequenceRead for DiskView {
 
 impl MapRead for DiskView {
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
-        self.map_snapshot(table).get(key)
+        self.map_segments(table).get(key)
     }
 
     fn values(&self, table: MapId, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
-        self.map_snapshot(table).get_many(keys)
+        self.map_segments(table).get_many(keys)
     }
 
     fn range(
@@ -475,7 +475,7 @@ impl MapRead for DiskView {
         end: &[u8],
         limit: usize,
     ) -> Option<Vec<(Bytes, Bytes)>> {
-        self.map_snapshot(table).range(start, end, limit)
+        self.map_segments(table).range(start, end, limit)
     }
 }
 

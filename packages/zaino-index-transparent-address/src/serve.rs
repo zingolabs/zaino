@@ -155,7 +155,7 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// - 0, 1 committed, 2 buffered (durable view + layer): 1 pays `paid` 42, 2 spends it
+    /// - 0, 1 durable, 2 buffered (durable view + layer): 1 pays `paid` 42, 2 spends it
     /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
     /// - Stranger + heights past the tip → empty, never an error
     #[test]
@@ -209,7 +209,7 @@ mod tests {
         }
     }
 
-    /// - Row budget = receives across every address of a request, committed + buffered alike
+    /// - Row budget = receives across every address of a request, durable + buffered alike
     /// - At the limit every method answers; one over, every method refuses whole (never a short
     ///   list or a partial balance)
     #[test]
@@ -218,7 +218,7 @@ mod tests {
             TransparentAddress::PublicKeyHash([0x01; 20]),
             TransparentAddress::PublicKeyHash([0x02; 20]),
         );
-        // `first` paid at 1, 2 and 3, `second` at 2; 0..=2 committed, 3 buffered
+        // `first` paid at 1, 2 and 3, `second` at 2; 0..=2 durable, 3 buffered
         let (pays_first, pays_second) = (p2pkh([0x01; 20]), p2pkh([0x02; 20]));
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
@@ -243,7 +243,7 @@ mod tests {
         let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
         let rows = |utxos: Result<Vec<Vec<AddressUtxo>>, _>| utxos.map(|all| all[0].len());
 
-        // `first` alone = 3 rows (2 committed + 1 buffered); both = 4
+        // `first` alone = 3 rows (2 durable + 1 buffered); both = 4
         let at = budget(3);
         assert_eq!(at.balances(&[first]), Ok(vec![zats(30)]));
         assert_eq!(rows(at.utxos_of(&[first], h(0))), Ok(3));

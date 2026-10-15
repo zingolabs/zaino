@@ -47,7 +47,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     pub fn new(store: S) -> Self {
         let view = store.durable();
         let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
-        assert_eq!(view.sequence(HEIGHTS).len(), held, "{NAME}: one record per committed height");
+        assert_eq!(view.sequence(HEIGHTS).len(), held, "{NAME}: one record per durable height");
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }

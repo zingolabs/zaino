@@ -203,7 +203,7 @@ impl AsRef<[u8]> for Shared {
     }
 }
 
-/// - sound: mapped bytes below a committed length never rewritten or truncated after publication
+/// - sound: mapped bytes below a durable length never rewritten or truncated after publication
 ///   (truncation only in `PagedFile::open`, before any map; `LOCK` keeps other processes out)
 /// - broken rule = SIGBUS (uncatchable) or corrupted zero-copy `Bytes` already handed out
 #[allow(unsafe_code)]

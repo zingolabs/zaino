@@ -61,7 +61,7 @@ impl SegmentDir {
         Ok(())
     }
 
-    /// Segments (+ checksums) no committed manifest lists any more
+    /// Segments (+ checksums) no durable manifest lists any more
     ///
     /// - no dir sync: unlink lost to a crash = unlisted segment, removed at the next open
     pub(crate) fn remove(&self, segments: &[SegmentMeta]) -> io::Result<()> {

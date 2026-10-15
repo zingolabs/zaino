@@ -19,7 +19,7 @@ use futures::future::BoxFuture;
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
-use zaino_persistence::{DurableView, IndexKind};
+use zaino_persistence::{IndexKind, PinnedView};
 use zaino_snapshot::{GrpcSnapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
@@ -201,7 +201,7 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: DurableView> Dispatch<S, V> {
+impl<S: ChainDataSource, V: PinnedView> Dispatch<S, V> {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
         let (reads, silent_timeout) = (ReadLanes::new(limits), limits.silent_timeout);
         let routed = OnceLock::new();
@@ -232,7 +232,7 @@ impl<S: ChainDataSource, V> Routing<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: DurableView> Wired<S, V> {
+impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
     /// One request's response: every refusal folded into its status here, nowhere else
     async fn answer<B>(&self, method: Option<Method>, path: &str, body: B) -> Response<Body>
     where
@@ -251,7 +251,7 @@ impl<S: ChainDataSource, V: DurableView> Wired<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: DurableView> Routed<S, V> {
+impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
     /// The registry's handler column: one arm per [`Method`], off one `GrpcSnapshot`
     async fn handle<B>(
         &self,
@@ -337,7 +337,7 @@ fn disabled(method: Method, index: IndexKind) -> Status {
 impl<S, V, ReqBody> tower::Service<Request<ReqBody>> for Dispatch<S, V>
 where
     S: ChainDataSource,
-    V: DurableView,
+    V: PinnedView,
     ReqBody: http_body::Body + Send + 'static,
     ReqBody::Data: Send,
     ReqBody::Error: std::fmt::Display,

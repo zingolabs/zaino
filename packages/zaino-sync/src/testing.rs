@@ -137,7 +137,7 @@ impl<'a> FinalStream<'a> {
         self.sent
     }
 
-    /// Last height sent (the durable tip once its move committed)
+    /// Last height sent (the durable tip once its move commits)
     pub fn tip(&self) -> Option<BlockHeight> {
         let last = self.sent.checked_sub(1)?;
         Some(self.blocks[last].header().height)

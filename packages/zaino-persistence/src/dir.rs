@@ -20,7 +20,7 @@ const CREATING: &str = "MANIFEST.creating";
 /// Locked for the life of this value (second process's open-time truncation under this one's
 /// mappings = SIGBUS)
 ///
-/// - `seq` = last committed manifest's sequence number (0 = nothing committed yet)
+/// - `seq` = last durable manifest's sequence number (0 = nothing durable yet)
 #[derive(Debug)]
 pub(crate) struct IndexDir {
     fs: Arc<dyn Fs>,
@@ -38,7 +38,7 @@ pub(crate) enum Depth {
     Recursive,
 }
 
-/// Freshly opened directory + committed manifest body (`None` = never committed)
+/// Freshly opened directory + durable manifest body (`None` = no commit yet)
 #[derive(Debug)]
 pub(crate) struct Opened {
     pub(crate) dir: IndexDir,
@@ -77,8 +77,8 @@ impl IndexDir {
         };
         fs.sync_dir(path)?;
 
-        let committed = committed_body(manifest.as_ref(), identity)?;
-        let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body)));
+        let durable = durable_body(manifest.as_ref(), identity)?;
+        let (seq, body) = durable.map_or((0, None), |(seq, body)| (seq, Some(body)));
         let dir = Self { fs, path: path.to_path_buf(), identity, manifest, seq, _lock: lock };
         Ok(Opened { dir, body })
     }
@@ -95,7 +95,7 @@ impl IndexDir {
         Ok(dir)
     }
 
-    /// `body` committed: written over the slot the last commit did not use, then `fdatasync`ed
+    /// Commits `body`: written over the slot the last commit did not use, then `fdatasync`ed
     ///
     /// - crash before the sync → other slot (last commit) intact
     /// - no rename / truncate / directory sync (write below EOF: sync flushes this file only, never
@@ -110,7 +110,7 @@ impl IndexDir {
     }
 
     /// Fresh-directory check: `relative` absent, an empty file, or a directory of empty files
-    /// (crash between creating them and the first commit); else uncommitted data
+    /// (crash between creating them and the first commit); else not yet durable data
     pub(crate) fn ensure_empty(&self, relative: &str, depth: Depth) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
@@ -141,20 +141,20 @@ impl IndexDir {
     }
 }
 
-/// `path`'s committed body, read offline (read only, no lock: safe beside a live writer)
+/// `path`'s durable body, read offline (read only, no lock: safe beside a live writer)
 ///
-/// - `None` = never committed; manifest not decoding as `identity` = its `ManifestError`
-pub(crate) fn read_committed(
+/// - `None` = no commit yet; manifest not decoding as `identity` = its `ManifestError`
+pub(crate) fn read_durable(
     fs: &dyn Fs,
     path: &Path,
     identity: Identity,
 ) -> Result<Option<Vec<u8>>, ManifestError> {
     let Some(file) = fs.open_read(&path.join(MANIFEST))? else { return Ok(None) };
-    Ok(committed_body(file.as_ref(), identity)?.map(|(_, body)| body))
+    Ok(durable_body(file.as_ref(), identity)?.map(|(_, body)| body))
 }
 
-/// `(sequence number, body)` of the manifest's last commit; `None` = never committed
-fn committed_body(
+/// `(sequence number, body)` of the manifest's last commit; `None` = no commit yet
+fn durable_body(
     manifest: &dyn ReadHandle,
     identity: Identity,
 ) -> Result<Option<(u64, Vec<u8>)>, ManifestError> {
@@ -174,7 +174,7 @@ mod tests {
 
     /// - fresh → commit → reopen reads it back; commits after a reopen continue the sequence
     ///   (never over the live slot); manifest never past its two slots
-    /// - second opener locked out; foreign network never committed state
+    /// - second opener locked out; foreign network never commits
     #[test]
     fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
         let fs = SimFs::new();
@@ -266,19 +266,19 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("idx");
         let fs = crate::fs::RealFs::shared();
-        let read = || read_committed(fs.as_ref(), &path, IDENTITY);
+        let read = || read_durable(fs.as_ref(), &path, IDENTITY);
         assert_eq!(read().expect("no directory"), None);
 
         let mut opened = IndexDir::open(fs.clone(), &path, IDENTITY).expect("open").dir;
         assert_eq!(read().expect("zeroed slots"), None, "created, never committed");
         for body in [[1u8], [2], [3]] {
             opened.commit(&body).expect("commit");
-            assert_eq!(read().expect("committed"), Some(body.to_vec()));
+            assert_eq!(read().expect("durable"), Some(body.to_vec()));
         }
         drop(opened);
 
         let foreign = Identity { network: NetworkType::Main, ..IDENTITY };
-        let refused = read_committed(fs.as_ref(), &path, foreign).expect_err("foreign network");
+        let refused = read_durable(fs.as_ref(), &path, foreign).expect_err("foreign network");
         assert!(matches!(refused, ManifestError::Network { .. }), "{refused}");
 
         std::fs::write(path.join(MANIFEST), [1; 40]).expect("older layout");

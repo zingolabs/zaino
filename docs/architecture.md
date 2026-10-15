@@ -57,7 +57,7 @@ Every block takes one of two paths, which never meet:
 - **Final path** (durable): blocks at or below the final tip, folded and committed by each index
   writer. Writers never see a reorg.
 - **Tip path** (RAM): blocks above the indexes' durable tips, folded in memory by the NFS,
-  served at once, dropped once committed. Reorgs live here alone.
+  served at once, dropped once durable. Reorgs live here alone.
 
 Both run the same `fold` per index, so a tip block is folded twice: once in RAM, once by its writer.
 

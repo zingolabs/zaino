@@ -11,7 +11,7 @@ One `Variable` sequence, `"blocks"`, through the persistence port
 at height `h`. zainod stores it with `DiskEngine`:
 
 ```text
-MANIFEST      committed tip + each file's seal (the engine's)
+MANIFEST      durable tip + each file's seal (the engine's)
 blocks.dat    records back to back, height order, each [0x00][len u32 BE][CompactBlock protobuf]
 blocks.idx    end offset per record (record h = end(h − 1)..end(h))
 ```

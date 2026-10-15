@@ -166,7 +166,7 @@ PSI, is left out rather than reported as zero):
 
 | Metric | Labels | Answers |
 |---|---|---|
-| `zaino_disk_committed_bytes` | `index`, `table` | committed data per table |
+| `zaino_disk_committed_bytes` | `index`, `table` | durable data per table |
 | `zaino_disk_cached_bytes` | `index`, `table` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch) |
 | `zaino_disk_bytes` | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
 | `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes` | `index` | room left on the index's filesystem |
@@ -322,7 +322,7 @@ network or format included).
 
 `heights` = durable tip + 1; `units` = one entry per sealed file; `bad_pages` = 4 KiB page
 indexes whose CRC disagrees; `bad_sums` = the `.crc` file no longer matches the digest the
-manifest committed; `null` = index disabled. A corrupt or lost file means delete that index's
+manifest recorded; `null` = index disabled. A corrupt or lost file means delete that index's
 directory and resync it.
 
 ## Failure policy

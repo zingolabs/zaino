@@ -6,16 +6,17 @@ are writing or reviewing an index, or debugging what is on disk.
 
 ## What an index may ask
 
-Every index is a fold over final blocks, so the port promises only five things:
+Every index is a fold over finalized blocks, so the port promises only five things:
 
-1. **Final data only.** Non-final blocks live in memory (`Overlay`, below). Reorgs never reach a
-   store, so nothing on disk is ever rewound.
+1. **Finalized data only.** A store receives finalized blocks alone; the NFS holds everything above
+   its durable tip in memory (`Overlay`, below). Reorgs never reach a store, so nothing on disk is
+   ever rewound.
 2. **Insert only.** Sequence records are appended; map keys are inserted once. The single
    exception is a map that declares `deletes()` (see [Deletes](#deletes)).
 3. **One atomic commit per index, carrying the tip.** Every table moves to the new tip together or
-   not at all. The committed tip is where the index resumes.
-4. **Snapshot reads.** A `View` never changes while held, so a request or stream sees one state.
-5. **Verifiable.** Every committed byte can be checked offline, and corruption stops the process.
+   not at all. The durable tip is where the index resumes.
+4. **Pinned reads.** A `View` never changes while held, so a request or stream sees one state.
+5. **Verifiable.** Every durable byte can be checked offline, and corruption stops the process.
 
 There are two kinds of table:
 
@@ -55,7 +56,7 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **`cache_writes()`** marks a table a fold reads back (tree-state, utxo-set's `outputs`).
   Everything else is dropped from page cache once synced, so bulk writes never evict hot tables.
 - **`apply` vs `commit`.** `apply` buffers in RAM; a writer folding the next block reads its parent
-  through `applied()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
+  through `applied()` (durable + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
   reaches the `write_buffer` given to `open`, `apply` commits by itself. `commit` writes everything
   buffered at the last applied tip. `Schema::changes(at)` (or `store.changes(at)`) opens a block's
   delta. Point reads through `applied()` hit the buffer's hash index; a map `range` through it
@@ -65,7 +66,7 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
   reopen it: recovery is always a fresh `open` from the last durable manifest, never a retried
   `fsync`. `commit`'s `CommitFailed` names the index and its directory (a full disk anywhere in the error
   chain reads as "disk … full"); `CommitFailed::crash` turns it into that panic.
-- **Reads never return errors.** Reading past what was committed is a bug, and a page that fails its
+- **Reads never return errors.** Reading past what was durable is a bug, and a page that fails its
   checksum panics on first touch with the remedy (`zainod verify`, resync).
 - **Misuse panics where it happens**, naming the table: a handle from another schema, a fixed-width
   item of the wrong size, a tip that does not advance, a key inserted twice, a table the engine
@@ -92,11 +93,11 @@ at most one value row and one tombstone row anywhere, so no answer depends on se
 utxo-set's `outputs` is the one user: it keeps only unspent outputs, so its fold's prevout
 lookups fit in page cache.
 
-## Non-final data: `Overlay`
+## Above the durable tip: `Overlay`
 
 Data above a durable tip has the same shape as a store's buffer. `zaino-nfs` keeps one `Overlay`
-per index per non-final block; a clone is a few pointer copies (`imbl`), so a child block shares
-its parent's layer.
+per index per block above the durable tips; a clone is a few pointer copies (`imbl`), so a child
+block shares its parent's layer.
 
 ```rust
 let child = parent_layer.with(&changes);                       // parent + one block
@@ -148,9 +149,9 @@ A commit:
    each; `fs/probe.rs` decides at open);
 3. writes the new `MANIFEST` slot and syncs it. **This is the commit point.**
 
-The manifest holds the committed tip (height and hash), each sequence file's seal (length, tail
+The manifest holds the durable tip (height and hash), each sequence file's seal (length, tail
 page checksum, digest of its `.crc`) and each map's segment list. Bytes the manifest does not claim
-are uncommitted, whatever they contain. Commit `n` overwrites slot `n % 2`, so the previous commit
+are not yet durable, whatever they contain. Commit `n` overwrites slot `n % 2`, so the previous commit
 always survives a torn write, and a slot that fails its CRC is read as a crash mid-commit.
 
 Opening a store:
@@ -189,13 +190,13 @@ append-only file stays unfragmented where a copy-on-write B-tree under random in
   blocking pool (`zaino-grpc`'s read lanes), and multi-record reads issue `MADV_WILLNEED` first. Point-lookup segments are mapped `MADV_RANDOM`,
   merge inputs `MADV_SEQUENTIAL`.
 - **Zero-copy slices outlive the view.** `Bytes` returned by a read hold the mapping alive, which is
-  sound only because committed bytes are never rewritten or truncated after publication.
+  sound only because durable bytes are never rewritten or truncated after publication.
 
 ## Verifying offline
 
 ```rust
 let report = DiskEngine::new(fs, LsmConfig::default()).verify(path, &schema)?;
-report.is_clean();   // report.units: per file, committed / orphaned bytes, lost, bad pages
+report.is_clean();   // report.units: per file, durable / orphaned bytes, lost, bad pages
 ```
 
 Reads every file the manifest seals, page by page, with plain reads: no mapping, no lock, safe
@@ -207,7 +208,7 @@ newer manifest. `zainod verify` wraps this.
 - `zaino.store.commit_seconds` / `commit_bytes_total` per index (label `index`); `zaino.lsm.*` per
   map (labels `index` + `table`: segments per tier, merges, stalls, cancelled tombstone pairs).
   Register with `describe_metrics` and the `METRIC_BUCKETS` constants.
-- `DiskView::footprint()`: per table, committed bytes and how many are in page cache (`mincore`).
+- `DiskView::footprint()`: per table, durable bytes and how many are in page cache (`mincore`).
 - Logs: `Compacting segments` / `Compacted segments` (debug), `Commit waited on compaction` (warn).
 
 ## Testing

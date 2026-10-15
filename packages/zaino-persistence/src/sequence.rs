@@ -43,7 +43,7 @@ impl<T> Records<T> {
     }
 }
 
-/// Sequence's committed files, as the manifest records them
+/// Sequence's durable files, as the manifest records them
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Seals {
     pub(crate) data: Sealed,
@@ -51,7 +51,7 @@ pub(crate) struct Seals {
 }
 
 impl Seals {
-    /// Nothing committed
+    /// Nothing durable
     pub(crate) fn empty(width: Width) -> Self {
         Self { data: Sealed::EMPTY, records: Records::of(width, || Sealed::EMPTY) }
     }
@@ -266,7 +266,7 @@ impl SequencePages {
                 let end = |position: usize| {
                     let bytes = ends.read(position * END..(position + 1) * END);
                     let end = u64::from_le_bytes(bytes.try_into().expect("END bytes"));
-                    usize::try_from(end).expect("committed offsets fit usize")
+                    usize::try_from(end).expect("durable offsets fit usize")
                 };
                 let start = at(range.start).checked_sub(1).map_or(0, end);
                 start..end(at(range.end) - 1)

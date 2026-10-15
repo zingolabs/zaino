@@ -31,14 +31,14 @@ use crate::{fs::Fs, manifest::IndexKind, port::MapTable};
 /// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
 const STALL_WINDOWS: usize = 2;
 
-/// Map's committed list + merges running under it + list staged for the next manifest
+/// Map's durable list + merges running under it + list staged for the next manifest
 ///
 /// - one merge per tier at a time, <= `slots` working engine-wide (lowest tier first:
 ///   small merges never queue behind a large one)
-/// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
+/// - `batch` stages → owner's manifest commit → `on_manifest_durable` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
     series: Series,
-    snapshot: Arc<SegmentsView>,
+    segments_view: Arc<SegmentsView>,
     writer: SegmentWriter,
     fanout: Fanout,
     slots: Arc<Slots>,
@@ -73,7 +73,7 @@ struct Merge {
 }
 
 impl SegmentLog {
-    /// `index`'s `table` segments in `dir`, at the committed `listed`
+    /// `index`'s `table` segments in `dir`, at the durable `listed`
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
     /// - unlisted files removed ([`SegmentDir::retain`])
@@ -91,7 +91,7 @@ impl SegmentLog {
         let shape = Shape::of(table);
         let dir = SegmentDir::new(fs, dir);
         dir.retain(listed)?;
-        let snapshot = Arc::new(SegmentsView::open(&dir, shape, listed)?);
+        let segments_view = Arc::new(SegmentsView::open(&dir, shape, listed)?);
         let next = listed
             .iter()
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
@@ -100,7 +100,7 @@ impl SegmentLog {
         let mut log = Self {
             writer: SegmentWriter::new(dir, shape),
             series: Series { index: index.name(), table: table.name },
-            snapshot,
+            segments_view,
             fanout,
             slots,
             next,
@@ -114,9 +114,9 @@ impl SegmentLog {
         Ok(log)
     }
 
-    /// Committed segments, mapped
-    pub(crate) fn snapshot(&self) -> &Arc<SegmentsView> {
-        &self.snapshot
+    /// Durable segments, mapped
+    pub(crate) fn segments_view(&self) -> &Arc<SegmentsView> {
+        &self.segments_view
     }
 
     /// `rows` (`(key, value)`, `None` = tombstone) as one segment (sealed, durably linked) + every
@@ -169,11 +169,11 @@ impl SegmentLog {
     /// Owner's manifest with [`batch`](Self::batch)'s list durable → mapped, retired inputs
     /// unlinked, merges launched on every idle tier holding `fanout` segments
     pub(crate) fn on_manifest_durable(&mut self) -> Result<()> {
-        let staged = self.staged.take().expect("committed follows batch");
+        let staged = self.staged.take().expect("a commit follows batch");
         self.segments = staged.segments;
-        self.snapshot = Arc::new(self.snapshot.next(self.writer.dir(), &self.segments)?);
+        self.segments_view = Arc::new(self.segments_view.next(self.writer.dir(), &self.segments)?);
         let name = self.series.table;
-        assert_eq!(self.snapshot.segments(), self.segments, "{name}: readers see the list");
+        assert_eq!(self.segments_view.segments(), self.segments, "{name}: readers see the list");
         self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
             emit::swapped(self.series, landed);
@@ -327,7 +327,7 @@ mod tests {
     use super::*;
 
     impl SegmentLog {
-        /// Committed list, ≈ data age (readers probe newest first; answers never depend on order)
+        /// Durable list, ≈ data age (readers probe newest first; answers never depend on order)
         pub(crate) fn segments(&self) -> &[SegmentMeta] {
             &self.segments
         }

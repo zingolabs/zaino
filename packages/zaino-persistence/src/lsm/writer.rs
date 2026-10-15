@@ -123,7 +123,7 @@ impl SegmentWriter {
     /// Sorts `rows` (`(key, value)`, `None` = tombstone) and writes them as segment `id`, sealed;
     /// `None` for none
     ///
-    /// - uncommitted until listed in a manifest, unlinked until [`SegmentDir::sync`]
+    /// - not yet durable until listed in a manifest, unlinked until [`SegmentDir::sync`]
     /// - duplicate keys panic (the buffer holds one row per key: a cancelled pair writes neither)
     /// - unique keys → unstable sort exact; parallel on the CPU pool
     pub(crate) fn write(

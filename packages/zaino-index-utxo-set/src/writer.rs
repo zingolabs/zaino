@@ -466,7 +466,7 @@ mod tests {
     /// each state reopens to an acknowledged or attempted commit, and the writer on it resolves
     /// the next block's fees against the outputs it recovered and commits it
     #[tokio::test]
-    async fn every_crash_state_reopens_to_a_committed_prefix_whose_outputs_still_resolve() {
+    async fn every_crash_state_reopens_to_a_durable_prefix_whose_outputs_still_resolve() {
         // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
         // recovered output
         let alice = p2pkh([0xaa; 20]);
@@ -526,11 +526,11 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
             assert_eq!(resolved, [expected[next as usize].clone()], "{crashed}");
-            assert_eq!(tip_of(&handle.view()), Some(next), "{crashed}: committed");
+            assert_eq!(tip_of(&handle.view()), Some(next), "{crashed}: durable");
         }
     }
 
-    /// Every prevout resolves wherever it lives (committed, buffered, earlier in its own run)
+    /// Every prevout resolves wherever it lives (durable, buffered, earlier in its own run)
     /// - 1: spends 0's output and one from earlier in its own block
     /// - 2: enters orchard and sprout; 3: spends 1's outputs with value leaving sprout; 4: spends
     ///   3's and enters ironwood

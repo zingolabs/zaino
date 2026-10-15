@@ -25,7 +25,7 @@ const SCHEMA: Schema = Schema::new(
     Tables::new(&[FIXED, VARIABLE], &[DROPPED, CACHED]),
 );
 
-/// - bytes = committed data (records + 8-byte ends, every listed segment), never the files'
+/// - bytes = durable data (records + 8-byte ends, every listed segment), never the files'
 ///   preallocated tails
 /// - cached right after the commit: each `cache_writes` table all of it; a default sequence none
 ///   (dropped once synced), a default map only what opening the view reads (summary + filters)

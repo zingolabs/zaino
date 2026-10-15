@@ -120,7 +120,7 @@ mod tests {
     use zcash_protocol::consensus::NetworkType;
 
     /// Five indexes from one chain, scrubbed through the daemon's own config:
-    /// - clean = 0; flipped committed byte = its page named + 1; lost file = 1
+    /// - clean = 0; flipped durable byte = its page named + 1; lost file = 1
     /// - disabled = skipped; no config = 2
     #[tokio::test]
     async fn verify_scrubs_every_sealed_file_and_exits_by_the_corruption_rule() {
@@ -202,14 +202,14 @@ mod tests {
         let clean = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let indexes =
             ["compact_block", "utxo_set", "block_hash", "tree_state", "transparent_address"];
-        // on disk = the sealed bytes, then the zeroed reserve the appends grow into (uncommitted)
+        // on disk = the sealed bytes, then the zeroed reserve the appends grow into (not yet durable)
         let blocks_dat = &clean["compact_block"]["units"][0];
-        let committed = blocks_dat["committed_bytes"].as_u64().expect("committed bytes");
+        let durable_bytes = blocks_dat["committed_bytes"].as_u64().expect("committed_bytes");
         let on_disk = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();
-        assert!(on_disk > committed, "a reserve past the seal");
+        assert!(on_disk > durable_bytes, "a reserve past the seal");
         let expected = json!({
-            "name": "blocks.dat", "committed_bytes": committed,
-            "orphaned_bytes": on_disk - committed,
+            "name": "blocks.dat", "committed_bytes": durable_bytes,
+            "orphaned_bytes": on_disk - durable_bytes,
             "lost": false, "bad_sums": false, "bad_pages": [],
         });
         let tree_units = clean["tree_state"]["units"].as_array().map(Vec::len);
@@ -236,8 +236,7 @@ mod tests {
         records[3] ^= 0x01;
         std::fs::write(&heights, &records).expect("restore");
 
-        let segment =
-            clean["block_hash"]["units"][0]["name"].as_str().expect("a committed segment");
+        let segment = clean["block_hash"]["units"][0]["name"].as_str().expect("a durable segment");
         std::fs::remove_file(bh.join(segment)).expect("remove");
         let lost = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let lost_flag = &lost["block_hash"]["units"][0]["lost"];

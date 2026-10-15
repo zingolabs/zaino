@@ -599,7 +599,7 @@ impl DaemonConfig {
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::Config(format!(
                 "sync.finalised_depth = {depth} is below the validator's reorg bound \
-                 {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach committed blocks \
+                 {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach durable blocks \
                  (only regtest may set less)"
             )));
         }

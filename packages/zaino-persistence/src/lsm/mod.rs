@@ -6,8 +6,8 @@
 //!   merge
 //! - Segment = one batch, sorted by key, **fixed stride, 100% packed**, then per-block fences and
 //!   a binary fuse filter (`layout.rs`)
-//! - Committed segments = owner's manifest list (`SegmentMeta`: id, record count, file seal)
-//! - Segment file the manifest does not list = uncommitted, removed at open
+//! - Durable segments = owner's manifest list (`SegmentMeta`: id, record count, file seal)
+//! - Segment file the manifest does not list = not yet durable, removed at open
 //! - Integrity = the file's page checksums (`crate::pages`)
 //! - Merge = pure k-way merge on a background thread, one per size tier (Lucene
 //!   `TieredMergePolicy`), swapped in by the owner's next manifest (`SegmentLog`)

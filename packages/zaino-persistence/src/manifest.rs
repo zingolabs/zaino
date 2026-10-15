@@ -8,7 +8,7 @@
 //!
 //! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
 //! - commit `seq` overwrites slot `seq % 2` in place (other slot = the commit before it)
-//! - committed state = valid slot with the highest `seq` ([`latest`])
+//! - durable state = valid slot with the highest `seq` ([`latest`])
 //! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
 //!   waits on the filesystem journal or every other file's writeback)
 
@@ -38,7 +38,7 @@ pub enum IndexKind {
 }
 
 impl IndexKind {
-    /// One spelling everywhere (metric label, `/status`, task, default directory, snapshot entry)
+    /// One spelling everywhere (metric label, `/status`, task, default dir, index-snapshot entry)
     /// Fold order (utxo-set before compact-block: its fees)
     pub const ALL: [Self; 5] = [
         Self::UtxoSet,
@@ -147,7 +147,7 @@ pub(crate) fn slot_offset(seq: u64) -> u64 {
 enum Slot<'a> {
     Unwritten,
     Torn(ManifestError),
-    Committed { seq: u64, body: &'a [u8] },
+    Valid { seq: u64, body: &'a [u8] },
 }
 
 /// `Err` = whole, checksummed slot of another index, format or network (refused outright, never
@@ -179,15 +179,15 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
         return Err(ManifestError::Network { expected: identity.network, found: header[11] });
     }
     let seq = u64::from_le_bytes(header[12..20].try_into().expect("8 bytes"));
-    Ok(Slot::Committed { seq, body })
+    Ok(Slot::Valid { seq, body })
 }
 
-/// Committed `(seq, body)` of a whole manifest file; `None` = no commit ever completed
+/// Durable `(seq, body)` of a whole manifest file; `None` = no commit ever completed
 ///
-/// - both committed → higher `seq` (other = the commit before it)
-/// - committed + torn → the committed one (torn = later commit interrupted before its ack)
+/// - both valid → higher `seq` (other = the commit before it)
+/// - valid + torn → the valid one (torn = later commit interrupted before its ack)
 ///   - bit rot in the live slot reads as torn too → rollback one commit (CRC can't tell them apart)
-/// - none committed, <= 1 torn → nothing committed yet (first commit interrupted)
+/// - none valid, <= 1 torn → nothing durable yet (first commit interrupted)
 /// - both torn → error (created zeroed + synced first; a crash tears only the slot written)
 /// - other length → error (older layout; file only ever created whole)
 pub(crate) fn latest(
@@ -201,7 +201,7 @@ pub(crate) fn latest(
     let slots = [decode_slot(identity, first)?, decode_slot(identity, second)?];
 
     let mut commits = slots.iter().filter_map(|slot| match slot {
-        Slot::Committed { seq, body } => Some((*seq, *body)),
+        Slot::Valid { seq, body } => Some((*seq, *body)),
         Slot::Unwritten | Slot::Torn(_) => None,
     });
     match (commits.next(), commits.next()) {
@@ -215,23 +215,23 @@ pub(crate) fn latest(
     }
 }
 
-/// Committed tip (`None` = nothing committed): every body's first 40 bytes
+/// Durable tip (`None` = nothing durable): every body's first 40 bytes
 ///
 /// - block count from genesis ‖ tip hash (zeros when empty)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Committed {
+pub(crate) struct DurableTip {
     pub(crate) tip: Option<BlockRef>,
 }
 
-impl Committed {
+impl DurableTip {
     pub(crate) const EMPTY: Self = Self { tip: None };
 
-    /// Last committed height, inclusive (`None` = nothing committed)
+    /// Durable tip height, inclusive (`None` = nothing durable)
     pub(crate) fn height(&self) -> Option<BlockHeight> {
         self.tip.map(|tip| tip.height)
     }
 
-    /// Blocks committed from genesis (what a file sized per height is checked against)
+    /// Durable blocks from genesis (what a file sized per height is checked against)
     pub(crate) fn count(&self) -> u64 {
         self.height().map_or(0, |height| u64::from(height) + 1)
     }
@@ -248,12 +248,12 @@ impl Committed {
         let Some(last) = count.checked_sub(1) else {
             return match hash == [0; 32] {
                 true => Ok(Self::EMPTY),
-                false => Err(ManifestError::Body("tip hash with nothing committed")),
+                false => Err(ManifestError::Body("tip hash with nothing durable")),
             };
         };
         let height = u32::try_from(last)
             .map(BlockHeight::from)
-            .map_err(|_| ManifestError::Body("committed count past the height ceiling"))?;
+            .map_err(|_| ManifestError::Body("durable block count past the height ceiling"))?;
         Ok(Self { tip: Some(BlockRef { hash: BlockHash(hash), height }) })
     }
 }
@@ -310,7 +310,7 @@ mod tests {
     }
 
     /// - slot pinned byte for byte, alternating by `seq`
-    /// - committed state read off every slot pair a crash, foreign directory or older layout leaves
+    /// - durable state read off every slot pair a crash, foreign directory or older layout leaves
     #[test]
     fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
         let identity =
@@ -388,8 +388,8 @@ mod tests {
     /// - tip presence follows the count both ways; zero hash = still a tip
     /// - on disk = block count from genesis (tip height + 1) ‖ hash
     #[test]
-    fn committed_round_trips_and_refuses_a_tip_with_nothing_committed() {
-        let tip = |height: u32, hash: u8| Committed {
+    fn durable_tip_round_trips_and_refuses_a_tip_with_nothing_durable() {
+        let tip = |height: u32, hash: u8| DurableTip {
             tip: Some(BlockRef { hash: BlockHash([hash; 32]), height: BlockHeight::from(height) }),
         };
         let golden = [3u64.to_le_bytes().as_slice(), &[7; 32]].concat();
@@ -397,18 +397,18 @@ mod tests {
         tip(2, 7).encode(&mut bytes);
         assert_eq!(bytes, golden, "tip at 2 = count 3 on disk");
 
-        for committed in [Committed::EMPTY, tip(2, 7), tip(0, 0)] {
+        for durable in [DurableTip::EMPTY, tip(2, 7), tip(0, 0)] {
             let mut bytes = Vec::new();
-            committed.encode(&mut bytes);
+            durable.encode(&mut bytes);
             let mut body = BodyReader::new(&bytes);
-            assert_eq!(Committed::decode(&mut body).expect("decode"), committed);
+            assert_eq!(DurableTip::decode(&mut body).expect("decode"), durable);
             body.finish().expect("no tail");
         }
 
         let mut bytes = 0u64.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[7; 32]);
-        let tip_only = Committed::decode(&mut BodyReader::new(&bytes));
-        assert!(matches!(tip_only, Err(ManifestError::Body("tip hash with nothing committed"))));
+        let tip_only = DurableTip::decode(&mut BodyReader::new(&bytes));
+        assert!(matches!(tip_only, Err(ManifestError::Body("tip hash with nothing durable"))));
         let tail = BodyReader::new(&[1]).finish();
         assert!(matches!(tail, Err(ManifestError::Body("trailing bytes"))));
     }

@@ -30,10 +30,10 @@ pub enum Command {
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
-    /// Check every file each enabled index has committed against its page checksums.
+    /// Check every file each enabled index has made durable against its page checksums.
     ///
     /// Read-only and safe beside a running zainod: it opens nothing for writing, creates no
-    /// directory and takes no lock. Each file is checked up to its committed length; bytes a
+    /// directory and takes no lock. Each file is checked up to its durable length; bytes a
     /// live writer appended past it are reported as orphaned, not as corruption.
     ///
     /// Prints the full report as JSON on stdout and a summary on stderr. Exits 0 when every

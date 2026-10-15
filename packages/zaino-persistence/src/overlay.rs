@@ -1,7 +1,7 @@
-//! Non-final data over a durable view (`docs/architecture.md` §7)
+//! Applied layers above a durable view (`docs/architecture.md` §7)
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
-//! - [`OverlayView`] = rows [`Uncommitted`] the durable view they sit on: above first, then durable
+//! - [`OverlayView`] = rows [`AppliedLayer`] the durable view they sit on: above first, then durable
 //! - a key removed above masks durable ([`Entry::Removed`]; usage.md "Deletes")
 
 use std::{
@@ -16,7 +16,7 @@ use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::port::{
-    table_slot, BlockChanges, DurableView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
+    table_slot, BlockChanges, MapId, MapRead, PinnedView, Schema, SequenceId, SequenceRead, View,
 };
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
@@ -65,7 +65,7 @@ impl Overlay {
 
     /// This layer + `changes`, sharing structure with `self`
     ///
-    /// - panics: changes this layer does not [accept](Uncommitted::assert_accepts)
+    /// - panics: changes this layer does not [accept](AppliedLayer::assert_accepts)
     pub fn with(&self, changes: &BlockChanges) -> Self {
         let mut next = self.clone();
         next.push(changes);
@@ -155,9 +155,9 @@ fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> 
     records
 }
 
-/// Rows above a durable view: [`Overlay`] (NFS publications) or a store's uncommitted
+/// Rows above a durable view: [`Overlay`] (NFS publications) or a store's not yet durable
 /// [`WriteBuffer`](crate::write_buffer::WriteBuffer)
-pub trait Uncommitted: Clone {
+pub trait AppliedLayer: Clone {
     fn schema(&self) -> &Schema;
 
     /// Lowest block held (`None` = empty)
@@ -195,7 +195,7 @@ pub trait Uncommitted: Clone {
     }
 }
 
-impl Uncommitted for Overlay {
+impl AppliedLayer for Overlay {
     fn schema(&self) -> &Schema {
         &self.schema
     }
@@ -231,7 +231,7 @@ impl Uncommitted for Overlay {
     }
 }
 
-impl<A: Uncommitted> Uncommitted for &A {
+impl<A: AppliedLayer> AppliedLayer for &A {
     fn schema(&self) -> &Schema {
         (**self).schema()
     }
@@ -268,7 +268,7 @@ pub struct OverlayView<V, A = Overlay> {
     above: A,
 }
 
-impl<V: View, A: Uncommitted> OverlayView<V, A> {
+impl<V: View, A: AppliedLayer> OverlayView<V, A> {
     /// Panics: `above` not above `durable`'s tip (rebase it first), or of another schema
     pub fn new(durable: V, above: A) -> Self {
         assert_eq!(above.schema(), durable.schema(), "layer over another schema's view");
@@ -279,13 +279,13 @@ impl<V: View, A: Uncommitted> OverlayView<V, A> {
         Self { durable, above }
     }
 
-    /// Committed state underneath (the seam: at or below its tip = durable)
+    /// Durable state underneath (the seam: at or below its tip = durable)
     pub fn durable(&self) -> &V {
         &self.durable
     }
 }
 
-impl<V: View, A: Uncommitted + Send + Sync> View for OverlayView<V, A> {
+impl<V: View, A: AppliedLayer + Send + Sync> View for OverlayView<V, A> {
     fn tip(&self) -> Option<BlockRef> {
         self.above.tip().or_else(|| self.durable.tip())
     }
@@ -295,7 +295,7 @@ impl<V: View, A: Uncommitted + Send + Sync> View for OverlayView<V, A> {
     }
 }
 
-impl<V: View, A: Uncommitted> fmt::Debug for OverlayView<V, A> {
+impl<V: View, A: AppliedLayer> fmt::Debug for OverlayView<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OverlayView")
             .field("tip", &self.above.tip().or_else(|| self.durable.tip()))
@@ -304,9 +304,9 @@ impl<V: View, A: Uncommitted> fmt::Debug for OverlayView<V, A> {
     }
 }
 
-impl<V: DurableView> DurableView for OverlayView<V, Overlay> {}
+impl<V: PinnedView> PinnedView for OverlayView<V, Overlay> {}
 
-impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView<V, A> {
+impl<V: SequenceRead, A: AppliedLayer + Send + Sync> SequenceRead for OverlayView<V, A> {
     fn len(&self, table: SequenceId) -> u64 {
         self.durable.len(table) + self.above.len(table)
     }
@@ -332,7 +332,7 @@ impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView
     }
 }
 
-impl<V: MapRead, A: Uncommitted + Send + Sync> MapRead for OverlayView<V, A> {
+impl<V: MapRead, A: AppliedLayer + Send + Sync> MapRead for OverlayView<V, A> {
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
         match self.above.value(table, key) {
             Some(Entry::Value(value)) => Some(value),

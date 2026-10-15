@@ -7,7 +7,7 @@ use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
-use zaino_persistence::{DurableView, IndexKind, OverlayView};
+use zaino_persistence::{IndexKind, OverlayView, PinnedView};
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::limits::Lane;
@@ -46,7 +46,7 @@ struct Walk<V> {
 ///
 /// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
 /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
-fn range_response<V: DurableView>(
+fn range_response<V: PinnedView>(
     walk: Walk<V>,
     reads: ReadLanes,
     reproject: fn(Bytes) -> Result<Bytes, Status>,
@@ -102,7 +102,7 @@ pub(crate) async fn block<V, B>(
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status>
 where
-    V: DurableView,
+    V: PinnedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -116,7 +116,7 @@ async fn stored_block<V, B>(
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
 where
-    V: DurableView,
+    V: PinnedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -149,7 +149,7 @@ pub(crate) async fn range<V, B>(
     reads: ReadLanes,
 ) -> Result<Response<Body>, Status>
 where
-    V: DurableView,
+    V: PinnedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -162,7 +162,7 @@ where
 
 /// - walk order up to the first height past `through`: a first height past it = refused before
 ///   any block (lightwalletd: the first `getblock` fails)
-fn open_range<V: DurableView>(
+fn open_range<V: PinnedView>(
     blocks: Blocks<V>,
     through: BlockHeight,
     request: &service::BlockRange,
@@ -221,7 +221,7 @@ mod deprecated_nullifiers {
         reads: ReadLanes,
     ) -> Result<Response<Body>, Status>
     where
-        V: zaino_persistence::DurableView,
+        V: zaino_persistence::PinnedView,
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
@@ -460,7 +460,7 @@ mod tests {
             (headers.get("grpc-status"), headers.get(http::header::CONTENT_TYPE));
         assert_eq!((status, content), (None, Some(&grpc)), "stream status rides in the trailers");
         let (chunks, trailing) = drained(response).await;
-        assert_eq!(chunks.len(), 1, "four committed records = one projected window");
+        assert_eq!(chunks.len(), 1, "four durable records = one projected window");
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let blocks = decode_frames::<compact_formats::CompactBlock>(&chunks.concat());
         let shapes: Vec<_> = blocks

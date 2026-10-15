@@ -157,7 +157,7 @@ fn start(store: DiskStore) -> Writer<DiskView> {
 let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));  // SimFs, at /<index name>
 writer.send(step(&blocks[0])).await;
 writer.send(finalized(&blocks[1])).await;                     // commits after it
-writer.durable_at(h(1)).await;                                // None = nothing committed
+writer.durable_at(h(1)).await;                                // None = nothing durable
 let handle = writer.stop().await.expect("stops at Shutdown"); // Err = the writer panicked
 ```
 

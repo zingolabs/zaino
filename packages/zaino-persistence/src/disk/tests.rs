@@ -289,11 +289,11 @@ struct Node {
     layer: Overlay,
 }
 
-/// Oracle for [`history`]: `nodes` = blocks above `committed`, oldest first, the first `applied`
+/// Oracle for [`history`]: `nodes` = blocks above `durable`, oldest first, the first `applied`
 /// buffered in the store; `salt` = branch of the next node
 #[derive(Default)]
 struct Oracle {
-    committed: Model,
+    durable: Model,
     nodes: Vec<Node>,
     applied: usize,
     salt: u8,
@@ -302,15 +302,15 @@ struct Oracle {
 impl Oracle {
     /// Contents through the last applied node (what `staged()` reads)
     fn buffered(&self) -> &Model {
-        self.applied.checked_sub(1).map_or(&self.committed, |at| &self.nodes[at].model)
+        self.applied.checked_sub(1).map_or(&self.durable, |at| &self.nodes[at].model)
     }
 
-    /// Contents through the newest node (a snapshot's)
+    /// Contents through the newest node (a pinned view's)
     fn newest(&self) -> &Model {
-        self.nodes.last().map_or(&self.committed, |node| &node.model)
+        self.nodes.last().map_or(&self.durable, |node| &node.model)
     }
 
-    /// Newest node's layer over `durable` (`durable` = committed)
+    /// Newest node's layer over `durable` (`durable` = the store's durable view)
     fn newest_view(&self, durable: DiskView) -> OverlayView<DiskView> {
         let layer = self.nodes.last().map_or_else(|| Overlay::empty(&SCHEMA), |n| n.layer.clone());
         OverlayView::new(durable, layer)
@@ -320,7 +320,7 @@ impl Oracle {
     fn grow(&mut self, (records, owners, ids, removals): (u8, &[u8], u16, &[u16])) {
         let (mut model, layer) = match self.nodes.last() {
             Some(node) => (node.model.clone(), node.layer.clone()),
-            None => (self.committed.clone(), Overlay::empty(&SCHEMA)),
+            None => (self.durable.clone(), Overlay::empty(&SCHEMA)),
         };
         model.salt = self.salt;
         let changes = model.advance(records, owners, ids, removals);
@@ -335,14 +335,14 @@ impl Oracle {
         }
     }
 
-    /// Store view = committed; staged = through the last applied; node layers over the view =
+    /// Store view = durable; staged = through the last applied; node layers over the view =
     /// their contents (oldest + newest read in full); buffered bytes >= applied item bytes, 0 iff
     /// nothing applied
     fn assert(&self, store: &DiskStore, label: &str) {
-        self.committed.assert_view(&store.durable(), &format!("{label}: view"));
+        self.durable.assert_view(&store.durable(), &format!("{label}: view"));
         self.buffered().assert_view(&store.applied(), &format!("{label}: staged"));
         let (buffered, items) = (store.buffered_bytes(), self.buffered().bytes);
-        let items = items - self.committed.bytes;
+        let items = items - self.durable.bytes;
         assert!(buffered >= items, "{label}: buffered bytes {buffered} < items {items}");
         assert_eq!(buffered == 0, self.applied == 0, "{label}: buffered bytes {buffered}");
         for node in &self.nodes {
@@ -358,14 +358,14 @@ impl Oracle {
 /// Views taken at step `at` + the models they must keep answering (staged = a borrow: never pinned)
 struct Pinned {
     at: usize,
-    committed: Model,
+    durable: Model,
     newest: Model,
     view: DiskView,
     node: OverlayView<DiskView>,
 }
 
 /// - `Grow`: node above the newest (`records` blocks + nodes, one height, `removals` of held
-///   scanned rows (committed, buffered or in a node), `owners` scanned rows, `ids` probed ids)
+///   scanned rows (durable, buffered or in a node), `owners` scanned rows, `ids` probed ids)
 /// - `Apply`: oldest unapplied nodes into the store, `count` reduced at run time
 /// - `Commit`: every buffered node durable, then every node rebased onto the new view
 /// - `Reorg`: unapplied nodes cut to `keep` (reduced), later nodes on a new branch
@@ -447,9 +447,9 @@ fn steps() -> impl Strategy<Value = Vec<Step>> {
 
 /// History against `Oracle`, after every step:
 ///
-/// - `committed()` = committed prefix; `staged()` = committed + buffered; buffered bytes >= applied
+/// - `durable()` = durable prefix; `staged()` = durable + buffered; buffered bytes >= applied
 /// - each node's layer over the view = its contents; pinned views = their models
-/// - crash or reopen = exactly the committed nodes; [`assert_tiers`] + `Overlay::check` hold
+/// - crash or reopen = exactly the durable nodes; [`assert_tiers`] + `Overlay::check` hold
 fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
     let mut fs = sim_fs(SimFs::new(), flush_device);
     let mut store = open(&DiskEngine::with_fanout(fs.clone(), fanout));
@@ -473,7 +473,7 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
             }
             Step::Commit => {
                 store.commit().expect("commit");
-                oracle.committed = oracle.buffered().clone();
+                oracle.durable = oracle.buffered().clone();
                 oracle.nodes.drain(..oracle.applied);
                 oracle.applied = 0;
                 oracle.rebase(&store.durable());
@@ -498,7 +498,7 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
             Step::Pin => {
                 pinned = Some(Pinned {
                     at,
-                    committed: oracle.committed.clone(),
+                    durable: oracle.durable.clone(),
                     newest: oracle.newest().clone(),
                     view: store.durable(),
                     node: oracle.newest_view(store.durable()),
@@ -519,7 +519,7 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
         oracle.assert(&store, &label);
         if let Some(pin) = &pinned {
             let label = format!("{label}: pinned at step {}", pin.at);
-            pin.committed.assert_view(&pin.view, &format!("{label}: view"));
+            pin.durable.assert_view(&pin.view, &format!("{label}: view"));
             pin.newest.assert_view(&pin.node, &format!("{label}: newest node"));
         }
     }
@@ -639,7 +639,7 @@ fn crash_states_reopen_to_a_commit(flush_device: bool) {
 /// (never a panic, never swallowed), restart = acked or attempted commit; per-file fsync and
 /// one-flush (`Barrier`) commits (a failed `write_back` included)
 #[test]
-fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_state() {
+fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_durable_state() {
     for flush_device in [false, true] {
         failed_io_poisons_and_recovers(flush_device);
     }
@@ -719,7 +719,7 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
     assert!(failures > 40, "only {failures} failure points exercised");
 }
 
-/// Read 0, 1, 2, … failed while reopening a committed store until the open succeeds
+/// Read 0, 1, 2, … failed while reopening a durable store until the open succeeds
 ///
 /// - each failure = the injected `Err`, never a panic; successful open finds every commit
 #[test]
@@ -878,8 +878,8 @@ fn a_removal_from_a_table_without_deletes_panics() {
 // same key inserted by two commits: neither layer above durable can see the first
 
 #[test]
-#[should_panic(expected = "a key held 2 times across committed segments")]
-fn an_insert_only_key_in_two_committed_segments_panics_on_read() {
+#[should_panic(expected = "a key held 2 times across durable segments")]
+fn an_insert_only_key_in_two_durable_segments_panics_on_read() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     for n in [1, 2] {
         let mut changes = store.changes(block_ref(n));
@@ -891,8 +891,8 @@ fn an_insert_only_key_in_two_committed_segments_panics_on_read() {
 }
 
 #[test]
-#[should_panic(expected = "a key held 2 times across committed segments")]
-fn a_deletes_key_held_in_two_committed_segments_panics_on_read() {
+#[should_panic(expected = "a key held 2 times across durable segments")]
+fn a_deletes_key_held_in_two_durable_segments_panics_on_read() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     for n in [1, 2] {
         let mut changes = store.changes(block_ref(n));
@@ -967,10 +967,10 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let blocks_len = |fs: &SimFs| fs.contents(&path("blocks.dat")).expect("blocks").len();
 
     let fs = populated();
-    let committed = (0..4).map(|n| block(n).len()).sum::<usize>();
+    let durable = (0..4).map(|n| block(n).len()).sum::<usize>();
     fs.corrupt(&path("blocks.dat"), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
     let store = open(&DiskEngine::new(fs.clone(), LsmConfig::default()));
-    assert_eq!(blocks_len(&fs), committed, "uncommitted tail truncated");
+    assert_eq!(blocks_len(&fs), durable, "tail past the durable length truncated");
     let records = store.durable().sequence(BLOCKS).records(0..4);
     assert_eq!(records, (0..4).map(block).collect::<Vec<_>>());
     drop(store);
@@ -984,7 +984,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
             .to_string()
     };
     let short = refused(&|fs| fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10)));
-    assert_eq!(short, "/idx/pool/nodes.dat is 10 bytes, the committed state needs 32");
+    assert_eq!(short, "/idx/pool/nodes.dat is 10 bytes, the durable state needs 32");
     let torn = refused(&|fs| fs.corrupt(&path("blocks.idx"), |bytes| bytes[3] ^= 1));
     assert_eq!(torn, "/idx/blocks.idx: tail page fails its checksum");
 
@@ -999,7 +999,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     assert!(matches!(opened, Err(StoreError::Manifest(ManifestError::Unmanifested { .. }))));
 }
 
-/// Manifest body pinned byte for byte: committed tip, each sequence's seals in schema order (two
+/// Manifest body pinned byte for byte: durable tip, each sequence's seals in schema order (two
 /// for a variable one), each map's segment list
 #[test]
 fn a_manifest_body_is_its_golden_bytes() {
@@ -1011,7 +1011,7 @@ fn a_manifest_body_is_its_golden_bytes() {
     let sealed =
         |n: u8| Sealed { len: u64::from(n), tail: u32::from(n) << 8, sums: u32::from(n) << 16 };
     let body = Body {
-        committed: Committed { tip: Some(block_ref(3)) },
+        durable: DurableTip { tip: Some(block_ref(3)) },
         sequences: vec![
             Seals { data: sealed(4), records: Records::Fixed(NonZeroU32::new(4).expect("4")) },
             Seals { data: sealed(5), records: Records::Variable(sealed(8)) },
@@ -1060,7 +1060,7 @@ fn verify_names_bad_pages_and_lost_files_rescrubs_after_a_merge_and_refuses_anot
     store.commit().expect("commit");
     store.apply(model.advance(1, &[2], 1, &[]));
     store.commit().expect("commit");
-    let read = || dir::read_committed(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
+    let read = || dir::read_durable(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
     let before = read();
     store.settle();
     store.apply(model.advance(0, &[], 0, &[]));
@@ -1076,11 +1076,10 @@ fn verify_names_bad_pages_and_lost_files_rescrubs_after_a_merge_and_refuses_anot
 
     let mut reads = [before.clone(), after.clone()].into_iter().chain(std::iter::repeat(after));
     let rescrubbed =
-        verify_committed(fs.as_ref(), &path, &SCHEMA, || Ok(reads.next().expect("endless")))
+        verify_durable(fs.as_ref(), &path, &SCHEMA, || Ok(reads.next().expect("endless")))
             .expect("verify");
     assert_eq!(rescrubbed, clean, "retired inputs: scrubbed again against the newer manifest");
-    let stale =
-        verify_committed(fs.as_ref(), &path, &SCHEMA, || Ok(before.clone())).expect("verify");
+    let stale = verify_durable(fs.as_ref(), &path, &SCHEMA, || Ok(before.clone())).expect("verify");
     assert!(stale.units.iter().any(|unit| unit.lost), "a listed file missing is lost: {stale:?}");
 
     let heights = path.join("heights.dat");

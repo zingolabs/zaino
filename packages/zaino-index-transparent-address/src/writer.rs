@@ -178,11 +178,11 @@ mod tests {
 
     /// Ten one-block commits (write_buffer = 1 byte: each block commits as it arrives; the 9th
     /// launches a background merge), crashed at every persistence point: each state reopens to a
-    /// committed prefix with its one unspent output and balance exact, takes the next block
+    /// durable prefix with its one unspent output and balance exact, takes the next block
     ///
     /// - block `h`'s coinbase pays alice `h + 1` zats (vout 0); its tx spends block `h - 1`'s
     #[tokio::test]
-    async fn every_crash_state_of_commits_and_a_merge_reopens_to_a_committed_prefix() {
+    async fn every_crash_state_of_commits_and_a_merge_reopens_to_a_durable_prefix() {
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
         let pays_alice = p2pkh([0xa1; 20]);
         let mut chain = MockChain::regtest()
@@ -239,7 +239,7 @@ mod tests {
 
     /// Receive in one segment, its spend in the next, queried across both, after restarts
     ///
-    /// - 0, 1 (`FinalizedTip`: committed there), then 2 (`FinalizedTip`)
+    /// - 0, 1 (`FinalizedTip`: durable there), then 2 (`FinalizedTip`)
     /// - restart: 1 and 2 resent (held: skipped), then 3 (`FinalizedTip`)
     #[tokio::test]
     async fn a_spend_in_a_later_segment_retires_a_utxo_and_a_restart_skips_what_it_holds() {

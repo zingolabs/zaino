@@ -53,7 +53,7 @@ impl Overlay {
     }
 }
 
-/// Committed side of an `OverlayView`: a tip + a schema, nothing else read
+/// Durable side of an `OverlayView`: a tip + a schema, nothing else read
 #[derive(Clone)]
 struct Durable {
     tip: Option<BlockRef>,

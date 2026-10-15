@@ -3,11 +3,11 @@
 //! ```text
 //! <file>       append-only data
 //! <file>.crc   CRC-32 LE per complete 4 KiB page of <file>
-//! MANIFEST     per file: committed length, the tail page's CRC, a digest of <file>.crc (`Sealed`)
+//! MANIFEST     per file: durable length, the tail page's CRC, a digest of <file>.crc (`Sealed`)
 //! ```
 //!
 //! - complete page never changes → its CRC in `<file>.crc`; growing tail page → CRC in manifest
-//!   (no committed page ever left with a stale CRC)
+//!   (no durable page ever left with a stale CRC)
 //! - CRC covers page index + bytes (page moved with its CRC still fails)
 //! - manifest digest of `<file>.crc`, checked at open: manifest pins every CRC, each CRC its page
 //!   (stale page + stale CRC after a lost write still fails)
@@ -49,7 +49,7 @@ static ZEROS: [u8; 1 << 20] = [0; 1 << 20];
 /// Operator remedy in a checksum-mismatch panic
 const CORRUPTION: &str = "on-disk corruption: stop zainod, run `zainod verify`, resync";
 
-/// File's committed state, as its owner's manifest records it
+/// File's durable state, as its owner's manifest records it
 ///
 /// - `tail` = [`page_sum`] of the bytes after the last complete page
 /// - `sums` = CRC-32 of `<file>.crc` through the last complete page (CRC of nothing when none)
@@ -61,7 +61,7 @@ pub(crate) struct Sealed {
 }
 
 impl Sealed {
-    /// Nothing committed
+    /// Nothing durable
     pub(crate) const EMPTY: Self = Self { len: 0, tail: 0, sums: 0 };
 
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
@@ -83,7 +83,7 @@ impl Sealed {
         self.full_pages() * SUM as u64
     }
 
-    /// `sums` = the checksums this seal committed
+    /// `sums` = the checksums this seal records
     fn digest_matches(&self, sums: &[u8]) -> bool {
         crc32fast::hash(sums) == self.sums
     }
@@ -101,8 +101,8 @@ fn page_intact(index: u64, bytes: &[u8], sums: &[u8], tail: u32) -> bool {
     page_sum(index, bytes) == expected
 }
 
-/// `file`'s length, refused when short of `need` (committed bytes lost)
-fn committed_len(file: &dyn ReadHandle, path: &Path, need: u64) -> Result<u64, PageError> {
+/// `file`'s length, refused when short of `need` (durable bytes lost)
+fn durable_len(file: &dyn ReadHandle, path: &Path, need: u64) -> Result<u64, PageError> {
     let have = file.size()?;
     match have < need {
         true => Err(PageError::Lost { path: path.to_owned(), have, need }),
@@ -157,7 +157,7 @@ pub enum PageError {
     #[error("page io: {0}")]
     Io(#[from] io::Error),
 
-    #[error("{path} is {have} bytes, the committed state needs {need}")]
+    #[error("{path} is {have} bytes, the durable state needs {need}")]
     Lost { path: PathBuf, have: u64, need: u64 },
 
     #[error("{path}: tail page fails its checksum")]
@@ -256,9 +256,9 @@ impl PagedFile {
             return Err(PageError::Tail { path: path.to_owned() });
         }
         tail_page.reserve(PAGE - tail_page.len());
-        let mut committed_sums = vec![0; usize::try_from(sums_len).expect("sums fit usize")];
-        sums.read_exact_at(&mut committed_sums, 0)?;
-        if !sealed.digest_matches(&committed_sums) {
+        let mut durable_sums = vec![0; usize::try_from(sums_len).expect("sums fit usize")];
+        sums.read_exact_at(&mut durable_sums, 0)?;
+        if !sealed.digest_matches(&durable_sums) {
             return Err(PageError::Sums { path: path.to_owned() });
         }
 
@@ -320,7 +320,7 @@ impl PagedFile {
     }
 
     /// Data durable → completed pages' CRCs written + durable → seal for the owner's next
-    /// manifest (committed only once that manifest is durable)
+    /// manifest (durable only once that manifest is durable)
     ///
     /// - [`Durability::Barrier`] = written back only: durable at the owner's one flush, before its
     ///   manifest
@@ -353,7 +353,7 @@ impl PagedFile {
 }
 
 fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageError> {
-    if committed_len(file, path, need)? > need {
+    if durable_len(file, path, need)? > need {
         file.set_len(need)?;
     }
     Ok(())
@@ -409,8 +409,8 @@ impl Pages {
         let data = fs.open_read(path)?.ok_or_else(|| missing(path))?;
         let sums_at = sums_path(path);
         let sums = fs.open_read(&sums_at)?.ok_or_else(|| missing(&sums_at))?;
-        committed_len(data.as_ref(), path, sealed.len)?;
-        committed_len(sums.as_ref(), &sums_at, sealed.sums_len())?;
+        durable_len(data.as_ref(), path, sealed.len)?;
+        durable_len(sums.as_ref(), &sums_at, sealed.sums_len())?;
         let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
         if !sealed.digest_matches(&pages.inner.sums) {
             return Err(PageError::Sums { path: path.to_owned() });
@@ -542,8 +542,8 @@ pub(crate) fn scrub(
         report.lost = true;
         return Ok(report);
     };
-    let lengths = committed_len(data.as_ref(), &path, sealed.len)
-        .and_then(|len| Ok((len, committed_len(sums.as_ref(), &path, sealed.sums_len())?)));
+    let lengths = durable_len(data.as_ref(), &path, sealed.len)
+        .and_then(|len| Ok((len, durable_len(sums.as_ref(), &path, sealed.sums_len())?)));
     let len = match lengths {
         Ok((len, _)) => len,
         Err(PageError::Lost { .. }) => {
@@ -553,15 +553,15 @@ pub(crate) fn scrub(
         Err(error) => return Err(error),
     };
     report.orphaned_bytes = len - sealed.len;
-    let mut committed_sums = vec![0; usize::try_from(sealed.sums_len()).expect("sums fit usize")];
-    sums.read_exact_at(&mut committed_sums, 0)?;
-    report.bad_sums = !sealed.digest_matches(&committed_sums);
+    let mut durable_sums = vec![0; usize::try_from(sealed.sums_len()).expect("sums fit usize")];
+    sums.read_exact_at(&mut durable_sums, 0)?;
+    report.bad_sums = !sealed.digest_matches(&durable_sums);
 
     let mut page = vec![0u8; PAGE];
     for index in 0..sealed.len.div_ceil(PAGE as u64) {
         let size = (sealed.len - index * PAGE as u64).min(PAGE as u64) as usize;
         data.read_exact_at(&mut page[..size], index * PAGE as u64)?;
-        if !page_intact(index, &page[..size], &committed_sums, sealed.tail) {
+        if !page_intact(index, &page[..size], &durable_sums, sealed.tail) {
             report.bad_pages.push(index);
         }
     }
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "page 1: checksum mismatch")]
-    fn a_read_of_a_flipped_committed_byte_panics_naming_its_page() {
+    fn a_read_of_a_flipped_durable_byte_panics_naming_its_page() {
         let fs = SimFs::new();
         let path = Path::new("/p/data");
         fs.create_dir_all(Path::new("/p")).expect("dir");
@@ -616,10 +616,10 @@ mod tests {
 
     /// - appends across page boundaries seal to a from-scratch hash's CRCs
     /// - reopen continues the tail
-    /// - flipped committed byte passes open (lengths only); forged checksum, torn tail, short file
+    /// - flipped durable byte passes open (lengths only); forged checksum, torn tail, short file
     ///   refused
     #[test]
-    fn seals_reopen_and_every_committed_byte_is_checked() {
+    fn seals_reopen_and_every_durable_byte_is_checked() {
         let fs = SimFs::new();
         let path = Path::new("/p/data");
         fs.create_dir_all(Path::new("/p")).expect("dir");
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(pages.read(PAGE - 10..PAGE + 10), &bytes[PAGE - 10..PAGE + 10]);
         assert_eq!(pages.bytes(0..bytes.len()), bytes);
 
-        // longer file: uncommitted bytes past the seal dropped at open
+        // longer file: not yet durable bytes past the seal dropped at open
         fs.corrupt(path, |data| data.extend_from_slice(&[9; 17]));
         drop(file);
         PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment).expect("reopen past orphans");

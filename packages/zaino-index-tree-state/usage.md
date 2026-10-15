@@ -11,7 +11,7 @@ stored:
 
 ```text
 <dir>/
-  MANIFEST                   committed tip, every table's seal (the engine's)
+  MANIFEST                   durable tip, every table's seal (the engine's)
   heights.dat                48 B per height: hash, time, three cumulative tree sizes
   sapling/ orchard/ ironwood/
     l00.dat … l31.dat        32 B per retained node, one file per tree level
@@ -68,7 +68,7 @@ tokio::spawn(writer.run(blocks));
   `zaino_sync::apply`s each. It commits on a `FinalizedTip` block, a full buffer
   (`WRITE_BUFFER` = 16 MiB) and `Shutdown`.
 - Fallible only at boot (`StoreError` from `open`). `new` asserts one `heights`
-  record per committed height. `run` panics on a failed commit or an unfoldable
+  record per durable height. `run` panics on a failed commit or an unfoldable
   block ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - `PoolActivations::new(&LocalNetwork)` gives each pool's first height:
   Sapling, NU5 (Orchard), NU6.3 (Ironwood), or `None` when unscheduled.

@@ -3,7 +3,7 @@
 //! - positional I/O only (a partial write can never move where the next one lands)
 //! - new file / rename / removal durable only after [`Fs::sync_dir`] on its parent
 //! - maps read-only (full disk = `io::Error` from a write, never SIGBUS on a mapped store)
-//! - mapping spans the whole file → callers bound reads by committed lengths (`crate::pages`)
+//! - mapping spans the whole file → callers bound reads by durable lengths (`crate::pages`)
 
 use std::{
     fmt, io,

@@ -224,7 +224,7 @@ mod tests {
         store
     }
 
-    /// `chain` committed whole, read as an NFS publication reads it (nothing above)
+    /// `chain` durable whole, read as an NFS publication reads it (nothing above)
     fn reader(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
         let count = u32::from(chain.tip().height) + 1;
         let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
@@ -233,8 +233,8 @@ mod tests {
         CompactBlockReader::new(OverlayView::new(store.durable(), Overlay::empty(store.schema())))
     }
 
-    /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them (as the NFS folds them)
-    fn four_committed_three_above(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
+    /// `chain(7)`: 0..=3 durable, 4..=6 in the layer above them (as the NFS folds them)
+    fn four_durable_three_above(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
         let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut store = folded(store, chain, 0..4);
         store.commit().expect("SimFs commit");
@@ -306,10 +306,10 @@ mod tests {
     /// Range crossing the seam (where an off-by-one hides): every height exactly once, in order,
     /// no duplicate or gap at the boundary; files in one window, the layer per record
     #[test]
-    fn a_range_spans_the_committed_records_and_the_layer_without_a_seam() {
-        // committed 0 to 3 (both inclusive), layer from 4
+    fn a_range_spans_the_durable_records_and_the_layer_without_a_seam() {
+        // durable 0 to 3 (both inclusive), layer from 4
         let chain = chain(7);
-        let reader = four_committed_three_above(&chain);
+        let reader = four_durable_three_above(&chain);
         let range = |start, end| {
             RangeCursor::new(reader.clone(), h(start), h(end), h(6), Pools::ALL).expect("range")
         };
@@ -334,7 +334,7 @@ mod tests {
     /// across the seam (layer first)
     #[test]
     fn a_descending_range_serves_the_ascending_records_top_down_across_the_seam() {
-        let reader = four_committed_three_above(&chain(7));
+        let reader = four_durable_three_above(&chain(7));
         let range = |start, end| {
             RangeCursor::new(reader.clone(), h(start), h(end), h(6), Pools::ALL).expect("range")
         };
@@ -352,11 +352,11 @@ mod tests {
         assert_eq!(heights(&drain(narrow.expect("narrow"))), [6, 5, 4, 3, 2, 1]);
     }
 
-    /// Bounds over 0..=6 held (0..=3 committed): top past the served tip = clamped, either
+    /// Bounds over 0..=6 held (0..=3 durable): top past the served tip = clamped, either
     /// direction; bottom past it = a miss (served tip 4 = a root publication behind its reader)
     #[test]
     fn a_range_clamps_its_top_to_the_served_tip_and_misses_past_it() {
-        let reader = four_committed_three_above(&chain(7));
+        let reader = four_durable_three_above(&chain(7));
         let served = |heights: &[u64]| Ok(heights.to_vec());
         let missed = |height| Err(ServeError::NotFound { height: h(height) });
         // (start, end, served tip) → heights in walk order
@@ -382,7 +382,7 @@ mod tests {
     /// order, chunked as the unprojected range
     #[test]
     fn a_projected_range_is_its_records_projected_in_walk_order() {
-        let reader = four_committed_three_above(&chain(7));
+        let reader = four_durable_three_above(&chain(7));
         for (start, end) in [(2, 6), (6, 1), (0, 3)] {
             let range = |pools| {
                 let range = RangeCursor::new(reader.clone(), h(start), h(end), h(6), pools);

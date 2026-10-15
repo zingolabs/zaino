@@ -4,7 +4,7 @@
 use crate::network::chain_name;
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
-use zaino_persistence::{DurableView, OverlayView};
+use zaino_persistence::{OverlayView, PinnedView};
 use zaino_proto::proto::service;
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
@@ -37,7 +37,7 @@ fn to_status(error: ServeError) -> Status {
 }
 
 /// `GetAddressUtxos`: one list message
-pub(crate) async fn utxos<V: DurableView, B>(
+pub(crate) async fn utxos<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -51,7 +51,7 @@ where
 }
 
 /// `GetAddressUtxosStream`: one message per utxo
-pub(crate) async fn utxos_stream<V: DurableView, B>(
+pub(crate) async fn utxos_stream<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -68,7 +68,7 @@ where
 ///
 /// - Fetched lazily, one per poll (busy address = thousands; a client that stops reading stops
 ///   the round trips; HTTP/2 flow control paces)
-pub(crate) async fn transactions<S: ChainDataSource, V: DurableView, B>(
+pub(crate) async fn transactions<S: ChainDataSource, V: PinnedView, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
     body: B,
@@ -102,7 +102,7 @@ where
 }
 
 /// Txids touching the address, height order
-async fn found_transactions<V: DurableView, B>(
+async fn found_transactions<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -148,7 +148,7 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
 }
 
 /// `GetAddressUtxos` / `GetAddressUtxosStream`: one walk, two response shapes
-async fn utxo_replies<V: DurableView, B>(
+async fn utxo_replies<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -208,7 +208,7 @@ fn reply(
 }
 
 /// `GetTaddressBalance`: one `AddressList`, one total
-pub(crate) async fn balance<V: DurableView, B>(
+pub(crate) async fn balance<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -222,7 +222,7 @@ where
 }
 
 /// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), reply = one total
-pub(crate) async fn balance_stream<V: DurableView, B>(
+pub(crate) async fn balance_stream<V: PinnedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -239,7 +239,7 @@ where
 
 /// Deduped on the parsed address (a repeated address counts once)
 /// - distinct addresses' balances sum within the supply, so overflow = index corruption
-async fn total<V: DurableView>(
+async fn total<V: PinnedView>(
     index: Addresses<V>,
     addresses: &[String],
     reads: &ReadLanes,

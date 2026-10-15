@@ -1,4 +1,4 @@
-//! Committed segment as its manifest records it + merge policy over a segment list
+//! Durable segment as its manifest records it + merge policy over a segment list
 
 use std::collections::BTreeMap;
 
@@ -8,7 +8,7 @@ use crate::{
     pages::Sealed,
 };
 
-/// Committed segment: file id, record count, its file's seal
+/// Durable segment: file id, record count, its file's seal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SegmentMeta {
     pub(crate) id: u32,

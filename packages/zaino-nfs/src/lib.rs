@@ -18,7 +18,7 @@ use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::VerifiedChain;
-use zaino_persistence::{DurableView, IndexKind, PerIndex};
+use zaino_persistence::{IndexKind, PerIndex, PinnedView};
 use zaino_primitives::display::Human;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::ChainDataSource;
@@ -61,7 +61,7 @@ pub struct Nfs<S, V> {
     served: Option<BlockRef>,
 }
 
-impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
+impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
     /// - `balancer` = who serves each body (each answer checked; its driver runs elsewhere)
     /// - `lookahead` = bodies fetched or folding ahead of the next fold
     pub fn new(
@@ -230,7 +230,7 @@ impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
 }
 
 /// `position`'s next commit (`false` = its writer gone)
-async fn next_commit<V: DurableView>(
+async fn next_commit<V: PinnedView>(
     position: usize,
     mut handle: IndexHandle<V>,
 ) -> (usize, IndexHandle<V>, bool) {

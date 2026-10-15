@@ -1,7 +1,7 @@
 //! Persistence port: what an index may ask of storage (usage.md "What an index may ask")
 //!
-//! - final data only, insert only (+ single removes on a `deletes()` map), buffered then one atomic
-//!   commit, snapshot reads, verifiable
+//! - finalized data only, insert only (+ single removes on a `deletes()` map), buffered then one
+//!   atomic commit, pinned reads, verifiable
 //! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
 //! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
 
@@ -23,7 +23,7 @@ use crate::{manifest::IndexKind, write_buffer::AppliedView, CommitFailed, StoreE
 pub trait PersistenceEngine: Send + Sync + 'static {
     type Store: Store;
 
-    /// Store at `path`: created, or resumed at its committed tip; commits by itself once
+    /// Store at `path`: created, or resumed at its durable tip; commits by itself once
     /// `write_buffer` bytes are buffered
     ///
     /// - another identity there (kind, format, network) = error, never a reformat
@@ -35,16 +35,16 @@ pub trait PersistenceEngine: Send + Sync + 'static {
         write_buffer: NonZeroUsize,
     ) -> Result<Self::Store, StoreError>;
 
-    /// Every committed byte against its integrity data (read-only: safe beside a running writer)
+    /// Every durable byte against its integrity data (read-only: safe beside a running writer)
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError>;
 }
 
 /// Index's store = commit point of all its tables (one writer)
 ///
-/// - final data: [`apply`](Self::apply) buffers (commits itself on a full buffer),
+/// - finalized data: [`apply`](Self::apply) buffers (commits itself on a full buffer),
 ///   [`commit`](Self::commit) makes the rest durable now
 pub trait Store: Send + 'static {
-    type View: DurableView;
+    type View: PinnedView;
 
     /// As opened
     fn schema(&self) -> &Schema;
@@ -55,7 +55,7 @@ pub trait Store: Send + 'static {
     }
 
     /// `changes` buffered: in [`applied`](Self::applied), not in [`durable`](Self::durable),
-    /// not durable; buffer then at `write_buffer` bytes = committed (as [`commit`](Self::commit))
+    /// not durable; buffer then at `write_buffer` bytes = durable (as [`commit`](Self::commit))
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
@@ -70,16 +70,16 @@ pub trait Store: Send + 'static {
     /// - `Err` poisons the store: every later apply / commit panics (failed sync never retried)
     fn commit(&mut self) -> Result<(), CommitFailed>;
 
-    /// Committed only (what serving pins: no crash takes back what a reader saw)
+    /// Durable only (what serving pins: no crash takes back what a reader saw)
     fn durable(&self) -> Self::View;
 
-    /// Committed + buffered (what a bulk fold reads its parent through)
+    /// Durable + buffered (what a bulk fold reads its parent through)
     fn applied(&self) -> AppliedView<'_, Self::View>;
 }
 
-/// State at a tip: [`DurableView`] (served) or [`AppliedView`] (a writer's fold, borrowed)
+/// State at a tip: [`PinnedView`] (served) or [`AppliedView`] (a writer's fold, borrowed)
 pub trait View: Clone + Send + Sync {
-    /// Last committed block (`None` = nothing committed yet)
+    /// Last block in this view (`None` = none yet)
     fn tip(&self) -> Option<BlockRef>;
 
     /// Store's, as opened
@@ -134,10 +134,10 @@ pub trait MapRead: View {
     }
 }
 
-/// gRPC's read: a committed snapshot, fixed while held, owned (read on any thread)
+/// gRPC's read: pinned state, fixed while held, owned (read on any thread)
 ///
 /// - NFS layers over one (`OverlayView<V, Overlay>`) = one too
-pub trait DurableView: SequenceRead + MapRead + 'static {}
+pub trait PinnedView: SequenceRead + MapRead + 'static {}
 
 /// One sequence table of one view
 #[derive(Debug, Clone, Copy)]
@@ -582,7 +582,7 @@ impl Items {
 
 /// What [`PersistenceEngine::verify`] found
 ///
-/// - `heights` = tip height + 1 (0 = nothing committed); `units` = files, for the file engines
+/// - `heights` = tip height + 1 (0 = nothing durable); `units` = files, for the file engines
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Verification {
     pub heights: u64,
@@ -598,7 +598,7 @@ impl Verification {
 /// Stored unit, checked
 ///
 /// - `orphaned_bytes` = past what the commit claims (interrupted commit's tail: harmless)
-/// - `lost` = shorter than committed; `bad_sums` = checksum list != commit's
+/// - `lost` = shorter than durable; `bad_sums` = checksum list != commit's
 /// - `bad_pages` = pages whose bytes != their checksum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Checked {

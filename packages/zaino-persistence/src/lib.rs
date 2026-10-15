@@ -30,13 +30,13 @@ pub use disk::{manifest_fits, DiskEngine, DiskStore, DiskView, TableFootprint};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::{Fanout, LsmConfig, SegmentError};
 pub use manifest::{IndexKind, ManifestError};
-pub use overlay::{Entry, Overlay, OverlayView, Uncommitted};
+pub use overlay::{AppliedLayer, Entry, Overlay, OverlayView};
 pub use pages::PageError;
 pub use per_index::PerIndex;
 pub use port::{
-    BlockChanges, Checked, DurableView, MapChanges, MapId, MapRead, MapTable, MapView,
-    PersistenceEngine, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable,
-    SequenceView, Store, Tables, Verification, View, Width,
+    BlockChanges, Checked, MapChanges, MapId, MapRead, MapTable, MapView, PersistenceEngine,
+    PinnedView, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable, SequenceView,
+    Store, Tables, Verification, View, Width,
 };
 pub use write_buffer::{AppliedView, WriteBuffer};
 

@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
-    /// 0..=3 (3 `FinalizedTip`: committed there), then a restart resending 2 and 3 (held: skipped)
+    /// 0..=3 (3 `FinalizedTip`: durable there), then a restart resending 2 and 3 (held: skipped)
     /// before 4; every hash located at its height after a reopen, a never-sent one nowhere
     #[tokio::test]
     async fn every_block_locates_its_hash_and_a_restart_skips_what_it_holds() {
@@ -156,7 +156,7 @@ mod tests {
     /// to an acknowledged or the attempted commit, locates every hash it holds and none past it,
     /// and commits the next block
     #[tokio::test]
-    async fn every_crash_state_reopens_to_a_committed_prefix_that_keeps_committing() {
+    async fn every_crash_state_reopens_to_a_durable_prefix_that_keeps_committing() {
         let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);

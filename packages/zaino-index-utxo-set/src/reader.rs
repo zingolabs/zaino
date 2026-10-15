@@ -34,7 +34,7 @@ impl<V: SequenceRead + MapRead> UtxoSetReader<V> {
                 let found = found?;
                 let bytes: &[u8; VALUE] =
                     found[..].try_into().expect("outputs values: schema width");
-                Some(decode_value(bytes).expect("outputs values: in supply when committed"))
+                Some(decode_value(bytes).expect("outputs values: in supply when made durable"))
             })
             .collect()
     }

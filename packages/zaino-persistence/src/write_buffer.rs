@@ -1,4 +1,4 @@
-//! [`WriteBuffer`]: a store's applied, uncommitted [`BlockChanges`], concatenated per table
+//! [`WriteBuffer`]: a store's applied, not yet durable [`BlockChanges`], concatenated per table
 //!
 //! - map rows unsorted (the LSM sorts each batch at commit)
 //! - per map: row numbers by key (applied-view lookups + the held-key check)
@@ -13,14 +13,14 @@ use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
-    overlay::{Entry, OverlayView, Uncommitted},
+    overlay::{AppliedLayer, Entry, OverlayView},
     port::{
         table_slot, BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId,
         SequenceTable, Width,
     },
 };
 
-/// Committed view + its store's buffer, borrowed ([`Store::applied`](crate::Store::applied))
+/// Durable view + its store's buffer, borrowed ([`Store::applied`](crate::Store::applied))
 ///
 /// - borrow = none held across `apply` (compile error, never a buffer copy)
 pub type AppliedView<'a, V> = OverlayView<V, &'a WriteBuffer>;
@@ -72,7 +72,7 @@ impl WriteBuffer {
         self.tip
     }
 
-    /// `changes` the caller checked with [`assert_accepts`](Uncommitted::assert_accepts)
+    /// `changes` the caller checked with [`assert_accepts`](AppliedLayer::assert_accepts)
     pub(crate) fn push(&mut self, changes: &BlockChanges) {
         for (&table, held) in self.schema.sequences().iter().zip(&mut self.sequences) {
             held.extend(changes.sequence_items(table));
@@ -187,7 +187,7 @@ fn key_at(keys: &Items, table: MapTable, row: usize) -> &[u8] {
     keys.get(table.key, row).expect("an indexed row is buffered")
 }
 
-impl Uncommitted for WriteBuffer {
+impl AppliedLayer for WriteBuffer {
     fn schema(&self) -> &Schema {
         &self.schema
     }

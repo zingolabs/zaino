@@ -29,7 +29,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     pub fn new(store: S) -> Self {
         let view = store.durable();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
-        assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per committed height");
+        assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per durable height");
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
@@ -386,7 +386,7 @@ mod tests {
     /// reopens to an acknowledged or the attempted commit, serves those records byte for byte,
     /// and the next block's tree sizes fold onto its tip record (not from zero)
     #[tokio::test]
-    async fn every_crash_state_reopens_to_a_committed_prefix_the_next_block_folds_onto() {
+    async fn every_crash_state_reopens_to_a_durable_prefix_the_next_block_folds_onto() {
         // (sapling, orchard, ironwood) per block from 1: cumulative sizes distinct at every height
         let counts = [(1u8, 0u8, 2u8), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
         let mut mock = MockChain::regtest();

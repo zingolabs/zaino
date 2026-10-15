@@ -182,7 +182,7 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
 }
 
 /// - retain removes unlisted segments (+ checksums) + any writer's scratch
-/// - short or unsummed segment refused; flipped committed byte passes open (lengths only)
+/// - short or unsummed segment refused; flipped durable byte passes open (lengths only)
 #[test]
 fn retain_removes_strays_and_open_checks_lengths_leaving_pages_to_the_first_touch() {
     let fs = SimFs::new();
@@ -238,10 +238,10 @@ fn a_read_of_a_corrupt_page_panics_naming_the_page_and_the_fix() {
         .expect("rows");
     // page 0 = records only (600 rows: summary past it)
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
-    let snapshot = SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept])
+    let segments_view = SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept])
         .expect("lengths intact");
 
-    snapshot.get(&scanned_row(1, 1).0);
+    segments_view.get(&scanned_row(1, 1).0);
 }
 
 /// Same tier at fanout 2 → open launches their merge (reads the corrupt page on its thread)
@@ -350,7 +350,7 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
         })
         .collect();
     writer.dir().sync().expect("sync");
-    let snapshot =
+    let segments_view =
         SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &metas).expect("open");
     let files: Vec<SegmentFile> = metas
         .iter()
@@ -368,7 +368,7 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
     let holder = |n: u32| spans.iter().position(|span| span.contains(&n)).expect("held");
 
     for step in [Prefetch::Fences, Prefetch::Records] {
-        let plan = snapshot.prefetch_plan(step, &sorted);
+        let plan = segments_view.prefetch_plan(step, &sorted);
         for segment in 0..spans.len() {
             let ranges: Vec<_> =
                 plan.iter().filter(|(s, _)| *s == segment).map(|(_, r)| r).collect();
@@ -408,11 +408,11 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
         .collect();
     writer.dir().sync().expect("sync");
 
-    let snapshot =
+    let segments_view =
         SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &segments).expect("open");
     let range = |a: u64| {
         let (start, end) = (account(a).to_vec(), [&account(a)[..], &[0xff; 4]].concat());
-        snapshot.range(&start, &end, usize::MAX).expect("unbounded")
+        segments_view.range(&start, &end, usize::MAX).expect("unbounded")
     };
     assert_eq!(range(0).len(), 6 * 20, "the shared account from every segment");
     assert_eq!(range(301).len(), 20, "an account from one segment");
@@ -563,13 +563,13 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
         SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &every).expect("open");
     for listed in lists {
         let ids: Vec<u32> = listed.iter().map(|meta| meta.id).collect();
-        let snapshot = mapped.next(&SegmentDir::new(fs.clone(), dir), listed).expect("map");
-        assert_eq!(snapshot.get(&removed.0), None, "{ids:?}: get");
+        let segments_view = mapped.next(&SegmentDir::new(fs.clone(), dir), listed).expect("map");
+        assert_eq!(segments_view.get(&removed.0), None, "{ids:?}: get");
         let asked = [removed.0.as_slice(), kept.0.as_slice(), removed.0.as_slice()];
         let expected = vec![None, Some(Bytes::from(kept.1.clone())), None];
-        assert_eq!(snapshot.get_many(&asked), expected, "{ids:?}: get_many");
+        assert_eq!(segments_view.get_many(&asked), expected, "{ids:?}: get_many");
         let range = |limit| {
-            let rows = snapshot.range(&[0; 16], &[0xff; 16], limit)?;
+            let rows = segments_view.range(&[0; 16], &[0xff; 16], limit)?;
             Some(rows.into_iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect::<Vec<_>>())
         };
         assert_eq!(range(2), Some(live.clone()), "{ids:?}: range at its live size");
