@@ -197,15 +197,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
-/// Serving metadata from one `GrpcSnapshot`: no validator read (served degraded too)
-///
-/// - `blockHeight` = the served tip `GetLatestBlock` serves; `estimatedHeight` = the verified
-///   best (the network's tip as far as the header chain knows)
-/// - branch at the served tip + Sapling + the next upgrade = the schedule (mainnet/testnet
-///   compiled, regtest its validator's at boot)
-/// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
-/// - nothing served = `UNAVAILABLE`
-/// - `lightwalletProtocolVersion` = vendored protos' release (pepper-sync refuses < v0.5.0)
+/// `GetLightdInfo` from one `GrpcSnapshot`, no validator read (fields: `docs/rpc_api.md`)
 pub(crate) fn lightd_info<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,

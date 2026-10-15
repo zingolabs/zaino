@@ -168,17 +168,8 @@ impl SegmentsView {
         values
     }
 
-    /// Readahead for a batch of point lookups (`sorted` = ascending keys), in a seek's page order
-    /// (advisory: never changes an answer)
-    ///
-    /// - cold seek = two serial faults per segment (fence group, then record block): device sees
-    ///   one read per probing thread
-    /// - `MADV_WILLNEED` queues without waiting: every candidate's fence group, then (those in
-    ///   flight) every candidate's record block → device sees the whole batch at once
-    /// - candidate = segment whose filter admits the key (≈ only the segment holding it)
-    /// - sorted keys give ascending ranges per segment, merged where they share a page
-    /// - planned + advised on the rayon pool (one thread = queue depth 1 when the records round
-    ///   faults fences, or advice blocks on a congested device)
+    /// Readahead for a batch of point lookups (`sorted` = ascending keys), advisory only
+    /// - fences, then records, on rayon (why: `usage.md` "Page faults on async threads")
     fn prefetch(&self, sorted: &[(&[u8], usize)]) {
         for step in [Prefetch::Fences, Prefetch::Records] {
             let plan = self.prefetch_plan(step, sorted);

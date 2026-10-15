@@ -127,14 +127,8 @@ impl<S: ChainDataSource> ChainView<S> {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
 
-    /// Submit one transaction: precheck, a trusted `checkadmission`, then relayed by attempts,
-    /// watched
-    ///
-    /// - check refused = that refusal at once, nothing relayed; check passed = `Ok` at once (`ours`
-    ///   from then)
-    /// - no check answered: `Ok` at the first acceptance; a rejection or a failure only once every
-    ///   attempt is spent
-    /// - the job outlives the answer: it keeps relaying until the transaction spreads
+    /// Submit one transaction (relay job outlives the answer)
+    /// - protocol: `docs/architecture.md` §6, API: `usage.md` "Submission"
     pub async fn submit(&self, raw: Vec<u8>) -> Result<TxId, SubmitError> {
         let prepared = prepare_transaction(&raw).map_err(|malformed| {
             SubmitError::Rejected(SendRawTransactionError::Malformed(malformed.to_string()))

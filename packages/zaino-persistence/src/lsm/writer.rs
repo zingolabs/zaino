@@ -147,17 +147,8 @@ impl SegmentWriter {
     }
 
     /// K-way merge of `inputs` into segment `id`, sealed; `None` once `cancel` is set (partial file
-    /// unlisted → removed at open)
-    ///
-    /// - a key's value + its tombstone, both inputs → neither written (insert-once / remove-once:
-    ///   no other row of that key exists anywhere); a lone tombstone → written (its value is in a
-    ///   segment outside the merge); any other duplicate → [`SegmentError::Contract`]
-    /// - no row left → no file, `output: None` (the inputs retire with nothing in their place)
-    /// - inputs read through their page checksums (corrupt input dies, never propagates)
-    /// - caller then commits a manifest listing it in their place, then
-    ///   [removes](SegmentDir::remove) the inputs
-    /// - streams: memory = a few 1 MiB buffers + summary + filter's shard table, whatever the
-    ///   segments' size (fences + fingerprints spill to scratch files, `spill.rs`)
+    /// unlisted → removed at open); no row left → no file (`output: None`)
+    /// - row rules / commit order + memory: `usage.md` "Deletes" / "On disk"
     pub(crate) fn merge(
         &self,
         id: u32,

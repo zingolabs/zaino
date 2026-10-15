@@ -159,7 +159,7 @@ impl Route {
 ///
 /// - `grpc_snapshots` = every read (chain, indexes, mempool, validator facts)
 /// - `submit` = `SendTransaction` only; `validators` = `GetTransaction` + address tx bytes
-/// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
+/// - `network` = declared (zainod's `network` key), never read off a validator
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
 /// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`

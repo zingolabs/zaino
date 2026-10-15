@@ -129,7 +129,9 @@ block of rows. Once a size tier holds `fanout` segments (`LsmConfig`, default 16
 thread merges them at low CPU and I/O priority, within an engine-wide cap (`merge_slots`,
 `merge_mib_per_sec`). A merge commits nothing itself: the next commit's manifest lists its output,
 and the inputs are deleted only after that manifest is durable. A commit waits for a merge only
-when its tier has fallen two windows behind, which bounds how many segments a read searches.
+when its tier has fallen two windows behind, which bounds how many segments a read searches. A
+merge streams: a few 1 MiB buffers plus the segment summary and the filter's shard table, whatever
+the inputs' size (fences and fingerprints spill to scratch files).
 
 Rows are fixed-stride, so the LSM holds only `Width::Fixed` keys and values, and its filter shards
 on 8 key bytes, so a map filters at least 8 (its whole key when `point`, else its `scope`). These
@@ -168,8 +170,8 @@ Every full 4 KiB page has a CRC in `<file>.crc`, seeded with the page's index; t
 from elsewhere) therefore still fails. Pages are checked on first read, not at open, so open costs
 reading the `.crc` files (1/1024 of the data).
 
-zainod pairs this with a fail-stop policy: any panic aborts the process, nothing restarts in
-process, and the service manager's restart is the recovery path.
+zainod pairs this with a fail-stop policy
+([failure policy](../zainod/usage.md#failure-policy)).
 
 ## Why append-only files and mmap
 
@@ -187,8 +189,11 @@ append-only file stays unfragmented where a copy-on-write B-tree under random in
   interrupted commit or the zeroed reserve. Every read goes through `Pages`, sliced to the sealed
   length.
 - **Page faults on async threads.** A cold read can block for milliseconds. Callers run reads on the
-  blocking pool (`zaino-grpc`'s read lanes), and multi-record reads issue `MADV_WILLNEED` first. Point-lookup segments are mapped `MADV_RANDOM`,
-  merge inputs `MADV_SEQUENTIAL`.
+  blocking pool (`zaino-grpc`'s read lanes), and multi-record reads issue `MADV_WILLNEED` first.
+  A batch of point lookups advises in two rounds, every candidate segment's fence page and then
+  its record block, so the device sees the whole batch at once instead of two serial faults per
+  segment per key. Point-lookup segments are mapped `MADV_RANDOM`, merge inputs
+  `MADV_SEQUENTIAL`.
 - **Zero-copy slices outlive the view.** `Bytes` returned by a read hold the mapping alive, which is
   sound only because durable bytes are never rewritten or truncated after publication.
 
