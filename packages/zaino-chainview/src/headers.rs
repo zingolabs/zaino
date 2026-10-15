@@ -280,7 +280,8 @@ impl<S: ChainDataSource> HeaderSync<S> {
             Ok(headers) => headers,
             Err(after) => return after,
         };
-        let top = BlockRef { hash: headers.last().expect("non-empty").hash(), height: to };
+        let top =
+            BlockRef { hash: headers.last().expect("headers() Ok = non-empty").hash(), height: to };
         let refused = headers.iter().find_map(|header| self.chain.insert(header).err());
         if refused.is_none() {
             self.chain.vouch(top);

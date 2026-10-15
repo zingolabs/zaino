@@ -159,7 +159,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
     /// `None` above the tip
     fn height_record(&self, at: BlockHeight) -> Option<TreeStateHeight> {
         let bytes = self.view.sequence(HEIGHTS).record(u64::from(at))?;
-        Some(heights::decode(bytes[..].try_into().expect("RECORD bytes")))
+        Some(heights::decode(bytes[..].try_into().expect("HEIGHTS width = RECORD bytes")))
     }
 
     /// `pool`'s serialized tree at `sizes`, the form both clients parse (`None` = corrupt)

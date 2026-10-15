@@ -94,7 +94,7 @@ fn page_intact(index: u64, bytes: &[u8], sums: &[u8], tail: u32) -> bool {
     let expected = match bytes.len() == PAGE {
         true => {
             let at = usize::try_from(index).expect("page index fits usize") * SUM;
-            u32::from_le_bytes(sums[at..at + SUM].try_into().expect("SUM bytes"))
+            u32::from_le_bytes(std::array::from_fn(|byte| sums[at + byte]))
         }
         false => tail,
     };

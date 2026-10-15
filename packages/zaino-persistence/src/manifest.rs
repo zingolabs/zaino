@@ -178,7 +178,7 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
     if header[11] != network_tag(identity.network) {
         return Err(ManifestError::Network { expected: identity.network, found: header[11] });
     }
-    let seq = u64::from_le_bytes(header[12..20].try_into().expect("8 bytes"));
+    let seq = u64::from_le_bytes(std::array::from_fn(|at| header[12 + at]));
     Ok(Slot::Valid { seq, body })
 }
 

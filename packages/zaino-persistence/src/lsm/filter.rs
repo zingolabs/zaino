@@ -54,7 +54,8 @@ pub(crate) fn shard_bits(records: u64) -> u8 {
 fn shard(key: &[u8], bits: u8) -> usize {
     match bits {
         0 => 0,
-        bits => usize::try_from(word(&key[..8]) >> (64 - u32::from(bits))).expect("shard index"),
+        bits => usize::try_from(word(&key[..8]) >> (64 - u32::from(bits)))
+            .expect("shard < 2^bits fits usize"),
     }
 }
 

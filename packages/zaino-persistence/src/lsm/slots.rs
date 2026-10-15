@@ -103,7 +103,7 @@ impl Slots {
                 state.running += 1;
                 return Some(Slot { slots: self });
             }
-            state = self.freed.wait_timeout(state, CANCEL_POLL).expect("slots lock").0;
+            state = self.freed.wait_timeout(state, CANCEL_POLL).expect("slots mutex poisoned").0;
         }
     }
 }

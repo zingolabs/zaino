@@ -204,7 +204,10 @@ impl TrafficCore {
             Some(ask.sends.remove(sent))
         });
         let sent = sent.expect("a reply for a send in flight");
-        let member = self.members.get_mut(&ticket.member).expect("a send's member");
+        let member = self
+            .members
+            .get_mut(&ticket.member)
+            .expect("member registered while its send is in flight");
         member.in_flight[ticket.class.lane().index()] -= 1;
         member.latency = self.now.saturating_duration_since(sent.at);
         member.outcome(reply != Reply::NonDomain);
@@ -218,7 +221,10 @@ impl TrafficCore {
     fn close(&mut self, id: AskId) {
         let ask = self.asks.remove(&id).expect("closing an open ask");
         for sent in ask.sends {
-            let member = self.members.get_mut(&sent.member).expect("a send's member");
+            let member = self
+                .members
+                .get_mut(&sent.member)
+                .expect("member registered while its send is in flight");
             member.in_flight[ask.class.lane().index()] -= 1;
         }
     }

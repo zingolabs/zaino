@@ -171,7 +171,7 @@ impl HeaderChain {
 
     /// Finalized headers kept: what the NFS reads below the best (`2 · depth`), at least what the
     /// rules read below an untrusted header ([`CONTEXT`])
-    pub fn finalized_headers_kept(&self) -> usize {
+    pub(crate) fn finalized_headers_kept(&self) -> usize {
         (FINALIZED_PER_DEPTH * self.depth.get() as usize).max(CONTEXT)
     }
 

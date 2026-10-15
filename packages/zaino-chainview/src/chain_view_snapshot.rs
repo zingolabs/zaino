@@ -402,7 +402,7 @@ impl ChainViewSnapshot {
     }
 
     /// Trusted validators whose mempool is read now (`Live`: catching-up and down ones list none)
-    pub fn mempool_readers(&self) -> TrustedValidatorSet {
+    pub(crate) fn mempool_readers(&self) -> TrustedValidatorSet {
         self.trusted_validators
             .iter()
             .enumerate()

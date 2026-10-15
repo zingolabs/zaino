@@ -53,7 +53,7 @@ impl Spill {
         let mut chunk = vec![0; SPILL_AT];
         let mut at = 0;
         while at < total {
-            let take = usize::try_from((total - at).min(SPILL_AT as u64)).expect("chunk");
+            let take = usize::try_from(total - at).map_or(SPILL_AT, |left| left.min(SPILL_AT));
             file.read_exact_at(&mut chunk[..take], at)?;
             out.append(&chunk[..take])?;
             at += take as u64;

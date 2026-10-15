@@ -9,6 +9,7 @@
 //! - Node at `h` folds each index durable below `h`
 //! - Served tip = deepest folded best block, else the root (reorg → fork point at once)
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -174,10 +175,11 @@ impl<F> NfsCore<F> {
 
     /// Kept iff its fold is the one in flight, above the root, on a held parent
     fn folded(&mut self, at: BlockRef, covers: Indexes, folded: Arc<F>) {
-        if self.folding.get(&at.hash).is_none_or(|(_, folding)| *folding != covers) {
+        let Entry::Occupied(in_flight) = self.folding.entry(at.hash) else { return };
+        if in_flight.get().1 != covers {
             return;
         }
-        let (block, _) = self.folding.remove(&at.hash).expect("in flight");
+        let (block, _) = in_flight.remove();
         let parent = block.header().prev_hash;
         let root = self.root();
         if Some(at.height) > height(root) && self.graph.holds_parent(root, parent, at.height) {
