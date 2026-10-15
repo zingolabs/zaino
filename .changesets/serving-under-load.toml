@@ -89,29 +89,75 @@ unknown hash.
 """
 
 [[changes]]
-crate = "zaino-chain-head-service"
-kind = "fix"
-description = """
-The window's treestate read also keeps each block's rendered per-pool \
-treestates, so a repeated read near the tip (every wallet's \
-`GetLatestTreeState`) no longer recomputes the pool roots.
-"""
-
-[[changes]]
-crate = "zaino-store"
-kind = "fix"
-description = """
-The finalised treestate read renders on the blocking pool and keeps up to \
-2,048 rendered treestates by height, shared across snapshots, so the seed the \
-composer reads at the watermark and heights several wallets ask for are not \
-re-rendered.
-"""
-
-[[changes]]
 crate = "zaino-primitives"
 kind = "feature"
 description = """
 `CommitmentTrees` is a block's commitment trees without their roots, the shape \
 a light wallet reads; `Treestate::into_trees` drops the roots from a full \
 treestate.
+"""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`TreestateRead::treestate` returns `CommitmentTrees`, the trees without roots, \
+and `TreestateWindowRead` takes and returns `CommitmentTrees`. The new \
+`TreestateRootsRead::treestate_with_roots` returns the full `Treestate` with \
+each pool's root, and `TreestateWindowRead::window_treestate_with_roots` is its \
+window half. `NodeRpcReads` requires `TreestateRootsRead`; the wallet read sets \
+do not.
+"""
+
+[[changes]]
+crate = "zaino-indexes"
+kind = "breaking"
+description = """
+`tree_state::pool_treestate` and `TreeStateValue::pool_treestates` are replaced \
+by `pool_tree` and `pool_trees`, which render the serialized trees without \
+computing roots. `tree_root` hashes a serialized tree to its root and \
+`with_roots` adds each pool's root to a `CommitmentTrees`. `serve::seed_value` \
+takes `CommitmentTrees`.
+"""
+
+[[changes]]
+crate = "zaino-store"
+kind = "feature"
+description = """
+`StoreSnapshot` implements `TreestateRootsRead`, hashing the roots on the \
+blocking pool; its `TreestateRead` computes none, so a light-wallet treestate \
+read costs a point read and a serialization.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+`HeadSnapshot` implements `TreestateWindowRead::window_treestate_with_roots`; \
+`window_treestate` folds and serializes the trees without computing roots.
+"""
+
+[[changes]]
+crate = "zaino-core"
+kind = "feature"
+description = """
+The engine implements `TreestateRootsRead` under the `Treestate` placement: \
+`Local` routes it across the seam like the trees read, `Passthrough` relays the \
+validator's treestate, and the trees read drops the validator's roots.
+"""
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "fix"
+description = """
+`GetTreeState` and `GetLatestTreeState` read the trees alone, so a light-wallet \
+treestate no longer pays for pool roots the wire never carries.
+"""
+
+[[changes]]
+crate = "zaino-noderpc"
+kind = "fix"
+description = """
+`z_gettreestate` reads through `TreestateRootsRead`, keeping `finalRoot` in its \
+response.
 """

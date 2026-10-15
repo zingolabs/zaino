@@ -92,15 +92,19 @@ that builds them backs `TreestateRead` locally.
   append-cumulative bridge's ordered-monoid scan over the three pools.
   `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
   chain order — projected from `CurrentZainoContext`.
-- `serve::pool_treestate` (and `TreeStateValue::pool_treestates`) render a
-  stored frontier as the domain `PoolTreestate` — the root and the legacy
-  `finalState` bytes — against a per-pool activation height (`PoolActivations`):
-  a pool is reported from its activation on, empty tree included, and absent
-  below it or when unscheduled. Both the finalised store and the non-finalised
-  window call it, so a treestate served either side of the seam renders
-  identically.
+- `serve::pool_tree` (and `TreeStateValue::pool_trees`) render a stored
+  frontier as its legacy `finalState` bytes against a per-pool activation height
+  (`PoolActivations`): a pool is reported from its activation on, empty tree
+  included, and absent below it or when unscheduled. Both the finalised store and
+  the non-finalised window call it, so trees served either side of the seam
+  render identically.
+- `serve::tree_root` hashes a serialized tree to its root, and
+  `serve::with_roots` turns a `CommitmentTrees` into a `Treestate` with each
+  present pool's root. Computing a root hashes up the whole tree depth
+  (milliseconds per pool), so only the tiers' `TreestateRootsRead` paths call
+  it; the trees read never does.
 - `serve::{seed_value, fold_window, window_subtree_roots}` back the window tier:
-  `seed_value` rebuilds the finalised frontier from the seed treestate (the
+  `seed_value` rebuilds the finalised frontier from the seed trees (the
   legacy bytes round-trip exactly), `fold_window` folds the window's blocks onto
   it via the index's own per-block extraction, and `window_subtree_roots` reports
   the subtrees the window completes above the seed. `sets::current_zaino::tree_state_ctx`

@@ -20,10 +20,12 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
 };
 use zaino_primitives::types::{
+    CommitmentTrees, PoolActivations, ShieldedPool, SubtreeRoot, Treestate,
+};
+use zaino_primitives::types::{
     Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
     TransparentSpend,
 };
-use zaino_primitives::types::{PoolActivations, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_primitives::types::{TransactionId, TransactionLocation};
 use zaino_service::error::{
     AddressReadError, BlockReadError, ReadError, SpendReadError, Transient, TreestateReadError,
@@ -32,7 +34,7 @@ use zaino_service::error::{
 use zaino_service::{
     AddressReceiveRead, Capability, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary,
     PoolActivationSource, SpendRead, SpendStatus, TakeSnapshot, TransactionLocationRead,
-    TreestateRead, TreestateWindowRead,
+    TreestateRead, TreestateRootsRead, TreestateWindowRead,
 };
 
 /// A fixed non-finalised window backed by an in-memory map.
@@ -314,8 +316,9 @@ impl StubNonFinalised {
 /// a `Local` placement. A height the window holds answers; above it is
 /// `NotServiceable`, never an empty tree.
 impl TreestateRead for StubNonFinalised {
-    async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+    async fn treestate(&self, at: Height) -> Result<CommitmentTrees, TreestateReadError> {
         self.scripted_treestate(at)
+            .map(Treestate::into_trees)
             .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
     }
 
@@ -326,6 +329,15 @@ impl TreestateRead for StubNonFinalised {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Ok(Vec::new())
+    }
+}
+
+/// The roots read over the same scripted treestates; the stub's pools are all
+/// absent, so there is no root to hash.
+impl TreestateRootsRead for StubNonFinalised {
+    async fn treestate_with_roots(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+        self.scripted_treestate(at)
+            .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
     }
 }
 
@@ -343,7 +355,16 @@ impl PoolActivationSource for StubNonFinalised {
 impl TreestateWindowRead for StubNonFinalised {
     async fn window_treestate(
         &self,
-        _seed: Option<&Treestate>,
+        _seed: Option<&CommitmentTrees>,
+        _activations: PoolActivations,
+        at: Height,
+    ) -> Result<Option<CommitmentTrees>, TreestateReadError> {
+        Ok(self.scripted_treestate(at).map(Treestate::into_trees))
+    }
+
+    async fn window_treestate_with_roots(
+        &self,
+        _seed: Option<&CommitmentTrees>,
         _activations: PoolActivations,
         at: Height,
     ) -> Result<Option<Treestate>, TreestateReadError> {
@@ -352,7 +373,7 @@ impl TreestateWindowRead for StubNonFinalised {
 
     async fn window_subtree_roots(
         &self,
-        _seed: Option<&Treestate>,
+        _seed: Option<&CommitmentTrees>,
         _pool: ShieldedPool,
         _start_index: u16,
         _limit: Option<u16>,

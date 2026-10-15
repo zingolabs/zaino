@@ -6,9 +6,9 @@
 //! local trait).
 
 use zaino_primitives::types::{
-    AddressBalance, BlockRef, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
-    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot,
-    TransactionLocation, TransparentInput, TransparentOutput, Treestate, Utxo,
+    AddressBalance, BlockRef, ChainMetadata, CommitmentTrees, CompactBlock, CompactCiphertext,
+    Nullifier, OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot,
+    TransactionLocation, TransparentInput, TransparentOutput, Utxo,
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
@@ -78,11 +78,12 @@ pub(crate) fn bip70_network_name(network: Network) -> &'static str {
     }
 }
 
-/// A treestate as the wire `TreeState`, rendered for the network the adapter
-/// serves. Not a `ToWire` impl: the conversion needs the served network (the
-/// domain `Treestate` does not carry it), which the trait's parameterless
-/// `to_wire` cannot supply.
-pub(crate) fn treestate_to_wire(treestate: Treestate, network: Network) -> proto::TreeState {
+/// A block's commitment trees as the wire `TreeState`, rendered for the network
+/// the adapter serves. The wire carries no roots, so the trees are the whole
+/// answer. Not a `ToWire` impl: the conversion needs the served network (the
+/// domain value does not carry it), which the trait's parameterless `to_wire`
+/// cannot supply.
+pub(crate) fn treestate_to_wire(treestate: CommitmentTrees, network: Network) -> proto::TreeState {
     proto::TreeState {
         // The BIP70 network name, as zebra and lightwalletd render it; the
         // handler is parameterised by the network it serves.
@@ -97,15 +98,15 @@ pub(crate) fn treestate_to_wire(treestate: Treestate, network: Network) -> proto
         // serialized empty tree (which would claim the pool is active).
         sapling_tree: treestate
             .sapling
-            .map(|pool| hex_bytes(&pool.final_state))
+            .map(|tree| hex_bytes(&tree))
             .unwrap_or_default(),
         orchard_tree: treestate
             .orchard
-            .map(|pool| hex_bytes(&pool.final_state))
+            .map(|tree| hex_bytes(&tree))
             .unwrap_or_default(),
         ironwood_tree: treestate
             .ironwood
-            .map(|pool| hex_bytes(&pool.final_state))
+            .map(|tree| hex_bytes(&tree))
             .unwrap_or_default(),
     }
 }
@@ -288,7 +289,7 @@ mod tests {
             ironwood: None,
         };
 
-        let wire = treestate_to_wire(treestate, Network::MainNetwork);
+        let wire = treestate_to_wire(treestate.into_trees(), Network::MainNetwork);
         assert_eq!(wire.height, 2_800_000u64);
         assert_eq!(wire.time, 1_700_000_000u32);
         // Display order: the all-0xAB hash renders the same forwards, but the
@@ -316,7 +317,7 @@ mod tests {
                 orchard: None,
                 ironwood: None,
             };
-            treestate_to_wire(treestate, network).network
+            treestate_to_wire(treestate.into_trees(), network).network
         };
         assert_eq!(at(Network::MainNetwork), "main");
         assert_eq!(at(Network::TestNetwork), "test");
@@ -495,7 +496,7 @@ mod tests {
 
             // The fixtures are captured from zebra mainnet, so the served
             // network renders "main".
-            let wire = treestate_to_wire(treestate, Network::MainNetwork);
+            let wire = treestate_to_wire(treestate.into_trees(), Network::MainNetwork);
             assert_eq!(wire.height, height_num, "height at {height_key}");
             assert_eq!(u64::from(wire.time), time_num, "time at {height_key}");
             assert_eq!(wire.network, "main", "network at {height_key}");

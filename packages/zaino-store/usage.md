@@ -101,10 +101,13 @@ has nothing to attribute the spend to. It implements the narrower
 `TreestateRead` exists on a store whose set builds `local::Treestate`
 (`tree_state` + `headers`) and `local::SubtreeRoots` (the three per-pool
 `subtrees_*` indexes). `treestate(at)` point-reads the per-pool frontier at the
-height and renders it through
-`zaino_indexes::indexes::tree_state::pool_treestate` — the same projection the
+height and renders it as `CommitmentTrees` through
+`zaino_indexes::indexes::tree_state::pool_tree` — the same projection the
 non-finalised window uses, so the two sides of the seam agree node-for-node — and
-takes the block hash and time from the `headers` index. These indexes are
+takes the block hash and time from the `headers` index. It computes no roots.
+`TreestateRootsRead::treestate_with_roots(at)` is the same read plus each pool's
+root, hashed from its tree on the blocking pool; only `z_gettreestate` asks for
+it. These indexes are
 `WalkOrdered`, so the store's coverage is exactly its watermark: a height above
 it is `NotServiceable(Treestate)`, never an empty tree. Per-pool presence is
 decided against the `PoolActivations` schedule the reader was built with (read

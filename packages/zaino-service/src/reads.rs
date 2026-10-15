@@ -9,8 +9,8 @@ use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::rpc::{BlockHeaderVerbose, ChainTip};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange,
-    Outpoint, PoolActivations, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
+    BlockTime, BlockVerbose, BlockchainInfo, CommitmentTrees, CompactBlock, DecodedBlock, Height,
+    HeightRange, Outpoint, PoolActivations, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
     TransactionDetail, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
     TransparentOutput, TransparentReceive, TransparentSpend, Treestate, Utxo,
 };
@@ -337,11 +337,16 @@ pub trait TransactionLocationRead: Send + Sync {
 }
 
 /// Backed by: commitment-tree index.
+///
+/// Answers the trees without their roots: a wallet parses the serialized trees
+/// and never reads a root, and computing one hashes up the whole tree depth. A
+/// reader that reports roots asks [`TreestateRootsRead`] instead.
 pub trait TreestateRead: Send + Sync {
+    /// The commitment trees as of the block at `at`.
     fn treestate(
         &self,
         at: Height,
-    ) -> impl Future<Output = Result<Treestate, TreestateReadError>> + Send;
+    ) -> impl Future<Output = Result<CommitmentTrees, TreestateReadError>> + Send;
     /// Complete note-commitment subtree roots for `pool`, addressed by subtree
     /// index: a run of at most `limit` roots starting at `start_index` (all from
     /// there when `limit` is `None`). Index-addressed, not height-addressed,
@@ -354,6 +359,22 @@ pub trait TreestateRead: Send + Sync {
         start_index: u16,
         limit: Option<u16>,
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
+}
+
+/// The commitment treestate with each pool's root, as `z_gettreestate` reports
+/// it.
+///
+/// Separate from [`TreestateRead`] because the roots cost milliseconds of
+/// hashing per pool and only node-RPC consumers report them: a use case that
+/// never names this port never pays for them. Served under the same
+/// [`Capability::Treestate`](crate::Capability::Treestate) — the roots are
+/// derived from the same trees.
+pub trait TreestateRootsRead: Send + Sync {
+    /// The treestate as of the block at `at`, with each active pool's root.
+    fn treestate_with_roots(
+        &self,
+        at: Height,
+    ) -> impl Future<Output = Result<Treestate, TreestateReadError>> + Send;
 }
 
 /// The per-pool activation schedule a tier was built against, so a treestate
@@ -387,7 +408,16 @@ pub trait TreestateWindowRead: Send + Sync {
     /// `at` is above the window tip.
     fn window_treestate(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
+        activations: PoolActivations,
+        at: Height,
+    ) -> impl Future<Output = Result<Option<CommitmentTrees>, TreestateReadError>> + Send;
+
+    /// [`window_treestate`](Self::window_treestate) with each active pool's
+    /// root, for [`TreestateRootsRead`]: the same fold, plus the root hashing.
+    fn window_treestate_with_roots(
+        &self,
+        seed: Option<&CommitmentTrees>,
         activations: PoolActivations,
         at: Height,
     ) -> impl Future<Output = Result<Option<Treestate>, TreestateReadError>> + Send;
@@ -400,7 +430,7 @@ pub trait TreestateWindowRead: Send + Sync {
     /// completes only once `2^16` notes exist, so the pool is certainly active.
     fn window_subtree_roots(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
         pool: ShieldedPool,
         start_index: u16,
         limit: Option<u16>,

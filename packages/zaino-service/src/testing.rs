@@ -27,11 +27,11 @@ use zaino_primitives::types::rpc::{
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
-    DecodedBlock, Difficulty, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction,
-    ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput,
-    TransparentReceive, TransparentSpend, Treestate, Utxo, ValuePoolBalance, Zatoshis,
-    ZatoshisFlowSum,
+    BlockTime, BlockVerbose, BlockchainInfo, CommitmentTrees, CompactBlock, ConsensusBranchId,
+    ConsensusBranchIds, DecodedBlock, Difficulty, Height, HeightRange, Outpoint, PreIndexCompactTx,
+    RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentAddress,
+    TransparentInput, TransparentReceive, TransparentSpend, Treestate, Utxo, ValuePoolBalance,
+    Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::error::{
@@ -48,7 +48,7 @@ use crate::{
     NodeStatusError, NodeStatusRead, PoolActivationSource, RawTransactionRead, ReadBudget,
     ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
     TransactionLocationRead, TransactionRead, TransactionViewRead, TreestateRead,
-    TreestateWindowRead, TxOutRead,
+    TreestateRootsRead, TreestateWindowRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -481,15 +481,22 @@ impl RawTransactionRead for MockSnapshot {
     }
 }
 
-impl TreestateRead for MockSnapshot {
-    async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
-        // A scripted treestate is returned verbatim for any height, so a test can
-        // pin every field through the serving adapter; absent it, the mock has no
-        // validator behind it, so it is not serviceable.
+impl MockSnapshot {
+    /// The scripted treestate, for any height; absent it, the mock has no
+    /// validator behind it, so it is not serviceable.
+    fn scripted_treestate(&self) -> Result<Treestate, TreestateReadError> {
         self.chain
             .treestate
             .clone()
             .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
+    }
+}
+
+impl TreestateRead for MockSnapshot {
+    async fn treestate(&self, _at: Height) -> Result<CommitmentTrees, TreestateReadError> {
+        // The scripted treestate's trees, so a test can pin every field through
+        // the serving adapter.
+        self.scripted_treestate().map(Treestate::into_trees)
     }
     async fn subtree_roots(
         &self,
@@ -498,6 +505,13 @@ impl TreestateRead for MockSnapshot {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Ok(self.chain.subtree_roots.clone())
+    }
+}
+
+impl TreestateRootsRead for MockSnapshot {
+    async fn treestate_with_roots(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
+        // The scripted treestate verbatim, roots included.
+        self.scripted_treestate()
     }
 }
 
@@ -510,19 +524,29 @@ impl PoolActivationSource for MockSnapshot {
 impl TreestateWindowRead for MockSnapshot {
     async fn window_treestate(
         &self,
-        _seed: Option<&Treestate>,
+        _seed: Option<&CommitmentTrees>,
+        _activations: zaino_primitives::types::PoolActivations,
+        _at: Height,
+    ) -> Result<Option<CommitmentTrees>, TreestateReadError> {
+        // The window half of the mock: the scripted trees are returned for any
+        // in-window height, mirroring the finalised half, so a mock tier can
+        // stand in for the non-finalised side of a `Local` treestate placement.
+        Ok(self.chain.treestate.clone().map(Treestate::into_trees))
+    }
+
+    async fn window_treestate_with_roots(
+        &self,
+        _seed: Option<&CommitmentTrees>,
         _activations: zaino_primitives::types::PoolActivations,
         _at: Height,
     ) -> Result<Option<Treestate>, TreestateReadError> {
-        // The window half of the mock: a scripted treestate is returned for any
-        // in-window height, mirroring the finalised half, so a mock tier can
-        // stand in for the non-finalised side of a `Local` treestate placement.
+        // The scripted treestate verbatim, roots included.
         Ok(self.chain.treestate.clone())
     }
 
     async fn window_subtree_roots(
         &self,
-        _seed: Option<&Treestate>,
+        _seed: Option<&CommitmentTrees>,
         _pool: ShieldedPool,
         _start_index: u16,
         _limit: Option<u16>,

@@ -30,12 +30,12 @@ use std::sync::Arc;
 use zaino_async::{run_blocking, TaskError, TaskName};
 use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 use zaino_indexes::indexes::tree_state::serve::{
-    fold_window, seed_value, window_subtree_roots, WindowSubtree,
+    fold_window, seed_value, window_subtree_roots, with_roots, WindowSubtree,
 };
 use zaino_indexes::indexes::tree_state::TreeStateValue;
 use zaino_indexes::sets::current_zaino::tree_state_ctx;
 use zaino_primitives::types::{
-    Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
+    CommitmentTrees, Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
 };
 use zaino_service::error::TreestateReadError;
 use zaino_service::TreestateWindowRead;
@@ -45,10 +45,10 @@ use crate::serve::HeadSnapshot;
 impl TreestateWindowRead for HeadSnapshot {
     async fn window_treestate(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
         activations: PoolActivations,
         at: Height,
-    ) -> Result<Option<Treestate>, TreestateReadError> {
+    ) -> Result<Option<CommitmentTrees>, TreestateReadError> {
         if at > self.window().best_tip().height {
             // No block at `at`: a domain miss, not a failure.
             return Ok(None);
@@ -60,21 +60,12 @@ impl TreestateWindowRead for HeadSnapshot {
             return Err(not_serviceable());
         };
         let (block_hash, time) = (last.reference.hash, last.block.header.time);
-        let cache = self.frontiers();
-        let pools = match cache.rendered(&block_hash, activations) {
-            Some(pools) => pools,
-            None => {
-                let after = self.frontiers_after(seed, &run).await?;
-                let folded = after
-                    .last()
-                    .ok_or_else(|| fatal("a non-empty window run folded to no value"))?;
-                let pools = Arc::new(folded.pool_treestates(&activations, at));
-                cache.insert_rendered(&block_hash, activations, Arc::clone(&pools));
-                pools
-            }
-        };
-        let (sapling, orchard, ironwood) = (*pools).clone();
-        Ok(Some(Treestate {
+        let after = self.frontiers_after(seed, &run).await?;
+        let folded = after
+            .last()
+            .ok_or_else(|| fatal("a non-empty window run folded to no value"))?;
+        let (sapling, orchard, ironwood) = folded.pool_trees(&activations, at);
+        Ok(Some(CommitmentTrees {
             block_hash,
             height: at,
             time,
@@ -84,9 +75,27 @@ impl TreestateWindowRead for HeadSnapshot {
         }))
     }
 
+    async fn window_treestate_with_roots(
+        &self,
+        seed: Option<&CommitmentTrees>,
+        activations: PoolActivations,
+        at: Height,
+    ) -> Result<Option<Treestate>, TreestateReadError> {
+        let Some(trees) = self.window_treestate(seed, activations, at).await? else {
+            return Ok(None);
+        };
+        run_blocking(TaskName("window-treestate-roots"), move || {
+            with_roots(trees)
+        })
+        .await
+        .map_err(task_error)?
+        .map(Some)
+        .map_err(|e| fatal(format!("decode a window tree: {e}")))
+    }
+
     async fn window_subtree_roots(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
         pool: ShieldedPool,
         start_index: u16,
         limit: Option<u16>,
@@ -113,7 +122,7 @@ impl TreestateWindowRead for HeadSnapshot {
 impl HeadSnapshot {
     /// Drop cached folds at or below the seed's height: the finalised store
     /// answers those heights now.
-    fn prune_finalised(&self, seed: Option<&Treestate>) {
+    fn prune_finalised(&self, seed: Option<&CommitmentTrees>) {
         if let Some(seed) = seed {
             self.frontiers().prune_through(seed.height);
         }
@@ -128,7 +137,7 @@ impl HeadSnapshot {
     /// or, for the first block above the seam, from the seed.
     async fn frontiers_after(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
         run: &[&ChainHeadBlock],
     ) -> Result<Vec<Arc<TreeStateValue>>, TreestateReadError> {
         let cache = self.frontiers();
@@ -197,7 +206,7 @@ impl HeadSnapshot {
     /// frontier, and cached with it.
     async fn completions(
         &self,
-        seed: Option<&Treestate>,
+        seed: Option<&CommitmentTrees>,
         run: &[&ChainHeadBlock],
         pool: ShieldedPool,
     ) -> Result<Vec<Arc<[WindowSubtree]>>, TreestateReadError> {
@@ -264,7 +273,7 @@ impl HeadSnapshot {
 /// With `upto`, the run must also end exactly there.
 fn seam_run<'a>(
     head: &'a HeadSnapshot,
-    seed: Option<&Treestate>,
+    seed: Option<&CommitmentTrees>,
     upto: Option<Height>,
 ) -> Result<Vec<&'a ChainHeadBlock>, TreestateReadError> {
     let seam = seam_next(seed);
@@ -297,7 +306,7 @@ fn seam_run<'a>(
 }
 
 /// The finalised frontier at the watermark, decoded from the seed treestate.
-fn decode_seed(seed: Option<&Treestate>) -> Result<TreeStateValue, TreestateReadError> {
+fn decode_seed(seed: Option<&CommitmentTrees>) -> Result<TreeStateValue, TreestateReadError> {
     seed_value(seed).map_err(|e| fatal(format!("decode seed frontier: {e}")))
 }
 
@@ -305,7 +314,7 @@ fn decode_seed(seed: Option<&Treestate>) -> Result<TreeStateValue, TreestateRead
 /// or genesis when the store holds nothing. A protocol height is below
 /// `u32::MAX`, so one past it cannot overflow — named rather than asserted as a
 /// magnitude, consistent with the fold loop's checked step.
-fn seam_next(seed: Option<&Treestate>) -> u32 {
+fn seam_next(seed: Option<&CommitmentTrees>) -> u32 {
     seed.map_or(0, |seed| {
         u32::from(seed.height)
             .checked_add(1)
@@ -356,10 +365,10 @@ mod tests {
 
     use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot, ChainHeadWork};
     use zaino_primitives::types::{
-        Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata,
+        Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata, CommitmentTrees,
         CompactCiphertext, CompactDifficulty, EphemeralKey, EquihashSolution, Height, MerkleRoot,
         NoteCommitment, OrchardData, PoolActivations, SaplingData, SaplingOutput, ShieldedPool,
-        Transaction, TransparentData, TreeRoots, Treestate,
+        Transaction, TransparentData, TreeRoots,
     };
     use zaino_service::TreestateWindowRead;
 
@@ -483,12 +492,8 @@ mod tests {
         let a = branch_a.sapling.expect("branch A funded Sapling");
         let b = branch_b.sapling.expect("branch B funded Sapling");
         assert_ne!(
-            a.final_root, b.final_root,
-            "a different note on the new branch yields a different Sapling root"
-        );
-        assert_ne!(
-            a.final_state, b.final_state,
-            "and a different serialized tree"
+            a, b,
+            "a different note on the new branch yields a different Sapling tree"
         );
     }
 
@@ -515,8 +520,8 @@ mod tests {
             &[tree_state_ctx(&b0.block), tree_state_ctx(&b1.block)],
         )
         .expect("fold to height 1");
-        let (sapling, orchard, ironwood) = value_at_1.pool_treestates(&active(), height(1));
-        let seed = Treestate {
+        let (sapling, orchard, ironwood) = value_at_1.pool_trees(&active(), height(1));
+        let seed = CommitmentTrees {
             block_hash: b1.reference.hash,
             height: height(1),
             time: b1.block.header.time,
@@ -549,6 +554,31 @@ mod tests {
             seeded, whole,
             "folding from the finalised seed at the watermark equals folding the whole chain"
         );
+    }
+
+    /// The window's roots read is its trees read plus each pool's root.
+    #[tokio::test]
+    async fn the_window_roots_read_adds_roots_to_the_trees_read() {
+        let head = HeadSnapshot::over(Arc::new(funded_chain(3)));
+        let trees = head
+            .window_treestate(None, active(), height(2))
+            .await
+            .expect("read succeeds")
+            .expect("height 2 is in the window");
+        let with_roots = head
+            .window_treestate_with_roots(None, active(), height(2))
+            .await
+            .expect("read succeeds")
+            .expect("height 2 is in the window");
+        assert_eq!(with_roots.clone().into_trees(), trees);
+        assert_eq!(
+            with_roots,
+            zaino_indexes::indexes::tree_state::with_roots(trees).expect("window trees decode")
+        );
+        assert!(with_roots
+            .sapling
+            .and_then(|pool| pool.final_root)
+            .is_some());
     }
 
     /// A height above the window tip is a domain miss, not a failure.
@@ -636,26 +666,6 @@ mod tests {
         }
     }
 
-    /// A repeated read at one height is served from the rendered cache and
-    /// answers exactly what the first read rendered.
-    #[tokio::test]
-    async fn a_repeated_read_is_served_from_the_rendered_cache() {
-        let frontiers = Arc::new(WindowFrontiers::default());
-        let head = HeadSnapshot::new(Arc::new(funded_chain(3)), Arc::clone(&frontiers));
-        let first = head
-            .window_treestate(None, active(), height(2))
-            .await
-            .expect("read succeeds");
-        assert!(frontiers
-            .rendered(&BlockHash::from([2; 32]), active())
-            .is_some());
-        let again = head
-            .window_treestate(None, active(), height(2))
-            .await
-            .expect("read succeeds");
-        assert_eq!(first, again);
-    }
-
     /// The cache is keyed by block, not height: after a reorg the competing
     /// block at the same height is folded on its own, through the same cache.
     #[tokio::test]
@@ -724,8 +734,8 @@ mod tests {
             .collect();
         let value_at_1 =
             fold_window(&seed_value(None).expect("empty seed"), &ctxs).expect("fold to height 1");
-        let (sapling, orchard, ironwood) = value_at_1.pool_treestates(&active(), height(1));
-        let seed = Treestate {
+        let (sapling, orchard, ironwood) = value_at_1.pool_trees(&active(), height(1));
+        let seed = CommitmentTrees {
             block_hash: BlockHash::from([1; 32]),
             height: height(1),
             time: 1_001,

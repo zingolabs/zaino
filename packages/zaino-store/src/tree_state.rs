@@ -14,17 +14,12 @@
 //! A treestate is reported against its block, so the hash and time come from the
 //! `headers` index at the same height; the frontier's projection onto the domain
 //! value (the serialized tree, its root, and the per-pool activation proxy) is
-//! shared with the window through [`pool_treestate`](zaino_indexes::indexes::tree_state::pool_treestate),
+//! shared with the window through [`pool_tree`](zaino_indexes::indexes::tree_state::pool_tree),
 //! so the two sides of the seam render identically.
 //!
 //! [`NotServiceable`]: TreestateReadError::NotServiceable
 
-mod rendered;
-
-pub(crate) use rendered::RenderedTreestates;
-
 use std::ops::ControlFlow;
-use std::sync::Arc;
 
 use zaino_async::{run_blocking, TaskError, TaskName};
 
@@ -33,34 +28,52 @@ use zaino_indexes::indexes::headers::{self, HeadersIndex};
 use zaino_indexes::indexes::subtrees::{
     IronwoodSubtreesIndex, OrchardSubtreesIndex, SaplingSubtreesIndex,
 };
-use zaino_indexes::indexes::tree_state::{self, TreeStateIndex};
+use zaino_indexes::indexes::tree_state::{self, with_roots, TreeStateIndex};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{decode_value, encode_key, EntryCodec};
 use zaino_primitives::types::{
-    BlockHash, Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
+    BlockHash, CommitmentTrees, Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot,
+    Treestate,
 };
 use zaino_service::error::TreestateReadError;
-use zaino_service::{Capability, PoolActivationSource, TreestateRead};
+use zaino_service::{Capability, PoolActivationSource, TreestateRead, TreestateRootsRead};
 use zaino_sync::traits::IndexDef;
 
 use crate::{read_index_value, serviceability_gate, StoreSnapshot};
+
+/// `z_gettreestate`'s shape over the finalised store: the trees the
+/// [`TreestateRead`] answers, with each active pool's root hashed from its tree.
+/// The hashing is milliseconds per pool, so it runs on the blocking pool, and
+/// only for the readers that report roots.
+impl<B, M> TreestateRootsRead for StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Backs<local::Treestate> + Backs<local::SubtreeRoots>,
+{
+    async fn treestate_with_roots(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+        let trees = self.treestate(at).await?;
+        run_blocking(TaskName("store-treestate-roots"), move || with_roots(trees))
+            .await
+            .map_err(|e| match e {
+                TaskError::Panicked { .. } => TreestateReadError::Fatal(e.to_string()),
+                TaskError::Cancelled { .. } => TreestateReadError::Transient(e.to_string()),
+            })?
+            .map_err(|e| TreestateReadError::Fatal(format!("decode a stored tree: {e}")))
+    }
+}
 
 impl<B, M> TreestateRead for StoreSnapshot<B, M>
 where
     B: Backend + 'static,
     M: Backs<local::Treestate> + Backs<local::SubtreeRoots>,
 {
-    async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+    async fn treestate(&self, at: Height) -> Result<CommitmentTrees, TreestateReadError> {
         // `tree_state` is WalkOrdered, so the store holds it for every height up
         // to the pinned watermark and for none above it. A height above coverage
         // is "not built to here yet" — NotServiceable, never an empty tree.
         match self.watermark {
             Some(watermark) if at <= watermark => {}
             _ => return Err(TreestateReadError::NotServiceable(Capability::Treestate)),
-        }
-
-        if let Some(rendered) = self.rendered.get(at) {
-            return Ok((*rendered).clone());
         }
 
         let reader = self.treestate_reader()?;
@@ -90,27 +103,15 @@ where
                 ))
             })?;
 
-        // Rendering computes each pool's root, milliseconds of hashing, so it
-        // runs on the blocking pool.
-        let activations = self.activations;
-        let treestate = run_blocking(TaskName("store-treestate-render"), move || {
-            let (sapling, orchard, ironwood) = value.pool_treestates(&activations, at);
-            Treestate {
-                block_hash: header.hash,
-                height: at,
-                time: header.time,
-                sapling,
-                orchard,
-                ironwood,
-            }
+        let (sapling, orchard, ironwood) = value.pool_trees(&self.activations, at);
+        Ok(CommitmentTrees {
+            block_hash: header.hash,
+            height: at,
+            time: header.time,
+            sapling,
+            orchard,
+            ironwood,
         })
-        .await
-        .map_err(|e| match e {
-            TaskError::Panicked { .. } => TreestateReadError::Fatal(e.to_string()),
-            TaskError::Cancelled { .. } => TreestateReadError::Transient(e.to_string()),
-        })?;
-        self.rendered.insert(at, Arc::new(treestate.clone()));
-        Ok(treestate)
     }
 
     async fn subtree_roots(
@@ -285,7 +286,7 @@ mod tests {
         BlockHash, CompactDifficulty, Height, NoteCommitment, PoolActivations, ShieldedPool,
     };
     use zaino_service::error::TreestateReadError;
-    use zaino_service::{Capability, TakeSnapshot, TreestateRead};
+    use zaino_service::{Capability, TakeSnapshot, TreestateRead, TreestateRootsRead};
     use zaino_sync::primitives::BlockHeight;
     use zaino_sync::traits::{CumulativeAppend, ExtractCumulative, IndexDef};
 
@@ -441,14 +442,34 @@ mod tests {
 
         // Each height's Sapling tree is exactly the one the index stored there,
         // and they differ height to height (each block adds notes).
-        let expected2 = values[1].pool_treestates(&activations(), height(2)).0;
-        let expected3 = values[2].pool_treestates(&activations(), height(3)).0;
+        let expected2 = values[1].pool_trees(&activations(), height(2)).0;
+        let expected3 = values[2].pool_trees(&activations(), height(3)).0;
         assert_eq!(at2.sapling, expected2);
         assert_eq!(at3.sapling, expected3);
         assert_ne!(
             at2.sapling, at3.sapling,
             "distinct heights, distinct frontiers"
         );
+    }
+
+    /// The roots read is the trees read plus each pool's root: dropping the
+    /// roots gives back exactly the trees, and the Sapling root is the one its
+    /// tree hashes to. An absent pool stays absent, with no root.
+    #[tokio::test]
+    async fn the_roots_read_adds_roots_to_the_trees_read() {
+        let (dir, _values) = built();
+        let snap = snapshot(Arc::new(open_at(dir.path()))).await;
+        let trees = snap.treestate(height(3)).await.expect("covered");
+        let with_roots = snap.treestate_with_roots(height(3)).await.expect("covered");
+        assert_eq!(with_roots.clone().into_trees(), trees);
+        assert_eq!(
+            with_roots,
+            tree_state::with_roots(trees).expect("stored trees decode"),
+            "each root is the one its tree hashes to"
+        );
+        let sapling = with_roots.sapling.expect("Sapling has notes");
+        assert!(sapling.final_root.is_some(), "a present pool has a root");
+        assert_eq!(with_roots.orchard, None);
     }
 
     /// A pool with no notes at the height is reported `None` (the `""` the wire

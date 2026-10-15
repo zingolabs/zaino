@@ -30,5 +30,5 @@ pub mod sync;
 pub use codec::{legacy_tree_bytes, legacy_tree_from_bytes, TreeStateIndex, TreeStateValue};
 pub use pools::{ironwood_leaf, orchard_leaf, sapling_leaf};
 pub use segment::TreeSegment;
-pub use serve::pool_treestate;
+pub use serve::{pool_tree, tree_root, with_roots};
 pub use sync::{TreeStateCtx, TreeStateEntry};

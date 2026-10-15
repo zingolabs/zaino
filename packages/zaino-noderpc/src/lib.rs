@@ -30,8 +30,8 @@ use zaino_service::ChainTipsRead;
 use zaino_service::RawTransactionRead;
 use zaino_service::SpendRead;
 use zaino_service::TransactionViewRead;
-use zaino_service::TreestateRead;
 use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
+use zaino_service::{TreestateRead, TreestateRootsRead};
 use zcash_protocol::consensus::Network;
 
 use zaino_primitives::types::{BlockSelector, Outpoint};
@@ -703,7 +703,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
                 .map_err(ReadError::from)?
                 .ok_or_else(|| RpcError::NotFound(format!("no block with hash {hash_or_height}")))?
         };
-        let treestate = snapshot.treestate(height).await?;
+        let treestate = snapshot.treestate_with_roots(height).await?;
         Ok(treestate_to_wire(treestate))
     }
 

@@ -14,7 +14,7 @@ use crate::block_deltas::BlockDeltasRead;
 use crate::reads::{
     AddressRead, BlockHashRead, BlockRead, BlockVerboseRead, ChainInfoRead, ChainTipsRead,
     CompactBlockRead, CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead,
-    TransactionViewRead, TreestateRead,
+    TransactionViewRead, TreestateRead, TreestateRootsRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
@@ -67,6 +67,10 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// verbose, resolved-transaction and header reads already in this set — it adds no
 /// source port.
 ///
+/// [`TreestateRootsRead`] is `z_gettreestate`, which reports each pool's root
+/// beside its tree; the wallet sets read the trees alone through
+/// [`TreestateRead`] and never pay for the roots.
+///
 /// [`ChainTipsRead`] is the `getchaintips` surface: a third indexer-only method
 /// (Zebra answers `-32601`), read from the non-finalised head's retained graph.
 ///
@@ -88,6 +92,7 @@ pub trait NodeRpcReads:
     + AddressRead
     + SpendRead
     + TreestateRead
+    + TreestateRootsRead
     + ChainInfoRead
     + ChainTipsRead
 {
@@ -103,6 +108,7 @@ impl<T> NodeRpcReads for T where
         + AddressRead
         + SpendRead
         + TreestateRead
+        + TreestateRootsRead
         + ChainInfoRead
         + ChainTipsRead
 {

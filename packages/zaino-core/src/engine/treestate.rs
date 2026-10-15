@@ -16,15 +16,23 @@
 //! the finalised tier's page followed by the window's newly completed ones, whose
 //! global indices continue above it. Requires the finalised tier to have a
 //! [`TreestateRead`] and the window a [`TreestateWindowRead`].
+//!
+//! **Roots.** The trees read carries no roots; [`TreestateRootsRead`] adds them
+//! under the same placement. Passthrough relays the validator's treestate as it
+//! reports it. Local routes across the seam exactly as the trees read does, each
+//! tier computing the roots of the trees it holds — milliseconds of hashing paid
+//! only by the reads that report roots.
 
 use std::future::Future;
 
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Passthrough, Routing};
-use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
+use zaino_primitives::types::{CommitmentTrees, Height, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::TreestateReadError;
-use zaino_service::{Capability, PoolActivationSource, TreestateRead, TreestateWindowRead};
+use zaino_service::{
+    Capability, PoolActivationSource, TreestateRead, TreestateRootsRead, TreestateWindowRead,
+};
 use zaino_source::{GetSubtreeRoots, GetTreestate};
 
 use super::EngineSnapshot;
@@ -33,6 +41,12 @@ use crate::passthrough::PassthroughProvider;
 /// How a placement answers treestate reads over the providers `(F, N, Src)`.
 pub trait TreestatePlacement<F, N, Src>: Send + Sync + 'static {
     fn treestate(
+        local: &ChainViewSnapshot<F, N>,
+        passthrough: &PassthroughProvider<Src>,
+        at: Height,
+    ) -> impl Future<Output = Result<CommitmentTrees, TreestateReadError>> + Send;
+
+    fn treestate_with_roots(
         local: &ChainViewSnapshot<F, N>,
         passthrough: &PassthroughProvider<Src>,
         at: Height,
@@ -55,7 +69,7 @@ where
     R: Routing,
     R::Treestate: TreestatePlacement<F, N, Src>,
 {
-    async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+    async fn treestate(&self, at: Height) -> Result<CommitmentTrees, TreestateReadError> {
         R::Treestate::treestate(self.local(), self.passthrough(), at).await
     }
 
@@ -70,6 +84,19 @@ where
     }
 }
 
+impl<F, N, Src, R> TreestateRootsRead for EngineSnapshot<F, N, Src, R>
+where
+    F: ChainTier,
+    N: ChainTier,
+    Src: Send + Sync + 'static,
+    R: Routing,
+    R::Treestate: TreestatePlacement<F, N, Src>,
+{
+    async fn treestate_with_roots(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+        R::Treestate::treestate_with_roots(self.local(), self.passthrough(), at).await
+    }
+}
+
 impl<F, N, Src> TreestatePlacement<F, N, Src> for Passthrough
 where
     F: ChainTier,
@@ -80,7 +107,17 @@ where
         _local: &ChainViewSnapshot<F, N>,
         passthrough: &PassthroughProvider<Src>,
         at: Height,
+    ) -> Result<CommitmentTrees, TreestateReadError> {
+        passthrough.treestate(at).await.map(Treestate::into_trees)
+    }
+
+    async fn treestate_with_roots(
+        _local: &ChainViewSnapshot<F, N>,
+        passthrough: &PassthroughProvider<Src>,
+        at: Height,
     ) -> Result<Treestate, TreestateReadError> {
+        // The validator's treestate as it reports it, roots included where it
+        // reports them.
         passthrough.treestate(at).await
     }
 
@@ -99,11 +136,11 @@ where
 
 // --- Local --------------------------------------------------------------------
 
-/// The finalised treestate at the watermark — the seed the window folds from —
-/// or `None` when the store holds nothing (the window folds from genesis).
+/// The finalised trees at the watermark — the seed the window folds from — or
+/// `None` when the store holds nothing (the window folds from genesis).
 async fn seed<F, N>(
     local: &ChainViewSnapshot<F, N>,
-) -> Result<Option<Treestate>, TreestateReadError>
+) -> Result<Option<CommitmentTrees>, TreestateReadError>
 where
     F: ChainTier + TreestateRead,
     N: ChainTier,
@@ -116,7 +153,7 @@ where
 
 impl<F, N, Src> TreestatePlacement<F, N, Src> for Local
 where
-    F: ChainTier + TreestateRead + PoolActivationSource,
+    F: ChainTier + TreestateRead + TreestateRootsRead + PoolActivationSource,
     N: ChainTier + TreestateWindowRead,
     Src: Send + Sync + 'static,
 {
@@ -124,7 +161,7 @@ where
         local: &ChainViewSnapshot<F, N>,
         _passthrough: &PassthroughProvider<Src>,
         at: Height,
-    ) -> Result<Treestate, TreestateReadError> {
+    ) -> Result<CommitmentTrees, TreestateReadError> {
         // At or below the watermark is the finalised store's; the store refuses a
         // height above its coverage, which the seam routing never asks it for.
         if local.watermark().is_some_and(|watermark| at <= watermark) {
@@ -141,6 +178,25 @@ where
         local
             .non_finalised()
             .window_treestate(seed.as_ref(), activations, at)
+            .await?
+            .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
+    }
+
+    async fn treestate_with_roots(
+        local: &ChainViewSnapshot<F, N>,
+        _passthrough: &PassthroughProvider<Src>,
+        at: Height,
+    ) -> Result<Treestate, TreestateReadError> {
+        // Routed exactly as the trees read is; each tier computes the roots of
+        // the trees it answers with.
+        if local.watermark().is_some_and(|watermark| at <= watermark) {
+            return local.finalised().treestate_with_roots(at).await;
+        }
+        let seed = seed(local).await?;
+        let activations = local.finalised().pool_activations();
+        local
+            .non_finalised()
+            .window_treestate_with_roots(seed.as_ref(), activations, at)
             .await?
             .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
     }

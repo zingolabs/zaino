@@ -6,7 +6,11 @@
 //! at the watermark. Both then render it the same way, so the projection lives
 //! here once and both tiers call it. Sharing it is what makes the two sides of
 //! the seam agree node-for-node: identical frontiers render to identical
-//! [`PoolTreestate`]s.
+//! serialized trees.
+//!
+//! The trees are the whole answer for a light wallet. A root is derived from a
+//! serialized tree on demand ([`tree_root`], [`with_roots`]), by the reads that
+//! report one, because computing it hashes up the full tree depth.
 //!
 //! # Activation
 //!
@@ -26,7 +30,8 @@ use orchard::tree::MerkleHashOrchard;
 use sapling_crypto::Node as SaplingNode;
 use zaino_persistence_codec::DecodeError;
 use zaino_primitives::types::{
-    BlockHash, Height, PoolActivations, PoolTreestate, ShieldedPool, TreeRoot, Treestate,
+    BlockHash, CommitmentTrees, Height, PoolActivations, PoolTreestate, ShieldedPool, TreeBytes,
+    TreeRoot, Treestate,
 };
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ExtractCumulative;
@@ -51,63 +56,87 @@ fn node_bytes<H: HashSer>(node: &H) -> [u8; 32] {
         .expect("a pool node hash serializes to exactly 32 bytes")
 }
 
-/// Render one pool's frontier as a domain [`PoolTreestate`], or [`None`] when the
-/// pool is not active at `at` (below its `activation` height, or unscheduled).
+/// Render one pool's frontier as its serialized tree, or [`None`] when the pool
+/// is not active at `at` (below its `activation` height, or unscheduled).
 ///
 /// An active pool is reported even when its tree is empty: the empty frontier
-/// renders to the serialised empty tree and the empty-tree root, which is what
-/// `z_gettreestate` carries from a pool's activation height onward. The
-/// `final_root` is the frontier's root (padded with empty subtrees to the pool
-/// depth) in internal byte order; the `final_state` is zcashd's legacy
+/// renders to the serialised empty tree, which is what `z_gettreestate` carries
+/// from a pool's activation height onward. The bytes are zcashd's legacy
 /// `CommitmentTree` serialization.
-pub fn pool_treestate<H: HashSer + Hashable + Clone>(
+pub fn pool_tree<H: HashSer + Hashable + Clone>(
     frontier: &Frontier<H, DEPTH>,
     activation: Option<Height>,
     at: Height,
-) -> Option<PoolTreestate> {
+) -> Option<TreeBytes> {
     // Absent (unscheduled) or below its activation height: the pool is not here.
     if activation.is_none_or(|activation| at < activation) {
         return None;
     }
-    Some(PoolTreestate {
-        final_root: Some(TreeRoot::from(node_bytes(&frontier.root()))),
-        final_state: legacy_tree_bytes(frontier),
+    Some(legacy_tree_bytes(frontier))
+}
+
+/// The root of a pool's serialized tree, in internal byte order: the frontier's
+/// root, padded with empty subtrees to the pool depth.
+///
+/// Hashes up the whole tree depth, milliseconds per pool, which is why only the
+/// reads that report roots call it.
+pub fn tree_root<H: HashSer + Hashable + Clone>(tree: &[u8]) -> Result<TreeRoot, DecodeError> {
+    let frontier = legacy_tree_from_bytes::<H>(tree)?;
+    Ok(TreeRoot::from(node_bytes(&frontier.root())))
+}
+
+/// `trees` with each present pool's root computed from its serialized tree.
+pub fn with_roots(trees: CommitmentTrees) -> Result<Treestate, DecodeError> {
+    fn pool<H: HashSer + Hashable + Clone>(
+        tree: Option<TreeBytes>,
+    ) -> Result<Option<PoolTreestate>, DecodeError> {
+        tree.map(|tree| {
+            Ok(PoolTreestate {
+                final_root: Some(tree_root::<H>(&tree)?),
+                final_state: tree,
+            })
+        })
+        .transpose()
+    }
+    Ok(Treestate {
+        block_hash: trees.block_hash,
+        height: trees.height,
+        time: trees.time,
+        sapling: pool::<SaplingNode>(trees.sapling)?,
+        orchard: pool::<MerkleHashOrchard>(trees.orchard)?,
+        ironwood: pool::<MerkleHashOrchard>(trees.ironwood)?,
     })
 }
 
 impl TreeStateValue {
-    /// The three pools' domain treestates at height `at`, Sapling / Orchard /
-    /// Ironwood, each rendered through [`pool_treestate`] against `activations`.
-    pub fn pool_treestates(
+    /// The three pools' serialized trees at height `at`, Sapling / Orchard /
+    /// Ironwood, each rendered through [`pool_tree`] against `activations`.
+    pub fn pool_trees(
         &self,
         activations: &PoolActivations,
         at: Height,
-    ) -> (
-        Option<PoolTreestate>,
-        Option<PoolTreestate>,
-        Option<PoolTreestate>,
-    ) {
+    ) -> (Option<TreeBytes>, Option<TreeBytes>, Option<TreeBytes>) {
         (
-            pool_treestate(&self.sapling, activations.sapling, at),
-            pool_treestate(&self.orchard, activations.orchard, at),
-            pool_treestate(&self.ironwood, activations.ironwood, at),
+            pool_tree(&self.sapling, activations.sapling, at),
+            pool_tree(&self.orchard, activations.orchard, at),
+            pool_tree(&self.ironwood, activations.ironwood, at),
         )
     }
 }
 
-/// Reconstruct the finalised per-pool frontier from the `seed` treestate the
+/// Reconstruct the finalised per-pool frontier from the `seed` trees the
 /// composer read at the watermark — the starting point a window fold builds on.
 ///
 /// A pool absent from the seed (below activation, or active-but-empty, both the
-/// `None` the store reports) starts from the empty frontier. The legacy
-/// `finalState` bytes round-trip exactly to the frontier they were written from,
-/// so the reconstructed value equals the one the store holds at the watermark.
-pub fn seed_value(seed: Option<&Treestate>) -> Result<TreeStateValue, DecodeError> {
+/// `None` the store reports) starts from the empty frontier. The legacy bytes
+/// round-trip exactly to the frontier they were written from, so the
+/// reconstructed value equals the one the store holds at the watermark.
+pub fn seed_value(seed: Option<&CommitmentTrees>) -> Result<TreeStateValue, DecodeError> {
     fn pool<H: HashSer + Hashable + Clone>(
-        pool: Option<&PoolTreestate>,
+        tree: Option<&TreeBytes>,
     ) -> Result<Frontier<H, DEPTH>, DecodeError> {
-        match pool {
-            Some(pool) => legacy_tree_from_bytes::<H>(&pool.final_state),
+        match tree {
+            Some(tree) => legacy_tree_from_bytes::<H>(tree),
             None => Ok(Frontier::empty()),
         }
     }
@@ -241,13 +270,8 @@ mod tests {
         orchard_leaf(bytes).expect("canonical orchard cmx")
     }
 
-    fn root_bytes(pool: &Option<PoolTreestate>) -> [u8; 32] {
-        <[u8; 32]>::from(
-            pool.as_ref()
-                .expect("active pool")
-                .final_root
-                .expect("root present"),
-        )
+    fn root_bytes<H: HashSer + Hashable + Clone>(tree: &[u8]) -> [u8; 32] {
+        <[u8; 32]>::from(tree_root::<H>(tree).expect("a serialized tree"))
     }
 
     // Step 1(a): the activation boundary against zebra's z_gettreestate fixture
@@ -262,12 +286,12 @@ mod tests {
         let empty = Frontier::<SaplingNode, DEPTH>::empty();
 
         // activation − 1: absent (the wire `""`).
-        assert_eq!(pool_treestate(&empty, activation, h(419_199)), None);
+        assert_eq!(pool_tree(&empty, activation, h(419_199)), None);
 
         // activation: active but empty — finalState `000000`, the empty-tree root.
-        let at = pool_treestate(&empty, activation, h(419_200)).expect("active at activation");
+        let at = pool_tree(&empty, activation, h(419_200)).expect("active at activation");
         assert_eq!(
-            at.final_state,
+            at,
             hex::decode("000000").expect("hex"),
             "the empty Sapling tree serialises to zebra's `000000`",
         );
@@ -278,7 +302,7 @@ mod tests {
                 .expect("hex");
         fixture.reverse();
         assert_eq!(
-            root_bytes(&Some(at)).to_vec(),
+            root_bytes::<SaplingNode>(&at).to_vec(),
             fixture,
             "empty Sapling root"
         );
@@ -286,9 +310,9 @@ mod tests {
         // first note (419201): non-empty, still present.
         let mut one = empty.clone();
         assert!(one.append(sapling_note(1)));
-        let first = pool_treestate(&one, activation, h(419_201)).expect("active");
+        let first = pool_tree(&one, activation, h(419_201)).expect("active");
         assert_ne!(
-            first.final_state,
+            first,
             hex::decode("000000").expect("hex"),
             "a funded Sapling tree is not the empty encoding",
         );
@@ -302,23 +326,23 @@ mod tests {
         let activation = Some(h(1_687_104));
         let empty = Frontier::<MerkleHashOrchard, DEPTH>::empty();
 
-        assert_eq!(pool_treestate(&empty, activation, h(1_687_103)), None);
+        assert_eq!(pool_tree(&empty, activation, h(1_687_103)), None);
 
-        let at = pool_treestate(&empty, activation, h(1_687_104)).expect("active at activation");
-        assert_eq!(at.final_state, hex::decode("000000").expect("hex"));
+        let at = pool_tree(&empty, activation, h(1_687_104)).expect("active at activation");
+        assert_eq!(at, hex::decode("000000").expect("hex"));
         let fixture =
             hex::decode("ae2935f1dfd8a24aed7c70df7de3a668eb7a49b1319880dde2bbd9031ae5d82f")
                 .expect("hex");
         assert_eq!(
-            root_bytes(&Some(at)).to_vec(),
+            root_bytes::<MerkleHashOrchard>(&at).to_vec(),
             fixture,
             "empty Orchard root"
         );
 
         let mut one = empty.clone();
         assert!(one.append(orchard_note(1)));
-        let first = pool_treestate(&one, activation, h(1_687_105)).expect("active");
-        assert_ne!(first.final_state, hex::decode("000000").expect("hex"));
+        let first = pool_tree(&one, activation, h(1_687_105)).expect("active");
+        assert_ne!(first, hex::decode("000000").expect("hex"));
     }
 
     // An unscheduled pool (regtest without NU6.3, say) is never reported, even
@@ -326,6 +350,36 @@ mod tests {
     #[test]
     fn an_unscheduled_pool_is_absent() {
         let empty = Frontier::<MerkleHashOrchard, DEPTH>::empty();
-        assert_eq!(pool_treestate(&empty, None, h(9_000_000)), None);
+        assert_eq!(pool_tree(&empty, None, h(9_000_000)), None);
+    }
+
+    /// `with_roots` keeps each tree and adds the root its frontier hashes to,
+    /// leaving an absent pool absent.
+    #[test]
+    fn with_roots_adds_each_present_pool_root() {
+        let mut sapling = Frontier::<SaplingNode, DEPTH>::empty();
+        assert!(sapling.append(sapling_note(7)));
+        let tree = legacy_tree_bytes(&sapling);
+        let trees = CommitmentTrees {
+            block_hash: BlockHash::from([3; 32]),
+            height: h(10),
+            time: 1,
+            sapling: Some(tree.clone()),
+            orchard: None,
+            ironwood: None,
+        };
+        let treestate = with_roots(trees.clone()).expect("valid trees");
+        let pool = treestate.sapling.clone().expect("sapling present");
+        assert_eq!(pool.final_state, tree);
+        assert_eq!(
+            pool.final_root,
+            Some(TreeRoot::from(node_bytes(&sapling.root())))
+        );
+        assert!(treestate.orchard.is_none());
+        assert_eq!(
+            treestate.into_trees(),
+            trees,
+            "dropping the roots is lossless"
+        );
     }
 }
