@@ -6,9 +6,10 @@
 //!   listing its output is durable (routine: bulk sync lands several a second)
 //! - commit waiting on a merge = WARN (go-ethereum "Database compacting, degraded performance")
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use tracing::{debug, warn};
+use zaino_primitives::display::{ByteSize, Human};
 
 use super::{log::Landed, writer::Merged, SegmentMeta};
 
@@ -135,14 +136,14 @@ pub(super) fn merged(series: Series, tier: u32, merged: &Merged, took: Duration)
 pub(super) fn stalled(series: Series, tiers: &[u32], waited: Duration) {
     metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &series.labels()).record(waited);
     let Series { index, table } = series;
-    warn!(index, table, tiers = ?tiers, waited = %Elapsed(waited), "Commit waited on compaction");
+    warn!(index, table, tiers = ?tiers, waited = %Human(waited), "Commit waited on compaction");
 }
 
 pub(super) fn launched(series: Series, tier: u32, inputs: &[SegmentMeta]) {
     let Series { index, table } = series;
     let bytes: u64 = inputs.iter().map(|segment| segment.sealed.len).sum();
     let rows: u64 = inputs.iter().map(|segment| segment.records).sum();
-    let size = Size(bytes);
+    let size = ByteSize(bytes);
     debug!(index, table, tier, segments = inputs.len(), rows, size = %size, "Compacting segments");
 }
 
@@ -155,8 +156,8 @@ pub(super) fn swapped(series: Series, landed: &Landed) {
         tier = landed.tier,
         rows = output.map_or(0, |output| output.records),
         cancelled = landed.merged.cancelled,
-        size = %Size(output.map_or(0, |output| output.sealed.len)),
-        took = %Elapsed(landed.took),
+        size = %ByteSize(output.map_or(0, |output| output.sealed.len)),
+        took = %Human(landed.took),
         "Compacted segments"
     );
 }
@@ -164,57 +165,4 @@ pub(super) fn swapped(series: Series, landed: &Landed) {
 pub(super) fn cancelled(series: Series, merges: usize) {
     let Series { index, table } = series;
     debug!(index, table, merges, "Compaction cancelled at close");
-}
-
-/// `412.3MiB` (binary units, no space: one logfmt token)
-struct Size(u64);
-
-impl fmt::Display for Size {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-        let mut value = self.0 as f64;
-        let mut unit = 0;
-        while value >= 1024.0 && unit + 1 < UNITS.len() {
-            value /= 1024.0;
-            unit += 1;
-        }
-        match unit {
-            0 => write!(f, "{}B", self.0),
-            _ => write!(f, "{value:.1}{}", UNITS[unit]),
-        }
-    }
-}
-
-/// `812ms` under a second, `3.2s` from there
-struct Elapsed(Duration);
-
-impl fmt::Display for Elapsed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.as_millis() {
-            ms if ms < 1_000 => write!(f, "{ms}ms"),
-            _ => write!(f, "{:.1}s", self.0.as_secs_f64()),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sizes_and_durations_read_as_one_token() {
-        for (bytes, shown) in [
-            (0, "0B"),
-            (1_023, "1023B"),
-            (1_024, "1.0KiB"),
-            (432_346_234, "412.3MiB"),
-            (3 << 40, "3.0TiB"),
-            (u64::MAX, "16777216.0TiB"),
-        ] {
-            assert_eq!(Size(bytes).to_string(), shown, "{bytes}");
-        }
-        for (ms, shown) in [(0, "0ms"), (812, "812ms"), (1_000, "1.0s"), (3_249, "3.2s")] {
-            assert_eq!(Elapsed(Duration::from_millis(ms)).to_string(), shown, "{ms}");
-        }
-    }
 }
