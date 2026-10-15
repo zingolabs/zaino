@@ -8,7 +8,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::ReorgDepth;
+use zaino_primitives::types::FinalityDepth;
 use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
@@ -20,9 +20,9 @@ use zcash_protocol::TxId;
 use crate::admission::{valid_in, NextBlock};
 use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::error::{ConfigError, SubmitError};
-use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
-use crate::observe::ObservationFold;
+use crate::merge::ChainViewCore;
+use crate::observe::ObservationMerge;
 use crate::peer_mempool::PeerMempool;
 use crate::peers::PeerWatch;
 use crate::ports::{PeerSource, UnspentOutputs};
@@ -52,7 +52,7 @@ impl<S> std::fmt::Debug for ChainView<S> {
 impl<S: ChainDataSource> ChainView<S> {
     /// The view over `balancer`'s trusted members (`addresses[i]` = `TrustedValidatorId(i)`'s, for logs
     /// and status); its tip comes from [`header_sync`](Self::header_sync), its polls from
-    /// [`observation_fold`](Self::observation_fold)
+    /// [`observation_merge`](Self::observation_merge)
     ///
     /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
     /// - `schedule` = the network's: the branch a transaction must be signed for at the next block
@@ -61,7 +61,7 @@ impl<S: ChainDataSource> ChainView<S> {
     pub fn new(
         addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
-        depth: ReorgDepth,
+        depth: FinalityDepth,
         schedule: LocalNetwork,
         shutdown: CancellationToken,
     ) -> Result<Self, ConfigError> {
@@ -97,7 +97,7 @@ impl<S: ChainDataSource> ChainView<S> {
         Self { peers: Some(peers), ..self }
     }
 
-    /// The runnable folding peers' block announcements into the view (`None` = no peers)
+    /// The runnable merging peers' block announcements into the view (`None` = no peers)
     pub fn peer_watch(&self) -> Option<PeerWatch> {
         let peers = Arc::clone(self.peers.as_ref()?);
         Some(PeerWatch::new(Arc::clone(&self.core), peers))
@@ -122,10 +122,10 @@ impl<S: ChainDataSource> ChainView<S> {
         HeaderSync::new(Arc::clone(&self.core), self.balancer.clone(), chain)
     }
 
-    /// The runnable folding each trusted member's polls into this view
-    pub fn observation_fold(&self) -> ObservationFold<S> {
+    /// The runnable merging each trusted member's polls into this view
+    pub fn observation_merge(&self) -> ObservationMerge<S> {
         let (core, balancer) = (Arc::clone(&self.core), self.balancer.clone());
-        ObservationFold { core, balancer, addresses: self.addresses.clone() }
+        ObservationMerge { core, balancer, addresses: self.addresses.clone() }
     }
 
     /// Reader onto the same published cell
@@ -341,7 +341,7 @@ impl ChainViewSubscriber {
         self.core.current()
     }
 
-    /// Every publish (one per fold): [`current`](Self::current) has moved
+    /// Every publish (one per merge): [`current`](Self::current) has moved
     pub fn subscribe_published(&self) -> tokio::sync::watch::Receiver<()> {
         self.core.subscribe_published()
     }

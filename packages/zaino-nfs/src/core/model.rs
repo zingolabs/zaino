@@ -22,7 +22,7 @@ use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::testing::{encode_header, h, MockChain};
-use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_sync::{check_block, Checked};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
@@ -30,7 +30,7 @@ use zcash_protocol::BlockHash;
 use super::{Indexes, Input, NfsCore, Output, Publication};
 use crate::publish::Branch;
 
-const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 /// Fold window (the driver's `2 · depth`)
 const WINDOW: u32 = 6;
 const INDEXES: usize = 3;
@@ -219,7 +219,7 @@ impl Sim {
                 let Some(&old) = self.tips.get(usize::from(pick) % self.tips.len().max(1)) else {
                     return;
                 };
-                let old = self.builder.block(old).at();
+                let old = self.builder.block(old).block_ref();
                 let fork = self.builder.fork_point(old, best);
                 if u32::from(fork.height) < floor || fork == old {
                     return;
@@ -299,7 +299,7 @@ impl Sim {
     fn abandon(&mut self, at: BlockRef, context: &str) {
         assert!(self.fetching.remove(&at.hash), "{context}: Abandon {at:?} with no Fetch out");
         if self.random(2) == 0 {
-            let answer = |due: &Due| matches!(due, Due::Body(body) if body.at() == at);
+            let answer = |due: &Due| matches!(due, Due::Body(body) if body.block_ref() == at);
             self.pending.retain(|(_, due)| !answer(due));
         }
     }
@@ -374,8 +374,8 @@ impl Sim {
             return Some((root, Branch::Best, false));
         }
         tip.graph.get(&hash)?;
-        let blocks = self.builder.blocks(self.builder.block(hash).at());
-        let path: Vec<BlockRef> = blocks.iter().map(|block| block.at()).collect();
+        let blocks = self.builder.blocks(self.builder.block(hash).block_ref());
+        let path: Vec<BlockRef> = blocks.iter().map(|block| block.block_ref()).collect();
         let shared = path.iter().take_while(|at| tip.chain.on_best(**at)).count();
         let branch = match path.get(shared) {
             None => Branch::Best,
@@ -425,7 +425,7 @@ impl Sim {
             let pick = due[self.random(due.len() as u64) as usize];
             let input = match self.pending.swap_remove(pick).1 {
                 Due::Body(body) => {
-                    let at = body.at();
+                    let at = body.block_ref();
                     if self.core.wanted.get(&at.height) == Some(&at.hash) {
                         self.fetching.remove(&at.hash);
                     }

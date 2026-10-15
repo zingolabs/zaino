@@ -226,7 +226,7 @@ mod tests {
 
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
-        let durable_tip_a2 = Some(trunk[2].at());
+        let durable_tip_a2 = Some(trunk[2].block_ref());
         let mut durable_at_a2 =
             follower.subscribe(IndexKind::BlockHash, durable_tip_a2, NonZeroUsize::MAX);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
@@ -242,12 +242,12 @@ mod tests {
                     Step::Shutdown => panic!("Shutdown early"),
                 };
                 assert_eq!(data.header().height, height, "step height = its block's");
-                sent.push((data.at(), finalized));
+                sent.push((data.block_ref(), finalized));
             }
             sent
         };
         let steps = |range: std::ops::RangeInclusive<usize>, finalized_tip: usize| -> Vec<_> {
-            range.map(|at| (trunk[at].at(), at == finalized_tip)).collect()
+            range.map(|at| (trunk[at].block_ref(), at == finalized_tip)).collect()
         };
 
         let first = steps(0..=5, 5);
@@ -298,7 +298,7 @@ mod tests {
         let finalized_at_five = Some(Arc::new(chain.verified_finalized(a7, h(5))));
         let (_verified, verified_rx) = watch::channel(finalized_at_five);
         let mut follower = FinalizedFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
-        let durable_tip_a4 = Some(chain.blocks(a7)[4].at());
+        let durable_tip_a4 = Some(chain.blocks(a7)[4].block_ref());
         let mut above = follower.subscribe(IndexKind::TreeState, durable_tip_a4, NonZeroUsize::MAX);
         let mut foreign = follower.subscribe(IndexKind::BlockHash, Some(x1), NonZeroUsize::MAX);
         let stopped = within("the follower stopped", follower.run(CancellationToken::new())).await;
@@ -325,9 +325,10 @@ mod tests {
                 Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => data,
                 Step::Shutdown => panic!("Shutdown early"),
             };
-            sent.push(data.at());
+            sent.push(data.block_ref());
         }
-        let trunk: Vec<BlockRef> = chain.blocks(a7)[..=5].iter().map(|block| block.at()).collect();
+        let trunk: Vec<BlockRef> =
+            chain.blocks(a7)[..=5].iter().map(|block| block.block_ref()).collect();
         assert_eq!(sent, trunk, "A0..=A5");
         validator.follow(&chain, b11);
         verified.send_replace(Some(Arc::new(chain.verified_finalized(b11, h(8)))));
@@ -380,11 +381,13 @@ mod peers {
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
             match step.expect("a finalized block within a minute") {
-                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => sent.push(data.at()),
+                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => {
+                    sent.push(data.block_ref())
+                }
                 Step::Shutdown => panic!("Shutdown early"),
             }
         }
-        let expected: Vec<BlockRef> = trunk[..=8].iter().map(|block| block.at()).collect();
+        let expected: Vec<BlockRef> = trunk[..=8].iter().map(|block| block.block_ref()).collect();
         assert_eq!(sent, expected, "A0..=A8 in order, served while the validator never answered");
         cancel.cancel();
     }

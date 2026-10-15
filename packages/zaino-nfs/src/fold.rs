@@ -34,7 +34,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     covers: &[IndexKind],
 ) -> Result<Folded, FoldError> {
     let mut layers = PerIndex::default();
-    let open = |kind: IndexKind| parent.layer(kind).schema().changes(block.at());
+    let open = |kind: IndexKind| parent.layer(kind).schema().changes(block.block_ref());
     let mut push = |kind: IndexKind, changes: BlockChanges| {
         layers.insert(kind, parent.layer(kind).with(&changes))
     };

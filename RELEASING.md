@@ -24,7 +24,7 @@ default: major
 
 # `zaino-grpc`: `GetLightdInfo.version` is the daemon's version
 
-Pass it in `Routes.version`.
+Pass it in `RouteDeps.version`.
 ```
 
 | Type       | Use for | Version bump under 0.x |

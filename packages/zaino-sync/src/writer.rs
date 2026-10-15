@@ -16,7 +16,7 @@ use crate::{emit, IndexHandle};
 /// Fold's preconditions, panic naming the index: `out` opened for `block`, `block` next above
 /// `parent` (`None` = empty parent: genesis)
 pub fn assert_next(out: &BlockChanges, parent: Option<BlockRef>, block: &Block) {
-    let (name, at, opened) = (out.schema().kind.name(), block.at(), out.block());
+    let (name, at, opened) = (out.schema().kind.name(), block.block_ref(), out.block());
     assert!(opened == at, "{name}: changes opened for another block ({opened:?}), folding {at:?}");
     let extends = block.header().extends(parent);
     assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
@@ -29,7 +29,7 @@ pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChang
     let mut below = parent;
     for (block, out) in blocks.iter().zip(out) {
         assert_next(out, below, block);
-        below = Some(block.at());
+        below = Some(block.block_ref());
     }
 }
 
@@ -124,7 +124,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         let two = chain.mine_empty(2);
         let run = [&**chain.block(chain.genesis().hash), &**chain.block(two.hash)];
-        assert_run(None, &run, &run.map(|block| SCHEMA.changes(block.at())));
+        assert_run(None, &run, &run.map(|block| SCHEMA.changes(block.block_ref())));
     }
 
     #[test]

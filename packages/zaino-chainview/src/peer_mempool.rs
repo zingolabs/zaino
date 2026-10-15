@@ -2,7 +2,7 @@
 //! checked here, admitted into the view (`docs/architecture.md` §5)
 //!
 //! ```text
-//!   each PEER_MEMPOOL_POLL ─▶ mempool(peer), every live peer ─▶ fold: listings, retention
+//!   each PEER_MEMPOOL_POLL ─▶ mempool(peer), every live peer ─▶ merge: listings, retention
 //!     ─▶ candidates ─▶ bytes (held, else by wtxid from peers) ─▶ admission.rs ─▶ admitted
 //! ```
 //!
@@ -26,8 +26,8 @@ use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::{admissible, NextBlock, Refused};
 use crate::chain_view_snapshot::ChainViewSnapshot;
-use crate::fold::{Candidate, ChainViewCore};
 use crate::listings::PEER_MEMPOOL_POLL;
+use crate::merge::{Candidate, ChainViewCore};
 use crate::ports::{PeerSource, UnspentOutputs};
 
 /// A transaction one of our checks refused stays refused this long

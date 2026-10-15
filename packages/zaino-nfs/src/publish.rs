@@ -1,9 +1,9 @@
-//! [`Indexed`]: one served tip across every enabled index, `GrpcSnapshot`'s index half
+//! [`NfsPublication`]: one served tip across every enabled index, `GrpcSnapshot`'s index half
 //! (`usage.md`)
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the durable view
 //! - Layers rebased onto the durable views they pair with, at build
-//! - [`Indexed::at`]: any folded node or the root, side branches included (G7)
+//! - [`NfsPublication::at`]: any folded node or the root, side branches included (G7)
 
 use std::sync::Arc;
 
@@ -56,14 +56,14 @@ pub enum Branch {
 }
 
 /// Every enabled index as of one block: what a route reads
-pub struct At<V> {
+pub struct IndexesAtBlock<V> {
     block: BlockRef,
     branch: Branch,
     params: ChainParams,
     views: Views<V>,
 }
 
-impl<V: View> At<V> {
+impl<V: View> IndexesAtBlock<V> {
     /// Highest height `kind` answers: its durable tip when past a best block (finalized), else the
     /// block (side branch: durable data past it = best chain, not this branch)
     pub fn answers_through(&self, kind: IndexKind) -> BlockHeight {
@@ -77,7 +77,7 @@ impl<V: View> At<V> {
     }
 }
 
-impl<V> At<V> {
+impl<V> IndexesAtBlock<V> {
     /// `GetLatestBlock` + every read naming no height (one tip across indexes)
     pub fn tip(&self) -> BlockRef {
         self.block
@@ -100,15 +100,15 @@ impl<V> At<V> {
 ///
 /// - `served` = deepest folded best block, else `root` (lowest durable tip of every index)
 /// - `durable` = each enabled index's durable view as of this publish (republished per commit)
-pub struct Indexed<V> {
+pub struct NfsPublication<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
-    served: At<V>,
+    served: IndexesAtBlock<V>,
     durable: PerIndex<V>,
     graph: Graph<Folded>,
 }
 
-impl<V: View> Indexed<V> {
+impl<V: View> NfsPublication<V> {
     /// Panics: `tip` neither a node of `graph` nor `root`
     pub(crate) fn new(
         chain: Arc<VerifiedChain>,
@@ -127,7 +127,7 @@ impl<V: View> Indexed<V> {
     ///
     /// - `None` = finalized below the root, never folded, or unknown
     /// - an index durable at or past the block: its durable view alone (reads at heights `<=`)
-    pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
+    pub fn at(&self, hash: &BlockHash) -> Option<IndexesAtBlock<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;
         Some(at(self.served.params, &self.durable, base))
     }
@@ -138,13 +138,13 @@ impl<V: View> Indexed<V> {
     }
 }
 
-impl<V> Indexed<V> {
+impl<V> NfsPublication<V> {
     /// Chain `served` was judged under (`GrpcSnapshot` judges under the chain view's)
     pub fn chain(&self) -> &Arc<VerifiedChain> {
         &self.chain
     }
 
-    pub fn served(&self) -> &At<V> {
+    pub fn served(&self) -> &IndexesAtBlock<V> {
         &self.served
     }
 
@@ -166,14 +166,19 @@ impl<V> Indexed<V> {
     }
 }
 
-fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -> At<V> {
+fn at<V: View>(
+    params: ChainParams,
+    durable: &PerIndex<V>,
+    base: Base<Folded>,
+) -> IndexesAtBlock<V> {
     let empty = PerIndex::default();
     let layers = base.folded.as_deref().map_or(&empty, |folded| &folded.layers);
     let views = Views::at(durable, layers, Some(base.at.height));
-    At { block: base.at, branch: base.branch, params, views }
+    IndexesAtBlock { block: base.at, branch: base.branch, params, views }
 }
 
-/// Every enabled index's durable view + a layer above it: [`At`]'s state, and a fold's parent
+/// Every enabled index's durable view + a layer above it: [`IndexesAtBlock`]'s state, and a fold's
+/// parent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -253,12 +258,12 @@ impl<V: SequenceRead + MapRead> Views<V> {
     }
 }
 
-/// Latest [`Indexed`] (`None` = nothing folded or durable yet), swapped whole per publish
-pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;
+/// Latest [`NfsPublication`] (`None` = nothing folded or durable yet), swapped whole per publish
+pub type Published<V> = watch::Receiver<Option<Arc<NfsPublication<V>>>>;
 
 /// No driver publishes into it (consumers' tests)
 #[cfg(any(test, feature = "testing"))]
-impl<V: View> Indexed<V> {
+impl<V: View> NfsPublication<V> {
     /// At `tip` on `chain`, `tip` = the root: each enabled index = its durable view
     pub fn fixed(
         chain: Arc<VerifiedChain>,
@@ -284,11 +289,11 @@ impl<V: View> Indexed<V> {
         }
         let mut graph = Graph::new();
         for block in above_root {
-            let (at, parent) = (block.at(), block.header().prev_hash);
+            let (at, parent) = (block.block_ref(), block.header().prev_hash);
             let folded = Arc::new(Folded { layers: PerIndex::default() });
             graph.insert(Node { at, parent, block: Arc::clone(block), folded });
         }
-        let tip = above_root.last().map_or(root, |block| block.at());
+        let tip = above_root.last().map_or(root, |block| block.block_ref());
         Self::new(chain, tip, Some(root), params, views, graph)
     }
 }

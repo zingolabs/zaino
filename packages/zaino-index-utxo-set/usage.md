@@ -46,7 +46,7 @@ let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` ta
 let schema = Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES);
 let writer = UtxoSetIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, handle.view().tip(), queue);
+let blocks = follower.subscribe(IndexKind::UtxoSet, handle.durable_view().tip(), queue);
 nfs.add(IndexKind::UtxoSet, handle);
 tokio::spawn(writer.run(blocks, fee_sink));
 ```
@@ -76,7 +76,7 @@ No route reads this index. Its readers are:
 
 ```rust,ignore
 let parent = UtxoSetReader::new(view);   // any V: SequenceRead + MapRead
-let mut out = store.changes(block.at());      // or the parent layer's `changes`
+let mut out = store.changes(block.block_ref());      // or the parent layer's `changes`
 let fees = fold(&parent, &block, &mut out)?;  // Result<BlockFees, FoldError>
 let stored = parent.block_fees(&block)?;      // a held block's fees, read back
 ```

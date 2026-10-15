@@ -28,7 +28,7 @@ use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::observe::Measured;
 use crate::report::{self, CapsInUse, INTERVAL};
-use crate::service::{Dispatch, Routes, Routing};
+use crate::service::{Dispatch, RouteDeps, Routing};
 use crate::{emit, GrpcLimits};
 
 /// Per-stream send buffer (flow control paces from here: a slow wallet backs up itself, not the
@@ -61,7 +61,7 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Locally-reset streams per peer before the connection closes (CVE-2023-44487)
 const RAPID_RESET_LIMIT: usize = 128;
 
-/// `CompactTxStreamer` endpoint: enabled [`Routes`] on one listener, bounded by [`GrpcLimits`]
+/// `CompactTxStreamer` endpoint: enabled [`RouteDeps`] on one listener, bounded by [`GrpcLimits`]
 pub struct GrpcService<S: ChainDataSource, V> {
     dispatch: Dispatch<S, V>,
     bind: SocketAddr,
@@ -96,7 +96,7 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
     }
 
     /// Routed from the start
-    pub fn with_routes(self, routes: Routes<S, V>) -> Self {
+    pub fn with_routes(self, routes: RouteDeps<S, V>) -> Self {
         self.routing().route(routes);
         self
     }
@@ -429,7 +429,7 @@ mod tests {
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 
     use super::GrpcService;
-    use crate::service::{Method, Routes};
+    use crate::service::{Method, RouteDeps};
     use crate::testing::{grpc_snapshots, indexed, routes, MAINNET};
 
     const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -456,7 +456,7 @@ mod tests {
             indexed(IndexKind::CompactBlock, &chain, tip),
             indexed(IndexKind::TransparentAddress, &chain, tip),
         ];
-        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() };
+        let routes = RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() };
 
         let server = GrpcService::new(ANY_PORT, crate::GrpcLimits::default()).with_routes(routes);
         let bound = server.bind().await.expect("binds");
@@ -517,7 +517,7 @@ mod tests {
         let serve = |limits: crate::GrpcLimits| {
             let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
             let routes =
-                Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
+                RouteDeps { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
             async move {
                 let server = GrpcService::new(ANY_PORT, limits).with_routes(routes);
                 let bound = server.bind().await.expect("binds");
@@ -610,7 +610,8 @@ mod tests {
             ..crate::GrpcLimits::default()
         };
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
+        let routes =
+            RouteDeps { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
         let server = GrpcService::new(ANY_PORT, forever).with_routes(routes);
         let retire = server.retire();
         let bound = server.bind().await.expect("binds");

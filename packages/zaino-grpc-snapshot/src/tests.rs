@@ -11,12 +11,12 @@ use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
-use zaino_nfs::{ChainParams, Indexed};
+use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, Limits, TrafficBalancer, TrustedValidator};
@@ -32,7 +32,7 @@ use crate::{
     Publisher, Standing, Tips,
 };
 
-const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 
 /// - Seq 0 stored at `new` (nothing verified, nothing served)
 /// - A chain view publish → seq 1 under the new chain
@@ -76,7 +76,8 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
 
     let none: [(IndexKind, DiskView); 0] = [];
     for block in &path[1..] {
-        let indexed = Indexed::fixed(Arc::new(chain.clone()), block.at(), params, none.clone());
+        let indexed =
+            NfsPublication::fixed(Arc::new(chain.clone()), block.block_ref(), params, none.clone());
         nfs.send_replace(Some(Arc::new(indexed)));
     }
     within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
@@ -106,7 +107,7 @@ fn one_snapshot_renders_every_gauge() {
     let a = builder.blocks(a5);
     let mut headers = builder.header_chain(DEPTH);
     insert(&mut headers, &a).expect("A verifies");
-    headers.finalize(a[2].at());
+    headers.finalize(a[2].block_ref());
     let chain = Arc::new(headers.verified().expect("verified"));
 
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
@@ -119,14 +120,14 @@ fn one_snapshot_renders_every_gauge() {
     let mut store =
         engine.open(Path::new("block_hash"), &schema, NonZeroUsize::MAX).expect("fresh store");
     for block in &a {
-        let mut out = store.changes(block.at());
+        let mut out = store.changes(block.block_ref());
         let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(store.applied());
         zaino_internal_block_hash_to_height::fold(&parent, block, &mut out);
         store.apply(out);
     }
     store.commit().expect("SimFs commit");
     let durable = [(IndexKind::BlockHash, store.durable())];
-    let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
+    let indexed = NfsPublication::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
 
     let relayed = TxId::from_bytes([1; 32]);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
@@ -178,9 +179,10 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
     let served_at = |tip: &Block| {
-        let chain = Arc::new(builder.verified(tip.at()));
+        let chain = Arc::new(builder.verified(tip.block_ref()));
         let params = ChainParams::of(&builder);
-        let indexed = Indexed::fixed(Arc::clone(&chain), tip.at(), params, none.clone());
+        let indexed =
+            NfsPublication::fixed(Arc::clone(&chain), tip.block_ref(), params, none.clone());
         let view =
             ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
         (Arc::new(indexed), view)
@@ -222,7 +224,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
     let none: [(IndexKind, DiskView); 0] = [];
     let chain = Arc::new(builder.verified(a12));
     let indexed =
-        Arc::new(Indexed::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
+        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let cases = [
         ("caught up", Health::Live, 0, Health::Pending, Standing::Serving, vec![]),
         ("one failed poll", Health::Degraded, 0, Health::Pending, Standing::Serving, vec![]),
@@ -272,7 +274,7 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let none: [(IndexKind, DiskView); 0] = [];
     let chain = Arc::new(builder.verified(a12));
     let indexed =
-        Arc::new(Indexed::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
+        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let held = ChainViewSnapshot::fixed(
         Some(Arc::clone(&chain)),
         TrustedValidatorSet::at([0]),
@@ -316,9 +318,9 @@ impl Drill {
         let chain = Arc::new(builder.verified(a6));
         let params = ChainParams::of(&builder);
         let view = Arc::new(view(&chain, &[]));
-        let core = Core::new(served(&chain, params, a[3].at()), Arc::clone(&view), DEPTH);
+        let core = Core::new(served(&chain, params, a[3].block_ref()), Arc::clone(&view), DEPTH);
         let prev = core.handle().load();
-        core.publish(served(&chain, params, a[6].at()), view);
+        core.publish(served(&chain, params, a[6].block_ref()), view);
         let next = core.handle().load();
         Self { a, s5, mined: TxId::from_bytes([0x66; 32]), chain, params, prev, next }
     }
@@ -352,9 +354,9 @@ fn served(
     chain: &Arc<VerifiedChain>,
     params: ChainParams,
     block: BlockRef,
-) -> Option<Arc<Indexed<DiskView>>> {
+) -> Option<Arc<NfsPublication<DiskView>>> {
     let none: [(IndexKind, DiskView); 0] = [];
-    Some(Arc::new(Indexed::fixed(Arc::clone(chain), block, params, none)))
+    Some(Arc::new(NfsPublication::fixed(Arc::clone(chain), block, params, none)))
 }
 
 fn copy(s: &GrpcSnapshot<DiskView>) -> GrpcSnapshot<DiskView> {
@@ -390,7 +392,7 @@ fn check_catches_a_best_off_the_chain() {
 #[should_panic(expected = "G3: finalized")]
 fn check_catches_a_finalized_tip_off_the_chain() {
     let d = Drill::new();
-    let tips = Tips { finalized_tip: Some(d.a[1].at()), ..d.next.tips };
+    let tips = Tips { finalized_tip: Some(d.a[1].block_ref()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
@@ -406,7 +408,7 @@ fn check_catches_holders_off_the_view() {
 #[should_panic(expected = "G3: served")]
 fn check_catches_a_served_tip_off_the_indexes() {
     let d = Drill::new();
-    let tips = Tips { served: Some(d.a[5].at()), ..d.next.tips };
+    let tips = Tips { served: Some(d.a[5].block_ref()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
@@ -414,7 +416,7 @@ fn check_catches_a_served_tip_off_the_indexes() {
 #[should_panic(expected = "G4: synced opens only at served = best")]
 fn check_catches_synced_opening_below_best() {
     let d = Drill::new();
-    check(&d.prev, &d.serving(d.a[5].at(), true), DEPTH);
+    check(&d.prev, &d.serving(d.a[5].block_ref(), true), DEPTH);
 }
 
 /// Boot race: validator 0's claim past best, its hash at best not polled yet
@@ -422,7 +424,7 @@ fn check_catches_synced_opening_below_best() {
 #[should_panic(expected = "no validator claiming past it")]
 fn check_catches_synced_opening_under_a_validator_claiming_past_best() {
     let d = Drill::new();
-    let mut planted = d.serving(d.a[6].at(), true);
+    let mut planted = d.serving(d.a[6].block_ref(), true);
     let view = view(&d.chain, &[]).ahead(0, 1, false);
     planted.tips.held_by = view.held_by();
     planted.view = Arc::new(view);
@@ -440,7 +442,7 @@ fn check_catches_synced_serving_a_side_branch() {
 #[should_panic(expected = "G4: synced stays within")]
 fn check_catches_synced_falling_behind_its_window() {
     let d = Drill::new();
-    check(&d.synced_prev(), &d.serving(d.a[2].at(), true), DEPTH);
+    check(&d.synced_prev(), &d.serving(d.a[2].block_ref(), true), DEPTH);
 }
 
 #[test]
@@ -472,8 +474,13 @@ fn check_catches_a_sealed_stored_epoch() {
 fn check_catches_an_epoch_carrying_a_tx_its_served_tip_mined() {
     let d = Drill::new();
     let none: [(IndexKind, DiskView); 0] = [];
-    let indexed =
-        Indexed::fixed_above(Arc::clone(&d.chain), d.a[5].at(), &d.a[6..], d.params, none);
+    let indexed = NfsPublication::fixed_above(
+        Arc::clone(&d.chain),
+        d.a[5].block_ref(),
+        &d.a[6..],
+        d.params,
+        none,
+    );
     let stale = view(&d.chain, &[(d.mined, Bytes::from_static(&[0x66]))]);
     let wake = watch::Sender::new(()).subscribe();
     let feed = Feed::open(stale.arrivals(None), HashSet::new(), wake);

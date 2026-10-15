@@ -43,7 +43,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
                 let mut write = Duration::ZERO;
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
-                        let mut changes = store.changes(block.at());
+                        let mut changes = store.changes(block.block_ref());
                         fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
                         write += apply(&mut store, changes);
                     }
@@ -144,10 +144,10 @@ mod tests {
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-        let mut genesis = store.changes(blocks[0].at());
+        let mut genesis = store.changes(blocks[0].block_ref());
         fold(&TransparentAddressReader::new(store.applied()), &blocks[0], &mut genesis);
         store.apply(genesis);
-        let mut changes = store.changes(blocks[1].at());
+        let mut changes = store.changes(blocks[1].block_ref());
         fold(&TransparentAddressReader::new(store.applied()), &blocks[1], &mut changes);
 
         let spender = TxId::from_bytes([0x20; 32]);
@@ -264,8 +264,9 @@ mod tests {
         });
         let blocks = chain.blocks(tip);
         let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
-        let reader =
-            |writer: &Writer<DiskView>| TransparentAddressReader::new(writer.handle().view());
+        let reader = |writer: &Writer<DiskView>| {
+            TransparentAddressReader::new(writer.handle().durable_view())
+        };
 
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[0])).await;
@@ -436,7 +437,7 @@ mod tests {
             writer.durable_at(stream.tip()).await;
 
             let held = stream.sent() as u32;
-            let reader = TransparentAddressReader::new(writer.handle().view());
+            let reader = TransparentAddressReader::new(writer.handle().durable_view());
             if held > 0 {
                 for tag in 0..3u8 {
                     let served = reader.transactions(&address(tag), h(0), h(held - 1));

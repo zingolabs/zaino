@@ -46,7 +46,7 @@ use zaino_primitives::types::{Block, HeaderBytes, Treestate};
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
   `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Announced`
   (a peer's block `inv`, its sender attached),
-  `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
+  `BlockRef`, `FinalityDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `MerkleRoot`,
   `HeaderBytes` and `TransactionLocation`, plus `CompactDifficulty` below.
   What a validator reports about itself (`BlockchainInfo`, `PeerInfo`, …) is

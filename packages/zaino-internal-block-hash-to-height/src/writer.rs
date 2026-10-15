@@ -42,7 +42,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
                 let mut write = Duration::ZERO;
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
-                        let mut changes = store.changes(block.at());
+                        let mut changes = store.changes(block.block_ref());
                         fold(&BlockHashReader::new(store.applied()), block, &mut changes);
                         write += apply(&mut store, changes);
                     }
@@ -104,7 +104,7 @@ mod tests {
 
         for (height, block) in (0u8..).zip(&blocks) {
             let hash = block.header().hash.0;
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             fold(&BlockHashReader::new(store.applied()), block, &mut changes);
             let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
             assert_eq!(rows, [(&hash[..], &[0, 0, 0, height][..])], "block {height}: hash → BE");
@@ -188,7 +188,7 @@ mod tests {
             let writer = start(store);
             writer.send(step(&blocks[count])).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = located(handle.view(), &blocks[count..=count]);
+            let next = located(handle.durable_view(), &blocks[count..=count]);
             assert_eq!(next, [Some(BlockHeight::from(count as u32))], "{label}: commits continue");
         }
     }

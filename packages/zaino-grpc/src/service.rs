@@ -3,9 +3,10 @@
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
 //! - one global [`GrpcSnapshot`](zaino_grpc_snapshot::GrpcSnapshot) per request or stream (G1),
-//!   pinned for its life: no height named = its served tip; a height named = `At::answers_through`
+//!   pinned for its life: no height named = its served tip; a height named =
+//!   `IndexesAtBlock::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
-//! - a row whose index `Routes::indexes` lacks = `UNIMPLEMENTED`, naming the index
+//! - a row whose index `RouteDeps::indexes` lacks = `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
 
 use std::{
@@ -162,7 +163,7 @@ impl Route {
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
 /// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`
-pub struct Routes<S: ChainDataSource, V> {
+pub struct RouteDeps<S: ChainDataSource, V> {
     pub grpc_snapshots: GrpcSnapshots<V>,
     pub submit: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
@@ -175,7 +176,7 @@ pub struct Routes<S: ChainDataSource, V> {
 /// Every method's answer before [`Routing::route`] (the listener serves health from bind on)
 pub(crate) const STARTING: &str = "starting: not routed yet";
 
-/// Routes + what every request shares, one `Arc` (a request clones one pointer)
+/// [`RouteDeps`] + what every request shares, one `Arc` (a request clones one pointer)
 ///
 /// - `routed` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
@@ -186,9 +187,9 @@ struct Wired<S: ChainDataSource, V> {
     silent_timeout: Duration,
 }
 
-/// [`Routes`] + each row's unconfigured index, fixed at [`Routing::route`] (`None` = served)
+/// [`RouteDeps`] + each row's unconfigured index, fixed at [`Routing::route`] (`None` = served)
 struct Routed<S: ChainDataSource, V> {
-    routes: Routes<S, V>,
+    routes: RouteDeps<S, V>,
     disabled_by: [Option<IndexKind>; ROUTES.len()],
 }
 
@@ -213,7 +214,7 @@ impl<S: ChainDataSource, V: PinnedView> Dispatch<S, V> {
     }
 }
 
-/// Sets a server's [`Routes`] once they exist (a server binds + answers health before its owner
+/// Sets a server's [`RouteDeps`] once they exist (a server binds + answers health before its owner
 /// has a chain to route to)
 pub struct Routing<S: ChainDataSource, V>(Arc<Wired<S, V>>);
 
@@ -225,7 +226,7 @@ impl<S: ChainDataSource, V> Clone for Routing<S, V> {
 
 impl<S: ChainDataSource, V> Routing<S, V> {
     /// Every method answered from `routes` from here on; once per server (twice = a bug, panics)
-    pub fn route(&self, routes: Routes<S, V>) {
+    pub fn route(&self, routes: RouteDeps<S, V>) {
         let disabled_by = ROUTES.map(|row| row.index.filter(|kind| !routes.indexes.contains(kind)));
         let routed = Routed { routes, disabled_by };
         assert!(self.0.routed.set(routed).is_ok(), "gRPC server routed twice");
@@ -375,7 +376,7 @@ mod tests {
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, MockChain};
 
-    use super::{Method, Routes, ROUTES};
+    use super::{Method, RouteDeps, ROUTES};
     use crate::testing::{
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, grpc_snapshots_held,
         indexed, request_at, routes, MAINNET,
@@ -402,7 +403,7 @@ mod tests {
         use tower::Service as _;
         use Method::*;
 
-        let mut router = dispatch(Routes { indexes: vec![IndexKind::TreeState], ..routes() });
+        let mut router = dispatch(RouteDeps { indexes: vec![IndexKind::TreeState], ..routes() });
         let syncing = || (Unavailable, "the indexes are syncing: nothing served yet".to_owned());
         let off = |method: Method, index: &str| {
             let method = method.route().name;
@@ -463,7 +464,7 @@ mod tests {
         let two = chain.at(h(2));
         let grpc_snapshots =
             grpc_snapshots_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
-        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
+        let mut router = dispatch(RouteDeps { grpc_snapshots, ..routes() });
         let mut call = |method: Method, message: Vec<u8>| {
             let response = router.call(framed_request(method, message.into()));
             async move {
@@ -563,7 +564,7 @@ mod tests {
         let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
         let views = kinds.into_iter().map(|kind| indexed(kind, &chain, tip)).collect();
         let mut router =
-            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
+            dispatch(RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
         let range = service::BlockRange {

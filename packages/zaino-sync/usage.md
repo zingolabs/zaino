@@ -39,7 +39,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
             store = blocking(move || {
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
-                        let mut changes = store.changes(block.at());
+                        let mut changes = store.changes(block.block_ref());
                         fold(&MyReader::new(store.applied()), block, &mut changes);
                         apply(&mut store, changes);     // full buffer = the store commits
                     }
@@ -60,7 +60,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 ## `FinalizedFollower`
 
-- `new(chain, balancer, lookahead)`; `subscribe(kind, handle.view().tip(), queue)` per index;
+- `new(chain, balancer, lookahead)`; `subscribe(kind, handle.durable_view().tip(), queue)` per index;
   `progress()`; `run(cancel)`.
 - Streams `lowest durable + 1 ..= finalized tip`, `lookahead` blocks in flight, delivered in order;
   waits for the next chain past the finalized tip.
@@ -85,7 +85,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 ## `IndexHandle`
 
-What the rest of the daemon knows about one index: `view()` (durable view),
+What the rest of the daemon knows about one index: `durable_view()`,
 `durable_height()` (its tip), `applied_height()` (last block folded into the store, durable or
 not), `changed()` (after each commit; `false` = writer gone).
 

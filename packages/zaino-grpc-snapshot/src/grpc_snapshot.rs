@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet};
 use zaino_header_chain::VerifiedChain;
-use zaino_nfs::{At, Indexed};
+use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
 use zaino_traffic::Health;
@@ -81,7 +81,7 @@ impl Down {
 pub struct GrpcSnapshot<V> {
     pub(crate) seq: u64,
     pub(crate) tips: Tips,
-    pub(crate) indexed: Option<Arc<Indexed<V>>>,
+    pub(crate) indexed: Option<Arc<NfsPublication<V>>>,
     pub(crate) view: Arc<ChainViewSnapshot>,
     pub(crate) feed: Feed,
 }
@@ -101,7 +101,7 @@ impl<V> GrpcSnapshot<V> {
     }
 
     /// Index state at the served tip (block, tree-state and transparent routes)
-    pub fn served(&self) -> Result<&At<V>, Unavailable> {
+    pub fn served(&self) -> Result<&IndexesAtBlock<V>, Unavailable> {
         let indexed = self.indexed.as_deref().ok_or(Unavailable::NothingServed)?;
         Ok(indexed.served())
     }
@@ -137,12 +137,12 @@ impl<V> GrpcSnapshot<V> {
     }
 
     /// Validator facts, alarms, the mempool's spread
-    pub fn view(&self) -> &ChainViewSnapshot {
+    pub fn chain_view(&self) -> &ChainViewSnapshot {
         &self.view
     }
 
     /// Memo identity: a new `Arc` per NFS publish
-    pub fn indexed(&self) -> Option<&Arc<Indexed<V>>> {
+    pub fn indexed(&self) -> Option<&Arc<NfsPublication<V>>> {
         self.indexed.as_ref()
     }
 
@@ -194,8 +194,8 @@ impl<V> GrpcSnapshot<V> {
 }
 
 impl<V: View> GrpcSnapshot<V> {
-    /// Index state as of any folded block or the NFS root ([`Indexed::at`])
-    pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
+    /// Index state as of any folded block or the NFS root ([`NfsPublication::at`])
+    pub fn at(&self, hash: &BlockHash) -> Option<IndexesAtBlock<V>> {
         self.indexed.as_ref()?.at(hash)
     }
 }

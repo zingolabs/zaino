@@ -3,15 +3,15 @@
 use crate::grpc_snapshot::Tips;
 use zaino_chainview::ChainViewSnapshot;
 use zaino_header_chain::VerifiedChain;
-use zaino_nfs::Indexed;
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_nfs::NfsPublication;
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 
 /// Pure (no I/O, no clock); `was_synced` = the last publish's (hysteresis)
 pub(crate) fn compose<V>(
     was_synced: bool,
-    indexed: Option<&Indexed<V>>,
+    indexed: Option<&NfsPublication<V>>,
     view: &ChainViewSnapshot,
-    depth: ReorgDepth,
+    depth: FinalityDepth,
 ) -> Tips {
     let chain = view.chain().map(|chain| &**chain);
     let served = indexed.map(|indexed| indexed.served().tip());
@@ -32,7 +32,7 @@ fn synced(
     was: bool,
     served: Option<BlockRef>,
     chain: &VerifiedChain,
-    depth: ReorgDepth,
+    depth: FinalityDepth,
     ahead: bool,
 ) -> bool {
     let Some(served) = served else { return false };
@@ -52,7 +52,7 @@ fn synced(
 pub(crate) fn check<V>(
     prev: &crate::GrpcSnapshot<V>,
     next: &crate::GrpcSnapshot<V>,
-    depth: ReorgDepth,
+    depth: FinalityDepth,
 ) {
     use crate::feed::above_durable_txids;
 
@@ -98,8 +98,8 @@ pub(crate) fn check<V>(
 pub(crate) fn mempool_read<V>(grpc_snapshot: &crate::GrpcSnapshot<V>) -> bool {
     use zaino_traffic::Health;
 
-    let trusted_validators = grpc_snapshot.view().trusted_validators();
+    let trusted_validators = grpc_snapshot.chain_view().trusted_validators();
     let live =
         |at: usize| trusted_validators.get(at).is_some_and(|meta| meta.health == Health::Live);
-    grpc_snapshot.tips().held_by.positions().any(live) || grpc_snapshot.view().peers_quorate()
+    grpc_snapshot.tips().held_by.positions().any(live) || grpc_snapshot.chain_view().peers_quorate()
 }

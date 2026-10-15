@@ -16,8 +16,8 @@ use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainViewSnapshot, ChainViewSubscriber};
-use zaino_nfs::{Indexed, Published};
-use zaino_primitives::types::ReorgDepth;
+use zaino_nfs::{NfsPublication, Published};
+use zaino_primitives::types::FinalityDepth;
 
 use crate::compose::compose;
 use crate::feed::{above_durable_txids, Feed};
@@ -58,14 +58,14 @@ impl<V> GrpcSnapshots<V> {
     /// One snapshot for good, no publisher (consumers' tests)
     ///
     /// - never republished: `changed()` errs, a tail ends after its opening
-    pub fn fixed(indexed: Option<Arc<Indexed<V>>>, view: Arc<ChainViewSnapshot>) -> Self {
-        Core::new(indexed, view, ReorgDepth::CONSENSUS).handle()
+    pub fn fixed(indexed: Option<Arc<NfsPublication<V>>>, view: Arc<ChainViewSnapshot>) -> Self {
+        Core::new(indexed, view, FinalityDepth::CONSENSUS).handle()
     }
 }
 
 /// One writer: the stored snapshot + the tails' wake
 pub(crate) struct Core<V> {
-    depth: ReorgDepth,
+    depth: FinalityDepth,
     current: Arc<ArcSwap<GrpcSnapshot<V>>>,
     changed: watch::Sender<()>,
     wake: watch::Sender<()>,
@@ -74,9 +74,9 @@ pub(crate) struct Core<V> {
 impl<V> Core<V> {
     /// Seq 0 from the inputs' current values (nothing synced yet)
     pub(crate) fn new(
-        indexed: Option<Arc<Indexed<V>>>,
+        indexed: Option<Arc<NfsPublication<V>>>,
         view: Arc<ChainViewSnapshot>,
-        depth: ReorgDepth,
+        depth: FinalityDepth,
     ) -> Self {
         let wake = watch::Sender::new(());
         let tips = compose(false, indexed.as_deref(), &view, depth);
@@ -92,7 +92,11 @@ impl<V> Core<V> {
     }
 
     /// One publish: open → store → seal (G5), then wake readers and tails
-    pub(crate) fn publish(&self, indexed: Option<Arc<Indexed<V>>>, view: Arc<ChainViewSnapshot>) {
+    pub(crate) fn publish(
+        &self,
+        indexed: Option<Arc<NfsPublication<V>>>,
+        view: Arc<ChainViewSnapshot>,
+    ) {
         let prev = self.current.load_full();
         let tips = compose(prev.tips.synced, indexed.as_deref(), &view, self.depth);
         let moved = tips.served != prev.tips.served;
@@ -130,7 +134,7 @@ pub struct Publisher<V> {
 impl<V> Publisher<V> {
     /// - `depth` = the header chain's reorg depth (`synced` closes past it)
     /// - stores seq 0 at once
-    pub fn new(mut indexed: Published<V>, view: ChainViewSubscriber, depth: ReorgDepth) -> Self {
+    pub fn new(mut indexed: Published<V>, view: ChainViewSubscriber, depth: FinalityDepth) -> Self {
         let mut published = view.subscribe_published();
         published.borrow_and_update();
         let latest = indexed.borrow_and_update().clone();

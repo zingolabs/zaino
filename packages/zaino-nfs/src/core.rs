@@ -138,7 +138,7 @@ impl<F> NfsCore<F> {
 
     /// A wanted body → ready; any other (abandoned while in flight) dropped
     fn body(&mut self, body: Checked) {
-        let at = body.at();
+        let at = body.block_ref();
         if self.wanted.get(&at.height) == Some(&at.hash) {
             self.wanted.remove(&at.height);
             self.ready.insert(at.height, Arc::clone(body.block()));

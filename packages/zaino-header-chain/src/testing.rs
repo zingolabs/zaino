@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::testing::{encode_header, MockChain, Work};
-use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::{decode_header, HeaderChain, Params, Rejected, VerifiedChain};
@@ -13,7 +13,7 @@ pub trait HeaderViews {
     /// Rules `validate` runs this chain's headers under (Blossom / NU7 at its schedule's heights)
     fn header_params(&self) -> Params;
     /// Anchored at genesis (its finalized tip), nothing above
-    fn header_chain(&self, depth: ReorgDepth) -> HeaderChain;
+    fn header_chain(&self, depth: FinalityDepth) -> HeaderChain;
     /// Genesis ..= `tip`, finalized at genesis
     fn verified(&self, tip: BlockRef) -> VerifiedChain;
     /// Genesis ..= `tip`, finalized through `finalized_at` (< `tip`)
@@ -30,7 +30,7 @@ impl HeaderViews for MockChain {
         }
     }
 
-    fn header_chain(&self, depth: ReorgDepth) -> HeaderChain {
+    fn header_chain(&self, depth: FinalityDepth) -> HeaderChain {
         let mut chain = HeaderChain::new(depth);
         let genesis = decode_header(&self.header_bytes(self.genesis().hash));
         chain.anchor(&genesis.expect("MockChain headers decode"), H0);
@@ -38,7 +38,7 @@ impl HeaderViews for MockChain {
     }
 
     fn verified(&self, tip: BlockRef) -> VerifiedChain {
-        let mut chain = self.header_chain(ReorgDepth::CONSENSUS);
+        let mut chain = self.header_chain(FinalityDepth::CONSENSUS);
         insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");
         chain.verified().expect("anchored")
     }
@@ -46,7 +46,8 @@ impl HeaderViews for MockChain {
     fn verified_finalized(&self, tip: BlockRef, finalized_at: BlockHeight) -> VerifiedChain {
         let deep =
             u32::from(tip.height).checked_sub(u32::from(finalized_at)).and_then(NonZeroU32::new);
-        let mut chain = self.header_chain(ReorgDepth::new(deep.expect("finalized_at below tip")));
+        let mut chain =
+            self.header_chain(FinalityDepth::new(deep.expect("finalized_at below tip")));
         insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");
         chain.finalize(chain.finalizable().expect("tip = finalized_at + depth"));
         chain.verified().expect("anchored")
@@ -91,7 +92,7 @@ mod tests {
         assert_eq!(pinned.hash_at(h(5)), Some(chain.at(h(5)).hash));
 
         let retreat = chain.fork(h(10)).outweigh().mine_empty(1).tip();
-        let mut headers = chain.header_chain(ReorgDepth::CONSENSUS);
+        let mut headers = chain.header_chain(FinalityDepth::CONSENSUS);
         insert(&mut headers, &chain.blocks(twelve)).expect("trunk links");
         let heavier = decode_header(&chain.header_bytes(retreat.hash)).expect("decodes");
         assert_eq!(headers.insert(&heavier), Ok(Inserted::Best { reorg: true }));
@@ -133,7 +134,7 @@ mod tests {
                 true => MockChain::regtest().varied_work(),
                 false => MockChain::regtest(),
             };
-            let mut headers = chain.header_chain(ReorgDepth::CONSENSUS);
+            let mut headers = chain.header_chain(FinalityDepth::CONSENSUS);
             let mut inserted: HashSet<BlockHash> = HashSet::from([chain.genesis().hash]);
             let mut tips = vec![chain.genesis()];
             for shape in shapes {

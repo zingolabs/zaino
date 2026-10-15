@@ -51,7 +51,7 @@ pub(crate) struct Sources {
 /// Closed set; first match: held, not booted, runtime stalled, the `GrpcSnapshot`'s [`Standing`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum State {
+pub(crate) enum DaemonState {
     Provisioning,
     Syncing,
     Serving,
@@ -83,7 +83,7 @@ enum Unit {
 ///   `notes` = raised alarms
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Readiness {
-    state: State,
+    state: DaemonState,
     progress: Option<Progress>,
     detail: Option<&'static str>,
     notes: Vec<String>,
@@ -92,7 +92,7 @@ pub(crate) struct Readiness {
 impl Readiness {
     /// Serving, or degraded (serving a peer-verified tip no trusted validator vouches for)
     pub(crate) fn ready(&self) -> bool {
-        matches!(self.state, State::Serving | State::Degraded)
+        matches!(self.state, DaemonState::Serving | DaemonState::Degraded)
     }
 }
 
@@ -142,25 +142,27 @@ fn readiness(held: bool, live: bool, stage: Stage) -> Readiness {
             Stage::Booted(booted) => booted.notes,
             Stage::Starting { .. } => Vec::new(),
         };
-        return at(State::Held, None, None, notes);
+        return at(DaemonState::Held, None, None, notes);
     }
     match (live, stage) {
         (false, Stage::Booted(booted)) => {
-            at(State::Down, None, Some(RUNTIME_STALLED), booted.notes)
+            at(DaemonState::Down, None, Some(RUNTIME_STALLED), booted.notes)
         }
         (_, Stage::Starting { awaiting_validator: true, .. }) => {
-            at(State::Down, None, Some(Down::NoValidatorReachable.detail()), Vec::new())
+            at(DaemonState::Down, None, Some(Down::NoValidatorReachable.detail()), Vec::new())
         }
         (_, Stage::Starting { bootstrap, .. }) => {
-            at(State::Provisioning, bootstrap, None, Vec::new())
+            at(DaemonState::Provisioning, bootstrap, None, Vec::new())
         }
         (true, Stage::Booted(booted)) if booted.overloaded => {
-            at(State::Down, None, Some(OVERLOADED), booted.notes)
+            at(DaemonState::Down, None, Some(OVERLOADED), booted.notes)
         }
         (true, Stage::Booted(booted)) => match booted.standing {
-            Standing::Down(down) => at(State::Down, None, Some(down.detail()), booted.notes),
-            Standing::Degraded(why) => at(State::Degraded, None, Some(why.detail()), booted.notes),
-            Standing::Serving => at(State::Serving, None, None, booted.notes),
+            Standing::Down(down) => at(DaemonState::Down, None, Some(down.detail()), booted.notes),
+            Standing::Degraded(why) => {
+                at(DaemonState::Degraded, None, Some(why.detail()), booted.notes)
+            }
+            Standing::Serving => at(DaemonState::Serving, None, None, booted.notes),
             Standing::Syncing => {
                 let progress = booted.target.map(|total| Progress {
                     done: u64::from(booted.done.unwrap_or(0)),
@@ -168,7 +170,7 @@ fn readiness(held: bool, live: bool, stage: Stage) -> Readiness {
                     unit: Unit::Block,
                     rate: booted.rate,
                 });
-                at(State::Syncing, progress, None, booted.notes)
+                at(DaemonState::Syncing, progress, None, booted.notes)
             }
         },
     }
@@ -265,7 +267,7 @@ impl DaemonStatus {
     /// Booted: handed + served heights + every index's durable one; before: bootstrap phase + bytes
     pub(crate) fn startup(&self) -> Startup {
         let readiness = self.current_readiness();
-        let started = readiness.ready() || readiness.state == State::Held;
+        let started = readiness.ready() || readiness.state == DaemonState::Held;
         let Some(sources) = self.sources.get() else {
             return Startup { started, progress: self.bootstrap_progress() };
         };
@@ -404,7 +406,7 @@ struct Chain {
 impl Chain {
     fn of(sources: &Sources, grpc_snapshot: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
         let tips = grpc_snapshot.tips();
-        let trusted_validators = grpc_snapshot.view().trusted_validators();
+        let trusted_validators = grpc_snapshot.chain_view().trusted_validators();
         let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
@@ -631,11 +633,11 @@ mod tests {
             let readiness = readiness(false, live, stage);
             let state = readiness.state;
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            let serving = matches!(state, State::Serving | State::Degraded);
+            let serving = matches!(state, DaemonState::Serving | DaemonState::Degraded);
             assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
-            let detailed = matches!(state, State::Down | State::Degraded);
+            let detailed = matches!(state, DaemonState::Down | DaemonState::Degraded);
             assert_eq!(readiness.detail.is_some(), detailed, "{case}: detail ⇔ down or degraded");
-            let progressing = matches!(state, State::Provisioning | State::Syncing);
+            let progressing = matches!(state, DaemonState::Provisioning | DaemonState::Syncing);
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
 

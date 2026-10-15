@@ -1,4 +1,4 @@
-//! Trusted validator telemetry: alarm conditions per fold, event histograms + counters
+//! Trusted validator telemetry: alarm conditions per merge, event histograms + counters
 //!
 //! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
 //! - State gauges + alarm edge logs = `zaino-grpc-snapshot`'s (at scrape, per publish)
@@ -62,7 +62,7 @@ pub fn describe_metrics() {
     );
 }
 
-/// Raised conditions as of one fold (`zaino-grpc-snapshot` logs each edge)
+/// Raised conditions as of one merge (`zaino-grpc-snapshot` logs each edge)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Alarms {
     stale: TrustedValidatorSet,

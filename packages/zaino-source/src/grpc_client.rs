@@ -62,7 +62,7 @@ impl ZebraIndexerGrpcClient {
     ///
     /// - connections = `max_connections` streams at zebrad's 20 per connection; each opens on its
     ///   first call (inside a tokio runtime)
-    pub fn at(
+    pub fn new(
         rpc: ZcashLegacyRpcClient,
         zebra_indexer_address: &str,
         tls: Option<&ZebraIndexerTls>,

@@ -100,7 +100,7 @@ impl ValidatorViews for MockChain {
     }
 
     fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
-        assert_eq!(self.block(tip.hash).at(), tip, "tip held at its height");
+        assert_eq!(self.block(tip.hash).block_ref(), tip, "tip held at its height");
         let upgrades = &self.schedule().upgrades;
         let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {
             Some((upgrade.branch_id(), upgrades.activation_height(upgrade)?))

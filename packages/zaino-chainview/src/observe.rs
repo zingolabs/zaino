@@ -1,7 +1,7 @@
-//! Each trusted validator's polls (the balancer's [`Observation`]s) folded into the view
+//! Each trusted validator's polls (the balancer's [`Observation`]s) merged into the view
 //!
 //! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
-//! - Reading (claim, `getblockhash`) folded first, then the listing (holder facts never wait on
+//! - Reading (claim, `getblockhash`) merged first, then the listing (holder facts never wait on
 //!   bytes)
 //! - Bytes = only what the view lacks, through `bytes(..)` with this validator preferred
 //! - A transaction leaves a validator's listing one way: unlisted (mined or evicted); a new tip
@@ -25,22 +25,22 @@ use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::CATCHING_UP_WARN_INTERVAL;
-use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
+use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 
-/// Folds every trusted validator's observations into the view; spawn [`run`](Self::run)
-pub struct ObservationFold<S> {
+/// Merges every trusted validator's observations into the view; spawn [`run`](Self::run)
+pub struct ObservationMerge<S> {
     pub(crate) core: Arc<ChainViewCore>,
     pub(crate) balancer: TrafficBalancer<S>,
     pub(crate) addresses: Vec<String>,
 }
 
-impl<S: ChainDataSource> ObservationFold<S> {
+impl<S: ChainDataSource> ObservationMerge<S> {
     /// Until `cancel`: each validator's latest poll, as it lands (validators independent)
     pub async fn run(self, cancel: CancellationToken) {
         let followers = self.addresses.iter().enumerate().map(|(index, address)| {
             let validator =
                 TrustedValidatorId::new(index).expect("configured below TrustedValidatorId::MAX");
-            let folding = ValidatorFollower {
+            let merging = ValidatorFollower {
                 validator,
                 address,
                 core: &self.core,
@@ -49,13 +49,13 @@ impl<S: ChainDataSource> ObservationFold<S> {
                 health: Health::Pending,
                 catching_up_warned: None,
             };
-            folding.follow()
+            merging.follow()
         });
         cancel.run_until_cancelled(join_all(followers)).await;
     }
 }
 
-/// `listed` = its last listing as admitted (the diff's left side); `health` = as last folded
+/// `listed` = its last listing as admitted (the diff's left side); `health` = as last merged
 struct ValidatorFollower<'a, S> {
     validator: TrustedValidatorId,
     address: &'a str,
@@ -69,17 +69,17 @@ struct ValidatorFollower<'a, S> {
 impl<S: ChainDataSource> ValidatorFollower<'_, S> {
     async fn follow(mut self) {
         let mut observations = self.balancer.observe(self.validator);
-        // a poll landed before this subscribed: folded too
+        // a poll landed before this subscribed: merged too
         observations.mark_changed();
         while observations.changed().await.is_ok() {
             let observation = observations.borrow_and_update().clone();
             if let Some(observation) = observation {
-                self.fold(&observation).await;
+                self.merge(&observation).await;
             }
         }
     }
 
-    async fn fold(&mut self, observation: &Observation) {
+    async fn merge(&mut self, observation: &Observation) {
         let polled = match &observation.polled {
             Ok(polled) => polled,
             Err(cause) => return self.failed(cause, observation.health),
@@ -88,7 +88,8 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         let (peers, release) = self.metadata(metadata.as_ref());
         let held = self.held(observation.asked, held);
         let streaming = observation.streaming;
-        let reading = Reading { held, info: info.clone(), peers, release, streaming };
+        let reading =
+            Reading { block_at_best: held, info: info.clone(), peers, release, streaming };
         let health = observation.health;
         match listing {
             Ok(listing) => {
@@ -105,7 +106,7 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         }
     }
 
-    /// Mempool read (its reading already folded): the diff, bytes for what the view lacks, one
+    /// Mempool read (its reading already merged): the diff, bytes for what the view lacks, one
     /// report
     async fn listed(&mut self, listing: &[MempoolListed]) {
         let listing: BTreeMap<TxId, MempoolListed> =

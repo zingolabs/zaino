@@ -431,14 +431,14 @@ mod tests {
         let hear =
             |seeds: &[usize]| seeds.iter().for_each(|seed| node.hear(&chain, seeded[seed - 1]));
         node.reachable(&Port::ALL, false);
-        let (mut routes, balancing, fold) = routes_over(&node);
+        let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let (view, grpc_snapshots) = (Arc::clone(&routes.submit), routes.grpc_snapshots.clone());
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
-        tokio::spawn(fold.run(cancel.child_token()));
+        tokio::spawn(merge.run(cancel.child_token()));
         let mut router = dispatch(routes);
         // the header chain's verdict + the NFS's served tip, standing in for both
         let verified = |tip: BlockRef| view.set_verified(Some(chain.verified(tip)));
@@ -594,13 +594,13 @@ mod tests {
             chain.submit((tx.clone(), raw.clone()));
             node.hear(&chain, tx.txid);
         }
-        let (mut routes, balancing, fold) = routes_over(&node);
+        let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);
         let (reader, grpc_snapshots) = (routes.submit.subscriber(), routes.grpc_snapshots.clone());
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
-        tokio::spawn(fold.run(cancel.child_token()));
+        tokio::spawn(merge.run(cancel.child_token()));
         routes.submit.set_verified(Some(chain.verified(tip)));
         let mut router = dispatch(routes);
         let three = || grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);

@@ -10,7 +10,7 @@ request goes through one `zaino_traffic::TrafficBalancer`.
 use zaino_chainview::{ChainView, SubmitPolicy};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::types::ReorgDepth;
+use zaino_primitives::types::FinalityDepth;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
@@ -20,15 +20,15 @@ use zcash_protocol::consensus::NetworkType;
 // a transaction must be signed for at the next block; regtest's = its validator's)
 let addresses = vec!["127.0.0.1:8232".to_owned()];
 let schedule = compiled_schedule(NetworkType::Main).ok_or("mainnet compiled in")?;
-let view = ChainView::new(addresses, balancer, ReorgDepth::CONSENSUS, schedule, shutdown.child_token())?;
+let view = ChainView::new(addresses, balancer, FinalityDepth::CONSENSUS, schedule, shutdown.child_token())?;
 let view = view.with_submit_policy(SubmitPolicy::default());
-// the tip comes only from header sync, the polls from the fold (the balancer's driver runs
+// the tip comes only from header sync, the polls from the merge (the balancer's driver runs
 // beside them)
 let headers = view.header_sync(chain);
-let fold = view.observation_fold();
+let merge = view.observation_merge();
 // each: `tokio::spawn(x.run(cancel.child_token()))`
 // `view.submit(raw)` submits; `view.subscriber()` = the read handle
-let _ = (view, headers, fold);
+let _ = (view, headers, merge);
 # Ok(())
 # }
 ```
@@ -36,9 +36,9 @@ let _ = (view, headers, fold);
 ## In `zainod`
 
 zainod spawns the balancer's driver first, builds the view once the upgrade schedule is known
-(regtest's = the first answered poll), then spawns header sync, the observation fold, each push
+(regtest's = the first answered poll), then spawns header sync, the observation merge, each push
 stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and with `[p2p]` on
-`peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `Routes.submit` holds the view for
+`peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `RouteDeps.submit` holds the view for
 `SendTransaction`; every read goes through `zaino-grpc-snapshot`.
 
 ## Membership
@@ -53,14 +53,14 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 
 ```text
 HeaderSync             trusted headers(Pinned) + peer headers(Peers) → HeaderChain → VerifiedChain
-ObservationFold        each member's poll (TrafficBalancer::observe): claim + getblockhash first,
+ObservationMerge       each trusted validator's poll (TrafficBalancer::observe): claim + getblockhash first,
       │                then the listing diff (bytes(..) fetched between)
 PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer finality)
-ChainViewCore          folds all of it into one ChainViewSnapshot via ArcSwap
+ChainViewCore          merges all of it into one ChainViewSnapshot via ArcSwap
 ChainViewSubscriber    readers pin one `ChainViewSnapshot` per request
 ```
 
-The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferred. Each
+The merge is `O(change)`. Raw bytes are fetched once per txid, the lister preferred. Each
 `MempoolEntry` carries a `Projection` (the serving layer's encoding), rendered once
 (`get_or_render`); a fee arriving for an unpriced entry starts a fresh one.
 
@@ -77,7 +77,7 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
   vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
   other refusal → `report`.
-- **Vouches** after every poll fold: each answering validator's claim and its held `getblockhash`
+- **Vouches** after every poll merge: each answering validator's claim and its held `getblockhash`
   answer.
 - **Stall** (fetch failed, retreated, malformed, empty, refused, or a fully read branch still not
   holding the claim): that validator alone backs off 5 s. A trusted run orphaned at or below the
@@ -90,7 +90,7 @@ The fold is `O(change)`. Raw bytes are fetched once per txid, the lister preferr
 Cheap to clone; cannot drive polling or submit.
 
 - `current()` → `Arc<ChainViewSnapshot>`: pin once per request.
-- `subscribe_published()` → `watch::Receiver<()>`, changed on every publish (stored in fold order).
+- `subscribe_published()` → `watch::Receiver<()>`, changed on every publish (stored in merge order).
 
 `ChainViewSnapshot`:
 
@@ -120,7 +120,7 @@ height), push-stream state, `blocks_to_end_of_service()`. Latency and failures a
 `Diverged` (none of these: telemetry, never an error), `Unknown` (nothing verified, or last poll
 failed).
 
-## Validator states in the fold
+## Validator states in the merge
 
 | Poll result | Health | Claim | Sightings |
 |---|---|---|---|
@@ -175,7 +175,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 ## Ports
 
-- Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view folds
+- Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view merges
   their polls (`observe`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`; header sync
   asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
@@ -191,7 +191,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 - `UnspentOutputs::values(outpoints)`: the transparent UTXO set at the served tip (`None` = none
   yet).
-- `ChainView::peer_watch()` → `PeerWatch`: folds block `inv`s every 250 ms.
+- `ChainView::peer_watch()` → `PeerWatch`: merges block `inv`s every 250 ms.
 
 ## Telemetry
 
@@ -206,7 +206,7 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 | `submission_attempts` | histogram | `outcome` |
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
-`alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per fold
+`alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
 (definitions: [architecture §11](../../docs/architecture.md#11-telemetry)). Constants:
 `STALE_TIP_BLOCKS` = 24, `END_OF_SERVICE_WARN_BLOCKS` = 8,064, `ECLIPSE_OUTBOUND_MAX` = 2,
 `FINALITY_STALL` = 60 s.

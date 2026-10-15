@@ -1,4 +1,5 @@
-//! Typed reads over any `SequenceRead` view (an `Indexed`'s layered view, the durable store alike)
+//! Typed reads over any `SequenceRead` view (an `NfsPublication`'s layered view, the durable store
+//! alike)
 //!
 //! - one reader = one pinned state: a commit or reorg landing mid-stream cannot move it
 //! - clone = the view's clone (pointer copies)

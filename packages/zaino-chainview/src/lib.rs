@@ -5,11 +5,11 @@ mod admission;
 mod chain_view_snapshot;
 mod config;
 mod error;
-mod fold;
 mod headers;
 mod listings;
 #[cfg(test)]
 mod mempool_model;
+mod merge;
 mod netgroup;
 mod observe;
 mod peer_mempool;
@@ -32,7 +32,7 @@ pub use chain_view_snapshot::{
 };
 pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
-pub use observe::ObservationFold;
+pub use observe::ObservationMerge;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
 pub use ports::{PeerSource, UnspentOutputs};

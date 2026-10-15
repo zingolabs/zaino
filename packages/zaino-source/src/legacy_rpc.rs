@@ -30,7 +30,7 @@ pub struct ZcashLegacyRpcClient {
 impl ZcashLegacyRpcClient {
     /// Validator at `address` (`host:port`), unprobed (down at boot = the first call's failure +
     /// the caller's retry, never a boot failure)
-    pub fn at(
+    pub fn new(
         address: &str,
         cookie_path: Option<&Path>,
         user: Option<String>,

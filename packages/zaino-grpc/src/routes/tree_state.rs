@@ -1,5 +1,6 @@
 //! Tree-state methods (framed once per NFS publish): `GetTreeState` at heights `<=`
-//! [`At::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the served tip
+//! [`IndexesAtBlock::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the served
+//! tip
 
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
-use zaino_nfs::{At, Indexed};
+use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::{IndexKind, OverlayView, PinnedView};
 use zaino_primitives::types::{CommitmentTreeBytes, SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
@@ -23,14 +24,15 @@ use crate::wire::{self, streamed_response, unary_response};
 /// Framed answers per NFS publish: the layer heights every synced wallet asks (the tip among
 /// them), and each pool's root list as of the tip (sliced per request)
 ///
-/// - keyed on the `Indexed` publish, not the `GrpcSnapshot` (that one moves per chain-view fold)
+/// - keyed on the `NfsPublication` publish, not the `GrpcSnapshot` (that one moves per chain-view
+///   fold)
 pub(crate) struct Memos<V> {
     states: Memo<V, BlockHeight, Result<Bytes, Status>>,
     roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
 /// One answer kind, keyed by `K`, per NFS publish
-type Memo<V, K, T> = PerView<Indexed<V>, K, T>;
+type Memo<V, K, T> = PerView<NfsPublication<V>, K, T>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {
@@ -40,14 +42,14 @@ impl<V> Default for Memos<V> {
 
 /// Everything one tree-state request is answered with (`trees` = `indexed`'s served tip's)
 pub(crate) struct Answering<V> {
-    pub(crate) indexed: Arc<Indexed<V>>,
+    pub(crate) indexed: Arc<NfsPublication<V>>,
     pub(crate) trees: TreeStateReader<OverlayView<V>>,
     pub(crate) reads: ReadLanes,
     pub(crate) memos: Arc<Memos<V>>,
 }
 
 impl<V: PinnedView> Answering<V> {
-    fn served(&self) -> &At<V> {
+    fn served(&self) -> &IndexesAtBlock<V> {
         self.indexed.served()
     }
 
@@ -281,7 +283,7 @@ mod tests {
     use zcash_protocol::local_consensus::LocalNetwork;
     use zcash_protocol::BlockHash;
 
-    use crate::service::{Method, Routes};
+    use crate::service::{Method, RouteDeps};
     use crate::testing::{
         decode_frames, dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET,
     };
@@ -336,7 +338,7 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.sapling_output(1)));
         let genesis = chain.genesis();
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees]),
             ..routes()
         });
@@ -393,7 +395,7 @@ mod tests {
         }
         let tip = chain.tip();
         let trees = indexed(IndexKind::TreeState, &chain, tip);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, tip, vec![trees]),
             ..routes()
         });
@@ -453,7 +455,7 @@ mod tests {
         let block = chain.block(genesis.hash);
         let hash = genesis.hash.0;
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees.clone()]),
             ..routes()
         });
@@ -520,7 +522,10 @@ mod tests {
         let located_by = |locator: &MockChain| {
             let views =
                 vec![trees.clone(), indexed(IndexKind::BlockHash, locator, locator.genesis())];
-            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() })
+            dispatch(RouteDeps {
+                grpc_snapshots: grpc_snapshots(&chain, genesis, views),
+                ..routes()
+            })
         };
         let mut linked = located_by(&chain);
         let response = linked.call(by_hash(hash)).await.expect("answers");

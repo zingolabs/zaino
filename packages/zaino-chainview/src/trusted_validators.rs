@@ -108,7 +108,7 @@ impl Agreement {
 
 /// One configured validator as of its last poll (`peers` = telemetry only, never gates serving)
 ///
-/// - `held` = last `getblockhash` answer, at the best its poll started under
+/// - `block_at_best` = last `getblockhash` answer, at the best its poll started under
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrustedValidatorMeta {
     pub address: String,
@@ -119,7 +119,7 @@ pub struct TrustedValidatorMeta {
     pub release: Option<NodeRelease>,
     pub streaming: bool,
     pub(crate) info: Option<BlockchainInfo>,
-    pub(crate) held: Option<BlockRef>,
+    pub(crate) block_at_best: Option<BlockRef>,
 }
 
 impl TrustedValidatorMeta {
@@ -133,11 +133,11 @@ impl TrustedValidatorMeta {
             release: None,
             streaming: false,
             info: None,
-            held: None,
+            block_at_best: None,
         }
     }
 
-    /// Its last poll answered (`Live`, `CatchingUp`): its claim + `held` are current facts
+    /// Its last poll answered (`Live`, `CatchingUp`): its claim + `block_at_best` are current facts
     pub(crate) fn answering(&self) -> bool {
         matches!(self.health, Health::Live | Health::CatchingUp)
     }
@@ -146,21 +146,22 @@ impl TrustedValidatorMeta {
     /// `getblockhash` answer on `chain` (trusted: holding a block = holding every block below it)
     pub(crate) fn holds(&self, chain: &VerifiedChain) -> bool {
         let best = chain.best();
-        let ours = self.held.is_some_and(|held| chain.on_best(held));
+        let ours = self.block_at_best.is_some_and(|held| chain.on_best(held));
         let above = |claim: BlockRef| claim == best || (claim.height > best.height && ours);
         self.answering() && self.tip().is_some_and(above)
     }
 
-    /// Answering, its claim above `chain`'s best, not shown off it (`held` unread yet = maybe
-    /// ahead: no poll since the chain moved)
+    /// Answering, its claim above `chain`'s best, not shown off it (`block_at_best` unread yet =
+    /// maybe ahead: no poll since the chain moved)
     pub(crate) fn claims_past(&self, chain: &VerifiedChain) -> bool {
         let best = chain.best();
-        let forked =
-            self.held.is_some_and(|held| held.height <= best.height && !chain.on_best(held));
+        let forked = self
+            .block_at_best
+            .is_some_and(|held| held.height <= best.height && !chain.on_best(held));
         self.answering() && self.tip().is_some_and(|claim| claim.height > best.height) && !forked
     }
 
-    /// In order: claim = best; claims higher, `held` verified; claim verified, below; else
+    /// In order: claim = best; claims higher, `block_at_best` verified; claim verified, below; else
     pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;
@@ -168,7 +169,7 @@ impl TrustedValidatorMeta {
         let (best, verified) = (chain.best(), |at: BlockRef| chain.on_best(at));
         if claim == best {
             Agreement::Agreed
-        } else if claim.height > best.height && self.held.is_some_and(verified) {
+        } else if claim.height > best.height && self.block_at_best.is_some_and(verified) {
             Agreement::Ahead
         } else if claim.height < best.height && verified(claim) {
             Agreement::Behind

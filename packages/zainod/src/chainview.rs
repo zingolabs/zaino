@@ -10,9 +10,9 @@ use futures::future::BoxFuture;
 use futures::FutureExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerSource, PeerWatch};
+use zaino_chainview::{ChainView, HeaderSync, ObservationMerge, PeerSource, PeerWatch};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::ReorgDepth;
+use zaino_primitives::types::FinalityDepth;
 use zaino_source::{
     ChainDataSource, ZcashLegacyRpcClient, ZebraIndexerGrpcClient, ZebraIndexerWatch,
 };
@@ -40,10 +40,10 @@ pub(crate) struct Wiring<S: ChainDataSource> {
 
 /// View + the tasks feeding it (spawn every one)
 ///
-/// - `fold` = polls into the view; `peers`: `[p2p]` on = network start + block `inv` fold
+/// - `merge` = polls into the view; `peers`: `[p2p]` on = network start + block `inv` merge
 pub(crate) struct Viewed<S: ChainDataSource> {
     pub(crate) view: Arc<ChainView<S>>,
-    pub(crate) fold: ObservationFold<S>,
+    pub(crate) merge: ObservationMerge<S>,
     pub(crate) header_sync: HeaderSync<S>,
     pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
 }
@@ -71,7 +71,7 @@ pub(crate) fn connect<S: ChainDataSource>(
         let address = validator.indexer_address.as_ref()?;
         let id = TrustedValidatorId::new(index)?;
         let watch =
-            ZebraIndexerWatch::at(address, validator.indexer_tls.as_ref(), validator.into());
+            ZebraIndexerWatch::new(address, validator.indexer_tls.as_ref(), validator.into());
         Some(watch.map(|watch| (id, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
@@ -88,7 +88,7 @@ pub(crate) fn view<S: ChainDataSource>(
     shutdown: CancellationToken,
 ) -> Result<Viewed<S>, IndexerError> {
     let validators = &config.trusted_validators;
-    let depth = ReorgDepth::new(config.sync.finalised_depth);
+    let depth = FinalityDepth::new(config.sync.finalised_depth);
     let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
     let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule, shutdown)?;
     let mut view = view.with_submit_policy((&config.submission).into());
@@ -100,11 +100,11 @@ pub(crate) fn view<S: ChainDataSource>(
     let peers = starting.zip(view.peer_watch());
 
     let header_sync = view.header_sync(HeaderChain::new(depth));
-    let fold = view.observation_fold();
+    let merge = view.observation_merge();
     let p2p = config.p2p.enabled;
     info!(validators = validators.len(), p2p, "Chain view configured");
 
-    Ok(Viewed { view: Arc::new(view), fold, header_sync, peers })
+    Ok(Viewed { view: Arc::new(view), merge, header_sync, peers })
 }
 
 /// [`DaemonConfig::validate`] refuses it first
@@ -116,7 +116,7 @@ fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
 pub(crate) fn legacy_client(
     validator: &TrustedValidatorConfig,
 ) -> Result<ZcashLegacyRpcClient, IndexerError> {
-    ZcashLegacyRpcClient::at(
+    ZcashLegacyRpcClient::new(
         &validator.jsonrpc_address,
         validator.cookie_path.as_deref(),
         validator.user.clone(),
@@ -137,7 +137,7 @@ pub(crate) fn grpc_client(
         IndexerError::Config(format!("{}: no indexer_address", validator.jsonrpc_address))
     })?;
     let legacy = legacy_client(validator)?;
-    ZebraIndexerGrpcClient::at(
+    ZebraIndexerGrpcClient::new(
         legacy,
         indexer,
         validator.indexer_tls.as_ref(),

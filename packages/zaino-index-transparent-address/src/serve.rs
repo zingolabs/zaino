@@ -172,7 +172,7 @@ mod tests {
         let stranger = TransparentAddress::ScriptHash(stranger);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(two).iter().enumerate() {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
             store.apply(changes);
             if height == 1 {
@@ -226,7 +226,7 @@ mod tests {
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(three).iter().enumerate() {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
             store.apply(changes);
             if height == 2 {

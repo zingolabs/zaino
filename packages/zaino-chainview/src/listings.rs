@@ -92,7 +92,7 @@ impl Listings {
         admitted.map(|(id, _)| id).collect()
     }
 
-    /// One id's admission (the fold re-asks under its lock: the round may have moved on)
+    /// One id's admission (the merge re-asks under its lock: the round may have moved on)
     pub(crate) fn admits(&self, id: &PeerTxId) -> bool {
         let peers: Vec<SocketAddr> =
             self.fresh().filter(|(_, ids)| ids.contains(id)).map(|(peer, _)| *peer).collect();

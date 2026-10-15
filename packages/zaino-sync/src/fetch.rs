@@ -24,7 +24,7 @@ impl Checked {
         &self.0
     }
 
-    pub fn at(&self) -> BlockRef {
+    pub fn block_ref(&self) -> BlockRef {
         BlockRef { hash: self.0.header().hash, height: self.0.header().height }
     }
 }
@@ -142,9 +142,9 @@ mod tests {
         let repeated = [txs.clone(), vec![txs[2].clone()]].concat();
 
         let passed = check_block(block(two.hash), h2, &record).expect("the asked block");
-        assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
+        assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
         let passed = check_block_at(block(two.hash), h2).expect("its own header's body");
-        assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
+        assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
         let (side_at, two_at) = (BlockRef { hash: side.hash, height: h2 }, two);
         let wrong_height = Misanswer::WrongHeight { got: BlockHeight::from(9) };
         let merkle_root = Misanswer::Body(BodyMismatch::MerkleRoot);
@@ -157,7 +157,7 @@ mod tests {
             (with_txs(repeated), Err(mutated),                                  Ok(two_at)),
         ];
         for (block, by_hash, by_height) in served {
-            let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.at());
+            let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.block_ref());
             let got = (
                 checked(check_block(block.clone(), h2, &record)),
                 checked(check_block_at(block, h2)),
@@ -180,10 +180,10 @@ mod tests {
         let record = chain.verified(two).header_at(h(2)).expect("verified");
         let validator = chain.validator(two);
         let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
-        let passed = check_block(honest, h(2), &record).map(|checked| checked.at());
+        let passed = check_block(honest, h(2), &record).map(|checked| checked.block_ref());
         assert_eq!(passed, Ok(two));
         let honest = validator.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
-        assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.at()), Ok(two));
+        assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.block_ref()), Ok(two));
 
         type Expected = fn(&Block) -> Option<Misanswer>;
         #[rustfmt::skip]

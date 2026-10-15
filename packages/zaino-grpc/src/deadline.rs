@@ -299,14 +299,16 @@ mod tests {
         use zaino_persistence::IndexKind;
         use zaino_proto::proto::service;
 
-        use crate::service::{Method, Routes};
+        use crate::service::{Method, RouteDeps};
         use crate::testing::{dispatch, grpc_snapshots, indexed, routes, MAINNET};
 
         let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-        let mut router =
-            dispatch(Routes { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() });
+        let mut router = dispatch(RouteDeps {
+            grpc_snapshots: grpc_snapshots(&chain, genesis, views),
+            ..routes()
+        });
 
         let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();

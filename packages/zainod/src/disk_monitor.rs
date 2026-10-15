@@ -92,7 +92,10 @@ pub(crate) fn walked(index: &'static str, bytes: u64) {
 
 /// The sampled set: each index's kind, directory and durable view now
 pub(crate) fn views(indexes: &[Index]) -> Vec<(IndexKind, PathBuf, zaino_persistence::DiskView)> {
-    indexes.iter().map(|index| (index.kind, index.dir.clone(), index.handle.view())).collect()
+    indexes
+        .iter()
+        .map(|index| (index.kind, index.dir.clone(), index.handle.durable_view()))
+        .collect()
 }
 
 /// `(free, capacity)` bytes of the filesystem holding `dir` (free = what zainod may still use)

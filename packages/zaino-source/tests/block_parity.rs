@@ -345,9 +345,9 @@ async fn both_clients_decode_every_block_to_the_explorers_facts() {
     tokio::spawn(server);
 
     let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
-    let legacy = || ZcashLegacyRpcClient::at(&rpc_address, None, None, None, timeouts, limits);
+    let legacy = || ZcashLegacyRpcClient::new(&rpc_address, None, None, None, timeouts, limits);
     let legacy_client = legacy().expect("host:port");
-    let grpc = ZebraIndexerGrpcClient::at(
+    let grpc = ZebraIndexerGrpcClient::new(
         legacy().expect("host:port"),
         &indexer_address,
         None,

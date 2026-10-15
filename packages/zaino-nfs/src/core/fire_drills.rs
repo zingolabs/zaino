@@ -8,7 +8,7 @@ use std::sync::Arc;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::Lie;
 use zaino_sync::check_block;
 use zcash_protocol::consensus::BlockHeight;
@@ -44,7 +44,7 @@ impl World {
     }
 
     fn at(&self, hash: BlockHash) -> BlockRef {
-        self.builder.block(hash).at()
+        self.builder.block(hash).block_ref()
     }
 
     fn block(&self, hash: BlockHash) -> Arc<Block> {
@@ -59,7 +59,7 @@ impl World {
 
     /// Header chain over `blocks` (genesis first), finalized through `finalized_height`
     fn verified(&self, blocks: &[BlockHash], finalized_height: u32) -> Arc<VerifiedChain> {
-        let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nz"));
+        let depth = FinalityDepth::new(NonZeroU32::new(3).expect("nz"));
         let mut headers = self.builder.header_chain(depth);
         let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
         insert(&mut headers, &path).expect("valid");

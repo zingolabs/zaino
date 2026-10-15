@@ -67,14 +67,14 @@ impl VerifiedChain {
             let height =
                 BlockHeight::from(below.expect("a side node sits above the finalized tip"));
             let from = BlockRef { hash: lowest.parent, height };
-            Fork { from, tip: leaf.at(), cumulative_work: leaf.record.cumulative_work }
+            Fork { from, tip: leaf.block_ref(), cumulative_work: leaf.record.cumulative_work }
         };
         leaves.into_iter().map(fork).collect()
     }
 
     /// Side blocks from the fork's `from` (exclusive) up to `tip`; empty = `tip` not a side block
     pub fn branch(&self, tip: &BlockHash) -> Vec<BlockRef> {
-        self.off_best(*tip).iter().rev().map(|node| node.at()).collect()
+        self.off_best(*tip).iter().rev().map(|node| node.block_ref()).collect()
     }
 
     /// On the best chain (finalized included), or a side block held above the finalized tip

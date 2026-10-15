@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
-use zaino_grpc::{GrpcLimits, GrpcService, Routes};
+use zaino_grpc::{GrpcLimits, GrpcService, RouteDeps};
 use zaino_persistence::DiskView;
 use zaino_primitives::testing::MockChain;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -16,14 +16,14 @@ use zaino_source::testing::{MockValidator, ValidatorViews};
 
 /// Nothing served, chain view never polled → every `GetLightdInfo` = `UNAVAILABLE` (what these
 /// transport tests read back)
-fn routes() -> Routes<MockValidator, DiskView> {
+fn routes() -> RouteDeps<MockValidator, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let chain = MockChain::regtest();
     let validator = Arc::new(chain.validator(chain.genesis()));
     let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = zaino_traffic::TrustedValidator { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
-    let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
+    let depth = zaino_primitives::types::FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
     let schedule = zaino_primitives::protocol::compiled_schedule(network);
     let chain = zaino_chainview::ChainView::new(
         vec!["unpolled:18232".to_owned()],
@@ -33,7 +33,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
         tokio_util::sync::CancellationToken::new(),
     );
     let chain = chain.expect("one endpoint");
-    Routes {
+    RouteDeps {
         grpc_snapshots: zaino_grpc_snapshot::GrpcSnapshots::fixed(
             None,
             chain.subscriber().current(),

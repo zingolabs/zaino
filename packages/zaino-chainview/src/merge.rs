@@ -1,4 +1,4 @@
-//! The fold: per-validator deltas in, one published `ChainViewSnapshot` out
+//! The merge: per-validator deltas in, one published `ChainViewSnapshot` out
 //!
 //! - Store, then signal (a woken reader must find what woke it)
 
@@ -11,7 +11,7 @@ use imbl::{OrdSet, Vector};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{Announced, BlockRef, PeerTxId, ReorgDepth};
+use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
 use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
@@ -21,7 +21,7 @@ use crate::chain_view_snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
 use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
-/// State before a fold's change (settle's baseline)
+/// State before a merge's change (settle's baseline)
 struct Before {
     best: Option<BlockRef>,
     readers: TrustedValidatorSet,
@@ -47,11 +47,11 @@ pub(crate) struct Sighted {
 
 /// What every answered poll read, mempool on or off
 ///
-/// - `held` = its `getblockhash` answer at the best the poll started under
+/// - `block_at_best` = its `getblockhash` answer at the best the poll started under
 /// - `peers`, `release`: `Some` only on a metadata poll whose half answered (else the last kept)
 #[derive(Debug, Clone)]
 pub(crate) struct Reading {
-    pub(crate) held: Option<BlockRef>,
+    pub(crate) block_at_best: Option<BlockRef>,
     pub(crate) info: BlockchainInfo,
     pub(crate) peers: Option<Vec<PeerInfo>>,
     pub(crate) release: Option<NodeRelease>,
@@ -65,7 +65,7 @@ pub(crate) struct Listing {
     pub(crate) removed: Vec<TxId>,
 }
 
-/// One member's poll, as the fold takes it: its reading first, then its listing (bytes fetched
+/// One member's poll, as the merge takes it: its reading first, then its listing (bytes fetched
 /// between: holder facts never wait on them)
 #[derive(Debug, Clone)]
 pub(crate) enum TrustedValidatorReport {
@@ -80,16 +80,16 @@ pub(crate) enum TrustedValidatorReport {
     Failed(Health),
 }
 
-/// One fold's effect: `Settle(touched)` = settle (spreads re-judged for `touched`) + publish
+/// One merge's effect: `Settle(touched)` = settle (spreads re-judged for `touched`) + publish
 enum Change {
     Unchanged,
     Settle(Vec<TxId>),
 }
 
-/// The published cell + its watch, and the lock that serialises folds
+/// The published cell + its watch, and the lock that serialises merges
 ///
-/// - non-generic: the poll fold and readers hold it (the source type stays the balancer's)
-/// - `state` = fold working copy (`imbl` throughout: cloning it to publish = `O(1)`)
+/// - non-generic: the poll merge and readers hold it (the source type stays the balancer's)
+/// - `state` = merge working copy (`imbl` throughout: cloning it to publish = `O(1)`)
 pub(crate) struct ChainViewCore {
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
@@ -97,7 +97,10 @@ pub(crate) struct ChainViewCore {
 }
 
 impl ChainViewCore {
-    pub(crate) fn new(trusted_validators: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
+    pub(crate) fn new(
+        trusted_validators: Vector<TrustedValidatorMeta>,
+        depth: FinalityDepth,
+    ) -> Self {
         let empty = ChainViewSnapshot::empty(trusted_validators, depth);
         Self {
             state: Mutex::new(empty.clone()),
@@ -119,14 +122,14 @@ impl ChainViewCore {
         self.published.load().sighting(txid).is_some()
     }
 
-    /// One member's poll folded, published; → txids not admitted (listed, bytes
+    /// One member's poll merged, published; → txids not admitted (listed, bytes
     /// nowhere: re-listed + re-fetched next poll, never lost)
     pub(crate) fn apply(
         &self,
         validator: TrustedValidatorId,
         report: TrustedValidatorReport,
     ) -> Vec<TxId> {
-        self.fold(|state| {
+        self.merge(|state| {
             let mut touched: Vec<TxId> = Vec::new();
             let mut unadmitted: Vec<TxId> = Vec::new();
             let Some(meta) = state.trusted_validators.get_mut(validator.get()) else {
@@ -163,7 +166,7 @@ impl ChainViewCore {
                                 telemetry::first_trusted(&sighting);
                                 state.mempool.insert(sighted.txid, sighting);
                             }
-                            // held at the fetch-once check, gone before the fold
+                            // held at the fetch-once check, gone before the merge
                             (None, None) => {
                                 unadmitted.push(sighted.txid);
                                 continue;
@@ -175,7 +178,7 @@ impl ChainViewCore {
                 TrustedValidatorReport::Failed(health) => {
                     meta.health = health;
                     if health == Health::Down {
-                        (meta.info, meta.held) = (None, None);
+                        (meta.info, meta.block_at_best) = (None, None);
                         meta.peers = Vector::new();
                         touched.extend(retract(&mut state.mempool, validator));
                     }
@@ -189,7 +192,7 @@ impl ChainViewCore {
     ///
     /// - only live (outbound) peers carry the chain (inbound = anyone who dialed us)
     pub(crate) fn apply_heard(&self, batch: Vec<Announced>, live: Vec<SocketAddr>) {
-        self.fold(|state| {
+        self.merge(|state| {
             let live: OrdSet<SocketAddr> = live.into_iter().collect();
             let mut changed = live != state.peers_live;
             let carrying = std::mem::take(&mut state.peers_carrying);
@@ -211,14 +214,14 @@ impl ChainViewCore {
         })
     }
 
-    /// One mempool poll round (each live peer's answer, `None` = failed) folded, published:
+    /// One mempool poll round (each live peer's answer, `None` = failed) merged, published:
     /// retention re-judged → what the quorum admits that is not admitted here yet
     pub(crate) fn apply_listings(
         &self,
         answers: Vec<(SocketAddr, Option<Vec<PeerTxId>>)>,
         now: Instant,
     ) -> Vec<Candidate> {
-        self.fold(|state| {
+        self.merge(|state| {
             state.listings.round(answers, now);
             let lost: Vec<TxId> = state
                 .mempool
@@ -245,7 +248,7 @@ impl ChainViewCore {
 
     /// Candidates that passed our checks (`admission.rs`), each still admitted by the quorum now
     pub(crate) fn admit_by_quorum(&self, admitted: Vec<(PeerTxId, Bytes, Zatoshis)>) {
-        self.fold(|state| {
+        self.merge(|state| {
             let mut touched = Vec::new();
             for (id, raw, fee) in admitted {
                 if !state.listings.admits(&id) {
@@ -271,15 +274,15 @@ impl ChainViewCore {
 
     /// Header sync's word: the verified chain (`None` = nothing verified yet)
     pub(crate) fn apply_headers(&self, chain: Option<Arc<VerifiedChain>>) {
-        self.fold(|state| {
+        self.merge(|state| {
             state.verified(chain, Instant::now());
             (Change::Settle(Vec::new()), ())
         })
     }
 
-    /// Under the fold lock: `change`, then [`settle`](Self::settle) unless [`Change::Unchanged`]
-    fn fold<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Change, T)) -> T {
-        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
+    /// Under the merge lock: `change`, then [`settle`](Self::settle) unless [`Change::Unchanged`]
+    fn merge<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Change, T)) -> T {
+        let mut guard = self.state.lock().expect("chainview merge mutex poisoned");
         let before = Before::of(&guard);
         let (change, out) = change(&mut guard);
         if let Change::Settle(touched) = change {
@@ -342,7 +345,7 @@ impl ChainViewCore {
 
     /// Relayed by us → served before it propagates
     pub(crate) fn mark_ours(&self, txid: TxId, raw: Bytes) {
-        self.fold(|state| {
+        self.merge(|state| {
             match state.mempool.get_mut(&txid) {
                 Some(sighting) => sighting.mark_ours(),
                 None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
@@ -351,7 +354,7 @@ impl ChainViewCore {
         })
     }
 
-    /// Stored under the fold lock (publishes in fold order), then signalled
+    /// Stored under the merge lock (publishes in merge order), then signalled
     fn publish(&self, state: std::sync::MutexGuard<'_, ChainViewSnapshot>) {
         self.published.store(Arc::new(state.clone()));
         drop(state);
@@ -366,9 +369,10 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
-/// An answering poll: claim + held, clock estimate, peers (a failed peer read keeps the last)
+/// An answering poll: claim + block at best, clock estimate, peers (a failed peer read keeps the
+/// last)
 fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
-    meta.held = reading.held;
+    meta.block_at_best = reading.block_at_best;
     meta.info = Some(reading.info);
     meta.observed_at = Some(std::time::Instant::now());
     meta.streaming = reading.streaming;

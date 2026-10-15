@@ -56,7 +56,7 @@ let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TreeStateIndexWriter::new(store);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TreeState, handle.view().tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::TreeState, handle.durable_view().tip(), queue_bytes);
 nfs.add(IndexKind::TreeState, handle);
 tokio::spawn(writer.run(blocks));
 ```
@@ -81,7 +81,7 @@ tokio::spawn(writer.run(blocks));
 use zaino_index_tree_state::{fold, FoldError, TreeStateReader};
 
 let parent = TreeStateReader::new(view);  // any `V: SequenceRead` over these tables
-let mut out = store.changes(block.at());  // or the parent layer's `changes`
+let mut out = store.changes(block.block_ref());  // or the parent layer's `changes`
 fold(&parent, &block, &mut out)?;          // block = next above parent's tip
 ```
 

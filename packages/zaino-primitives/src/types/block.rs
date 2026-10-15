@@ -61,7 +61,7 @@ impl Block {
         &self.header
     }
 
-    pub fn at(&self) -> BlockRef {
+    pub fn block_ref(&self) -> BlockRef {
         BlockRef { hash: self.header.hash, height: self.header.height }
     }
 
@@ -127,7 +127,7 @@ mod tests {
         for (header, parent, expected) in cases {
             assert_eq!(header.extends(parent), expected, "{:?} on {parent:?}", header.height);
         }
-        assert_eq!(chain.block(two.hash).at(), two);
+        assert_eq!(chain.block(two.hash).block_ref(), two);
     }
 
     /// Body = what its header commits to: its own passes; a txid added or reordered moves the root;

@@ -1,15 +1,15 @@
 # zaino-grpc
 
 The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
-dispatched by path over [`Routes`]. Every method that reads chain, index, mempool or
+dispatched by path over [`RouteDeps`]. Every method that reads chain, index, mempool or
 validator state loads one `zaino_grpc_snapshot::GrpcSnapshot` and reads it for the life of its
 request or stream. The per-method table and the status codes a client must distinguish
 live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
-## Routes
+## RouteDeps
 
 ```rust
-let routes = Routes {
+let routes = RouteDeps {
     grpc_snapshots: publisher.handle(),  // zaino_grpc_snapshot::GrpcSnapshots<V>: one load per request
     submit: Arc::clone(&view),           // Arc<ChainView<S>>: SendTransaction
     validators,                          // zaino_traffic::TrafficBalancer<S>: GetTransaction
@@ -58,7 +58,7 @@ routing.route(routes);
   index holds: `GetLatestBlock`, `GetLatestTreeState`,
   `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
   transparent reader `.as_of(tip)`. A height named (`GetBlock`, `GetBlockRange`,
-  `GetTreeState`, by height or hash) = up to `At::answers_through(kind)`, the
+  `GetTreeState`, by height or hash) = up to `IndexesAtBlock::answers_through(kind)`, the
   index's own durable tip when past the served one. A point read past it =
   `NOT_FOUND`; a range streams to it, then `OUT_OF_RANGE`.
 - Wire contract: `SendTransaction`
@@ -73,7 +73,7 @@ routing.route(routes);
 - `GetMempoolStream` ends once the **served** tip moves (after the NFS folds the
   new block), so the `GetLatestBlock` a wallet sends after the end already
   answers the new tip.
-- An index missing from `Routes::indexes` = disabled: its methods are
+- An index missing from `RouteDeps::indexes` = disabled: its methods are
   `UNIMPLEMENTED` from routing on, served or not, naming the index
   (`GetTreeState needs the tree_state index, which is not enabled`). An NFS publication
   lacking a configured index's view answers the same. Compact-block is optional
@@ -83,14 +83,14 @@ routing.route(routes);
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
 - `V` = the indexes' `zaino_persistence::PinnedView` (zainod: `DiskView`): every read = an
   index's reader over its durable view + the NFS's layers, on a read lane (any thread).
-  Any engine's durable view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
+  Any engine's durable view serves end to end: `RouteDeps<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
   `GrpcSnapshot`'s `block_hash` view: `height_of(hash)` names the height (past
-  `At::answers_through` = `NOT_FOUND`), and the answering index must hold the same hash there
+  `IndexesAtBlock::answers_through` = `NOT_FOUND`), and the answering index must hold the same hash there
   (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
 - Route tests build a `GrpcSnapshot` with `zaino_grpc_snapshot::GrpcSnapshots::fixed` over
-  `Indexed::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
+  `NfsPublication::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
 - `GetLightdInfo` never calls a validator: one `GrpcSnapshot` load (`lightd()`), so it
   answers while no trusted validator vouches (degraded) too; nothing served =
@@ -301,7 +301,7 @@ The answers every synced wallet asks for right after each block never queue:
 | `GetSubtreeRoots` | each pool's list framed once per NFS publish; a request = one slice |
 
 The tree-state memos (`memo::PerView`) are keyed on the NFS publish (the
-`Indexed` `Arc`), not the `GrpcSnapshot`, which moves on every chain-view fold.
+`NfsPublication` `Arc`), not the `GrpcSnapshot`, which moves on every chain-view fold.
 A new publish starts empty, so there is no invalidation rule. The first ask per
 publish computes on the point lane, single-flight: the rest of the herd waits
 for that one computation, then every later ask is answered inline.

@@ -71,7 +71,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
                 let fresh = run.blocks.iter().filter(|(height, _)| !held(&store, *height));
                 let fresh: Vec<&Block> = fresh.map(|(_, block)| &**block).collect();
                 let mut out: Vec<BlockChanges> =
-                    fresh.iter().map(|block| store.changes(block.at())).collect();
+                    fresh.iter().map(|block| store.changes(block.block_ref())).collect();
                 let folded = fold_run(&TreeStateReader::new(store.applied()), &fresh, &mut out);
                 folded.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 for changes in out {
@@ -467,7 +467,7 @@ mod tests {
         let one_by_one: Vec<_> = chain
             .iter()
             .map(|block| {
-                let mut changes = store.changes(block.at());
+                let mut changes = store.changes(block.block_ref());
                 fold(&TreeStateReader::new(store.applied()), block, &mut changes).expect("folds");
                 let folded = tables(&changes);
                 store.apply(changes);
@@ -486,7 +486,7 @@ mod tests {
                     continue;
                 }
                 let mut out: Vec<BlockChanges> =
-                    run.iter().map(|b| store.changes(b.at())).collect();
+                    run.iter().map(|b| store.changes(b.block_ref())).collect();
                 let parent = TreeStateReader::new(store.applied());
                 fold_run(&parent, &std::mem::take(&mut run), &mut out).expect("folds");
                 for changes in out {
@@ -517,7 +517,7 @@ mod tests {
         let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
         let mut out: Vec<BlockChanges> =
-            run.iter().map(|block| store.changes(block.at())).collect();
+            run.iter().map(|block| store.changes(block.block_ref())).collect();
         let refused = fold_run(&TreeStateReader::new(store.applied()), &run, &mut out);
         assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
     }
@@ -609,7 +609,7 @@ mod tests {
             let writer = start(store);
             writer.send(step(&blocks[count as usize])).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = trees(handle.view(), count);
+            let next = trees(handle.durable_view(), count);
             assert_eq!(next, seen(count), "{label}: folding on after recovery");
         }
     }
@@ -677,7 +677,7 @@ mod tests {
             writer.durable_at(stream.tip()).await;
 
             let label = format!("move {at} {next:?}");
-            let reader = TreeStateReader::new(writer.handle().view());
+            let reader = TreeStateReader::new(writer.handle().durable_view());
             let sent = stream.sent() as u32;
             for height in 0..sent {
                 let served = reader.treestate(h(height));
@@ -761,7 +761,7 @@ mod tests {
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[5])).await;
         let handle = writer.stop().await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(handle.view());
+        let view = TreeStateReader::new(handle.durable_view());
         let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
         let third = SubtreeRoot { root: tree_root(&view, 5), completing: completing(&blocks[5]) };
         assert_eq!(resumed_roots, [roots, vec![third]].concat(), "earlier entries untouched");
@@ -785,7 +785,7 @@ mod tests {
             writer.send(step(&block)).await;
         }
         let handle = writer.stop().await.expect("stops at Shutdown");
-        let reader = TreeStateReader::new(handle.view());
+        let reader = TreeStateReader::new(handle.durable_view());
         let trees = reader.treestate(h(1)).expect("served");
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())

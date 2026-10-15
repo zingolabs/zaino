@@ -29,9 +29,9 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 use zaino_source::{LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
 let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
-let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
+let legacy = ZcashLegacyRpcClient::new(address, cookie, user, password, Timeouts::default(), link)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
-let grpc = ZebraIndexerGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
+let grpc = ZebraIndexerGrpcClient::new(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `TrustedValidator` member
 ```
 
@@ -46,7 +46,7 @@ Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
 
 ## The indexer gRPC: plaintext or mutual TLS
 
-`ZebraIndexerGrpcClient::at` and `ZebraIndexerWatch::at` (the push streams) take
+`ZebraIndexerGrpcClient::new` and `ZebraIndexerWatch::new` (the push streams) take
 `Option<&ZebraIndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
 zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
 
@@ -54,7 +54,7 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   signed by the server's client CA. Deserializes from the same keys (zainod's
   `[trusted_validators.indexer_tls]`).
 - `server_name` = the name on the server's certificate (`None` = the address's host).
-- The PEM files are read in `at`: an unreadable one is `EndpointError::TlsFile`, naming it. A
+- The PEM files are read in `new`: an unreadable one is `EndpointError::TlsFile`, naming it. A
   rotated file is read on the next restart.
 
 - `ZcashLegacyRpcClient`: JSON-RPC over HTTP/1.1 (zebrad or zcashd). A block
@@ -108,7 +108,7 @@ as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
 ## `ZebraIndexerWatch`: push streams as wake hints
 
-`ZebraIndexerWatch::at(address, tls, timeouts)` names zebrad's indexer gRPC
+`ZebraIndexerWatch::new(address, tls, timeouts)` names zebrad's indexer gRPC
 (`indexer_listen_addr`; `tls` as above). `run(cancel, on_change, on_link)` subscribes to
 `ChainTipChange` and `MempoolChange` until cancelled: every event calls
 `on_change(Change::Tip | Change::Mempool)`; `on_link(true)` fires once both

@@ -88,7 +88,7 @@ const FINALITY_PAUSED: &str = "Finality paused: no trusted validator holds the b
 /// One sentence per raised alarm (zainod's `/status` `notes`): partition, eclipse, finality
 /// paused, stale tips, ending releases
 pub fn notes<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Vec<String> {
-    let alarms = grpc_snapshot.view().alarms();
+    let alarms = grpc_snapshot.chain_view().alarms();
     let counted = |count: usize, one: &str, many: &str| match count {
         0 => None,
         1 => Some(format!("1 {one}")),
@@ -177,7 +177,7 @@ pub fn emit_gauges<V: View>(grpc_snapshot: &GrpcSnapshot<V>, progress: &SyncProg
     for (kind, _) in grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable()) {
         metrics::gauge!(names::INDEX_SYNCED, "index" => kind.name()).set(f64::from(tips.synced));
     }
-    chain_view_gauges(grpc_snapshot.view());
+    chain_view_gauges(grpc_snapshot.chain_view());
 }
 
 /// `zaino.chainview.*`: per endpoint, then the view's
@@ -240,7 +240,7 @@ pub(crate) fn transitions<V>(prev: &GrpcSnapshot<V>, next: &GrpcSnapshot<V>) {
         (true, false) => info!(height, "Behind the verified tip, syncing"),
         _ => {}
     }
-    alarm_edges(prev.view(), next.view());
+    alarm_edges(prev.chain_view(), next.chain_view());
 }
 
 fn alarm_edges(prev: &ChainViewSnapshot, next: &ChainViewSnapshot) {

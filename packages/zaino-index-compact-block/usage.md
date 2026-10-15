@@ -35,7 +35,7 @@ blocks.idx    end offset per record (record h = end(h − 1)..end(h))
 
 ```rust,ignore
 let parent = CompactBlockReader::new(view);  // any V: SequenceRead
-let mut out = store.changes(block.at());     // or the parent layer's `changes`
+let mut out = store.changes(block.block_ref());     // or the parent layer's `changes`
 fold(&parent, &block, &fees, &mut out);
 ```
 
@@ -63,7 +63,7 @@ let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::CompactBlock, handle.view().tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::CompactBlock, handle.durable_view().tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
 tokio::spawn(writer.run(blocks, fees)); // fees: a subscription to utxo-set's `FeeSink`
 ```
@@ -87,7 +87,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: a subscription to utxo-set's `F
 Routes read through one `GrpcSnapshot` per request (`at.views().compact_block()`,
 `None` = disabled), at heights `≤ at.answers_through(IndexKind::CompactBlock)`.
 `CompactBlockReader<V>` works
-over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
+over any `V: SequenceRead`: a store's durable view, or an `NfsPublication`'s
 `OverlayView` with the blocks above its durable tip layered on top.
 
 - `block(h)` = one framed record, every pool. `GetBlock` is never filtered.

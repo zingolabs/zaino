@@ -28,7 +28,7 @@ use std::num::NonZeroU32;
 use proptest::prelude::*;
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::{all_at, MockChain};
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
@@ -482,7 +482,7 @@ fn run(moves: Vec<Move>) {
     let chain = MockChain::regtest().varied_work();
     let mut builder = Builder { chain, templates: HashMap::new() };
     let genesis = builder.genesis();
-    let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
+    let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut chain = HeaderChain::new(depth);
     chain.anchor(&genesis, H0);
     let anchor = Record {

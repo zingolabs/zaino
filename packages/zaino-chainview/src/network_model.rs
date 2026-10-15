@@ -17,7 +17,7 @@ use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, TrustedValidator, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
@@ -136,7 +136,7 @@ fn holders(seen: &[Option<Seen>], best: BlockRef) -> (TrustedValidatorSet, Trust
 async fn run(n: usize, moves: Vec<Move>) {
     let mut chain = MockChain::regtest();
     let shared = chain.mine_empty(3);
-    let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
+    let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut headers = chain.header_chain(depth);
     let nodes = (0..n).map(|_| {
         let validator = Arc::new(chain.validator(shared));
@@ -162,7 +162,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let view = view.expect("1..=5 trusted validators");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
-    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    tokio::spawn(view.observation_merge().run(cancel.clone()));
     let validator = |node: usize| TrustedValidatorId::new(node).expect("< MAX_NODES");
     let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(validator(node))).collect();
     let reader = view.subscriber();
@@ -196,7 +196,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                 balancer.pushed(validator(node), Push::Changed);
                 within("the node polled", observed[node].changed()).await.expect("driver running");
                 observed[node].mark_changed();
-                // every fold of what landed (paused clock: runs before the timer fires)
+                // every merge of what landed (paused clock: runs before the timer fires)
                 tokio::time::sleep(Duration::from_millis(1)).await;
                 for (index, watch) in observed.iter_mut().enumerate() {
                     if !watch.has_changed().expect("driver running") {

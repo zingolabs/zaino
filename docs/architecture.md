@@ -39,14 +39,14 @@ possible, take everything else from as many peers as possible.**
                                    │
        ┌───────────────────────────┼─────────────────────────────────────┐
        ▼                           ▼                                     ▼
-  HeaderSync (chainview)      ObservationFold + PeerMempool        ChainView::submit
+  HeaderSync (chainview)      ObservationMerge + PeerMempool       ChainView::submit
   → HeaderChain               → mempool view                       (SendTransaction)
        │ watch<VerifiedChain>       │
        ├──────────────────┐         │
        ▼                  ▼         │
   FinalizedFollower        Nfs (RAM)    │
   (zaino-sync)         tip overlay  │
-       │ FinalizedStream     │ Indexed
+       │ FinalizedStream     │ NfsPublication
        ▼                     ▼      ▼
   5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
   (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
@@ -238,7 +238,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 ## 8. Serving: one `GrpcSnapshot`
 
-`zaino-grpc-snapshot`'s publisher combines the NFS's latest `Indexed` and the chain view's latest
+`zaino-grpc-snapshot`'s publisher combines the NFS's latest `NfsPublication` and the chain view's latest
 publish into one `Arc<GrpcSnapshot>`. Every gRPC request or stream, probe, scrape and state log loads
 one and reads only it, so no answer mixes two moments.
 

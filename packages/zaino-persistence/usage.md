@@ -33,7 +33,7 @@ pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]); // ids = positions,
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
 let mut store = DiskEngine::new(fs, LsmConfig::default()).open(path, &schema, WRITE_BUFFER)?;
 
-let mut changes = store.changes(block.at());           // one block's empty delta
+let mut changes = store.changes(block.block_ref());           // one block's empty delta
 changes.sequence(BLOCKS).append(&record);
 changes.map(SPENT).insert(&outpoint.encode(), &spend);
 store.apply(changes);                                  // buffered: visible in applied() only

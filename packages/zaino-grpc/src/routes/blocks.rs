@@ -1,12 +1,12 @@
 //! Compact-block methods: `GetLatestBlock` (the served tip), `GetBlock`, `GetBlockRange`
-//! (stored records, sent as the body, at heights `<=` [`At::answers_through`])
+//! (stored records, sent as the body, at heights `<=` [`IndexesAtBlock::answers_through`])
 
 use bytes::Bytes;
 use http::Response;
 use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
-use zaino_nfs::At;
+use zaino_nfs::IndexesAtBlock;
 use zaino_persistence::{IndexKind, OverlayView, PinnedView};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -21,7 +21,7 @@ pub(crate) use deprecated_nullifiers::range_nullifiers;
 type Blocks<V> = CompactBlockReader<OverlayView<V>>;
 
 /// Served `GrpcSnapshot` + its compact-block records
-pub(crate) type Compact<'a, V> = (&'a At<V>, Blocks<V>);
+pub(crate) type Compact<'a, V> = (&'a IndexesAtBlock<V>, Blocks<V>);
 
 /// Kinds kept distinct (miss != bad request != corruption)
 fn to_status(error: ServeError) -> Status {
@@ -86,7 +86,7 @@ fn range_response<V: PinnedView>(
 }
 
 /// `GetLatestBlock` answers a `BlockID`, not a block: the served tip (no read at all)
-pub(crate) fn latest<V>(at: &At<V>) -> Response<Body> {
+pub(crate) fn latest<V>(at: &IndexesAtBlock<V>) -> Response<Body> {
     let tip = at.tip();
     let hash = tip.hash.0.to_vec();
     unary_response(wire::frame(&service::BlockId { height: tip.height.into(), hash }))
@@ -110,7 +110,7 @@ where
 }
 
 async fn stored_block<V, B>(
-    at: &At<V>,
+    at: &IndexesAtBlock<V>,
     blocks: Blocks<V>,
     body: B,
     reads: &ReadLanes,
@@ -282,7 +282,7 @@ mod tests {
     use zaino_primitives::testing::{h, MockChain};
     use zaino_proto::frame::FRAME_HEADER;
 
-    use crate::service::{Method, Routes};
+    use crate::service::{Method, RouteDeps};
     use crate::testing::{
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes, MAINNET,
     };
@@ -305,11 +305,11 @@ mod tests {
         let other_2 = other_2.hash.0;
 
         let compact = indexed(IndexKind::CompactBlock, &chain, two);
-        let unlocated = dispatch(Routes {
+        let unlocated = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, two, vec![compact.clone()]),
             ..routes()
         });
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, two, vec![compact, locator]),
             ..routes()
         });
@@ -360,7 +360,7 @@ mod tests {
         let mut chain = MockChain::regtest().network(MAINNET);
         let tip = chain.mine_empty(5);
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
             ..routes()
         });
@@ -428,7 +428,7 @@ mod tests {
         }
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
             ..routes()
         });
@@ -523,7 +523,7 @@ mod tests {
         }
         let tip = chain.tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
             ..routes()
         });
@@ -582,7 +582,7 @@ mod tests {
         let chain = MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let mut router = dispatch(Routes {
+        let mut router = dispatch(RouteDeps {
             grpc_snapshots: grpc_snapshots(&chain, genesis, vec![compact]),
             ..routes()
         });

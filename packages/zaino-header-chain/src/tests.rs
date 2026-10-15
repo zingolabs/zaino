@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::{all_at, MockChain};
-use zaino_primitives::types::{BlockRef, HeaderError, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth, HeaderError};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
@@ -88,7 +88,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
         hash: headers[index].hash(),
         height: height(3_508_500 + index as u32),
     };
-    let depth = ReorgDepth::new(NonZeroU32::new(10).expect("nz"));
+    let depth = FinalityDepth::new(NonZeroU32::new(10).expect("nz"));
     let mut chain = HeaderChain::new(depth);
     assert_eq!(
         (chain.best(), chain.verified().is_some()),
@@ -159,7 +159,7 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
         height: height(3_508_500 + index as u32),
     };
     let now = i64::from(headers.last().expect("non-empty").time());
-    let mut chain = HeaderChain::new(ReorgDepth::new(NonZeroU32::new(10).expect("nz")));
+    let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(10).expect("nz")));
     chain.anchor(&headers[0], at(0).height);
     let short = chain.insert_untrusted(&headers[1], &mainnet, now);
     let needed = AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
@@ -319,7 +319,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let five = builder.mine_empty(5);
     let orphan = builder.mine_empty(2);
     let below = builder.fork(height(1)).mine_empty(1).tip();
-    let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(2).expect("nz")));
+    let mut chain = builder.header_chain(FinalityDepth::new(NonZeroU32::new(2).expect("nz")));
     let one = |mock: &MockChain, at: BlockRef| [Arc::clone(mock.block(at.hash))];
     insert(&mut chain, &builder.blocks(five)).expect("trunk");
     chain.finalize(chain.finalizable().expect("6 headers, depth 2"));

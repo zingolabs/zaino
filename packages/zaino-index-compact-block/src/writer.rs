@@ -55,7 +55,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
                 let mut write = Duration::ZERO;
                 for ((height, block), fees) in run.blocks.iter().zip(&paid) {
                     if !held(&store, *height) {
-                        let mut changes = store.changes(block.at());
+                        let mut changes = store.changes(block.block_ref());
                         let parent = CompactBlockReader::new(store.applied());
                         fold(&parent, block, fees, &mut changes);
                         write += apply(&mut store, changes);
@@ -167,7 +167,7 @@ mod tests {
         });
         let fees = |block: &Block| chain.fees(block.header().hash);
         let folded = |store: &DiskStore, block: &Block| {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             let parent = CompactBlockReader::new(store.applied());
             fold(&parent, block, &fees(block), &mut changes);
             changes
@@ -219,7 +219,7 @@ mod tests {
 
         async fn stop(self) -> DiskView {
             self.fee_sink.shutdown();
-            self.writer.stop().await.expect("stops at Shutdown").view()
+            self.writer.stop().await.expect("stops at Shutdown").durable_view()
         }
     }
 
@@ -354,7 +354,7 @@ mod tests {
             index.writer.durable_at(stream.tip()).await;
 
             let case = format!("move {at} {next:?}");
-            let view = index.writer.handle().view();
+            let view = index.writer.handle().durable_view();
             let reader = CompactBlockReader::new(view.clone());
             let sent = stream.sent();
             let mut records = Vec::new();

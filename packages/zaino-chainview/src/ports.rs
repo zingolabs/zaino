@@ -1,7 +1,7 @@
 //! [`PeerSource`], [`UnspentOutputs`], and what this crate asks a validator through the
 //! balancer (`zaino-traffic`: cadence, retries, blame)
 //!
-//! - poll (the balancer's, folded here): `getblockchaininfo` (its claim, the estimate and schedule
+//! - poll (the balancer's, merged here): `getblockchaininfo` (its claim, the estimate and schedule
 //!   `GetLightdInfo` serves) + `getrawmempool true` (the listing the diff runs over, fees
 //!   included) + `getblockhash` at the view's best as the poll starts (whether it holds it);
 //!   every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)

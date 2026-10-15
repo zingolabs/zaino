@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::{IndexKind, PerIndex, PinnedView};
 use zaino_primitives::display::Human;
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::ChainDataSource;
 use zaino_sync::{compute, fetch, Checked, IndexHandle};
 use zaino_traffic::{TrafficBalancer, Urgency};
@@ -32,7 +32,7 @@ use crate::fold::{fold_block, Folded};
 
 pub use crate::emit::describe_metrics;
 pub use crate::fold::FoldError;
-pub use crate::publish::{At, Branch, ChainParams, Indexed, Published, Views};
+pub use crate::publish::{Branch, ChainParams, IndexesAtBlock, NfsPublication, Published, Views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {
@@ -47,7 +47,7 @@ pub enum NfsError {
 /// `NfsCore` run against the balancer, real folds and each index's handle
 ///
 /// - Inputs: the verified chain, checked bodies, fold results, each index's commits
-/// - Outputs: fetches (tasks), folds (compute pool), [`Indexed`] publishes
+/// - Outputs: fetches (tasks), folds (compute pool), [`NfsPublication`] publishes
 /// - `window` = `2 · depth`: the NFS folds while the lowest durable tip is that close to best
 pub struct Nfs<S, V> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
@@ -57,7 +57,7 @@ pub struct Nfs<S, V> {
     lookahead: NonZeroUsize,
     indexes: PerIndex<IndexHandle<V>>,
     durable: PerIndex<V>,
-    published: watch::Sender<Option<Arc<Indexed<V>>>>,
+    published: watch::Sender<Option<Arc<NfsPublication<V>>>>,
     served: Option<BlockRef>,
 }
 
@@ -68,7 +68,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         balancer: TrafficBalancer<S>,
         params: ChainParams,
-        depth: ReorgDepth,
+        depth: FinalityDepth,
         lookahead: NonZeroUsize,
     ) -> Self {
         Self {
@@ -152,7 +152,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
     fn refresh(&mut self) -> Vec<Option<BlockRef>> {
         let (mut durable, mut tips) = (PerIndex::default(), Vec::new());
         for (kind, handle) in self.indexes.iter() {
-            let view = handle.view();
+            let view = handle.durable_view();
             tips.push(view.tip());
             durable.insert(kind, view);
         }
@@ -197,7 +197,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
             Output::Publish(Some(Publication { chain, tip, root, graph })) => {
                 self.log_served(&chain, tip);
                 let views = self.durable.clone();
-                let indexed = Indexed::new(chain, tip, root, self.params, views, graph);
+                let indexed = NfsPublication::new(chain, tip, root, self.params, views, graph);
                 self.published.send_replace(Some(Arc::new(indexed)));
             }
         }
@@ -266,7 +266,7 @@ impl Fetches {
             };
             match done {
                 Ok((id, body)) => {
-                    let hash = body.at().hash;
+                    let hash = body.block_ref().hash;
                     if self.ids.get(&hash).is_some_and(|(held, _)| *held == id) {
                         self.ids.remove(&hash);
                     }

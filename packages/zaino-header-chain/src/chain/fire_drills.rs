@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zcash_protocol::BlockHash;
 
 use super::{HeaderChain, Node};
@@ -26,7 +26,7 @@ fn valid() -> Valid {
     let tip = builder.mine_empty(12);
     let trunk: Vec<BlockHash> = builder.blocks(tip).iter().map(|b| b.header().hash).collect();
     let side = builder.fork(h(11)).mine_empty(1).tip().hash;
-    let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(9).expect("nz")));
+    let mut chain = builder.header_chain(FinalityDepth::new(NonZeroU32::new(9).expect("nz")));
     insert(&mut chain, &builder.blocks(tip)).expect("valid");
     insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
     chain.finalize(chain.finalizable().expect("12 − 9"));
@@ -183,7 +183,7 @@ fn finalizing_within_depth_of_the_best_panics() {
 #[should_panic(expected = "H6: only a vouched block")]
 fn finalizing_an_unvouched_block_panics() {
     let Valid { mut chain, trunk, side, .. } = valid();
-    chain.depth = ReorgDepth::new(NonZeroU32::MIN);
+    chain.depth = FinalityDepth::new(NonZeroU32::MIN);
     for hash in trunk.iter().chain([&side]) {
         if let Some(node) = chain.nodes.get_mut(hash) {
             node.vouched = false;

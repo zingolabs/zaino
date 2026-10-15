@@ -41,7 +41,7 @@ use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::chain_view_snapshot::ChainViewSnapshot;
-use crate::fold::ChainViewCore;
+use crate::merge::ChainViewCore;
 use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 
 /// Heights per fetch step (tree ≤ `depth` + this above the finalized tip)
@@ -162,7 +162,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let floor = verified.finalized_tip().height + 1;
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
         let answering = view.trusted_validators().iter().filter(|meta| meta.answering());
-        let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.held));
+        let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.block_at_best));
         facts.filter(held).for_each(|fact| self.chain.vouch(fact));
         self.finalize(view);
         self.publish();

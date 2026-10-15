@@ -23,7 +23,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use zaino_primitives::types::{BlockRef, MerkleRoot, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth, MerkleRoot};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
@@ -84,7 +84,7 @@ pub(crate) struct Node {
 }
 
 impl Node {
-    pub(crate) fn at(&self) -> BlockRef {
+    pub(crate) fn block_ref(&self) -> BlockRef {
         BlockRef { hash: self.record.hash, height: self.height }
     }
 }
@@ -96,7 +96,7 @@ impl Node {
 ///   else the anchor: peer finality's difficulty reference (never moved by peers)
 /// - every collection `imbl` (O(1) into each [`VerifiedChain`])
 pub struct HeaderChain {
-    depth: ReorgDepth,
+    depth: FinalityDepth,
     finalized_headers: imbl::Vector<(BlockHeight, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
     leaves: imbl::HashSet<BlockHash>,
@@ -107,7 +107,7 @@ pub struct HeaderChain {
 
 impl HeaderChain {
     /// Empty: nothing held until [`anchor`](Self::anchor)
-    pub fn new(depth: ReorgDepth) -> Self {
+    pub fn new(depth: FinalityDepth) -> Self {
         Self {
             depth,
             finalized_headers: imbl::Vector::new(),
@@ -304,7 +304,7 @@ impl HeaderChain {
     /// Height of `hash` on the best branch above the finalized tip (`None` = not there)
     pub fn best_height_of(&self, hash: BlockHash) -> Option<BlockHeight> {
         let node = self.nodes.get(&hash)?;
-        self.on_best(node.at()).then_some(node.height)
+        self.on_best(node.block_ref()).then_some(node.height)
     }
 
     /// Every best-chain header up to `through` becomes finalized, every branch not descending from

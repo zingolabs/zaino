@@ -1,7 +1,7 @@
 //! lightwalletd-compatible `CompactTxStreamer` endpoint
 //!
 //! - [`GrpcService`] = every method in the one registry (`service.rs` `ROUTES`), dispatched by
-//!   path over [`Routes`] (`GrpcSnapshots`, the chain view, the validators); compact blocks
+//!   path over [`RouteDeps`] (`GrpcSnapshots`, the chain view, the validators); compact blocks
 //!   = stored bytes, never re-encoded
 //! - one `GrpcSnapshot` per request or stream (`service.rs`)
 //! - Domain → wire owned by the byte-producing crate (no domain crate depends on the schema)
@@ -38,7 +38,7 @@ pub use health::Health;
 pub use lifetime::Retire;
 pub use limits::GrpcLimits;
 
-pub use service::{Routes, Routing};
+pub use service::{RouteDeps, Routing};
 pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};
 pub use zaino_proto::proto::service::LightdInfo;

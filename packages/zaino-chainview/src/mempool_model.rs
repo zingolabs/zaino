@@ -1,5 +1,5 @@
 //! Mempool model: trusted validators polled, failing and killed, peers' listings churning (some
-//! peers byzantine), blocks, our sends; through the real fold (`ChainViewCore`) and the real
+//! peers byzantine), blocks, our sends; through the real merge (`ChainViewCore`) and the real
 //! checks (`peer_mempool::judge`), against a naive oracle after every move
 //! (`docs/architecture.md` §5)
 //!
@@ -22,7 +22,7 @@ use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
-use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth, PeerTxId};
 use zaino_source::testing::{raw_transparent, ValidatorViews};
 use zaino_traffic::TrustedValidatorId;
 use zcash_protocol::value::Zatoshis;
@@ -30,8 +30,8 @@ use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::NextBlock;
-use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 use crate::listings::LISTING_FRESH;
+use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 use crate::netgroup::Netgroup;
 use crate::netgroup::ECLIPSE_NETGROUPS;
 use crate::peer_mempool::judge;
@@ -150,7 +150,7 @@ impl Oracle {
         self.trusted(tx) || self.held.get(&tx).is_some_and(|held| held.quorum)
     }
 
-    /// The fold's drop rule after any change
+    /// The merge's drop rule after any change
     fn settle(&mut self, moved: bool) {
         let gone: Vec<usize> = self.held.keys().copied().collect();
         for tx in gone {
@@ -184,7 +184,13 @@ struct Run {
 impl Run {
     fn reading(&self) -> Reading {
         let info = self.chain.blockchain_info(self.tip);
-        Reading { held: Some(self.tip), info, peers: None, release: None, streaming: false }
+        Reading {
+            block_at_best: Some(self.tip),
+            info,
+            peers: None,
+            release: None,
+            streaming: false,
+        }
     }
 
     fn id(&self, tx: usize) -> PeerTxId {
@@ -377,7 +383,7 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
     let utxos = chain.ledger(tip);
     let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
-    let core = ChainViewCore::new(trusted_validators, ReorgDepth::CONSENSUS);
+    let core = ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS);
     core.apply_headers(Some(Arc::new(chain.verified(tip))));
     let oracle = Oracle {
         health: vec![Health::Pending; validators],

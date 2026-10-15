@@ -1,7 +1,7 @@
 //! The published view: verified tip, sighted transactions, per-validator metadata
 //!
-//! - `imbl` collections, so republishing on every fold clones in `O(1)` with structural sharing
-//! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a fold
+//! - `imbl` collections, so republishing on every merge clones in `O(1)` with structural sharing
+//! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a merge
 //!   landing mid-stream cannot splice two views into one response
 //! - raw bytes only, never a decoded transaction (parsing = the wire adapter's job, and
 //!   `zaino-proto` must not reach this crate)
@@ -14,7 +14,7 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
@@ -98,7 +98,7 @@ pub struct Spread {
 /// One transaction the view serves, and where it has been seen
 ///
 /// - `quorum` = a peer quorum admitted it (`listings.rs`) and it passed our checks
-/// - always listed (trusted or quorum) or ours: a fold drops one that is neither before publishing
+/// - always listed (trusted or quorum) or ours: a merge drops one that is neither before publishing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sighting {
     trusted: TrustedValidatorSet,
@@ -215,7 +215,7 @@ impl Sighting {
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
     pub(crate) chain: Option<Arc<VerifiedChain>>,
-    pub(crate) depth: ReorgDepth,
+    pub(crate) depth: FinalityDepth,
     pub(crate) owed_since: Option<Instant>,
     pub(crate) held_by: TrustedValidatorSet,
     pub(crate) mempool: OrdMap<TxId, Sighting>,
@@ -229,7 +229,7 @@ pub struct ChainViewSnapshot {
 impl ChainViewSnapshot {
     pub(crate) fn empty(
         trusted_validators: Vector<TrustedValidatorMeta>,
-        depth: ReorgDepth,
+        depth: FinalityDepth,
     ) -> Self {
         Self {
             chain: None,
@@ -284,7 +284,7 @@ impl ChainViewSnapshot {
 
         let trusted_validators =
             addresses.iter().map(|at| TrustedValidatorMeta::new((*at).to_owned()));
-        let mut view = Self::empty(trusted_validators.collect(), ReorgDepth::CONSENSUS);
+        let mut view = Self::empty(trusted_validators.collect(), FinalityDepth::CONSENSUS);
         view.chain = chain;
         view.held_by = view.best().map_or_else(TrustedValidatorSet::default, |_| held_by);
         if let Some(best) = view.best() {
@@ -309,7 +309,7 @@ impl ChainViewSnapshot {
 
     /// Consumers' tests: trusted validator `at`'s health, and its clock estimate `behind` blocks
     /// past its tip (a [`fixed`](Self::fixed) holder's tip = best)
-    /// - alarms re-derived as a fold would
+    /// - alarms re-derived as a merge would
     #[cfg(any(test, feature = "testing"))]
     pub fn trusted_validator(mut self, at: usize, health: Health, behind: u32) -> Self {
         if let Some(meta) = self.trusted_validators.get_mut(at) {
@@ -326,7 +326,7 @@ impl ChainViewSnapshot {
     /// Consumers' tests: holder `at` claims `by` blocks past best (header sync short of its tip)
     ///
     /// - `read` = its hash at best polled: `Ahead`, still a holder; else no poll since the chain
-    ///   moved: `Diverged`, no longer a holder (as a fold would)
+    ///   moved: `Diverged`, no longer a holder (as a merge would)
     #[cfg(any(test, feature = "testing"))]
     pub fn ahead(mut self, at: usize, by: u32, read: bool) -> Self {
         let best = self.best().expect("ahead of a verified best");
@@ -337,7 +337,7 @@ impl ChainViewSnapshot {
         let info = meta.info.as_mut().expect("a holder answered");
         info.tip = BlockRef { hash: BlockHash([0xA0; 32]), height: best.height + by };
         info.estimated_height = info.tip.height;
-        meta.held = read.then_some(best);
+        meta.block_at_best = read.then_some(best);
         meta.agreement = meta.agreement_with(self.chain.as_deref());
         if !read {
             self.held_by.remove(id);
@@ -381,7 +381,8 @@ impl ChainViewSnapshot {
         added.collect()
     }
 
-    /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry only, never gates)
+    /// Partition / eclipse / stale-tip conditions as of the last merge (telemetry only, never
+    /// gates)
     pub fn alarms(&self) -> Alarms {
         self.alarms
     }

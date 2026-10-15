@@ -20,17 +20,17 @@ use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
-use zaino_nfs::{ChainParams, Indexed};
+use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::testing::{decoded, raw_transaction};
 use zcash_protocol::TxId;
 
 use crate::publisher::Core;
 use crate::{Down, MempoolTail, Standing, Tips};
 
-const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
 /// - `Reorg`: top `depth` (above finalized) replaced by `len` blocks, the first outweighing them
@@ -120,7 +120,7 @@ impl Model {
         TrustedValidatorSet::at((0..ADDRESSES.len()).filter(|at| mask & (1 << at) != 0))
     }
 
-    /// Holders past an unread claim drop out (as a fold's `holds` would)
+    /// Holders past an unread claim drop out (as a merge's `holds` would)
     fn held_by(&self) -> TrustedValidatorSet {
         let unread = if self.read { 0 } else { self.ahead };
         Self::set(self.held & !unread)
@@ -135,12 +135,12 @@ impl Model {
         Arc::new(ahead.fold(view, |view, at| view.ahead(at, 1, self.read)))
     }
 
-    fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
+    fn indexed(&self) -> Option<Arc<NfsPublication<DiskView>>> {
         let path = self.builder.blocks(self.served?);
         let params = ChainParams::of(&self.builder);
         let none: [(IndexKind, DiskView); 0] = [];
-        let root = path[0].at();
-        Some(Arc::new(Indexed::fixed_above(self.chain(), root, &path[1..], params, none)))
+        let root = path[0].block_ref();
+        Some(Arc::new(NfsPublication::fixed_above(self.chain(), root, &path[1..], params, none)))
     }
 
     /// Txids of the served path above genesis (by the builder, not `served_above_durable`)
@@ -199,7 +199,7 @@ impl Model {
             Input::Drop(pick) => drop(self.mempool.remove(&relayed(pick).0)),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
-                self.served = Some(self.builder.blocks(best)[height as usize].at());
+                self.served = Some(self.builder.blocks(best)[height as usize].block_ref());
             }
             Input::ServeOld { pick } => {
                 let old = self.old_tips.get(usize::from(pick) % self.old_tips.len().max(1));

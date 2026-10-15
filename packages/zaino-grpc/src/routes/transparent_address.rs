@@ -267,7 +267,7 @@ mod tests {
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::{frame_into, FRAME_HEADER};
 
-    use crate::service::{Method, Routes};
+    use crate::service::{Method, RouteDeps};
     use crate::testing::{
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes,
         routes_over,
@@ -309,7 +309,8 @@ mod tests {
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(chain.validator(tip));
         let (routes, balancing, _) = routes_over(&node);
-        let routes = Routes { grpc_snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
+        let routes =
+            RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
@@ -491,7 +492,7 @@ mod tests {
         let genesis = chain.genesis();
         let index = indexed(IndexKind::TransparentAddress, &chain, genesis);
         let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![index]);
-        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
+        let mut router = dispatch(RouteDeps { grpc_snapshots, ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =

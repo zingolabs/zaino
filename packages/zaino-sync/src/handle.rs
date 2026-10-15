@@ -27,7 +27,7 @@ impl<V: View> IndexHandle<V> {
     }
 
     /// Durable view (what NFS publications and folds read)
-    pub fn view(&self) -> V {
+    pub fn durable_view(&self) -> V {
         self.durable.borrow().clone()
     }
 

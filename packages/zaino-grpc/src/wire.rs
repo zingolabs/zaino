@@ -23,12 +23,12 @@ pub(super) fn height(raw: u64, field: &str) -> Result<BlockHeight, Status> {
 }
 
 /// `BlockID.hash` → `(height, hash)` via `at`'s block-hash index, at or below `through` (the
-/// answering index's [`zaino_nfs::At::answers_through`])
+/// answering index's [`zaino_nfs::IndexesAtBlock::answers_through`])
 ///
 /// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
 ///   a time; a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::PinnedView>(
-    at: &zaino_nfs::At<V>,
+    at: &zaino_nfs::IndexesAtBlock<V>,
     through: BlockHeight,
     raw: &[u8],
     method: &str,
@@ -260,7 +260,7 @@ mod tests {
     use zaino_proto::proto::service::PoolType;
 
     use super::request_limit;
-    use crate::service::{Method, Routes};
+    use crate::service::{Method, RouteDeps};
     use crate::testing::{dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET};
 
     /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
@@ -308,7 +308,7 @@ mod tests {
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
         let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![compact]);
-        let mut router = dispatch(Routes { grpc_snapshots, ..routes() });
+        let mut router = dispatch(RouteDeps { grpc_snapshots, ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {

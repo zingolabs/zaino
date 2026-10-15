@@ -1,12 +1,12 @@
-//! Reorg depth: how far below the tip a block stays reorg-able
+//! Finality depth: blocks below the best tip before one is finalized
 
 use core::num::NonZeroU32;
 
 /// Blocks below the tip kept reorg-able (non-finalized); consensus bound = 1000
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReorgDepth(NonZeroU32);
+pub struct FinalityDepth(NonZeroU32);
 
-impl ReorgDepth {
+impl FinalityDepth {
     pub const CONSENSUS: Self =
         Self(NonZeroU32::new(crate::protocol::MAX_BLOCK_REORG_HEIGHT).expect("1000 is non-zero"));
 

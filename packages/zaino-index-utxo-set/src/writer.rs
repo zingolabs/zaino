@@ -65,7 +65,7 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
                 let stored = stored.collect::<Result<Vec<_>, _>>();
                 let mut paid = stored.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 let mut out: Vec<BlockChanges> =
-                    fresh.iter().map(|block| store.changes(block.at())).collect();
+                    fresh.iter().map(|block| store.changes(block.block_ref())).collect();
                 let folded = fold_run(&UtxoSetReader::new(store.applied()), &fresh, &mut out);
                 paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
                 for changes in out {
@@ -261,14 +261,14 @@ mod tests {
         let blocks = chain.blocks(two);
         let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-        let mut genesis = store.changes(blocks[0].at());
+        let mut genesis = store.changes(blocks[0].block_ref());
         let genesis_fees = fold(&UtxoSetReader::new(store.applied()), &blocks[0], &mut genesis);
         assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
         store.apply(genesis);
 
         let run = [&*blocks[1], &*blocks[2]];
         let mut out: Vec<BlockChanges> =
-            run.iter().map(|block| store.changes(block.at())).collect();
+            run.iter().map(|block| store.changes(block.block_ref())).collect();
         let parent = UtxoSetReader::new(store.applied());
         let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
         assert_eq!(run_fees, expected);
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(removed(&out[1]), spent, "block 2 spends block 1's");
 
         for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             let block_fees = fold(&UtxoSetReader::new(store.applied()), block, &mut changes);
             let height = block.header().height;
             assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
@@ -400,7 +400,7 @@ mod tests {
             let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
-                run.iter().map(|block| store.changes(block.at())).collect();
+                run.iter().map(|block| store.changes(block.block_ref())).collect();
             let folded = fold_run(&UtxoSetReader::new(store.applied()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
@@ -425,7 +425,7 @@ mod tests {
         let blocks = chain.blocks(one);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             fold(&UtxoSetReader::new(store.applied()), block, &mut changes).expect("folds");
             store.apply(changes);
         }
@@ -526,7 +526,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
             assert_eq!(resolved, [expected[next as usize].clone()], "{crashed}");
-            assert_eq!(tip_of(&handle.view()), Some(next), "{crashed}: durable");
+            assert_eq!(tip_of(&handle.durable_view()), Some(next), "{crashed}: durable");
         }
     }
 

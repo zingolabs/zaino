@@ -37,7 +37,7 @@ use zcash_transparent::bundle::OutPoint;
 use super::*;
 
 const NETWORK: NetworkType = NetworkType::Regtest;
-const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
@@ -120,12 +120,12 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let ((first, utxo_set), others) = stores.split_first_mut().expect("indexes");
     assert_eq!(*first, IndexKind::UtxoSet, "utxo-set folds first: the rest read its fees");
     for block in path {
-        let mut out = utxo_set.changes(block.at());
+        let mut out = utxo_set.changes(block.block_ref());
         let parent = UtxoSetReader::new(utxo_set.applied());
         let fees = zaino_index_utxo_set::fold(&parent, block, &mut out).expect("prevouts held");
         utxo_set.apply(out);
         for (kind, store) in others.iter_mut() {
-            let mut out = store.changes(block.at());
+            let mut out = store.changes(block.block_ref());
             own_fold(*kind, store.applied(), &fees, block, &mut out);
             store.apply(out);
         }
@@ -144,7 +144,7 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
 ///   or past it) its durable tip alone; either = the oracle there
 /// - `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
-    indexed: &Indexed<DiskView>,
+    indexed: &NfsPublication<DiskView>,
     blocks: &MockChain,
     mined: &[BlockHash],
     oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
@@ -176,11 +176,11 @@ fn verify(
             continue;
         };
         let block = at.tip();
-        let path = blocks.blocks(blocks.block(*hash).at());
-        let shared = path.iter().take_while(|block| chain.on_best(block.at())).count();
+        let path = blocks.blocks(blocks.block(*hash).block_ref());
+        let shared = path.iter().take_while(|block| chain.on_best(block.block_ref())).count();
         let branch = match shared {
             all if all == path.len() => Branch::Best,
-            shared => Branch::Side { from: path[shared - 1].at() },
+            shared => Branch::Side { from: path[shared - 1].block_ref() },
         };
         assert_eq!((block.hash, at.branch()), (*hash, branch), "{context}: G7 at({hash:?})");
         for (kind, durable) in &durable {
@@ -240,7 +240,7 @@ impl Pipeline {
             let store = store.expect("store");
             let mut add = |handle: IndexHandle<DiskView>| {
                 handles.push((kind, handle.clone()));
-                let blocks = follower.subscribe(kind, handle.view().tip(), queue);
+                let blocks = follower.subscribe(kind, handle.durable_view().tip(), queue);
                 nfs.add(kind, handle);
                 blocks
             };
@@ -302,11 +302,11 @@ impl Pipeline {
         &mut self,
         best: BlockRef,
         finalized_height: Option<BlockHeight>,
-        mut each: impl FnMut(&Indexed<DiskView>),
-        check: &mut impl FnMut(&Indexed<DiskView>, &str),
+        mut each: impl FnMut(&NfsPublication<DiskView>),
+        check: &mut impl FnMut(&NfsPublication<DiskView>, &str),
         context: &str,
     ) {
-        let mut seen: Option<Arc<Indexed<DiskView>>> = None;
+        let mut seen: Option<Arc<NfsPublication<DiskView>>> = None;
         let settled = async {
             loop {
                 let latest = self.indexed.borrow_and_update().clone();
@@ -388,10 +388,10 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
     let (genesis, mut tag) = (blocks.genesis(), 0);
     let trunk_a =
         [blocks.blocks(genesis), mine(&mut blocks, &mut tag, genesis, 12, false)].concat();
-    let longer_b = mine(&mut blocks, &mut tag, trunk_a[9].at(), 4, true);
-    let same_height_c13 = mine(&mut blocks, &mut tag, longer_b[2].at(), 1, true).remove(0);
-    let retreat_d12 = mine(&mut blocks, &mut tag, longer_b[1].at(), 1, true).remove(0);
-    let extension_e = mine(&mut blocks, &mut tag, retreat_d12.at(), 12, false);
+    let longer_b = mine(&mut blocks, &mut tag, trunk_a[9].block_ref(), 4, true);
+    let same_height_c13 = mine(&mut blocks, &mut tag, longer_b[2].block_ref(), 1, true).remove(0);
+    let retreat_d12 = mine(&mut blocks, &mut tag, longer_b[1].block_ref(), 1, true).remove(0);
+    let extension_e = mine(&mut blocks, &mut tag, retreat_d12.block_ref(), 12, false);
     let blocks = blocks;
     let side = [same_height_c13.clone(), retreat_d12.clone()];
     let tree = [&trunk_a[..], &longer_b, &side, &extension_e];
@@ -429,7 +429,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
-    let mut check = |indexed: &Indexed<DiskView>, context: &str| {
+    let mut check = |indexed: &NfsPublication<DiskView>, context: &str| {
         verify(indexed, &blocks, &mined, &mut oracles, context)
     };
 
@@ -444,7 +444,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
                 headers.finalize(boundary);
             }
             if let Some(tip) = added.last() {
-                members.iter().for_each(|member| member.follow(&blocks, tip.at()));
+                members.iter().for_each(|member| member.follow(&blocks, tip.block_ref()));
             }
             verified.send_replace(headers.verified().map(Arc::new));
             let best = headers.best().expect("verified").block;
@@ -487,7 +487,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
-    let mut check = |indexed: &Indexed<DiskView>, context: &str| {
+    let mut check = |indexed: &NfsPublication<DiskView>, context: &str| {
         verify(indexed, &blocks, &mined, &mut oracles, context)
     };
     let four = [
@@ -502,7 +502,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
             headers.finalize(boundary);
         }
         if let Some(tip) = added.last() {
-            member.follow(&blocks, tip.at());
+            member.follow(&blocks, tip.block_ref());
         }
         verified.send_replace(headers.verified().map(Arc::new));
         (headers.best().expect("verified").block, headers.finalized_tip().map(|tip| tip.height))
@@ -519,7 +519,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     for at in 9..=16 {
         let context = format!("run 1 A{at}");
         let (best, finalized_height) = add(&trunk[at..=at]);
-        let each = |indexed: &Indexed<DiskView>| {
+        let each = |indexed: &NfsPublication<DiskView>| {
             let tip = indexed.served().tip().height;
             assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
             served = tip;

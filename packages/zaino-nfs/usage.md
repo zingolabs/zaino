@@ -1,7 +1,7 @@
 # `zaino-nfs` — usage
 
 The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block
-above the indexes' durable tips folded in RAM, one `Indexed` publish across every index (the index
+above the indexes' durable tips folded in RAM, one `NfsPublication` publish across every index (the index
 half of `zaino_grpc_snapshot::GrpcSnapshot`). Finalized blocks reach the writers on the finalized path
 (`zaino-sync`), never through here.
 
@@ -17,7 +17,7 @@ let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clon
 // one per enabled index: its handle to both, its finalized stream out
 let utxo_set_writer = UtxoSetIndexWriter::new(utxo_set_store);
 let utxo_set = utxo_set_writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.view().tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.durable_view().tip(), queue_bytes);
 nfs.add(IndexKind::UtxoSet, utxo_set);
 
 let publisher = zaino_grpc_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
@@ -33,10 +33,10 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
   `IndexGone(index)` = an input dropped.
 
-## Readers: `Indexed` → `At`
+## Readers: `NfsPublication` → `IndexesAtBlock`
 
-Routes never hold an `Indexed`: they load one `zaino_grpc_snapshot::GrpcSnapshot` per request and ask it
-`served()?` (this crate's `At`).
+Routes never hold an `NfsPublication`: they load one `zaino_grpc_snapshot::GrpcSnapshot` per request and ask it
+`served()?` (this crate's `IndexesAtBlock`).
 
 ```rust,ignore
 let at = grpc_snapshot.served()?;                       // zaino-grpc-snapshot: one load, pinned
@@ -45,20 +45,20 @@ let blocks = at.views().compact_block().ok_or_else(disabled)?; // None = disable
 let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 ```
 
-- One `Indexed` = one served tip across every enabled index: each view = the durable view +
+- One `NfsPublication` = one served tip across every enabled index: each view = the durable view +
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
-- `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
+- `IndexesAtBlock::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
   best-branch block (finalized data), else the block.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
   durable tip); a reorg moves it to the fork point at once. The publish is `None` (withdrawn) only
   with no folded best node and no root on the best chain.
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
-  or unknown. `At::branch()` = `Best` or `Side { from }`.
+  or unknown. `IndexesAtBlock::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.
 - `served_above_durable()` = the full blocks `served` extends above the root, served first (its own
   path only, side nodes never): what the mempool stream excludes.
-- Feature `testing`: `Indexed::fixed(chain, tip, params, [(kind, view)])`;
-  `Indexed::fixed_above(chain, root, &above_root_blocks, params, [(kind, view)])` (served =
+- Feature `testing`: `NfsPublication::fixed(chain, tip, params, [(kind, view)])`;
+  `NfsPublication::fixed_above(chain, root, &above_root_blocks, params, [(kind, view)])` (served =
   the last);
   `ChainParams::of(&mock_chain)`.
 
@@ -79,7 +79,7 @@ from `zaino-grpc-snapshot`.
  checked bodies ─────┤                    │
  fold results ───────┼─▶ NfsCore::step ───┼─▶ Fold ────▶ fold_block on rayon ─▶ Node in graph
  IndexHandle commits ┘   (pure: no I/O)   │
-   (durable tips)                         └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-grpc-snapshot
+   (durable tips)                         └─▶ Publish ─▶ watch<Option<NfsPublication>> ─▶ zaino-grpc-snapshot
 ```
 
 `NfsCore::step` is pure (no I/O): inputs = the chain, checked bodies, fold results, durable tips;

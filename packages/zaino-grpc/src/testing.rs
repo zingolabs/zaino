@@ -1,4 +1,4 @@
-//! Shared route-test infra: `Routes` over a `MockValidator`, request builders, indexes folded
+//! Shared route-test infra: `RouteDeps` over a `MockValidator`, request builders, indexes folded
 //! from a `MockChain`'s genesis and served through one fixed `GrpcSnapshot`
 
 use std::{num::NonZeroUsize, sync::Arc};
@@ -8,20 +8,20 @@ use http::{HeaderMap, Request, Response};
 use http_body_util::Full;
 use tokio::sync::watch;
 use tonic::body::Body;
-use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationFold, TrustedValidatorSet};
+use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedValidatorSet};
 use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
 use zaino_header_chain::testing::HeaderViews;
-use zaino_nfs::{ChainParams, Indexed};
+use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
 use zcash_protocol::TxId;
 
-use crate::service::{Dispatch, Method, Routes};
+use crate::service::{Dispatch, Method, RouteDeps};
 
 /// Network the routes declare (the transparent tests' addresses are mainnet ones)
 pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
@@ -53,7 +53,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {
         let parent = index.applied();
-        let mut out = index.changes(block.at());
+        let mut out = index.changes(block.block_ref());
         match kind {
             IndexKind::CompactBlock => {
                 let parent = zaino_index_compact_block::CompactBlockReader::new(parent);
@@ -86,9 +86,9 @@ pub(super) fn indexed_at(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
-) -> Indexed<DiskView> {
+) -> NfsPublication<DiskView> {
     let params = ChainParams::of(chain);
-    Indexed::fixed(Arc::new(chain.verified(tip)), tip, params, views)
+    NfsPublication::fixed(Arc::new(chain.verified(tip)), tip, params, views)
 }
 
 /// Fixed `GrpcSnapshot`: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
@@ -113,12 +113,15 @@ pub(super) fn grpc_snapshots(
     grpc_snapshots_held(chain, tip, views, TrustedValidatorSet::default(), &[])
 }
 
-/// Routes over `node`, every index configured (the balancer's driver + the view's poll fold back,
-/// unspawned); nothing verified, nothing served, never republished
+/// `RouteDeps` over `node`, every index configured (the balancer's driver + the view's poll merge
+/// back, unspawned); nothing verified, nothing served, never republished
 pub(super) fn routes_over(
     node: &Arc<MockValidator>,
-) -> (Routes<MockValidator, DiskView>, TrafficDriver<MockValidator>, ObservationFold<MockValidator>)
-{
+) -> (
+    RouteDeps<MockValidator, DiskView>,
+    TrafficDriver<MockValidator>,
+    ObservationMerge<MockValidator>,
+) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = TrustedValidator { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
@@ -127,13 +130,13 @@ pub(super) fn routes_over(
     let view = ChainView::new(
         address,
         validators.clone(),
-        ReorgDepth::CONSENSUS,
+        FinalityDepth::CONSENSUS,
         schedule,
         tokio_util::sync::CancellationToken::new(),
     );
     let view = view.expect("one endpoint");
-    let fold = view.observation_fold();
-    let routes = Routes {
+    let merge = view.observation_merge();
+    let routes = RouteDeps {
         grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
         submit: Arc::new(view),
         validators,
@@ -147,31 +150,31 @@ pub(super) fn routes_over(
             IndexKind::BlockHash,
         ],
     };
-    (routes, driver, fold)
+    (routes, driver, merge)
 }
 
 /// Stands in for the NFS's publication watch
-pub(super) type NfsPublishes = watch::Sender<Option<Arc<Indexed<DiskView>>>>;
+pub(super) type NfsPublishes = watch::Sender<Option<Arc<NfsPublication<DiskView>>>>;
 
 /// `routes` read a live publisher over their chain view and the returned NFS watch (the
 /// publisher back, unspawned)
 pub(super) fn published(
-    routes: &mut Routes<MockValidator, DiskView>,
+    routes: &mut RouteDeps<MockValidator, DiskView>,
 ) -> (Publisher<DiskView>, NfsPublishes) {
     let (nfs, indexed) = watch::channel(None);
-    let publisher = Publisher::new(indexed, routes.submit.subscriber(), ReorgDepth::CONSENSUS);
+    let publisher = Publisher::new(indexed, routes.submit.subscriber(), FinalityDepth::CONSENSUS);
     routes.grpc_snapshots = publisher.handle();
     (publisher, nfs)
 }
 
 /// [`routes_over`] a never-polled node at a bare genesis, for tests that only serve indexes
-pub(super) fn routes() -> Routes<MockValidator, DiskView> {
+pub(super) fn routes() -> RouteDeps<MockValidator, DiskView> {
     let chain = MockChain::regtest();
     routes_over(&Arc::new(chain.validator(chain.genesis()))).0
 }
 
 pub(super) fn dispatch(
-    routes: Routes<MockValidator, DiskView>,
+    routes: RouteDeps<MockValidator, DiskView>,
 ) -> Dispatch<MockValidator, DiskView> {
     let dispatch = Dispatch::new(&crate::GrpcLimits::default());
     dispatch.routing().route(routes);

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{h, p2pkh, MockChain};
-use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth, PeerTxId};
 use zaino_source::testing::{
     decoded, raw_transaction, raw_transparent, within, MockValidator, Port, ValidatorViews,
 };
@@ -31,7 +31,7 @@ use crate::{
     Agreement, ChainView, Count, MempoolEntry, Projection, SubmitError, TrustedValidatorSet,
 };
 
-/// The view over `validators` (`addresses` in order) + `peer_set`, its balancer + poll fold
+/// The view over `validators` (`addresses` in order) + `peer_set`, its balancer + poll merge
 /// spawned (they run once the test awaits)
 fn running(
     validators: &[Arc<MockValidator>],
@@ -57,11 +57,11 @@ fn running(
     .expect("a valid set");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
-    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    tokio::spawn(view.observation_merge().run(cancel.clone()));
     (view, balancer, cancel)
 }
 
-/// Every member polled again (cadence, ladder or a wake) and that poll folded (paused clock: the
+/// Every member polled again (cadence, ladder or a wake) and that poll merged (paused clock: the
 /// 1 ms timer fires once every task idles)
 async fn polled(balancer: &TrafficBalancer<MockValidator>) {
     let members = balancer.members().borrow().rows.len();
@@ -89,8 +89,8 @@ fn zats(zats: u64) -> Zatoshis {
 
 const DEPTH: u32 = 10;
 
-fn depth() -> ReorgDepth {
-    ReorgDepth::new(std::num::NonZeroU32::new(DEPTH).expect("nz"))
+fn depth() -> FinalityDepth {
+    FinalityDepth::new(std::num::NonZeroU32::new(DEPTH).expect("nz"))
 }
 
 /// `MockChain::regtest()`'s: every upgrade through NU6.3 at 1
@@ -714,7 +714,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     assert_eq!(tip(), Some((at_100, held_by(&[0, 1, 2]))));
 
     // a mines 101, a new transaction's bytes 20 s away; its header verifies: the tip moves at
-    // once, held by a alone (its poll's hold folded before its bytes are fetched)
+    // once, held by a alone (its poll's hold merged before its bytes are fetched)
     validators[0].follow(&chain, at_101);
     validators[0].latency(&[Port::MempoolBytes], Duration::from_secs(20));
     let unmined = chain.submit(decoded(raw_transaction(1, 0).1));
@@ -1143,7 +1143,8 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         chain.mine_empty(4);
         path_end(&mut chain);
         let peers_tip = chain.mine_empty(1);
-        let best: Vec<BlockRef> = chain.blocks(peers_tip).iter().map(|block| block.at()).collect();
+        let best: Vec<BlockRef> =
+            chain.blocks(peers_tip).iter().map(|block| block.block_ref()).collect();
         let peer_set = Arc::new(chain.peer_set(peers_tip));
         let (view, _balancer, cancel) = running(&[validator], &["a:8232"], Some(peer_set));
         let sync =

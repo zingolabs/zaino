@@ -215,7 +215,7 @@ mod tests {
     /// `chain`'s blocks `heights` folded onto `store`
     fn folded(mut store: DiskStore, chain: &MockChain, heights: std::ops::Range<u32>) -> DiskStore {
         for block in &chain.blocks(chain.tip())[heights.start as usize..heights.end as usize] {
-            let mut changes = store.changes(block.at());
+            let mut changes = store.changes(block.block_ref());
             let parent = CompactBlockReader::new(store.applied());
             let fees = chain.fees(block.header().hash);
             fold(&parent, block, &fees, &mut changes);
@@ -241,7 +241,7 @@ mod tests {
         let mut layer = Overlay::empty(store.schema());
         for block in &chain.blocks(chain.tip())[4..7] {
             let parent = CompactBlockReader::new(OverlayView::new(store.durable(), layer.clone()));
-            let mut changes = store.schema().changes(block.at());
+            let mut changes = store.schema().changes(block.block_ref());
             let fees = chain.fees(block.header().hash);
             fold(&parent, block, &fees, &mut changes);
             layer = layer.with(&changes);

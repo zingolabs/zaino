@@ -18,13 +18,13 @@ use std::sync::{Arc, OnceLock, RwLock};
 use bytes::Bytes;
 use tokio::sync::watch;
 use zaino_chainview::MempoolEntry;
-use zaino_nfs::Indexed;
+use zaino_nfs::NfsPublication;
 
 use zcash_protocol::TxId;
 
 /// Txids of the blocks the served tip extends above the root (below it: no live listing holds them)
-pub(crate) fn above_durable_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TxId> {
-    let blocks = indexed.into_iter().flat_map(Indexed::served_above_durable);
+pub(crate) fn above_durable_txids<V>(indexed: Option<&NfsPublication<V>>) -> HashSet<TxId> {
+    let blocks = indexed.into_iter().flat_map(NfsPublication::served_above_durable);
     blocks.flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
 }
 

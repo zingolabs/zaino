@@ -11,9 +11,9 @@
 //!                                               │                                          └─▶ transparent_address
 //!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──────────┘
 //!                                                    ▼
-//!                                   Indexed ─┐
-//!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ Routes ─▶ GrpcService
-//!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘    └▶ admin, logs
+//!                            NfsPublication ─┐
+//!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ RouteDeps ─▶ GrpcService
+//!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘       └▶ admin, logs
 //! ```
 //!
 //! - Finalized path: follower → writers (disk); tip path: NFS (RAM); one `GrpcSnapshot` per request
@@ -31,7 +31,9 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use crate::config::network_name;
 use zaino_chainview::ChainView;
-use zaino_grpc::{AdmissionState, GrpcLimits, GrpcService, Routes, Routing, Tls, TrustedProxies};
+use zaino_grpc::{
+    AdmissionState, GrpcLimits, GrpcService, RouteDeps, Routing, Tls, TrustedProxies,
+};
 use zaino_grpc_snapshot::Publisher;
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
@@ -43,7 +45,7 @@ use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::types::{Block, ReorgDepth};
+use zaino_primitives::types::{Block, FinalityDepth};
 use zaino_source::{BlockchainInfo, ChainDataSource};
 use zaino_sync::{FeeSink, FinalizedFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
@@ -227,8 +229,8 @@ async fn boot_over<S: ChainDataSource>(
         };
         spawn_infallible(&mut tasks, "peers", chainview_span.clone(), run);
     }
-    let fold = viewed.fold.run(cancel.child_token());
-    spawn_infallible(&mut tasks, "chainview", chainview_span.clone(), fold);
+    let merge = viewed.merge.run(cancel.child_token());
+    spawn_infallible(&mut tasks, "chainview", chainview_span.clone(), merge);
     for (member, watch) in wiring.watches {
         let (changed, linked) = (wiring.balancer.clone(), wiring.balancer.clone());
         let on_change = move |_| changed.pushed(member, Push::Changed);
@@ -271,7 +273,7 @@ fn open_indexes<S: ChainDataSource>(
     inputs: &Inputs<S>,
 ) -> Result<Indexes<S>, IndexerError> {
     let (network, lookahead) = (config.network, config.sync.concurrency);
-    let depth = ReorgDepth::new(config.sync.finalised_depth);
+    let depth = FinalityDepth::new(config.sync.finalised_depth);
     let params = ChainParams { network, schedule: inputs.schedule };
     let (chain, balancer) = (&inputs.chain, &inputs.balancer);
     let mut indexes = Indexes {
@@ -337,7 +339,7 @@ fn run_pipeline<S: ChainDataSource>(
     mut tasks: JoinSet<TaskExit>,
 ) -> JoinSet<TaskExit> {
     let network = config.network;
-    let depth = ReorgDepth::new(config.sync.finalised_depth);
+    let depth = FinalityDepth::new(config.sync.finalised_depth);
     let Indexes { follower, nfs, opened, writers, .. } = indexes;
     for (kind, span, writer) in writers {
         spawn_infallible(&mut tasks, kind.name(), span, writer);
@@ -350,7 +352,7 @@ fn run_pipeline<S: ChainDataSource>(
     spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
     spawn(&mut tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
-    serving.routing.route(Routes {
+    serving.routing.route(RouteDeps {
         grpc_snapshots: grpc_snapshots.clone(),
         submit: Arc::clone(&inputs.view),
         validators: inputs.balancer,
@@ -423,7 +425,7 @@ impl<S: ChainDataSource> Indexes<S> {
             self.engine.open(&config.path, &schema, write_buffer).map(writer)
         })?;
         let handle = handle(&writer);
-        let blocks = self.follower.subscribe(kind, handle.view().tip(), config.queue_bytes);
+        let blocks = self.follower.subscribe(kind, handle.durable_view().tip(), config.queue_bytes);
         self.nfs.add(kind, handle.clone());
         self.writers.push((kind, span.clone(), Box::pin(run(writer, blocks))));
         self.opened.push(crate::progress::Index { kind, span, dir: config.path.clone(), handle });
@@ -646,7 +648,7 @@ mod tests {
         let b = blocks.blocks(b8);
         let hash = |block: &Block| block.header().hash;
 
-        let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
+        let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
         let validator = Arc::new(blocks.validator(a8));
@@ -663,7 +665,7 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
         );
         let view = Arc::new(view.expect("one endpoint"));
-        let fold = view.observation_fold();
+        let merge = view.observation_merge();
         let fs = zaino_persistence::fs::SimFs::new();
         let inputs = Inputs { fs, chain, view: Arc::clone(&view), balancer, schedule };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -681,7 +683,7 @@ mod tests {
         let serving =
             listen(&config, &status, &cancel, &mut tasks).await.expect("the gRPC listener binds");
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
-        spawn_infallible(&mut tasks, "chainview", Span::none(), fold.run(cancel.child_token()));
+        spawn_infallible(&mut tasks, "chainview", Span::none(), merge.run(cancel.child_token()));
         let mut tasks =
             pipeline(&config, inputs, serving, &status, &cancel, tasks).expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
@@ -735,7 +737,7 @@ mod tests {
 
         publish(&a);
         agree_at(&a[8]).await;
-        // UNAVAILABLE until the fold's first poll shows the mock holding A8
+        // UNAVAILABLE until the merge's first poll shows the mock holding A8
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut mempool = loop {
             match streamer.get_mempool_stream(Empty {}).await {

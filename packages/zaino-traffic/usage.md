@@ -17,7 +17,7 @@ use zaino_traffic::{Limits, Peers, TrafficBalancer, TrustedValidator};
 let trusted = validators
     .iter()
     .map(|v| TrustedValidator {
-        source: Arc::new(ZcashLegacyRpcClient::at(&v.address, cookie, user, password, timeouts, link)?),
+        source: Arc::new(ZcashLegacyRpcClient::new(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections)?,               // None below 5
     })

@@ -93,7 +93,7 @@ pub struct ZebraIndexerWatch {
 
 impl ZebraIndexerWatch {
     /// Unprobed (a validator without its indexer up is the run loop's retry)
-    pub fn at(
+    pub fn new(
         address: &str,
         tls: Option<&ZebraIndexerTls>,
         timeouts: Timeouts,
@@ -262,7 +262,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let (changes, links) = (Arc::clone(&seen), Arc::clone(&seen));
         let cancel = CancellationToken::new();
-        let watch = ZebraIndexerWatch::at(&address, None, Timeouts::default()).expect("address");
+        let watch = ZebraIndexerWatch::new(&address, None, Timeouts::default()).expect("address");
         let watching = tokio::spawn(watch.run(
             cancel.clone(),
             move |change| changes.lock().expect("seen").push(format!("{change:?}")),
@@ -388,7 +388,7 @@ mod tests {
             let links = seen_tx.clone();
             let cancel = CancellationToken::new();
             let watch =
-                ZebraIndexerWatch::at(&address, Some(&tls), Timeouts::default()).expect("pems");
+                ZebraIndexerWatch::new(&address, Some(&tls), Timeouts::default()).expect("pems");
             let watching = tokio::spawn(watch.run(
                 cancel.clone(),
                 move |change| seen_tx.send(format!("{change:?}")).expect("test listening"),
@@ -418,7 +418,7 @@ mod tests {
             ca_path: dir.path().join("missing.pem"),
             ..client(&client_cert, &client_key)
         };
-        let refused = ZebraIndexerWatch::at(&address, Some(&missing), Timeouts::default());
+        let refused = ZebraIndexerWatch::new(&address, Some(&missing), Timeouts::default());
         let named = matches!(
             refused,
             Err(EndpointError::TlsFile { role: "CA", ref path, .. }) if path.ends_with("missing.pem")
