@@ -112,12 +112,11 @@ calls `GetLightdInfo` and rejects any `lightwalletProtocolVersion` below
 blocks. Zaino reports the release of its vendored protos
 (`zaino_proto::LIGHTWALLET_PROTOCOL_VERSION`, read from
 `packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`), so moving to a new
-upstream release moves the reported version with it. librustzcash still has no
-reader for the field.
+upstream release moves the reported version with it.
 
-## Transparent: the path everyone uses, and the path nobody uses yet
+## Transparent: address queries and the private path
 
-Transparent sync today leaks the wallet. pepper-sync discovers transparent funds
+Address-by-address transparent sync leaks the wallet. pepper-sync discovers transparent funds
 by walking the BIP-44 derivation path and sending **each derived address to the
 server**, one per round trip, until `gap_limit` consecutive addresses come back
 empty (`address_discovery` in `pepper-sync/src/sync/transparent.rs`). That is 20 round trips at
@@ -130,17 +129,6 @@ used, and the derivation order that links them all to one wallet.
 The protocol defines the private alternative: request the `TRANSPARENT` pool in
 `BlockRange.poolTypes` and match scripts locally, disclosing nothing
 (lightwallet-protocol v0.4.0, PR #1; lightwalletd PR #534).
-
-**Adoption is partial.** pepper-sync (zingolib `dev`) requests `TRANSPARENT`
-with the shielded pools above its transparent scan floor (`get_block_range` in
-`client/fetch.rs`). librustzcash's sync still sends `pool_types: vec![]`
-(`download_blocks` in `sync.rs`). Its compact scanner in the
-`zcash_client_backend` 0.24.0 release hardcodes the transparent-output argument
-to `vec![]` and gates the push on `has_sapling || has_orchard || has_ironwood`
-with no transparent term (`scan_block_with_runners` in `scanning/compact.rs`),
-so a purely transparent transaction is dropped **entirely**, not merely stripped
-of its transparent fields (librustzcash #2187, #2395). librustzcash `main` scans
-transparent data there.
 
 Zaino serves the private path, and it is cheap for us to do so. `CompactTxIn` is
 `{prevoutTxid, prevoutIndex}` with **no prevout value**, a deliberate omission

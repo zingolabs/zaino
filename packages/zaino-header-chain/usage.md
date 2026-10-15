@@ -1,12 +1,9 @@
 # `zaino-header-chain` — usage
 
-The Validated Header tree: each header validated either by the trusted validator that served it
-or by Zaino's `validate`. Anchored at a trusted validator's tip − `anchor_below()` (no history from
-genesis): the bounded tree of branches above the finalized boundary, the tip with the most cumulative
-work, and the immutable `VerifiedChain` everything downstream reads. A trusted header enters on
-its parent link and its nBits work alone (`insert`: its validator already ran the consensus
-rules); a peer's runs every rule first (`insert_untrusted`). Why and how it is driven:
-[architecture §4](../../docs/architecture.md#4-the-best-chain).
+The Validated Header tree ([architecture §4](../../docs/architecture.md#4-the-best-chain): the
+anchor, trusted vs peer headers, finality): the bounded tree of branches above the finalized
+boundary, the most-work tip, and the immutable `VerifiedChain` everything downstream reads. A
+trusted header enters by `insert`, a peer's by `insert_untrusted` (`validate` first).
 
 ```rust,ignore
 use zaino_header_chain::{decode_header, HeaderChain, Inserted};
@@ -75,10 +72,9 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   panics naming the invariant.
 - Finality on peers' word: with no vouch that deep, `peer_finalizable()` names best − depth
   unless a non-finalized best-chain block holds under half the work of the highest vouched block (or
-  the anchor): a difficulty collapse, the mark of a minority miner's private chain. The caller
-  adds its own evidence (`zaino-chainview`'s `HeaderSync`: live peers in more than 5 netgroups
-  carrying the chain) and calls
-  `finalize_by_peers(block)`, which panics on any other block. Peer-finalized blocks never move
+  the anchor). The caller adds its own evidence (`zaino-chainview`'s `HeaderSync`;
+  [why both](../../docs/architecture.md#finality)) and calls `finalize_by_peers(block)`, which
+  panics on any other block. Peer-finalized blocks never move
   the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
 - Memory only: the newest max(`2 · depth`, `CONTEXT`) finalized headers stay, answering by height;
   older finalized headers are finalized by definition (`on_best` = true) and a header whose parent is one of

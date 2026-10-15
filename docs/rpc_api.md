@@ -54,17 +54,22 @@ Every index method reads one `GrpcSnapshot` of every index, pinned for the reque
 stream. A method naming no height answers at the served tip, which every
 enabled index holds: `GetLatestBlock`, `GetLatestTreeState`, `GetSubtreeRoots`,
 `GetLightdInfo.blockHeight`, and the address methods (a `GetTaddressTxids` range
-included). A block or tree-state method naming a height
-(`GetBlock`, `GetBlockRange`, `GetTreeState`) answers up to its own index's
-tip, which during sync may be above the served tip.
+included). While Zaino syncs, the served tip is the lowest tip across the
+enabled indexes, so a wallet gating on `GetLatestBlock` or
+`GetLightdInfo.blockHeight` never asks past what every index holds. A block or
+tree-state method naming a height (`GetBlock`, `GetBlockRange`, `GetTreeState`)
+answers up to its own index's tip, which during sync may be above the served
+tip. Before the first `GrpcSnapshot` (indexes opening at boot) every index
+method is `UNAVAILABLE`.
 
-`GetLightdInfo` never calls a validator. `blockHeight` is the served tip (a wallet gates
-its sync on it), `estimatedHeight` the verified best, `chainName` the configured network, and the
-branch and next upgrade come from the upgrade schedule at the served tip. `version` is zainod's.
-`lightwalletProtocolVersion` is the vendored protos' release (`v0.5.0`), which pepper-sync requires
+`GetLightdInfo` never calls a validator, so it answers while no trusted validator vouches too.
+`blockHeight` is the served tip, `estimatedHeight` the verified best, `chainName` the configured
+network, and the branch and next upgrade come from the upgrade schedule at the served tip
+(compiled in for mainnet and testnet, the validator's for regtest). `version` is zainod's.
+`lightwalletProtocolVersion` is the vendored protos' release (the newest heading of
+`packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`); pepper-sync refuses one below `v0.5.0`
 ([client-requirements.md](./client-requirements.md)). Before anything is served the call is
-`UNAVAILABLE`. Field by field: the
-[`zaino-grpc` guide](../packages/zaino-grpc/usage.md).
+`UNAVAILABLE`.
 
 `GetTransaction` answers a mined transaction with its height, and an unmined or
 orphaned one with height 0, the wire's only "no height" value.
@@ -121,13 +126,6 @@ no progress (see [running.md](./running.md#stream-time-limits)).
 | addresses with more receives than one request may walk (`serve.max_address_rows`)                   | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
 | request body not complete within 30 s                                                               | `DEADLINE_EXCEEDED`  | resend                                                                 |
 | stored record will not walk                                                                         | `INTERNAL`           | the server is broken                                                   |
-
-While Zaino syncs, the served tip trails the chain: it is the lowest tip
-across the enabled indexes, and `GetLatestBlock` / `GetLightdInfo.blockHeight`
-report it, so a wallet gating on them never asks past what every index holds.
-Before
-the first `GrpcSnapshot` (indexes opening at boot) every index method is
-`UNAVAILABLE`.
 
 ## Pool filtering
 

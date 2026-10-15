@@ -104,16 +104,15 @@ the NFS, the finalized path and the `GrpcSnapshot` publisher read.
 - **Anchor.** No history from genesis. With no chain, or a trusted validator so far ahead its anchor
   lies above our fetch ceiling, the tree anchors at that validator's claim − max(depth, 113) (113 =
   the difficulty rule's context). Only a trusted validator can anchor.
-- **Trusted headers** arrive in runs of up to 2,000 and enter on their parent link and nBits work
-  alone: the validator already ran the rules.
-- **Peer headers** (`[p2p]` on, once anchored, polled every 5 s) run every consensus rule in
-  `zaino_header_chain::validate`: Equihash (200, 9) and hash ≤ target; nBits = zcashd's
-  `CalculateNextWorkRequired` + ZIP 218; time after the median of 11, within 90 min of it, within
-  2 h of our clock (a future header is deferred, not blamed). On regtest proof of work is off and
-  nBits fixed at the limit, as zebrad does. A header failing a rule gets its sender blamed.
-- **Bounds.** 32 side tips and 4 · depth side nodes; past either the lowest-work side leaf goes.
-  The newest max(2 · depth, 113) finalized headers are kept. `depth` = `[sync] finalised_depth`,
-  default and minimum 1,000 (lower only on regtest).
+- **Trusted headers** arrive in runs and enter on their parent link and nBits work alone: the
+  validator already ran the rules.
+- **Peer headers** (`[p2p]` on, once anchored) run every consensus rule first
+  (`zaino_header_chain::validate`, [the rules](../packages/zaino-header-chain/usage.md#validate-untrusted-fallback)).
+  A header from the future is deferred, not blamed; one failing a rule gets its sender blamed.
+- **Bounds.** Side branches are capped in tips and nodes (past either, the lowest-work side leaf
+  goes), and only a window of finalized headers is kept
+  ([limits](../packages/zaino-header-chain/usage.md#the-tree-the-best-tip-finality)). `depth` =
+  `[sync] finalised_depth` ([default and floor](./example_configs/zainod.toml)).
 
 ### Finality
 
@@ -130,7 +129,7 @@ A header proves work, not that its block's transactions are valid. A finalized b
   attacker who eclipses us can feed a private chain, but its difficulty retargets to their
   hashrate, which shows up as that collapse. Both checks fail safe: a thin peer set or a real
   hashrate drop only delays finality.
-- Neither holding: finality waits, the `finality_paused` alarm rises after 60 s, serving continues
+- Neither holding: finality waits, the `finality paused` alarm rises (§11), serving continues
   from RAM. A trusted validator's return vouches and finality resumes.
 
 ## 5. The mempool view
@@ -142,8 +141,9 @@ fee, a bitset of trusted validators listing it, a quorum flag and an `ours` flag
 quorum, or `ours` (accepted from our own submission). One trusted listing is enough: each trusted
 validator is trusted.
 
-**Peer quorum** (`[p2p]` on). Every 5 s each live outbound peer is asked for its whole mempool;
-each listing counts for 15 s. A transaction is admitted when:
+**Peer quorum** (`[p2p]` on). Each live outbound peer is polled for its whole mempool, and each
+listing counts while fresh ([intervals](../packages/zaino-chainview/usage.md#mempool)). A
+transaction is admitted when:
 
 - more than 2/3 of the counted listings hold its exact id (txid + auth digest), from > 5 netgroups;
 - its bytes decode, its expiry and (v5+) branch id fit the block above the verified best, it is not
@@ -153,10 +153,11 @@ each listing counts for 15 s. A transaction is admitted when:
 
 It stays while more than 1/3 still list it. No fee floor (zebrad's and zakura's differ), no proofs,
 signatures or scripts: each lister is a full node that ran those. A consensus refusal is remembered
-10 min; an unknown prevout is retried next round. With honest peers two conflicting transactions
-are never both admitted (one node's mempool holds at most one, and > 2/3 + > 1/3 must overlap);
-a peer listing both can get both admitted and kept (`mempool_model.rs`). Cost to an attacker:
-> 2/3 of our outbound peers across 6 netgroups, for a served transaction that never mines.
+(`REFUSED_TTL`); an unknown prevout is retried next round. With honest peers two conflicting
+transactions are never both admitted (one node's mempool holds at most one, and > 2/3 + > 1/3
+must overlap); a peer listing both can get both admitted and kept (`mempool_model.rs`). Cost to an
+attacker: > 2/3 of our outbound peers across 6 netgroups, for a served transaction that never
+mines.
 
 Transaction `inv` announcements are not used: nodes announce each transaction to a third of their
 peers, once, so silence means nothing.
@@ -204,7 +205,8 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 - Relays ride the peer set's existing connections: a zebrad peer drops a second connection from
   our IP, so a fresh connection per push would never deliver.
 - `[p2p]` off: every attempt is a trusted `sendrawtransaction`.
-- `[submission]`: `propagation_threshold_secs = 15`, `max_attempts = 4` (defaults).
+- `[submission]` sets `propagation_threshold_secs` and `max_attempts`
+  ([`SubmitPolicy`](../packages/zaino-chainview/usage.md#submission)).
 
 ## 7. Indexing
 
@@ -214,8 +216,8 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 - Heights the verified chain has a header for: fetched by hash from any member (peers included),
   checked against the header (hash, merkle root, coinbase height).
-- Below the header chain (bulk sync, a restart from an old index): by height, trusted only, batched
-  (up to 8 per request), checked by coinbase height only. A trusted validator's body is trusted.
+- Below the header chain (bulk sync, a restart from an old index): by height, trusted only,
+  batched, checked by coinbase height only. A trusted validator's body is trusted.
 - Each block must link to every durable tip it extends and to the block sent before it; otherwise
   the follower stops and the process exits. Nothing is skipped.
 - Queues are byte-bounded and a send reserves room in every queue first, so the slowest writer
@@ -249,14 +251,10 @@ one and reads only it, so no answer mixes two moments.
   does not count, one not polled since best moved does), and stays while it is on the best chain
   within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
-- `/readyz` state (`GrpcSnapshot::standing`): `Serving`, `Syncing`, `Down` (every trusted validator
-  down, or none holds the best block), or `Degraded` = that same cause while synced to a best block
-  under 30 min old (peers carry the tip).
-- `Unavailable` → gRPC `UNAVAILABLE`: no verified chain yet, no trusted validator holds the tip
-  (mempool methods), or nothing served yet.
-- `GetLightdInfo` never calls a validator: `blockHeight` = served, `estimatedHeight` = verified
-  best, branch and next upgrade from the upgrade schedule (compiled in for mainnet and testnet,
-  the validator's for regtest).
+- `GrpcSnapshot::standing` judges serving from the same load: `Down` when no trusted validator
+  vouches for the best block, `Degraded` for that cause while synced to a fresh best (peers carry
+  the tip). States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
+  what each method answers meanwhile: [rpc_api.md](./rpc_api.md).
 
 ### `GetMempoolStream`
 
@@ -275,8 +273,8 @@ per-transaction work never scales with subscribers.
 
 ## 9. Talking to validators and peers
 
-Every request goes through one `TrafficBalancer` (`zaino-traffic`); constants and the API are in
-its usage guide.
+Every request goes through one `TrafficBalancer` (`zaino-traffic`); intervals, hedge delays,
+bench times and the API are in [its guide](../packages/zaino-traffic/usage.md).
 
 - **Members.** Each trusted validator, in `priority` tiers (0 first); then the whole peer set as
   one member below every tier (zebra picks the peer). Peers answer headers and blocks only.
@@ -285,16 +283,16 @@ its usage guide.
   (bulk blocks), each with one reserved permit; the rest is shared, control first.
 - **Pick.** Best tier with room, then the preferred member, then the least loaded.
 - **Failure.** A round asks each member once; slow answers are hedged to another member. Blocks
-  retry every second forever; everything else ends unanswered after one round.
+  are retried until answered; everything else ends unanswered after one round.
 - **Blame.** The balancer cannot judge a value; the caller checks it and `report`s a bad one,
-  which benches that member (60 s, doubling, ≤ 1 h). Absent is never blame. The peer set is never
+  which benches that member for a doubling interval. Absent is never blame. The peer set is never
   benched: zebra scores the lying peer instead.
-- **Polling.** Each trusted validator is polled every 1 s (15 s while both zebrad push streams
-  are up; a push event polls within 200 ms): `getblockchaininfo`, `getrawmempool true`,
-  `getblockhash` at our best, and once a minute peers, version and end-of-service height. 10
-  failures in a row → `Down`, probed every 30 s. A failing validator never stops the process.
-- **Load on a zebrad** = `max_connections` (default 32, at least 5) + byte pacing
-  (`max_mib_per_sec`). There is no request-rate limit.
+- **Polling.** Each trusted validator is polled on an interval, sooner on a zebrad push event:
+  `getblockchaininfo`, `getrawmempool true`, `getblockhash` at our best, and periodically peers,
+  version and end-of-service height. Consecutive failures make it `Down`, probed until it
+  answers. A failing validator never stops the process.
+- **Load on a zebrad** = `max_connections` + byte pacing (`max_mib_per_sec`). There is no
+  request-rate limit.
 
 ## 10. When things fail
 
@@ -325,15 +323,16 @@ Per-transaction spread (`peers: x/y, trusted: x/y`) is tracked internally and fe
 
 ## 12. Seams
 
-A trait exists only where there must be more than one implementation:
+A trait exists only at a seam: a boundary with a second implementation (a real one or a test
+double), or one that keeps a dependency out of the crates above it:
 
 | Trait                               | Implementations                                | Why                                      |
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient`, `MockValidator` | RPC versions; tests control the data |
-| `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets; Tor later       |
+| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient`, `MockValidator` | JSON-RPC or indexer gRPC; tests control the data |
+| `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets                  |
 | `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
 | `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, a `MockChain` `Ledger`   | the chain view sits below the indexes    |
-| `zaino_persistence::PersistenceEngine`, `fs::Fs` | `DiskEngine`; `RealFs`, `SimFs`   | one storage contract; crash testing      |
+| `zaino_persistence::PersistenceEngine`, `fs::Fs` | `DiskEngine`; `RealFs`, `SimFs`   | indexes see the port, never the engine; crash testing |
 
 Not seams: the gRPC service, each index, and the validator set (`TrafficBalancer` is not a
 `ChainDataSource`, so a pool is never mistaken for one validator).

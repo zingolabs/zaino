@@ -80,10 +80,9 @@ several.
   error).
 - `push(raw)`: parses `raw` (zebra's parse-time checks and point rules; `PushError::Wire`
   otherwise, nothing sent), then zebra relays it as zebrad relays its own: to ⌈ready/3⌉
-  random ready peers (all of them on regtest), over the peer set's existing connections.
-  A second connection from our IP would be dropped by a zebrad peer's one-per-IP limit.
-  Zebra names no recipient and a peer answers a push with nothing, so this is delivery,
-  not a verdict. `PushError::Peers` = no ready peer within `request_timeout`.
+  random ready peers (all of them on regtest), over the peer set's existing connections
+  ([why, and what a relay proves](../../docs/architecture.md#6-submission)).
+  `PushError::Peers` = no ready peer within `request_timeout`.
 
 ## Announcements: the chain each peer carries
 
@@ -92,8 +91,7 @@ sender's address attached by zebra: `zaino_primitives::types::Announced { peer, 
 (one block per `inv`; zebra drops multi-block ones), which the chain view counts by
 netgroup toward finality on peers' word.
 
-Transaction `inv`s are ignored: zebrad announces each admitted
-transaction to a third of their peers, once, so a peer's silence says nothing.
+Transaction `inv`s are ignored ([why](../../docs/architecture.md#5-the-mempool-view)).
 Mempool membership is each peer's own listing (`mempool_of`).
 
 A subscriber that falls 4,096 announcements behind gets `RecvError::Lagged` and

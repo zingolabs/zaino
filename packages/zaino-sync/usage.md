@@ -64,14 +64,14 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   `progress()`; `run(cancel)`.
 - Streams `lowest durable + 1 ..= finalized tip`, `lookahead` blocks in flight, delivered in order;
   waits for the next chain past the finalized tip.
-- A height the verified chain holds a header for (the finalized window and above) is fetched by
-  hash from any member, peers included (`fetch`), checked against that header. Below it (bulk
-  sync) it goes by height to trusted members only (`fetch_at` → `TrafficBalancer::blocks_at`,
-  as many per request as one reply at `ResponseSizeCap::MAX` holds): no header there to hold a
-  peer to. A reply short of its heights is a misanswer (`Misanswer::Count`), asked again.
-- Each block's parent must be each durable tip it extends (`FollowError::Diverged`, naming the
-  index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
-  moved). Either stops the follower; nothing is skipped.
+- Which source serves which height, and how each is checked:
+  [architecture §7](../../docs/architecture.md#finalized-path-zaino-sync). By hash = `fetch`; by
+  height = `fetch_at` → `TrafficBalancer::blocks_at`, as many per request as one reply at
+  `ResponseSizeCap::MAX` holds. A reply short of its heights is a misanswer
+  (`Misanswer::Count`), asked again.
+- A block off a durable tip it extends = `FollowError::Diverged` (naming the index: resync); off
+  the block sent before it = `FollowError::Unlinked` (the validator's history moved). Either stops
+  the follower.
 - Cancel → `Ok`; either way every queue ends with `Shutdown`.
 - By height (internal): one batch from a trusted member
   until every block's coinbase height matches its place in the batch (a misanswer `report`ed,

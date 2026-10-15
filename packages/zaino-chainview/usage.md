@@ -208,9 +208,8 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
 `alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
-(definitions: [architecture §11](../../docs/architecture.md#11-telemetry)). Constants:
-`STALE_TIP_BLOCKS` = 24, `END_OF_SERVICE_WARN_BLOCKS` = 8,064, `ECLIPSE_OUTBOUND_MAX` = 2,
-`FINALITY_STALL` = 60 s.
+(definitions and thresholds: [architecture §11](../../docs/architecture.md#11-telemetry); in
+`config.rs`).
 
 ## Testing (feature `testing`)
 

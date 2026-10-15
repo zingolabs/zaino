@@ -25,9 +25,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 ```
 
 - `Nfs::new`: the `VerifiedChain` watch, the traffic balancer (`zaino_sync::fetch` per wanted
-  block, `Urgency::Tip`), the chain params, `depth` (the NFS folds only while the header just
-  above the lowest durable tip is held and best is within `2 · depth` of it), `lookahead` (bodies
-  fetched or folding ahead of the next fold).
+  block, `Urgency::Tip`), the chain params, `depth` (sets the folding window:
+  [architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)), `lookahead` (bodies fetched
+  or folding ahead of the next fold).
 - `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's durable view is
   what publications and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
@@ -49,9 +49,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
 - `IndexesAtBlock::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
   best-branch block (finalized data), else the block.
-- `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
-  durable tip); a reorg moves it to the fork point at once. The publish is `None` (withdrawn) only
-  with no folded best node and no root on the best chain.
+- `served().tip()` = the served tip ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)).
+  The publish is `None` (withdrawn) only with no folded best node and no root on the best chain.
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
   or unknown. `IndexesAtBlock::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.

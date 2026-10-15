@@ -49,7 +49,7 @@ routing.route(routes);
 | `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
 | `GetMempoolTx` | `mempool()?` (the servable mempool) |
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
-| `GetLightdInfo` | `lightd()?`: the served height, the verified best as `estimatedHeight`, the branch and next upgrade from the upgrade schedule at the served height; `network` as configured |
+| `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
 | `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
@@ -61,26 +61,14 @@ routing.route(routes);
   `GetTreeState`, by height or hash) = up to `IndexesAtBlock::answers_through(kind)`, the
   index's own durable tip when past the served one. A point read past it =
   `NOT_FOUND`; a range streams to it, then `OUT_OF_RANGE`.
-- Wire contract: `SendTransaction`
-  rejections = gRPC `OK` + the validator's code and message; `GetTreeState` = the
-  exact height, `""` below a pool's activation, `000000` for an empty active
-  tree; `GetSubtreeRoots` whole or refused before the first byte (unknown pool
-  `UNIMPLEMENTED`, `startIndex` past the end = empty `OK`). See
-  [`docs/rpc_api.md`](../../docs/rpc_api.md).
-- `Unavailable` = `UNAVAILABLE` with its message: nothing served yet (a booting
-  NFS), no verified chain, or (the mempool methods) neither a `Live` trusted
-  validator holding the best block nor a peer quorum.
-- `GetMempoolStream` ends once the **served** tip moves (after the NFS folds the
-  new block), so the `GetLatestBlock` a wallet sends after the end already
-  answers the new tip.
+- `zaino_grpc_snapshot::Unavailable` → `UNAVAILABLE` with its message
+  ([messages](../zaino-grpc-snapshot/usage.md#readers-grpcsnapshots--grpcsnapshot)).
 - An index missing from `RouteDeps::indexes` = disabled: its methods are
   `UNIMPLEMENTED` from routing on, served or not, naming the index
   (`GetTreeState needs the tree_state index, which is not enabled`). An NFS publication
   lacking a configured index's view answers the same. Compact-block is optional
   like the rest. An unknown path is `UNIMPLEMENTED`.
-- `S` = the validators' `ChainDataSource`. Derived answers have no validator
-  method to fall back to: they come from an index or not at all — see
-  [architecture §1](../../docs/architecture.md#1-who-owns-what).
+- `S` = the validators' `ChainDataSource`.
 - `V` = the indexes' `zaino_persistence::PinnedView` (zainod: `DiskView`): every read = an
   index's reader over its durable view + the NFS's layers, on a read lane (any thread).
   Any engine's durable view serves end to end: `RouteDeps<S, V>`, `GrpcService<S, V>`.
@@ -92,9 +80,6 @@ routing.route(routes);
 - Route tests build a `GrpcSnapshot` with `zaino_grpc_snapshot::GrpcSnapshots::fixed` over
   `NfsPublication::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
-- `GetLightdInfo` never calls a validator: one `GrpcSnapshot` load (`lightd()`), so it
-  answers while no trusted validator vouches (degraded) too; nothing served =
-  `UNAVAILABLE`.
 - `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
   `compact_tx`, cached on the entry's `Projection`); each request only renumbers
   slots and prunes pools.
@@ -151,12 +136,7 @@ opposite case: they are *derived*, so forwarding them would mean a second
 implementation that can disagree, or a dependency on a validator index Zebra
 need not have.
 
-`GetTransaction` (and the bytes behind `GetTaddressTransactions`) asks the
-traffic balancer's trusted validators in turn: an absent answer moves to the next, and
-the answer is `NOT_FOUND` only when every validator asked said absent (any other
-failure = `UNAVAILABLE`). `height` = the mined height on the best chain, else `0`
-(mempool, or mined on a branch no longer best). Only the `hash` form of
-`TxFilter` is served.
+What it answers, and when `NOT_FOUND`: [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
 ## Serve stack
 
@@ -184,8 +164,6 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   logged while the previous pair keeps serving. A handshake not done within 10 s closes the
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
-- `lightd_info(grpc_snapshot, network, version)` = `GetLightdInfo`'s answer off a `GrpcSnapshot`, `version` the
-  daemon's (`None` = `UNAVAILABLE`).
 
 Every cap refuses; none queues except the read lanes:
 

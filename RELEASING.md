@@ -65,4 +65,4 @@ after `0.11.0-alpha.2`. Leaving the label out releases `0.11.0`.
 ## Patch release
 
 On the release branch, cherry-pick the fix together with its change file, run `knope release`,
-then step 5.
+then step 4.

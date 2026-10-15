@@ -67,7 +67,8 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
     `Bytes` slice of the received frame: no hex, no JSON.
   - `get_blocks_by_height` cuts its heights into consecutive runs, one
     `GetBlockRange` stream each.
-  - It needs zebrad's `GetBlockRange` (`elicbarbieri/zebra perf/indexer-block-range`).
+  - It needs a zebrad serving the indexer's `GetBlockRange`, which stock zebrad lacks
+    ([`zaino-proto`](../zaino-proto/README.md#modules)).
   - Streams are multiplexed over `ceil(max_connections / 20)` connections (zebrad
     admits 20 streams per connection), requests rotated across them.
   - Receive windows: 4 MiB per stream (a whole block in flight), every stream's at

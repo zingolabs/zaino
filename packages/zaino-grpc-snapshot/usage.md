@@ -56,10 +56,8 @@ grpc_snapshots.changed().await?;                       // next publish
   (`changed()` errs, a tail ends after its opening): route tests over `NfsPublication::fixed` +
   `ChainViewSnapshot::fixed`.
 
-- `synced` opens once the served tip **is** the best block (hash, not height) and no validator
-  claims past it (`ChainViewSnapshot::claimed_past_best`: header sync short of the network, e.g.
-  anchored `depth` below that claim at boot), and stays open while the served tip is on the best
-  chain and at most `depth` below it (`standing` = `Syncing` until it opens).
+- `synced` ([when it opens and closes](../../docs/architecture.md#8-serving-one-grpcsnapshot))
+  compares hashes, not heights; `standing` = `Syncing` until it opens.
 
 ## `GetMempoolStream`: one epoch per served tip
 
@@ -72,8 +70,8 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ```
 
 - Epoch key = `tips.served`: a new epoch opens when the served tip moves, is stored in that
-  publish, and only then is the old one sealed. A stream's end ⇒ the next `load()` serves the
-  new tip (`GetLatestBlock` ≥ it).
+  publish, and only then is the old one sealed (so a stream ends only once the new tip is
+  served).
 - Arrivals = `ChainViewSnapshot::arrivals` between two consecutive publishes (an `imbl` diff),
   appended to the open epoch; an epoch never carries a transaction twice nor un-sends one.
 - Never a transaction of the served tip's own chain: the opening and every arrival skip the
@@ -100,7 +98,7 @@ emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then rend
   `ours_unverified`).
 - Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
   tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
-  (stale validator tip, end of service, partition, eclipse, finality paused).
+  ([architecture §11](../../docs/architecture.md#11-telemetry)).
 
 ## Invariants and tests
 

@@ -77,9 +77,8 @@ zainod then serves gRPC on `127.0.0.1:8137`.
 
 Each index syncs from genesis (or from an [index snapshot](../packages/zainod/usage.md#index-snapshot)),
 so a first run on Mainnet or Testnet takes a long time, and resumes from its own durable height
-on restart. While it syncs, every request answers at the served tip, the lowest tip across the
-enabled indexes; only before the first `GrpcSnapshot` is published do index methods answer
-`UNAVAILABLE` ([status codes](./rpc_api.md#status-codes-a-client-must-distinguish)).
+on restart. It serves while it syncs
+([what each method answers meanwhile](./rpc_api.md#where-each-method-is-answered)).
 
 ## Disk
 
@@ -105,9 +104,10 @@ Behind a load balancer that routes by polling `/readyz`, run
 
 zainod never restarts in-process and stops on any fault it cannot vouch past
 ([failure policy](../packages/zainod/usage.md#failure-policy)), so run it under a service
-manager that restarts it with backoff. Opening an index reads only file lengths and one tail
-page per file, so a restarted zainod is serving again within seconds, after the NFS fetches
-every block above the durable tips again (progress logged as `Fetching non-finalized blocks`).
+manager that restarts it with backoff. Opening an index checks each file's length, its tail
+page and its `.crc` checksum file (1/1024 of the data), never the data pages, so a restarted
+zainod is serving again within seconds, after the NFS fetches every block above the durable tips
+again (progress logged as `Fetching non-finalized blocks`).
 
 ## Status
 
@@ -149,10 +149,9 @@ queue, except the read lanes. How each cap, the accept loop and the health paths
 ### Stream time limits
 
 No stream has a cap on its total length, so a full sync streams for as long as it keeps
-receiving. A client's own `grpc-timeout` is its deadline. Two `[grpc]` bounds (default 300 s
-each) catch a stream that makes no progress: `unread_timeout_secs` (its client stopped
-reading: the connection closes) and `silent_timeout_secs` (nothing to send: the stream ends
-`UNAVAILABLE`) ([zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack)).
+receiving. Two `[grpc]` bounds catch a stream that makes no progress: `unread_timeout_secs` (its
+client stopped reading: the connection closes) and `silent_timeout_secs` (nothing to send: the
+stream ends `UNAVAILABLE`) ([zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack)).
 
 ### Behind a proxy
 

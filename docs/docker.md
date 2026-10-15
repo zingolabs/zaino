@@ -13,11 +13,10 @@ docker build -t zaino --build-arg CARGO_PROFILE=profiling .   # line tables and 
 The image ships `aria2c`, the `[snapshot]` bootstrap's downloader.
 
 There is no container-only configuration. The image reads the same `zainod.toml` as
-any other install ([`example_configs/zainod.toml`](./example_configs/zainod.toml)
-annotates the full schema), and `ZAINO_CONFIG_` variables override any key of it, with
-`__` separating nested keys, so `-e ZAINO_CONFIG_NETWORK=testnet` works as it does on
-the host. Arguments replace `start`, so `docker run zaino verify` checks the indexes
-the mounted config names.
+any other install, with the same `ZAINO_CONFIG_` overrides
+([running.md: Configuration](./running.md#configuration)), so
+`-e ZAINO_CONFIG_NETWORK=testnet` works as it does on the host. Arguments replace `start`, so
+`docker run zaino verify` checks the indexes the mounted config names.
 
 The default `grpc_listen_address` is `127.0.0.1:8137`, which a published port cannot
 reach. Inside a container the config MUST set it to `0.0.0.0:8137`, either in the file

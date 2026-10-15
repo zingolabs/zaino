@@ -1,8 +1,6 @@
 # zainod config paired with zebrad.toml (Testnet)
 #
-# - Precedence: ZAINO_CONFIG_ env vars (`__` nesting, e.g. ZAINO_CONFIG_SYNC__CONCURRENCY=64)
-#   → this file → built-in defaults
-# - Unknown keys rejected at load
+# - Env overrides + unknown-key rule: docs/running.md#configuration
 # - `zainod generate-config` = every key at its default
 
 # mainnet | testnet | regtest (default mainnet)
