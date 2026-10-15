@@ -1,78 +1,48 @@
-//! `/statusz`, `/readyz` + the `/metrics` gauges: each from one global snapshot load (G9)
+//! `/readyz`, public `/status` + the `/metrics` gauges: each from one snapshot load (G9)
 //!
-//! - Sources filled once by `indexer::boot` (admin thread starts first → `provisioning` until then)
-//! - `/statusz` = [`Readiness`] + process fields + `zaino_snapshot::Report`; owners' live tables
-//!   read at request
+//! - [`DaemonStatus`] built once by `daemon()`, `Arc`-shared with every reader and writer
 //! - `ready` ⇔ `state` = serving or degraded ⇔ `/readyz` 200 (degraded = a fresh peer-verified
 //!   tip served, no trusted validator vouching for it)
 
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, OnceLock,
-    },
-    time::Instant,
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
 };
 
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_snapshot::{Down, GrpcSnapshot, Report, Snapshots, Standing};
+use zaino_snapshot::{Down, GrpcSnapshot, Snapshots, Standing};
 use zaino_sync::SyncProgress;
-use zaino_traffic::{Health, MemberTable};
+use zaino_traffic::Health;
 use zcash_protocol::consensus::NetworkType;
 
+use crate::admin::Heartbeat;
 use crate::egress::Egress;
-use crate::progress::Disk;
 
-static SOURCES: OnceLock<Sources> = OnceLock::new();
-
-/// Config's network + enabled indexes, set before the snapshot bootstrap (stub + [`Report`] +
-/// public `/status` read one set)
-static CONFIGURED: OnceLock<(NetworkType, Vec<IndexKind>)> = OnceLock::new();
-
-/// Once per process, right after config validation
-pub(crate) fn configure(network: NetworkType, kinds: impl IntoIterator<Item = IndexKind>) {
-    let _ = CONFIGURED.set((network, kinds.into_iter().collect()));
+/// One process's status: config facts, then what each stage sets as it starts
+///
+/// - `retire` set once the gRPC service exists, `sources` once the pipeline boots (`provisioning`
+///   until then); a second set of either panics
+pub(crate) struct DaemonStatus {
+    network: NetworkType,
+    configured: Vec<IndexKind>,
+    heartbeat: Heartbeat,
+    held: AtomicBool,
+    awaiting_validator: AtomicBool,
+    #[cfg(feature = "snapshot")]
+    bootstrap: std::sync::Mutex<Option<Bootstrap>>,
+    retire: OnceLock<zaino_grpc::Retire>,
+    sources: OnceLock<Sources>,
 }
 
-fn configured() -> &'static [IndexKind] {
-    CONFIGURED.get().map_or(&[], |(_, kinds)| kinds.as_slice())
-}
-
-fn configured_network() -> Option<NetworkType> {
-    CONFIGURED.get().map(|(network, _)| *network)
-}
-
-/// Operator hold (`hold.rs`, from its marker): `held` above every other state
-static HELD: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn hold(held: bool) {
-    HELD.store(held, Ordering::Relaxed);
-}
-
-pub(crate) fn held() -> bool {
-    HELD.load(Ordering::Relaxed)
-}
-
-/// Boot waiting on its first validator answer (the upgrade schedule): `down`, not `provisioning`
-static AWAITING_VALIDATOR: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn awaiting_validator(awaiting: bool) {
-    AWAITING_VALIDATOR.store(awaiting, Ordering::Relaxed);
-}
-
-/// - `members` = the balancer's (latency, failures, health); `disk` = the progress task's last walk
+/// Booted pipeline's readers
+///
 /// - `block_rate` = blocks handed per second over its last ~60 s (`None` before its first tick)
-/// - `grpc_admission` = the gRPC work pool's (`/statusz` `load`, `Overloaded`)
-/// - `egress` = the last closed 10-min window's (public `/status`)
+/// - `egress` = last closed 10-min window
 pub(crate) struct Sources {
-    pub(crate) network: &'static str,
-    pub(crate) started: Instant,
     pub(crate) snapshots: Snapshots<DiskView>,
     pub(crate) progress: SyncProgress,
-    pub(crate) members: watch::Receiver<Arc<MemberTable>>,
-    pub(crate) disk: watch::Receiver<Disk>,
     pub(crate) block_rate: watch::Receiver<Option<f64>>,
     pub(crate) grpc_admission: Arc<zaino_grpc::AdmissionState>,
     pub(crate) egress: watch::Receiver<Option<Egress>>,
@@ -107,7 +77,7 @@ enum Unit {
     Byte,
 }
 
-/// Head of `/statusz` (`/readyz` = `state` + `detail`)
+/// Head of `/status` (`/readyz` = `state` + `detail`)
 ///
 /// - `detail` only when `down` or `degraded`, `progress` only while provisioning or syncing,
 ///   `notes` = raised alarms
@@ -204,21 +174,159 @@ fn readiness(held: bool, live: bool, stage: Stage) -> Readiness {
     }
 }
 
-/// Now, from the globals
-fn current_readiness(live: bool) -> Readiness {
-    let stage = match SOURCES.get() {
-        Some(sources) => Stage::Booted(Booted::of(sources, &sources.snapshots.load())),
-        None => Stage::Starting {
-            bootstrap: bootstrap_bytes(),
-            awaiting_validator: AWAITING_VALIDATOR.load(Ordering::Relaxed),
-        },
-    };
-    readiness(held(), live, stage)
+impl DaemonStatus {
+    pub(crate) fn new(
+        network: NetworkType,
+        configured: impl IntoIterator<Item = IndexKind>,
+    ) -> Self {
+        Self {
+            network,
+            configured: configured.into_iter().collect(),
+            heartbeat: Heartbeat::default(),
+            held: AtomicBool::new(false),
+            awaiting_validator: AtomicBool::new(false),
+            #[cfg(feature = "snapshot")]
+            bootstrap: std::sync::Mutex::new(None),
+            retire: OnceLock::new(),
+            sources: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn beat(&self) {
+        self.heartbeat.beat();
+    }
+
+    /// Serving runtime still scheduling (`/livez`; stale = `down`, "Runtime stalled")
+    pub(crate) fn live(&self) -> bool {
+        self.heartbeat.live()
+    }
+
+    /// Operator hold (`hold.rs`, from its marker): `held` above every other state
+    pub(crate) fn hold(&self, held: bool) {
+        self.held.store(held, Ordering::Relaxed);
+    }
+
+    pub(crate) fn held(&self) -> bool {
+        self.held.load(Ordering::Relaxed)
+    }
+
+    /// Boot waiting on its first validator answer (the upgrade schedule): `down`, not `provisioning`
+    pub(crate) fn awaiting_validator(&self, awaiting: bool) {
+        self.awaiting_validator.store(awaiting, Ordering::Relaxed);
+    }
+
+    pub(crate) fn serving(&self, retire: zaino_grpc::Retire) {
+        assert!(self.retire.set(retire).is_ok(), "one gRPC service per process");
+    }
+
+    /// `None` = no gRPC service yet (a hold before boot has no connection to retire)
+    pub(crate) fn retire(&self) -> Option<&zaino_grpc::Retire> {
+        self.retire.get()
+    }
+
+    pub(crate) fn publish(&self, sources: Sources) {
+        assert!(self.sources.set(sources).is_ok(), "one pipeline boot per process");
+    }
+
+    fn current_readiness(&self) -> Readiness {
+        let stage = match self.sources.get() {
+            Some(sources) => Stage::Booted(Booted::of(sources, &sources.snapshots.load())),
+            None => Stage::Starting {
+                bootstrap: self.bootstrap_bytes(),
+                awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
+            },
+        };
+        readiness(self.held(), self.live(), stage)
+    }
+
+    /// `/readyz`: `(ready, {"state", "detail"})`
+    pub(crate) fn readiness_json(&self) -> (bool, String) {
+        let readiness = self.current_readiness();
+        let body = serde_json::json!({ "state": readiness.state, "detail": readiness.detail });
+        (readiness.ready(), body.to_string())
+    }
+
+    /// Public `/status` body, now
+    fn public_status_json(&self) -> String {
+        let sources = self.sources.get();
+        let chain =
+            sources.map(|sources| Chain::of(sources, &sources.snapshots.load(), self.network));
+        let status = public_status(self.current_readiness(), self.network, chain, &self.configured);
+        serde_json::to_string(&status).unwrap_or_default()
+    }
+
+    /// Every snapshot gauge, set just before a scrape renders (nothing before boot)
+    pub(crate) fn emit_gauges(&self) {
+        if let Some(sources) = self.sources.get() {
+            zaino_snapshot::emit_gauges(&sources.snapshots.load(), &sources.progress);
+        }
+    }
+
+    /// Booted: handed + served heights + every index's durable one; before: bootstrap phase + bytes
+    pub(crate) fn startup(&self) -> Startup {
+        let readiness = self.current_readiness();
+        let started = readiness.ready() || readiness.state == State::Held;
+        let Some(sources) = self.sources.get() else {
+            return Startup { started, progress: self.bootstrap_progress() };
+        };
+        let snap = sources.snapshots.load();
+        let durable = snap.indexed().into_iter().flat_map(|indexed| indexed.durable());
+        let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
+        let heights = [sources.progress.handed(), snap.tips().served.map(|tip| tip.height)];
+        let progress =
+            heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
+        Startup { started, progress: progress.collect() }
+    }
+
+    /// `None` = bootstrap over (the indexer's own status takes over)
+    #[cfg(feature = "snapshot")]
+    pub(crate) fn bootstrap(&self, progress: Option<Bootstrap>) {
+        *self.bootstrap_lock() = progress;
+    }
+
+    /// Poison-tolerant: the lock only guards a value swap
+    #[cfg(feature = "snapshot")]
+    fn bootstrap_lock(&self) -> std::sync::MutexGuard<'_, Option<Bootstrap>> {
+        self.bootstrap.lock().expect("bootstrap progress mutex poisoned")
+    }
+
+    #[cfg(feature = "snapshot")]
+    pub(crate) fn current_bootstrap(&self) -> Option<Bootstrap> {
+        self.bootstrap_lock().clone()
+    }
+
+    /// While a bootstrap runs: its bytes (`rate` downloading only)
+    fn bootstrap_bytes(&self) -> Option<Progress> {
+        #[cfg(feature = "snapshot")]
+        if let Some(bootstrap) = self.current_bootstrap() {
+            return Some(Progress {
+                done: bootstrap.done,
+                total: bootstrap.total,
+                unit: Unit::Byte,
+                rate: bootstrap.rate.map(|rate| rate as f64),
+            });
+        }
+        None
+    }
+
+    fn bootstrap_progress(&self) -> Vec<Option<u64>> {
+        #[cfg(feature = "snapshot")]
+        if let Some(bootstrap) = self.current_bootstrap() {
+            return vec![Some(bootstrap.phase as u64), Some(bootstrap.done)];
+        }
+        Vec::new()
+    }
 }
 
-/// Once per process (a second boot = a bug, ignored)
-pub(crate) fn publish(sources: Sources) {
-    let _ = SOURCES.set(sources);
+/// `GET /readyz` + `GET /status` on the gRPC listener
+impl zaino_grpc::Health for DaemonStatus {
+    fn readyz(&self) -> (bool, String) {
+        self.readiness_json()
+    }
+
+    fn status(&self) -> String {
+        self.public_status_json()
+    }
 }
 
 /// Archive bootstrap progress, written by [`crate::bootstrap`] before the indexer boots
@@ -227,7 +335,7 @@ pub(crate) fn publish(sources: Sources) {
 /// - `phase` = slowest archive's, `done` = its bytes (archives past it whole); `rate` = bytes/s
 ///   (`downloading` only)
 #[cfg(feature = "snapshot")]
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bootstrap {
     pub(crate) phase: Phase,
     pub(crate) source: String,
@@ -240,119 +348,11 @@ pub(crate) struct Bootstrap {
 
 /// Declared in pipeline order (`Ord`: earliest = slowest)
 #[cfg(feature = "snapshot")]
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Phase {
     Downloading,
     Verifying,
     Unpacking,
-}
-
-#[cfg(feature = "snapshot")]
-static BOOTSTRAP: std::sync::Mutex<Option<Bootstrap>> = std::sync::Mutex::new(None);
-
-/// `None` = bootstrap over (the indexer's own status takes over)
-#[cfg(feature = "snapshot")]
-pub(crate) fn bootstrap(progress: Option<Bootstrap>) {
-    *bootstrap_lock() = progress;
-}
-
-/// Poison-tolerant: the lock only guards a value swap
-#[cfg(feature = "snapshot")]
-fn bootstrap_lock() -> std::sync::MutexGuard<'static, Option<Bootstrap>> {
-    BOOTSTRAP.lock().expect("bootstrap progress mutex poisoned")
-}
-
-#[cfg(feature = "snapshot")]
-fn current_bootstrap() -> Option<Bootstrap> {
-    bootstrap_lock().clone()
-}
-
-/// While a bootstrap runs: its bytes (`rate` downloading only)
-fn bootstrap_bytes() -> Option<Progress> {
-    #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) = current_bootstrap() {
-        return Some(Progress {
-            done: bootstrap.done,
-            total: bootstrap.total,
-            unit: Unit::Byte,
-            rate: bootstrap.rate.map(|rate| rate as f64),
-        });
-    }
-    None
-}
-
-/// While a bootstrap runs: its phase, source, height and archive count, verbatim
-pub(crate) fn bootstrap_report() -> Option<serde_json::Value> {
-    #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) = current_bootstrap() {
-        return serde_json::to_value(bootstrap).ok();
-    }
-    None
-}
-
-/// `/statusz` body: readiness + process fields + the snapshot's [`Report`] (field meanings:
-/// docs/running.md)
-#[derive(Debug, Serialize)]
-pub(crate) struct Status {
-    version: &'static str,
-    network: &'static str,
-    uptime_s: u64,
-    ready: bool,
-    #[serde(flatten)]
-    readiness: Readiness,
-    load: Load,
-    grpc: Grpc,
-    disk: Disk,
-    #[serde(flatten)]
-    report: Report,
-}
-
-/// The gRPC work pool (`zaino_grpc::AdmissionReport`)
-#[derive(Debug, Serialize, PartialEq)]
-struct Load {
-    limit: usize,
-    in_flight: usize,
-    refused_per_s: f64,
-    overloaded: bool,
-}
-
-impl From<zaino_grpc::AdmissionReport> for Load {
-    fn from(report: zaino_grpc::AdmissionReport) -> Self {
-        let zaino_grpc::AdmissionReport { limit, in_flight, refused_per_s, overloaded } = report;
-        Self { limit, in_flight, refused_per_s, overloaded }
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct Grpc {
-    sent_bytes: u64,
-}
-
-/// `None` = not booted
-fn current(live: bool) -> Option<Status> {
-    let sources = SOURCES.get()?;
-    let snap = sources.snapshots.load();
-    let readiness = readiness(held(), live, Stage::Booted(Booted::of(sources, &snap)));
-    let members = sources.members.borrow().clone();
-    Some(Status {
-        version: env!("CARGO_PKG_VERSION"),
-        network: sources.network,
-        uptime_s: sources.started.elapsed().as_secs(),
-        ready: readiness.ready(),
-        readiness,
-        load: sources.grpc_admission.report().into(),
-        grpc: Grpc { sent_bytes: zaino_grpc::sent_bytes_total() },
-        disk: sources.disk.borrow().clone(),
-        report: Report::of(&snap, &sources.progress, &members, configured()),
-    })
-}
-
-/// `/readyz`: `(ready, {"state", "detail"})`
-pub(crate) fn readiness_json(live: bool) -> (bool, String) {
-    let readiness = current_readiness(live);
-    let body = serde_json::json!({ "state": readiness.state, "detail": readiness.detail });
-    (readiness.ready(), body.to_string())
 }
 
 /// Public `/status` (gRPC listener): readiness + chain position + counts, safe for the open
@@ -362,7 +362,7 @@ struct PublicStatus {
     #[serde(flatten)]
     readiness: Readiness,
     version: &'static str,
-    network: Option<&'static str>,
+    network: &'static str,
     tip: Option<PublicBlock>,
     served: Option<u32>,
     validators: Option<ValidatorCounts>,
@@ -401,14 +401,13 @@ struct Chain {
 }
 
 impl Chain {
-    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>) -> Self {
+    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
         let tips = snap.tips();
         let endpoints = snap.view().endpoints();
         let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
-        let info = configured_network()
-            .and_then(|network| zaino_grpc::lightd_info(snap, network, env!("CARGO_PKG_VERSION")));
+        let info = zaino_grpc::lightd_info(snap, network, env!("CARGO_PKG_VERSION"));
         Self {
             tip: tips.best.map(|best| PublicBlock {
                 height: u32::from(best.height),
@@ -449,29 +448,9 @@ fn lightd_json(info: zaino_grpc::LightdInfo) -> serde_json::Value {
     })
 }
 
-/// Public `/status` body, now
-fn public_status_json(live: bool) -> String {
-    let chain = SOURCES.get().map(|sources| Chain::of(sources, &sources.snapshots.load()));
-    let status = public_status(current_readiness(live), configured_network(), chain, configured());
-    serde_json::to_string(&status).unwrap_or_default()
-}
-
-/// `GET /readyz` + `GET /status` on the gRPC listener (`zaino_grpc::Health`)
-pub(crate) struct PublicHealth;
-
-impl zaino_grpc::Health for PublicHealth {
-    fn readyz(&self) -> (bool, String) {
-        readiness_json(crate::admin::live())
-    }
-
-    fn status(&self) -> String {
-        public_status_json(crate::admin::live())
-    }
-}
-
 fn public_status(
     readiness: Readiness,
-    network: Option<NetworkType>,
+    network: NetworkType,
     chain: Option<Chain>,
     configured: &[IndexKind],
 ) -> PublicStatus {
@@ -484,20 +463,13 @@ fn public_status(
     PublicStatus {
         readiness,
         version: env!("CARGO_PKG_VERSION"),
-        network: network.map(crate::config::network_name),
+        network: crate::config::network_name(network),
         tip,
         served,
         validators,
         indexes: IndexCounts { enabled: enabled.collect(), total: all.len() },
         egress,
         info,
-    }
-}
-
-/// Every snapshot gauge, set just before a scrape renders (nothing before boot)
-pub(crate) fn emit_gauges() {
-    if let Some(sources) = SOURCES.get() {
-        zaino_snapshot::emit_gauges(&sources.snapshots.load(), &sources.progress);
     }
 }
 
@@ -510,58 +482,11 @@ pub(crate) struct Startup {
     pub(crate) progress: Vec<Option<u64>>,
 }
 
-/// Booted: handed + served heights + every index's durable one; before: bootstrap phase + bytes
-pub(crate) fn startup(live: bool) -> Startup {
-    let readiness = current_readiness(live);
-    let started = readiness.ready() || readiness.state == State::Held;
-    let Some(sources) = SOURCES.get() else {
-        return Startup { started, progress: bootstrap_progress() };
-    };
-    let snap = sources.snapshots.load();
-    let durable = snap.indexed().into_iter().flat_map(|indexed| indexed.durable());
-    let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
-    let heights = [sources.progress.handed(), snap.tips().served.map(|tip| tip.height)];
-    let progress = heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
-    Startup { started, progress: progress.collect() }
-}
-
-fn bootstrap_progress() -> Vec<Option<u64>> {
-    #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) = current_bootstrap() {
-        return vec![Some(bootstrap.phase as u64), Some(bootstrap.done)];
-    }
-    Vec::new()
-}
-
-/// `/statusz`: everything (pre-boot stub + configured `indexes` until boot publishes)
-pub(crate) fn status_json(live: bool) -> String {
-    match current(live) {
-        Some(status) => serde_json::to_string(&status).unwrap_or_default(),
-        None => stub(current_readiness(live), bootstrap_report(), configured()).to_string(),
-    }
-}
-
-/// Before boot: readiness, the configured `indexes` (no `durable` yet), the bootstrap if one runs
-fn stub(
-    readiness: Readiness,
-    bootstrap: Option<serde_json::Value>,
-    configured: &[IndexKind],
-) -> serde_json::Value {
-    let indexes = zaino_snapshot::indexes(configured, &[]);
-    let mut stub = serde_json::to_value(&readiness).unwrap_or_default();
-    stub["ready"] = readiness.ready().into();
-    stub["indexes"] = serde_json::to_value(indexes).unwrap_or_default();
-    if let Some(bootstrap) = bootstrap {
-        stub["snapshot"] = bootstrap;
-    }
-    stub
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every state rule, first match wins, as `/statusz` serializes it; across all of them
+    /// Every state rule, first match wins, as `/status` serializes it; across all of them
     /// `ready` ⇔ serving or degraded, `detail` only when down or degraded, `progress` only
     /// provisioning or syncing
     #[test]
@@ -749,38 +674,6 @@ mod tests {
         }
     }
 
-    /// Before boot `/statusz` already lists every foldable index as configured (compact-block
-    /// pair on, the rest off), then the bootstrap verbatim when one runs
-    #[test]
-    fn pre_boot_stub_lists_configured_indexes_and_bootstrap_progress() {
-        let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
-        let index = |name: &str, enabled: bool| serde_json::json!({ "name": name, "enabled": enabled, "durable": null });
-        let indexes = serde_json::json!([
-            index("utxo_set", true),
-            index("compact_block", true),
-            index("block_hash", false),
-            index("tree_state", false),
-            index("transparent_address", false),
-        ]);
-        let starting =
-            readiness(false, true, Stage::Starting { bootstrap: None, awaiting_validator: false });
-        assert_eq!(
-            stub(starting.clone(), None, &configured),
-            serde_json::json!({
-                "ready": false, "state": "provisioning", "progress": null, "detail": null,
-                "notes": [], "indexes": indexes,
-            }),
-        );
-        let bootstrap = serde_json::json!({ "phase": "downloading", "indexes": 2, "total": 9 });
-        assert_eq!(
-            stub(starting, Some(bootstrap.clone()), &configured),
-            serde_json::json!({
-                "ready": false, "state": "provisioning", "progress": null, "detail": null,
-                "notes": [], "indexes": indexes, "snapshot": bootstrap,
-            }),
-        );
-    }
-
     /// Public `/status`, field by field: before boot (chain facts `null`), then booted with a
     /// tip, one of two validators answering, an egress window and `GetLightdInfo`; never a
     /// validator address, peer, disk or mempool
@@ -792,7 +685,7 @@ mod tests {
         let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 5 });
         let version = env!("CARGO_PKG_VERSION");
 
-        let before = public_status(readiness(starting), Some(NetworkType::Main), None, &configured);
+        let before = public_status(readiness(starting), NetworkType::Main, None, &configured);
         assert_eq!(
             serde_json::to_value(before).expect("serializes"),
             serde_json::json!({
@@ -817,8 +710,7 @@ mod tests {
             egress: Some(Egress { start: 1_790_000_400, mbps: 12.5 }),
             info: Some(serde_json::json!({ "blockHeight": 3_515_400 })),
         };
-        let after =
-            public_status(readiness(serving), Some(NetworkType::Main), Some(chain), &configured);
+        let after = public_status(readiness(serving), NetworkType::Main, Some(chain), &configured);
         assert_eq!(
             serde_json::to_value(after).expect("serializes"),
             serde_json::json!({

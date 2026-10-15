@@ -38,7 +38,7 @@ pub enum IndexKind {
 }
 
 impl IndexKind {
-    /// One spelling everywhere (metric label, statusz, task, default directory, snapshot entry)
+    /// One spelling everywhere (metric label, `/status`, task, default directory, snapshot entry)
     /// Fold order (utxo-set before compact-block: its fees)
     pub const ALL: [Self; 5] = [
         Self::UtxoSet,

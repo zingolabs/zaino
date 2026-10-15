@@ -107,8 +107,8 @@ non-finalized window again (logged as `Fetching non-finalized blocks`).
 
 ## Status
 
-The admin listener's `/livez`, `/readyz` and `/statusz`, and the public `/readyz` and `/status`
-on the gRPC listener, all read one published snapshot of what zainod serves
+The admin listener's `/livez` and `/readyz`, and the public `/readyz` and `/status` on the
+gRPC listener, all read one published snapshot of what zainod serves
 ([architecture §8](./architecture.md#8-serving-one-snapshot)). States, readiness rules and every
 field: [zainod: the admin listener](../packages/zainod/usage.md#the-admin-listener).
 
@@ -120,9 +120,9 @@ zainod listens on two interfaces:
   certificate pair, in which case zainod terminates TLS itself (rustls with the ring provider).
   Expose it beyond a trusted network only with `[serve.tls]` or behind a
   TLS-terminating proxy. Its public `/readyz` and `/status` are safe for the open internet.
-- **Admin** (`[metrics] listen_address`, off by default): `/metrics`, `/livez`, `/readyz` and
-  `/statusz` with no authentication or encryption, publishing the chain tip, sync progress,
-  traffic and validator addresses. zainod warns at startup when it binds a non-private address.
+- **Admin** (`[metrics] listen_address`, off by default): `/metrics`, `/livez` and `/readyz` with
+  no authentication or encryption; the metrics publish the chain tip, sync progress, traffic and
+  validator addresses. zainod warns at startup when it binds a non-private address.
   Keep it on loopback, a private interface, or a network only the scraper reaches.
 
 Outbound, each validator link is plain HTTP JSON-RPC, and its indexer gRPC is plaintext unless

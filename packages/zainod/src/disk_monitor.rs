@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use zaino_persistence::IndexKind;
 
-use crate::progress::{Index, Usage};
+use crate::progress::Index;
 
 mod names {
     pub(super) const COMMITTED_BYTES: &str = "zaino.disk.committed_bytes";
@@ -86,8 +86,8 @@ pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView
 }
 
 /// Each walked index directory's total
-pub(crate) fn walked(index: &'static str, usage: &Usage) {
-    metrics::gauge!(names::BYTES, "index" => index).set(usage.size_bytes as f64);
+pub(crate) fn walked(index: &'static str, bytes: u64) {
+    metrics::gauge!(names::BYTES, "index" => index).set(bytes as f64);
 }
 
 /// The sampled set: each index's kind, directory and committed view now

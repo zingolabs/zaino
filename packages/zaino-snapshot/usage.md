@@ -40,13 +40,12 @@ snapshots.changed().await?;                            // next publish
 | `chain()`               | the chain view's `VerifiedChain`                                              |
 | `served()`              | the NFS's served `At` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
-| `forks()`               | each side branch of `chain()` (`ForkView { fork, folded }`, `folded` = its deepest folded block) |
 | `mempool()`             | the servable mempool while a `Live` validator holds best or `peers_quorate()`; else `NoChain` / `NotHeld` |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `At`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `view()`                | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `standing(now_unix)`    | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within 30 min of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or best held only by validators catching up); `Serving`. `Down::detail()` = zainod's `/statusz` `detail` |
+| `standing(now_unix)`    | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within 30 min of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or best held only by validators catching up); `Serving`. `Down::detail()` = zainod's `/readyz` + `/status` `detail` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
@@ -85,21 +84,11 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ## Reporting
 
 ```rust,ignore
-let members = balancer.members().borrow().clone();     // the traffic balancer's MemberTable
-let body = Report::of(&snapshots.load(), &nfs_progress, &members, &enabled); // `/statusz`
-let stub = indexes(&enabled, &[]);                      // same list, before a snapshot exists
 describe_metrics();                                     // once, at boot
 emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then render
 ```
 
-- `notes(&snap)`: one sentence per raised alarm (zainod's `/statusz` `notes`).
-- `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`),
-  `handed` (`SyncProgress::handed`), every index the NFS folds (`enabled` = the caller's
-  configured set, so listed before the NFS's first publish; `durable` = `null` until then), each
-  validator's facts (agreement, own height, staleness, push streams, release, peers) joined with
-  its `MemberTable` row (`state`, `latency_ms` once measured, `failures`), alarms (incl.
-  `finality_paused`), mempool counts, forks (work as a decimal string). zainod flattens it beside
-  its process fields.
+- `notes(&snap)`: one sentence per raised alarm (zainod's `/status` `notes`).
 - Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
   `zaino_fetch_height` (`handed`), `zaino_index_synced{index}`, and the chain view's
   `zaino_chainview_*` state:
@@ -123,7 +112,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
 | G8 | every NFS node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check` |
-| G9 | `/statusz`, `/readyz`, gauges = f(one snapshot, counters, owners' live tables) | types; golden `Report` |
+| G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
 | G10 | an epoch carries no txid of a block in `served_nonfinalized()` | `compose::check`; model |
 
 `compose::check(prev, next, depth)` is test-only: the model calls it after every publish.
@@ -132,7 +121,6 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails
   opened at random, against naive tips and per-epoch transaction sets.
 - `tests.rs`: the run loop over real watches (seq 0, coalescing, cancel, a gone NFS); the
-  `/statusz` golden (a `MemberTable` joined) and its rendered gauges; one fire drill per `check`
-  assertion. `report.rs`: the end-of-service serialization contract.
+  rendered gauges of one snapshot; one fire drill per `check` assertion.
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

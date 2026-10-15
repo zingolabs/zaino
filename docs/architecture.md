@@ -49,7 +49,7 @@ possible, take everything else from as many peers as possible.**
        │ IndexerDataSink     │ Indexed
        ▼                     ▼      ▼
   5 index writers ──▶ zaino-snapshot Publisher ──▶ one Arc<Snapshot> per request
-  (disk)  committed views                           → zaino-grpc, /statusz, /readyz, /metrics
+  (disk)  committed views                           → zaino-grpc, /status, /readyz, /metrics
 ```
 
 Every block takes one of two paths, which never meet:
@@ -306,7 +306,7 @@ its usage guide.
 ## 11. Telemetry
 
 Observation only: none of it changes a tip or what is served. State is read from one snapshot at
-scrape (`zaino_*` and `zaino_chainview_*` gauges, `/statusz`); events are emitted where they
+scrape (`zaino_*` and `zaino_chainview_*` gauges, `/status`); events are emitted where they
 happen. Alarms log once WARN when raised, once INFO when cleared:
 
 | Alarm             | Raised when                                                                         |
@@ -318,8 +318,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 | finality paused   | > depth unfinal blocks for 60 s with the final tip unmoved                          |
 
 Per-transaction spread (`peers: x/y, trusted: x/y`) is tracked internally and feeds histograms
-(first seen → first trusted listing → every trusted listing, residence); `/statusz` shows only
-mempool counts.
+(first seen → first trusted listing → every trusted listing, residence).
 
 ## 12. Seams
 

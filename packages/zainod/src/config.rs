@@ -521,7 +521,7 @@ impl From<&SubmissionConfig> for zaino_chainview::SubmitPolicy {
     }
 }
 
-/// Admin listener: `/metrics`, `/livez`, `/readyz`, `/statusz` (unset `listen_address` = off)
+/// Admin listener: `/metrics`, `/livez`, `/readyz` (unset `listen_address` = off)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct MetricsConfig {

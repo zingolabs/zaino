@@ -15,7 +15,7 @@ network = "testnet"
 #   validator's indexer_address and a zebrad serving GetBlockRange), everything else over JSON-RPC
 # validator_client = "grpc"
 
-# Admin listener (/metrics, /livez, /readyz, /statusz). Omit listen_address to disable.
+# Admin listener (/metrics, /livez, /readyz). Omit listen_address to disable.
 # [metrics]
 # listen_address = "127.0.0.1:9999"
 

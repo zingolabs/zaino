@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet};
-use zaino_header_chain::{Fork, VerifiedChain};
+use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
@@ -23,13 +23,6 @@ pub struct Tips {
     pub served: Option<BlockRef>,
     pub held_by: TrustedValidatorSet,
     pub synced: bool,
-}
-
-/// One fork of the chain view's chain + the deepest block of it the NFS folded
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ForkView {
-    pub fork: Fork,
-    pub folded: Option<BlockRef>,
 }
 
 /// What `GetLightdInfo` renders (`GrpcSnapshot::lightd`)
@@ -75,7 +68,7 @@ pub enum Down {
 const STALE_TIP_SECS: i64 = 24 * 75;
 
 impl Down {
-    /// `/statusz` + `/readyz` `detail`
+    /// `/readyz` + `/status` `detail`
     pub const fn detail(self) -> &'static str {
         match self {
             Self::NoValidatorReachable => "No trusted validator reachable",
@@ -196,17 +189,6 @@ impl<V> GrpcSnapshot<V> {
         let estimates =
             catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()
-    }
-
-    /// Each fork of `chain()`, most work first, with the deepest block of it folded
-    pub fn forks(&self) -> Vec<ForkView> {
-        let Some(chain) = self.chain() else { return Vec::new() };
-        let folded = |hash: &BlockHash| self.indexed.as_ref().is_some_and(|i| i.folded(hash));
-        let view = |fork: Fork| {
-            let branch = chain.branch(&fork.tip.hash);
-            ForkView { fork, folded: branch.into_iter().rev().find(|at| folded(&at.hash)) }
-        };
-        chain.forks().into_iter().map(view).collect()
     }
 }
 

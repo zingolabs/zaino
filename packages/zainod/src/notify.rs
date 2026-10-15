@@ -5,11 +5,11 @@
 //! - not ready yet: `EXTEND_TIMEOUT_USEC` per tick that saw progress (past `TimeoutStartSec`,
 //!   [`STALL_WINDOW`] without progress = failed start; a slow but moving one never fails)
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tracing::warn;
 
-use crate::status::Startup;
+use crate::status::{DaemonStatus, Startup};
 
 const TICK: Duration = Duration::from_secs(10);
 
@@ -23,13 +23,13 @@ enum Message {
 }
 
 /// Reports startup until `READY=1`
-pub(crate) fn spawn() {
-    tokio::spawn(async {
+pub(crate) fn spawn(status: Arc<DaemonStatus>) {
+    tokio::spawn(async move {
         let mut reporter = Reporter::default();
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
-            let message = reporter.observe(crate::status::startup(crate::admin::live()));
+            let message = reporter.observe(status.startup());
             if let Some(message) = &message {
                 send(message);
             }

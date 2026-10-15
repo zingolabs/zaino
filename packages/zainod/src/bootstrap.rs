@@ -31,7 +31,7 @@ use zaino_primitives::display::{ByteSize, Human};
 use crate::config::{DaemonConfig, IndexSnapshotConfig};
 use crate::error::IndexerError;
 use crate::progress::disk_bytes;
-use crate::status::{self, Bootstrap, Phase};
+use crate::status::{Bootstrap, DaemonStatus, Phase};
 
 const MANIFEST: &str = "manifest.json";
 const ARCHIVE: &str = "archive.tar.zst";
@@ -92,6 +92,7 @@ fn at<E: std::fmt::Display>(path: &Path) -> impl FnOnce(E) -> IndexerError + '_ 
 pub(crate) async fn bootstrap(
     snapshot: &IndexSnapshotConfig,
     config: &DaemonConfig,
+    status: &DaemonStatus,
 ) -> Result<(), IndexerError> {
     let empty: Vec<(IndexKind, PathBuf)> = IndexKind::ALL
         .into_iter()
@@ -144,10 +145,10 @@ pub(crate) async fn bootstrap(
         .map(|(slot, (fetch, gid))| install(&aria2, &board, slot, fetch, gid));
     tokio::select! {
         installed = try_join_all(installs) => drop(installed?),
-        () = board.report() => {}
+        () = board.report(status) => {}
     }
     aria2.stop().await;
-    status::bootstrap(None);
+    status.bootstrap(None);
     info!(
         indexes = fetches.len(),
         height = manifest.height,
@@ -270,7 +271,7 @@ fn rename_into(src: &Path, index: &Path) -> Result<(), IndexerError> {
         .map_err(|e| error(format!("{} → {}: {e}", src.display(), index.display())))
 }
 
-/// Per-archive step, slowest active one = `/statusz` `phase`
+/// Per-archive step, slowest active one = the logged phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Step {
     Active(Phase),
@@ -307,7 +308,7 @@ fn overall(slots: &[Slot], source: &str, height: u32) -> Option<Bootstrap> {
     })
 }
 
-/// Every archive's slot, folded by [`overall`] into `/statusz` every [`POLL_EVERY`]
+/// Every archive's slot, folded by [`overall`] into [`DaemonStatus`] every [`POLL_EVERY`]
 struct Board {
     source: String,
     height: u32,
@@ -359,7 +360,7 @@ impl Board {
     }
 
     /// Publishes until dropped (raced against the installs); logs every [`LOG_EVERY`]
-    async fn report(&self) {
+    async fn report(&self, status: &DaemonStatus) {
         let mut ticks = tokio::time::interval(POLL_EVERY);
         let mut logged = Instant::now();
         loop {
@@ -369,7 +370,7 @@ impl Board {
                 logged = Instant::now();
                 log(progress);
             }
-            status::bootstrap(progress);
+            status.bootstrap(progress);
         }
     }
 }
@@ -855,7 +856,8 @@ mod tests {
             connections: NonZeroU32::new(4).expect("4"),
         };
 
-        let refused = bootstrap(&snapshot, &config).await.expect_err("bad sha256");
+        let status = DaemonStatus::new(config.network, []);
+        let refused = bootstrap(&snapshot, &config, &status).await.expect_err("bad sha256");
         assert!(refused.to_string().contains("utxo_set.tar.zst"), "{refused}");
         assert!(!indexes.join(".utxo_set.snapshot").exists(), "bad archive wiped");
 
@@ -863,7 +865,7 @@ mod tests {
             .lock()
             .expect("files")
             .insert("/v/manifest.json".to_owned(), manifest(sha256(&utxo_set)));
-        bootstrap(&snapshot, &config).await.expect("installs");
+        bootstrap(&snapshot, &config, &status).await.expect("installs");
 
         let read = |path: &str| std::fs::read(indexes.join(path)).expect(path);
         let installed = [
@@ -889,6 +891,6 @@ mod tests {
         assert_eq!(left, ["block_hash", "compact_block", "utxo_set"], "no staging left");
         let requested = requested.lock().expect("log").clone();
         assert!(!requested.iter().any(|path| path.contains("block_hash")), "{requested:?}");
-        assert_eq!(status::bootstrap_report(), None, "progress cleared");
+        assert_eq!(status.current_bootstrap(), None, "progress cleared");
     }
 }

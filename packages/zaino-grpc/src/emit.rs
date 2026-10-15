@@ -20,7 +20,7 @@ const ACTIVE_SUBSCRIPTIONS: &str = "zaino.grpc.active_subscriptions";
 const SUBSCRIPTIONS_REJECTED_TOTAL: &str = "zaino.grpc.subscriptions_rejected_total";
 const ACCEPT_ERRORS_TOTAL: &str = "zaino.grpc.accept_errors_total";
 
-/// Σ `SENT_BYTES_TOTAL` over methods, readable without the metrics recorder (`/statusz`)
+/// Σ `SENT_BYTES_TOTAL` over methods, readable without the metrics recorder (zainod's egress)
 static SENT_BYTES: AtomicU64 = AtomicU64::new(0);
 
 pub fn sent_bytes_total() -> u64 {

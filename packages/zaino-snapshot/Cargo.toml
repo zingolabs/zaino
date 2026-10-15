@@ -23,7 +23,6 @@ unreachable_pub = "warn"
 arc-swap.workspace = true
 bytes.workspace = true
 metrics.workspace = true
-serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
@@ -42,7 +41,6 @@ zcash_protocol.workspace = true
 futures.workspace = true
 metrics-exporter-prometheus.workspace = true
 proptest.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 zaino-chainview = { workspace = true, features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }

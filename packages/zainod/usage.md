@@ -16,10 +16,10 @@ may reach it: [running.md: Network exposure](../../docs/running.md#network-expos
 | `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
 | `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
 | `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` or `degraded` (`503`) |
-| `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
-`/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
-(`zaino-snapshot`): none of them can mix two moments.
+`/readyz`, the public [`/status`](#public-health-on-the-grpc-listener) and the `/metrics` gauges
+each read **one** load of the global snapshot (`zaino-snapshot`): none of them can mix two
+moments.
 
 `state` is one of six, and the first rule that matches wins:
 
@@ -68,54 +68,8 @@ may reach it: [running.md: Network exposure](../../docs/running.md#network-expos
   - `progress` is `null` before the first verified header.
 - `notes` holds one sentence per raised alarm (partition, eclipse, finality paused, validators
   on a stale tip, releases reaching end of service within a week), or `[]` when none.
-
-```json
-{
-  "version": "0.11.0-alpha.2", "network": "main", "uptime_s": 5321,
-  "ready": false, "state": "syncing", "detail": null,
-  "progress": { "done": 3503023, "total": 3506659, "unit": "block", "rate": 412.5 },
-  "notes": [],
-  "load": { "limit": 310, "in_flight": 290, "refused_per_s": 0.0, "overloaded": false },
-  "grpc": { "sent_bytes": 1048576 },
-  "disk": { "compact_block": { "size_bytes": 4100000000, "tables": { "<subdirectory>": 4099000000 } } },
-  "seq": 18234,
-  "tips": {
-    "best": { "height": 3506659, "hash": "0000…" }, "final": { "height": 3506559, "hash": "0000…" },
-    "served": { "height": 3503023, "hash": "0000…" }, "held_by": 2, "configured": 2, "synced": false
-  },
-  "handed": 3503030,
-  "indexes": [{ "name": "compact_block", "enabled": true, "durable": 3502900 }],
-  "validators": [{
-    "address": "127.0.0.1:8232", "state": "live", "agreement": "agreed", "height": 3506659,
-    "stale_blocks": 0, "latency_ms": 4, "failures": 0, "observed_s_ago": 1, "streaming": true,
-    "release": null, "peers": []
-  }],
-  "alarms": { "partitioned": false, "eclipsed": false, "finality_paused": false, "stale": [], "ending": [] },
-  "mempool": { "transactions": 12, "verified": 12, "quorum": 0, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
-  "forks": []
-}
-```
-
-`/statusz` = zainod's process fields beside the snapshot's report (`zaino_snapshot::Report`,
-flattened): `version`, `network`,
-`uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `load` (the gRPC work pool,
-[zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack)), `grpc.sent_bytes` (response body bytes served,
-all methods), `disk` (per enabled index: `size_bytes` + `tables` = bytes per subdirectory, from
-the progress task's last walk, so absent until the first, 30 s after boot, then every 2
-minutes), then `seq`, `tips` (`best`, `final`, `served` as `{height, hash}`, `held_by` of
-`configured`, `synced`), `handed` (the last block handed to the indexes: sync progress
-between their commits), `indexes` (every index the NFS can fold: `name`, `enabled` = configured,
-`durable` = its committed height, `null` until the NFS reports it; listed from startup, snapshot
-bootstrap included), `validators` (each configured one:
-`address`, `state` / `latency_ms` / `failures` = the traffic balancer's, `agreement`, `height`,
-`stale_blocks`, `observed_s_ago`, `streaming` (push streams up), `release`: build, user agent,
-protocol and `end_of_service` as `{"status": "at", height, estimated_unix, blocks_left}` /
-`{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad < 6.3), and the p2p `peers` its
-`getpeerinfo` reports), `alarms` (`partitioned`, `eclipsed`, `finality_paused`, `stale`, `ending`
-= releases halting within a week), `mempool` (`transactions`, `verified`, `quorum`, `ours_unverified`,
-`fully_spread`, `trusted_readers`), `forks` (each side branch: `from`, `tip`, `cumulative_work`
-as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip, each final block
-moves it by one.
+- `progress` and `notes` appear on the public `/status`; `/readyz` carries `state` and `detail`
+  only.
 
 ## Operator hold
 
@@ -186,7 +140,8 @@ or tailnet name:
 }
 ```
 
-- `state`, `detail`, `progress` and `notes` are exactly as on `/statusz`.
+- `state`, `detail`, `progress` and `notes` follow [the admin listener](#the-admin-listener)'s
+  rules.
 - `tip` is the verified best block and `served` is the served height.
 - In `validators`, `connected` counts the answering ones (live or catching up).
 - `egress` is gRPC bytes sent in the last *closed* UTC 10-minute window, in Mbit/s:
@@ -307,21 +262,16 @@ with; `index.compact_block` may be disabled, and then neither is installed).
 - A manifest for another network, a hash mismatch or a permanent download error stops startup
   (a failed archive's staging is deleted).
 
-While it runs, the state is `provisioning`. `/statusz` carries the bytes as `progress`, and the
-bootstrap itself as `snapshot`, beside the configured `indexes`:
+While it runs, the state is `provisioning`, and `/status` carries the bytes as `progress`:
 
 ```json
-{"ready": false, "state": "provisioning", "detail": null, "notes": [],
- "progress": {"done": 27000000000, "total": 44500000000, "unit": "byte", "rate": 103000000.0},
- "indexes": [{"name": "utxo_set", "enabled": true, "durable": null}, …],
- "snapshot": {"phase": "downloading", "source": "snapshots.zingolabs.dev", "height": 3501802,
-              "indexes": 5, "done": 27000000000, "total": 44500000000, "rate": 103000000}}
+{"state": "provisioning", "detail": null, "notes": [],
+ "progress": {"done": 27000000000, "total": 44500000000, "unit": "byte", "rate": 103000000.0}, …}
 ```
 
-`indexes` = archives fetched, `total` = their cumulative bytes. `phase` = the slowest archive's
-(each moves downloading → verifying → unpacking); `done` = bytes through it, archives already
-past it counted whole. `rate` bytes/s (downloading only). The `IndexSnapshot` component logs progress
-every 30 s:
+`total` = the fetched archives' cumulative bytes. `done` = bytes through the slowest archive's
+phase (each moves downloading → verifying → unpacking), archives already past it counted whole.
+`rate` bytes/s (downloading only). The `IndexSnapshot` component logs progress every 30 s:
 
 ```text
 INFO  IndexSnapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s

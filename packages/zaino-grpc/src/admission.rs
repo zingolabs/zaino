@@ -39,7 +39,7 @@ pub(crate) enum Class {
 }
 
 /// The two admission pools, the adaptive work limit and their outcomes, shared by every connection
-/// ([`GrpcService::admission`](crate::GrpcService::admission) = its `/statusz` view)
+/// ([`GrpcService::admission`](crate::GrpcService::admission) = its readiness view)
 #[derive(Debug)]
 pub struct AdmissionState {
     work: AtomicUsize,

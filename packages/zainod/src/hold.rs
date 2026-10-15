@@ -13,10 +13,12 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::{info, warn};
+
+use crate::status::DaemonStatus;
 
 /// Marker check cadence (a `zainod hold` lands within this)
 const POLL: Duration = Duration::from_secs(1);
@@ -25,13 +27,6 @@ const MARKER: &str = "held";
 
 /// How long `zainod hold` / `resume` waits for the running zainod to report the new state
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5);
-
-/// The gRPC service's, once it exists (a hold before boot has no connection to retire)
-static RETIRE: OnceLock<zaino_grpc::Retire> = OnceLock::new();
-
-pub(crate) fn serving(retire: zaino_grpc::Retire) {
-    let _ = RETIRE.set(retire);
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Subcommand)]
 pub enum Action {
@@ -182,7 +177,7 @@ fn readyz_state(admin: SocketAddr) -> Option<String> {
 }
 
 /// For the process's life: the marker every [`POLL`] (unreadable = last state kept, warned)
-pub(crate) fn spawn(state_dir: std::path::PathBuf, drain_delay: Duration) {
+pub(crate) fn spawn(status: Arc<DaemonStatus>, state_dir: PathBuf, drain_delay: Duration) {
     tokio::spawn(async move {
         let marker = state_dir.join(MARKER);
         let mut held = false;
@@ -200,15 +195,16 @@ pub(crate) fn spawn(state_dir: std::path::PathBuf, drain_delay: Duration) {
                 continue;
             }
             held = now;
-            crate::status::hold(held);
+            status.hold(held);
             if !held {
                 info!("Resumed by operator");
                 continue;
             }
             warn!(delay = ?drain_delay, "Held by operator: /readyz 503 until `zainod resume`");
+            let status = Arc::clone(&status);
             tokio::spawn(async move {
                 tokio::time::sleep(drain_delay).await;
-                if let (true, Some(retire)) = (crate::status::held(), RETIRE.get()) {
+                if let (true, Some(retire)) = (status.held(), status.retire()) {
                     retire.retire_all();
                     info!("Held: every open gRPC connection sent GOAWAY");
                 }

@@ -1,19 +1,15 @@
-//! Reporting from one snapshot (G9): `/statusz` ([`Report`]), gauges at scrape ([`emit_gauges`]),
-//! edge logs per publish ([`transitions`])
+//! Reporting from one snapshot (G9): gauges at scrape ([`emit_gauges`]), alarm [`notes`], edge
+//! logs per publish ([`transitions`])
 //!
-//! - State = f(snapshot, `SyncProgress`, `MemberTable`): nothing mirrored between scrapes
+//! - State = f(snapshot, `SyncProgress`): nothing mirrored between scrapes
 //! - Gauge names = ztest's `zainod` families (a rename breaks its sync probes)
 
-use serde::Serialize;
 use tracing::{info, warn};
-use zaino_chainview::{
-    Agreement, ChainViewSnapshot, Spread, TrustedValidatorMeta, TrustedValidatorSet,
-};
+use zaino_chainview::{Agreement, ChainViewSnapshot, Spread};
 
-use zaino_persistence::{IndexKind, View};
-use zaino_primitives::types::BlockRef;
+use zaino_persistence::View;
 use zaino_sync::SyncProgress;
-use zaino_traffic::{Health, MemberId, MemberTable, TrustedValidatorId};
+use zaino_traffic::{Health, TrustedValidatorId};
 
 use crate::snapshot::GrpcSnapshot;
 
@@ -46,124 +42,6 @@ const AGREEMENTS: [Agreement; 5] = [
     Agreement::Diverged,
 ];
 
-/// `/statusz` body (zainod adds its process fields beside it)
-///
-/// - `handed` = last block handed to the indexes
-#[derive(Debug, Serialize, PartialEq)]
-pub struct Report {
-    seq: u64,
-    tips: TipsReport,
-    handed: Option<u32>,
-    indexes: Vec<IndexReport>,
-    validators: Vec<ValidatorReport>,
-    alarms: AlarmsReport,
-    mempool: MempoolCounts,
-    forks: Vec<ForkReport>,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-struct Block {
-    height: u32,
-    hash: String,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-struct TipsReport {
-    best: Option<Block>,
-    #[serde(rename = "final")]
-    final_tip: Option<Block>,
-    served: Option<Block>,
-    held_by: usize,
-    configured: usize,
-    synced: bool,
-}
-
-/// One `IndexKind::ALL` kind: `enabled` = config's, `durable` = its committed height
-#[derive(Debug, Serialize, PartialEq)]
-pub struct IndexReport {
-    name: &'static str,
-    enabled: bool,
-    durable: Option<u32>,
-}
-
-/// Every `IndexKind::ALL` kind, `durable` absent before the NFS's first publish (zainod's pre-boot stub
-/// passes none)
-pub fn indexes(
-    enabled: &[IndexKind],
-    durable: &[(IndexKind, Option<BlockRef>)],
-) -> Vec<IndexReport> {
-    let height = |kind| durable.iter().find(|(each, _)| *each == kind).and_then(|(_, tip)| *tip);
-    let report = |kind: IndexKind| IndexReport {
-        name: kind.name(),
-        enabled: enabled.contains(&kind),
-        durable: height(kind).map(|tip| u32::from(tip.height)),
-    };
-    IndexKind::ALL.into_iter().map(report).collect()
-}
-
-/// Chain view facts ⨝ the balancer's `MemberTable` row (`state`, `latency_ms`, `failures`)
-///
-/// - `latency_ms` `None` until its first answer; `release` `None` until a metadata read answers
-#[derive(Debug, Serialize, PartialEq)]
-struct ValidatorReport {
-    address: String,
-    state: &'static str,
-    agreement: &'static str,
-    height: Option<u32>,
-    stale_blocks: Option<u32>,
-    latency_ms: Option<u64>,
-    failures: u32,
-    observed_s_ago: Option<u64>,
-    streaming: bool,
-    release: Option<Release>,
-    peers: Vec<Peer>,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-struct Release {
-    build: String,
-    user_agent: String,
-    protocol_version: u32,
-    end_of_service: EndOfService,
-}
-
-/// `blocks_left` = from the validator's own tip
-#[derive(Debug, Serialize, PartialEq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum EndOfService {
-    At { height: u32, estimated_unix: i64, blocks_left: Option<u32> },
-    NotEnforced,
-    Unknown,
-}
-
-#[derive(Debug, Serialize, PartialEq)]
-struct Peer {
-    addr: String,
-    inbound: bool,
-}
-
-/// `stale`, `ending` = validator addresses
-#[derive(Debug, Serialize, PartialEq)]
-struct AlarmsReport {
-    partitioned: bool,
-    eclipsed: bool,
-    finality_paused: bool,
-    stale: Vec<String>,
-    ending: Vec<String>,
-}
-
-/// `transactions` = held = `verified` + `quorum` + `ours_unverified` ([`MempoolState`]);
-/// `trusted_readers` = the `y` of `trusted: x/y`
-#[derive(Debug, Serialize, PartialEq)]
-struct MempoolCounts {
-    transactions: usize,
-    verified: usize,
-    quorum: usize,
-    ours_unverified: usize,
-    fully_spread: usize,
-    trusted_readers: usize,
-}
-
 /// Why one held transaction is held, first match: a trusted listing, a peer quorum, our relay
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MempoolState {
@@ -190,136 +68,25 @@ fn mempool_state(spread: &Spread) -> MempoolState {
     }
 }
 
-/// `cumulative_work` decimal (past 2^53: a JSON number loses it)
-#[derive(Debug, Serialize, PartialEq)]
-struct ForkReport {
-    from: Block,
-    tip: Block,
-    cumulative_work: String,
-    folded: Option<Block>,
-}
-
-impl Report {
-    /// - `members` = the traffic balancer's table (joined on `MemberId::Trusted(position)`)
-    /// - `enabled` = config's indexes (listed before the NFS's first publish)
-    pub fn of<V: View>(
-        snap: &GrpcSnapshot<V>,
-        progress: &SyncProgress,
-        members: &MemberTable,
-        enabled: &[IndexKind],
-    ) -> Self {
-        let (tips, view) = (snap.tips(), snap.view());
-        let endpoints = view.endpoints();
-        let named = |set: TrustedValidatorSet| -> Vec<String> {
-            let at = set.positions().filter_map(|position| endpoints.get(position));
-            at.map(|meta| meta.address.clone()).collect()
-        };
-        let durable: Vec<_> = snap.indexed().into_iter().flat_map(|i| i.durable()).collect();
-        let validators = endpoints.iter().enumerate();
-        let validators = validators.map(|(position, meta)| validator(position, meta, members));
-        let alarms = view.alarms();
-        let forks = snap.forks().into_iter().map(|view| ForkReport {
-            from: block(view.fork.from),
-            tip: block(view.fork.tip),
-            cumulative_work: view.fork.cumulative_work.to_string(),
-            folded: view.folded.map(block),
-        });
-        Self {
-            seq: snap.seq(),
-            tips: TipsReport {
-                best: tips.best.map(block),
-                final_tip: tips.final_tip.map(block),
-                served: tips.served.map(block),
-                held_by: tips.held_by.count(),
-                configured: endpoints.len(),
-                synced: tips.synced,
-            },
-            handed: progress.handed().map(u32::from),
-            indexes: indexes(enabled, &durable),
-            validators: validators.collect(),
-            alarms: AlarmsReport {
-                partitioned: alarms.partitioned(),
-                eclipsed: alarms.eclipsed(),
-                finality_paused: alarms.finality_paused(),
-                stale: named(alarms.stale()),
-                ending: named(alarms.ending()),
-            },
-            mempool: mempool(view),
-            forks: forks.collect(),
-        }
-    }
-}
-
-/// Chain view facts at `position` ⨝ its `members` row
-fn validator(
-    position: usize,
-    meta: &TrustedValidatorMeta,
-    members: &MemberTable,
-) -> ValidatorReport {
-    let member = TrustedValidatorId::new(position)
-        .and_then(|id| members.rows.iter().find(|row| row.id == MemberId::Trusted(id)));
-    ValidatorReport {
-        address: meta.address.clone(),
-        state: meta.health.label(),
-        agreement: meta.agreement.label(),
-        height: meta.tip().map(|tip| u32::from(tip.height)),
-        stale_blocks: meta.stale_blocks(),
-        latency_ms: member
-            .filter(|_| meta.health != Health::Pending)
-            .map(|row| row.latency.as_millis() as u64),
-        failures: member.map_or(0, |row| row.failures),
-        observed_s_ago: meta.observed_at.map(|at| at.elapsed().as_secs()),
-        streaming: meta.streaming,
-        release: meta.release.as_ref().map(|release| Release {
-            build: release.build.clone(),
-            user_agent: release.user_agent.clone(),
-            protocol_version: release.protocol_version,
-            end_of_service: end_of_service(release.end_of_service, meta.blocks_to_end_of_service()),
-        }),
-        peers: (meta.peers.iter())
-            .map(|peer| Peer { addr: peer.addr.clone(), inbound: peer.inbound })
-            .collect(),
-    }
-}
-
-fn end_of_service(halts: zaino_source::EndOfService, blocks_left: Option<u32>) -> EndOfService {
-    match halts {
-        zaino_source::EndOfService::At { height, estimated_unix } => {
-            EndOfService::At { height: u32::from(height), estimated_unix, blocks_left }
-        }
-        zaino_source::EndOfService::NotEnforced => EndOfService::NotEnforced,
-        zaino_source::EndOfService::Unknown => EndOfService::Unknown,
-    }
-}
-
-/// One pass over the held transactions: per-state tally + full spread
-fn mempool(view: &ChainViewSnapshot) -> MempoolCounts {
-    let readers = view.mempool_readers().count();
-    let mut counts = MempoolCounts {
-        transactions: 0,
-        verified: 0,
-        quorum: 0,
-        ours_unverified: 0,
-        fully_spread: 0,
-        trusted_readers: readers,
-    };
+/// Held transactions per [`MempoolState`], one pass
+fn mempool(view: &ChainViewSnapshot) -> [(MempoolState, usize); 3] {
+    let mut held =
+        [(MempoolState::Verified, 0), (MempoolState::Quorum, 0), (MempoolState::Ours, 0)];
     for (_, spread) in view.spreads() {
-        counts.transactions += 1;
-        match mempool_state(&spread) {
-            MempoolState::Verified => counts.verified += 1,
-            MempoolState::Quorum => counts.quorum += 1,
-            MempoolState::Ours => counts.ours_unverified += 1,
+        let state = mempool_state(&spread);
+        if let Some((_, count)) = held.iter_mut().find(|(each, _)| *each == state) {
+            *count += 1;
         }
-        counts.fully_spread += usize::from(readers > 0 && spread.trusted.seen == readers);
     }
-    counts
+    held
 }
 
 const PARTITIONED: &str = "Two live validators share no outbound peer (possible partition)";
 const ECLIPSED: &str = "Live validators reach few distinct outbound peers (possible eclipse)";
 const FINALITY_PAUSED: &str = "Finality paused: no trusted validator holds the boundary";
 
-/// One sentence per raised alarm (`/statusz` `notes`), in `AlarmsReport` order
+/// One sentence per raised alarm (zainod's `/status` `notes`): partition, eclipse, finality
+/// paused, stale tips, ending releases
 pub fn notes<V>(snap: &GrpcSnapshot<V>) -> Vec<String> {
     let alarms = snap.view().alarms();
     let counted = |count: usize, one: &str, many: &str| match count {
@@ -341,10 +108,6 @@ pub fn notes<V>(snap: &GrpcSnapshot<V>) -> Vec<String> {
         "validator releases reach end of service within a week",
     );
     flags.chain(stale).chain(ending).collect()
-}
-
-fn block(at: BlockRef) -> Block {
-    Block { height: u32::from(at.height), hash: at.hash.to_string() }
 }
 
 /// `# HELP` registrations for every gauge [`emit_gauges`] sets
@@ -419,13 +182,7 @@ pub fn emit_gauges<V: View>(snap: &GrpcSnapshot<V>, progress: &SyncProgress) {
 
 /// `zaino.chainview.*`: per endpoint, then the view's
 fn chain_view_gauges(view: &ChainViewSnapshot) {
-    let counts = mempool(view);
-    let held = [
-        (MempoolState::Verified, counts.verified),
-        (MempoolState::Quorum, counts.quorum),
-        (MempoolState::Ours, counts.ours_unverified),
-    ];
-    for (state, held) in held {
+    for (state, held) in mempool(view) {
         metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => state.label()).set(held as f64);
     }
 
@@ -526,45 +283,5 @@ fn alarm_edges(prev: &ChainViewSnapshot, next: &ChainViewSnapshot) {
         (false, true) => warn!(?best, "{FINALITY_PAUSED}"),
         (true, false) => info!(?best, "Finality resumed"),
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Status page contract: one `status` tag per end-of-service case, fields only where they exist
-    #[test]
-    fn a_release_serializes_its_end_of_service_by_status() {
-        let release = |end_of_service| {
-            let release = Release {
-                build: "v6.4.2".to_owned(),
-                user_agent: "/Zebra:6.4.2/".to_owned(),
-                protocol_version: 170_140,
-                end_of_service,
-            };
-            serde_json::to_value(release).expect("serializes")
-        };
-        let mainnet = EndOfService::At {
-            height: 3_564_960,
-            estimated_unix: 1_790_000_000,
-            blocks_left: Some(4_960),
-        };
-        assert_eq!(
-            release(mainnet),
-            serde_json::json!({
-                "build": "v6.4.2", "user_agent": "/Zebra:6.4.2/", "protocol_version": 170_140,
-                "end_of_service": {
-                    "status": "at", "height": 3_564_960, "estimated_unix": 1_790_000_000,
-                    "blocks_left": 4_960,
-                },
-            })
-        );
-        let status = |eos| release(eos)["end_of_service"].clone();
-        assert_eq!(
-            status(EndOfService::NotEnforced),
-            serde_json::json!({ "status": "not_enforced" })
-        );
-        assert_eq!(status(EndOfService::Unknown), serde_json::json!({ "status": "unknown" }));
     }
 }

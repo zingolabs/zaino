@@ -108,9 +108,8 @@ let checked = loop {
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `ZebraIndexerWatch::run`'s callbacks here; an
   event polls within 200 ms.
 - `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, last reply's
-  latency, in flight; trusted first in configured order, then the peer set) for `/statusz` and
-  metrics, refreshed by
-  the driver. `entries()`: trusted members a submission may enter by (live, not benched).
+  latency, in flight; trusted first in configured order, then the peer set) for the chain view
+  and metrics, refreshed by the driver. `entries()`: trusted members a submission may enter by (live, not benched).
 
 ## Health
 

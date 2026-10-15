@@ -67,7 +67,7 @@ impl Health {
     }
 }
 
-/// Every member as the balancer sees it (/statusz, metrics)
+/// Every member as the balancer sees it (chain view, metrics)
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberTable {
     pub rows: Vec<MemberRow>,

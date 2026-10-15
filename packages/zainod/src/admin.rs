@@ -1,9 +1,8 @@
-//! Admin surface: `/metrics`, `/livez`, `/readyz`, `/statusz`, on a runtime of its own
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, on a runtime of its own
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` + `/statusz` + `/metrics`' gauges = [`crate::status`] (one snapshot load each;
-//!   `/readyz` + `/statusz` answered inline)
+//! - `/readyz` + `/metrics`' gauges = [`DaemonStatus`] (one snapshot load each; `/readyz` inline)
 
 use std::{
     convert::Infallible,
@@ -20,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
 use crate::error::IndexerError;
+use crate::status::DaemonStatus;
 
 /// Bounds `AtomicBucket` growth between scrapes (`render` drains itself; this covers no scraper)
 const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
@@ -35,36 +35,37 @@ const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 /// [`beat`] cadence
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
-static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
+/// Last beat from the serving runtime (poison-tolerant: the lock only guards a `Copy` swap)
+#[derive(Default)]
+pub(crate) struct Heartbeat(Mutex<Option<Instant>>);
 
-fn heartbeat() {
-    // Poison-tolerant: the lock only guards a `Copy` swap
-    *HEARTBEAT.lock().expect("heartbeat mutex poisoned") = Some(Instant::now());
+impl Heartbeat {
+    pub(crate) fn beat(&self) {
+        *self.0.lock().expect("heartbeat mutex poisoned") = Some(Instant::now());
+    }
+
+    pub(crate) fn live(&self) -> bool {
+        is_fresh(self.0.lock().expect("heartbeat mutex poisoned").map(|at| at.elapsed()))
+    }
 }
 
 /// Heartbeat from the serving runtime until `cancel` (wedged runtime → `/livez` fails)
-pub(crate) async fn beat(cancel: CancellationToken) -> Result<(), IndexerError> {
+pub(crate) async fn beat(
+    status: Arc<DaemonStatus>,
+    cancel: CancellationToken,
+) -> Result<(), IndexerError> {
     let mut tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     loop {
         tokio::select! {
-            _ = tick.tick() => heartbeat(),
+            _ = tick.tick() => status.beat(),
             () = cancel.cancelled() => return Ok(()),
         }
     }
 }
 
-fn heartbeat_age() -> Option<Duration> {
-    HEARTBEAT.lock().expect("heartbeat mutex poisoned").map(|at| at.elapsed())
-}
-
 /// `None` = never beaten = still starting (k8s covers that window with its own startup delay)
 fn is_fresh(age: Option<Duration>) -> bool {
     age.is_none_or(|age| age < HEARTBEAT_MAX_AGE)
-}
-
-/// Serving runtime still scheduling (`/livez`; stale = `down`, "Runtime stalled")
-pub(crate) fn live() -> bool {
-    is_fresh(heartbeat_age())
 }
 
 /// Called by `metrics::init` before the recorder installs (no sample without a draining listener)
@@ -82,6 +83,7 @@ pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, Indexe
 pub(crate) fn spawn(
     listener: std::net::TcpListener,
     handle: PrometheusHandle,
+    status: Arc<DaemonStatus>,
 ) -> Result<(), IndexerError> {
     std::thread::Builder::new()
         .name("zaino-admin".to_string())
@@ -90,13 +92,17 @@ pub(crate) fn spawn(
                 Ok(runtime) => runtime,
                 Err(e) => return error!(%e, "admin runtime failed to build; no /metrics or probes"),
             };
-            runtime.block_on(serve(listener, handle));
+            runtime.block_on(serve(listener, handle, status));
         })
         .map_err(|e| IndexerError::Metrics(format!("failed to spawn admin thread: {e}")))?;
     Ok(())
 }
 
-async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
+async fn serve(
+    listener: std::net::TcpListener,
+    handle: PrometheusHandle,
+    status: Arc<DaemonStatus>,
+) {
     // Bound before the recorder installed (`metrics::init`): this loop or a scrape drains all
     let upkeep = handle.clone();
     tokio::spawn(async move {
@@ -127,12 +133,12 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
                 continue;
             }
         };
-        let handle = handle.clone();
+        let (handle, status) = (handle.clone(), Arc::clone(&status));
         tokio::spawn(async move {
             let _permit = permit;
             let service = service_fn(move |request| {
-                let handle = handle.clone();
-                async move { Ok::<_, Infallible>(route(&handle, &request).await) }
+                let (handle, status) = (handle.clone(), Arc::clone(&status));
+                async move { Ok::<_, Infallible>(route(&handle, status, &request).await) }
             });
             // `timer` load-bearing: without it hyper drops its header-read timeout (slowloris)
             let _ = http1::Builder::new()
@@ -145,13 +151,15 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
 
 async fn route(
     handle: &PrometheusHandle,
+    status: Arc<DaemonStatus>,
     request: &Request<hyper::body::Incoming>,
 ) -> Response<Full<Bytes>> {
     match request.uri().path() {
         // Off the admin runtime: `render` walks every handle, and this thread answers probes
         "/metrics" => {
             let handle = handle.clone();
-            match tokio::task::spawn_blocking(move || crate::metrics::scrape(&handle)).await {
+            let scrape = move || crate::metrics::scrape(&handle, &status);
+            match tokio::task::spawn_blocking(scrape).await {
                 Ok(scrape) => body(StatusCode::OK, EXPOSITION_CONTENT_TYPE, scrape),
                 Err(e) => {
                     error!(%e, "rendering the scrape panicked");
@@ -159,18 +167,17 @@ async fn route(
                 }
             }
         }
-        "/livez" => match live() {
+        "/livez" => match status.live() {
             true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ok".to_string()),
             false => {
                 body(StatusCode::SERVICE_UNAVAILABLE, PLAIN_CONTENT_TYPE, "unavailable".to_string())
             }
         },
         "/readyz" => {
-            let (ready, json) = crate::status::readiness_json(live());
-            let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-            body(status, JSON_CONTENT_TYPE, json)
+            let (ready, json) = status.readiness_json();
+            let code = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            body(code, JSON_CONTENT_TYPE, json)
         }
-        "/statusz" => body(StatusCode::OK, JSON_CONTENT_TYPE, crate::status::status_json(live())),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
 }
@@ -208,7 +215,8 @@ mod tests {
         let listener = bind("127.0.0.1:0".parse().expect("a loopback socket address parses"))
             .expect("loopback bind succeeds");
         let endpoint = listener.local_addr().expect("a bound listener has an address");
-        tokio::spawn(serve(listener, handle));
+        let network = zcash_protocol::consensus::NetworkType::Regtest;
+        tokio::spawn(serve(listener, handle, Arc::new(DaemonStatus::new(network, []))));
 
         // The accept loop races the connect; retry rather than sleep a fixed guess
         let get = |path: &'static str| async move {
@@ -239,9 +247,6 @@ mod tests {
         let readyz = get("/readyz").await;
         assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
         assert!(readyz.ends_with(r#"{"detail":null,"state":"provisioning"}"#), "{readyz}");
-        let statusz = get("/statusz").await;
-        assert!(statusz.starts_with("HTTP/1.1 200"), "{statusz}");
-        assert!(statusz.contains(r#""state":"provisioning""#), "{statusz}");
         assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
     }
 

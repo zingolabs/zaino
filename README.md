@@ -27,7 +27,7 @@ packages/                          Cargo workspace members
   # serving
   zaino-grpc/                        Lightwalletd-compatible gRPC over snapshots, chain view, validators
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
-  zaino-snapshot/                    One published snapshot of everything served, /statusz report
+  zaino-snapshot/                    One published snapshot of everything served, /status report
   # indexing
   zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, snapshots
   zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
@@ -110,7 +110,7 @@ prevents.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers and blocks (checked by proof of work and merkle root, so the tip follows the network while every trusted validator is down), each peer's own mempool listing (the chain view's peer quorum: the mempool keeps serving while every trusted validator is down), attributed block announcements (finality on peers' word) and the isolated per-attempt submission push; advertises no services.
 - [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the Validated Header tree, each header validated by the trusted validator that served it or by Zaino, anchored at a trusted tip − depth (no history from genesis) — the most-work tip, vouched finality, and `validate`, the consensus rules kept as the fallback for an untrusted source.
 - [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the final stream (lockstep finality), and publishes one `Indexed` across every index that moves to the fork point the moment a reorg lands.
-- [`zaino-snapshot`](./packages/zaino-snapshot/usage.md): one published `Snapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the `/statusz` report, the gauges and the alarm logs derived from it.
+- [`zaino-snapshot`](./packages/zaino-snapshot/usage.md): one published `Snapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the public `/status` report, the gauges and the alarm logs derived from it.
 - [`zaino-sync`](./packages/zaino-sync/usage.md): the final stream (`Step`, `Run`), byte-bounded queues, fees from one index to another, and the `apply` / `commit` / `IndexPublisher` every writer's loop runs on.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
@@ -120,7 +120,7 @@ prevents.
 - [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs as two pure projections, why the fold performs no lookups, and what an empty result means.
 - [`zaino-proto`](./packages/zaino-proto/README.md): the vendored lightwallet protocol, Zebra's indexer protocol, and the gRPC frame helpers.
 - [`zaino-grpc`](./packages/zaino-grpc/usage.md): the index/validator split, why the router writes bytes rather than messages, and which status code a client must read as "retry".
-- [`zainod`](./packages/zainod/usage.md): the admin listener and its states (`/readyz`, `/statusz`, `/metrics`), operator hold, systemd, index snapshots, `zainod verify`, the failure policy and logging.
+- [`zainod`](./packages/zainod/usage.md): the admin listener and its states (`/livez`, `/readyz`, `/metrics`) and the public `/status`, operator hold, systemd, index snapshots, `zainod verify`, the failure policy and logging.
 
 ## Security disclosure
 

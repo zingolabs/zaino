@@ -5,8 +5,8 @@
 //!   once it has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
 //!   not synced
-//! - disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` `disk`)
-//! - the phase's blocks/s over the last two intervals (`/statusz` `progress.rate`)
+//! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)
+//! - the phase's blocks/s over the last two intervals (`/status` `progress.rate`)
 
 use std::{
     collections::BTreeMap,
@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
 use zaino_persistence::{DiskView, IndexKind};
@@ -38,15 +37,8 @@ pub(crate) struct Index {
     pub(crate) handle: IndexHandle<DiskView>,
 }
 
-/// Bytes under one index directory: its total, each top-level subdirectory's share by name
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct Usage {
-    pub(crate) size_bytes: u64,
-    pub(crate) tables: BTreeMap<String, u64>,
-}
-
-/// Last walk per index name (unreadable = absent)
-pub(crate) type Disk = BTreeMap<&'static str, Usage>;
+/// Last walk's bytes per index name (unreadable = absent)
+type Disk = BTreeMap<&'static str, u64>;
 
 /// Blocks handed since boot + the served height (0 before any), when
 #[derive(Clone, Copy)]
@@ -98,12 +90,11 @@ impl Phase {
     }
 }
 
-/// Until `cancel`; each walk lands in `disk`, each tick's blocks/s over the last two in `rate`
+/// Until `cancel`; each tick's blocks/s over the last two in `rate`
 pub(crate) async fn run(
     snapshots: Snapshots<DiskView>,
     progress: SyncProgress,
     indexes: Vec<Index>,
-    disk: watch::Sender<Disk>,
     rate: watch::Sender<Option<f64>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), IndexerError> {
@@ -116,18 +107,17 @@ pub(crate) async fn run(
     let mut last = sample(&snapshots.load().tips());
     let mut before_last = last;
     let (mut last_phase, mut moved_at) = (None::<Phase>, last.at);
-    let mut walked: Option<Instant> = None;
+    let (mut disk, mut walked) = (Disk::new(), None::<Instant>);
     loop {
         tokio::select! {
             () = cancel.cancelled() => return Ok(()),
             _ = ticks.tick() => {}
         }
         if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
-            let usage = walk(&indexes).await?;
-            for (index, usage) in &usage {
-                crate::disk_monitor::walked(index, usage);
+            disk = walk(&indexes).await?;
+            for (index, bytes) in &disk {
+                crate::disk_monitor::walked(index, *bytes);
             }
-            disk.send_replace(usage);
             walked = Some(Instant::now());
         }
         let views = crate::disk_monitor::views(&indexes);
@@ -147,13 +137,11 @@ pub(crate) async fn run(
             report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
         if matches!(phase, Some(Phase::Final { .. })) {
-            let sizes = disk.borrow();
             let column = |tip: Option<BlockRef>| HeightCol(tip.map(|tip| tip.height.into()));
             for index in &indexes {
                 let applied = column(index.handle.applied());
                 let durable = column(index.handle.tip());
-                let size =
-                    sizes.get(index.kind.name()).map(|usage| display(ByteSize(usage.size_bytes)));
+                let size = disk.get(index.kind.name()).map(|bytes| display(ByteSize(*bytes)));
                 index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
             }
         }
@@ -197,37 +185,17 @@ fn per_second(count: u64, over: Duration) -> u64 {
 /// Every index directory, off the runtime (an unreadable one logged here, under its component)
 async fn walk(indexes: &[Index]) -> Result<Disk, IndexerError> {
     let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
-    let walked =
-        tokio::task::spawn_blocking(move || dirs.iter().map(|dir| usage(dir)).collect::<Vec<_>>());
+    let walked = tokio::task::spawn_blocking(move || {
+        dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>()
+    });
     let mut disk = Disk::new();
     for (index, walked) in indexes.iter().zip(walked.await?) {
         match walked {
-            Ok(usage) => drop(disk.insert(index.kind.name(), usage)),
+            Ok(bytes) => drop(disk.insert(index.kind.name(), bytes)),
             Err(error) => index.span.in_scope(|| warn!(%error, "Index size unreadable")),
         }
     }
     Ok(disk)
-}
-
-/// One pass over `dir`: its own files count towards the total only; a file removed mid-walk
-/// counts as gone
-fn usage(dir: &Path) -> io::Result<Usage> {
-    let mut usage = Usage { size_bytes: 0, tables: BTreeMap::new() };
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let bytes = disk_bytes(&entry.path())?;
-            usage.size_bytes += bytes;
-            usage.tables.insert(entry.file_name().to_string_lossy().into_owned(), bytes);
-            continue;
-        }
-        match entry.metadata() {
-            Ok(meta) => usage.size_bytes += meta.len(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(usage)
 }
 
 /// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
@@ -267,27 +235,6 @@ mod tests {
         assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
         let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-    }
-
-    /// Root files count towards the total only; each subdirectory, nested files included, is its
-    /// own share, by name
-    #[test]
-    fn usage_splits_the_total_by_top_level_subdirectory() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let write = |path: &str, bytes: usize| {
-            std::fs::write(root.path().join(path), vec![0; bytes]).expect(path)
-        };
-        for subdir in ["spent", "receives", "receives/nested"] {
-            std::fs::create_dir(root.path().join(subdir)).expect(subdir);
-        }
-        write("MANIFEST", 10);
-        write("spent/0.seg", 300);
-        write("receives/0.seg", 100);
-        write("receives/nested/1.seg", 20);
-
-        let tables = [("receives".to_owned(), 120), ("spent".to_owned(), 300)];
-        let expected = Usage { size_bytes: 430, tables: tables.into_iter().collect() };
-        assert_eq!(usage(root.path()).expect("walk"), expected);
     }
 
     /// Final blocks first (handed, else the lowest durable tip), then the window up to best; the

@@ -1,10 +1,9 @@
-//! The run loop over real watches, the `/statusz` + `/metrics` goldens, `check()`'s fire drills
+//! The run loop over real watches, the `/metrics` golden, `check()`'s fire drills
 
 use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::watch;
@@ -20,9 +19,7 @@ use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
-use zaino_traffic::{
-    Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, TrustedValidatorId,
-};
+use zaino_traffic::{Health, Limits, TrafficBalancer, Trusted};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;
@@ -31,8 +28,8 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, Publisher, Report, SnapshotError,
-    Snapshots, Standing, Tips,
+    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, Publisher, SnapshotError, Snapshots,
+    Standing, Tips,
 };
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -93,20 +90,15 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     assert!(matches!(stopped, Err(SnapshotError::IndexedGone)), "{stopped:?}");
 }
 
-/// A 0..=5 final through 2, side S4..=S5 off A3; one of two validators holds A5 (the balancer:
-/// one live at 12 ms, one degraded after 3 failures); block-hash durable through A5, tree-state
-/// configured but absent from the NFS (enabled, no durable), served A5, handed 5; one relayed tx:
-/// the `/statusz` body field by field, then the gauges a scrape renders from the same snapshot
+/// A 0..=5 final through 2; one of two validators holds A5, the other degraded; block-hash
+/// durable through A5, served A5, handed 5; one relayed tx: the gauges a scrape renders
 #[test]
-fn one_snapshot_renders_the_status_report_and_every_gauge() {
+fn one_snapshot_renders_every_gauge() {
     let mut builder = MockChain::regtest();
     let a5 = builder.mine_empty(5);
     let a = builder.blocks(a5);
-    let s5 = builder.fork(h(3)).mine_empty(2).tip();
-    let s = builder.blocks(s5);
     let mut headers = builder.header_chain(DEPTH);
     insert(&mut headers, &a).expect("A verifies");
-    insert(&mut headers, &s[4..]).expect("S verifies");
     headers.finalize(a[2].at());
     let chain = Arc::new(headers.verified().expect("verified"));
 
@@ -140,65 +132,6 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let view = view.endpoint(1, Health::Degraded, 0);
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
-    let member = |at: usize, failures, latency| MemberRow {
-        id: MemberId::Trusted(TrustedValidatorId::new(at).expect("small")),
-        failures,
-        benched_until: None,
-        latency: Duration::from_millis(latency),
-        in_flight: 0,
-    };
-    let members = MemberTable { rows: vec![member(0, 0, 12), member(1, 3, 40)] };
-
-    let block = |block: &Block| {
-        let at = block.at();
-        serde_json::json!({ "height": u32::from(at.height), "hash": at.hash.to_string() })
-    };
-    let work = chain.forks()[0].cumulative_work.to_string();
-    let disabled =
-        |name: &str| serde_json::json!({ "name": name, "enabled": false, "durable": null });
-    let validator =
-        |address: &str, state: &str, latency_ms: u64, failures: u32, at: Option<u32>| {
-            serde_json::json!({
-                "address": address, "state": state, "height": at,
-                "agreement": if at.is_some() { "agreed" } else { "unknown" },
-                "stale_blocks": at.map(|_| 0), "latency_ms": latency_ms, "failures": failures,
-                "observed_s_ago": null, "streaming": false, "release": null, "peers": [],
-            })
-        };
-    let expected = serde_json::json!({
-        "seq": 0,
-        "tips": {
-            "best": block(&a[5]), "final": block(&a[2]), "served": block(&a[5]),
-            "held_by": 1, "configured": 2, "synced": true,
-        },
-        "handed": 5,
-        "indexes": [
-            disabled("utxo_set"),
-            disabled("compact_block"),
-            { "name": "block_hash", "enabled": true, "durable": 5 },
-            { "name": "tree_state", "enabled": true, "durable": null },
-            disabled("transparent_address"),
-        ],
-        "validators": [
-            validator(addresses[0], "live", 12, 0, Some(5)),
-            validator(addresses[1], "degraded", 40, 3, None),
-        ],
-        "alarms": {
-            "partitioned": false, "eclipsed": false, "finality_paused": false,
-            "stale": [], "ending": [],
-        },
-        "mempool": {
-            "transactions": 1, "verified": 0, "quorum": 0, "ours_unverified": 1, "fully_spread": 0,
-            "trusted_readers": 1,
-        },
-        "forks": [
-            { "from": block(&a[3]), "tip": block(&s[5]), "cumulative_work": work, "folded": null },
-        ],
-    });
-    let enabled = [IndexKind::BlockHash, IndexKind::TreeState];
-    let report = Report::of(&snap, &progress, &members, &enabled);
-    let report = serde_json::to_value(report).expect("serializes");
-    assert_eq!(report, expected);
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let render = recorder.handle();

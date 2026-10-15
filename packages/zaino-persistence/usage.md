@@ -71,7 +71,7 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
   item of the wrong size, a tip that does not advance, a key inserted twice, a table the engine
   cannot hold (for `DiskEngine`, see [its LSM's limits](#on-disk)).
 - **`IndexKind::name()`** (`compact_block`, …) is the one spelling of an index: metric label,
-  statusz key, default directory, task name.
+  `/status` index name, default directory, task name.
 
 ## Deletes
 

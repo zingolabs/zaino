@@ -55,6 +55,7 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
 use crate::error::IndexerError;
 use crate::logging::component;
+use crate::status::DaemonStatus;
 use crate::stores;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
@@ -68,32 +69,35 @@ type TaskExit = (&'static str, Result<(), IndexerError>);
 /// - then the bootstrap, then boot (no validator needs to answer first)
 pub(crate) async fn start_indexer(
     config: DaemonConfig,
+    status: Arc<DaemonStatus>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     warn!("In development, not for production mainnet use");
     crate::fd_limit::raise_for(config.grpc.max_connections)?;
     match config.validator_client {
-        ValidatorClient::LegacyRpc => start_over(config, crate::chainview::legacy_client).await,
-        ValidatorClient::Grpc => start_over(config, crate::chainview::grpc_client).await,
+        ValidatorClient::LegacyRpc => {
+            start_over(config, crate::chainview::legacy_client, status).await
+        }
+        ValidatorClient::Grpc => start_over(config, crate::chainview::grpc_client, status).await,
     }
 }
 
 async fn start_over<S: ChainDataSource>(
     config: DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
+    status: Arc<DaemonStatus>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let serving = listen(&config, &cancel, &mut tasks).await?;
+    let serving = listen(&config, &status, &cancel, &mut tasks).await?;
     #[cfg(feature = "snapshot")]
     if let Some(snapshot) = &config.snapshot {
-        crate::bootstrap::bootstrap(snapshot, &config)
-            .instrument(component("IndexSnapshot"))
-            .await?;
+        let bootstrap = crate::bootstrap::bootstrap(snapshot, &config, &status);
+        bootstrap.instrument(component("IndexSnapshot")).await?;
     }
-    boot_over(config, client, serving, cancel, tasks).await
+    boot_over(config, client, serving, status, cancel, tasks).await
 }
 
-/// Bound gRPC server's handles: where the pipeline's routes go, its admission for `/statusz`
+/// Bound gRPC server's handles: where the pipeline's routes go, its admission for `Overloaded`
 struct Serving<S: ChainDataSource> {
     routing: Routing<S, DiskView>,
     admission: Arc<AdmissionState>,
@@ -103,19 +107,20 @@ struct Serving<S: ChainDataSource> {
 /// routes it (EADDRINUSE = boot failure)
 async fn listen<S: ChainDataSource>(
     config: &DaemonConfig,
+    status: &Arc<DaemonStatus>,
     cancel: &CancellationToken,
     tasks: &mut JoinSet<TaskExit>,
 ) -> Result<Serving<S>, IndexerError> {
     let limits = GrpcLimits::from(&config.grpc);
     let mut server = GrpcService::new(config.serve.grpc_listen_address, limits)
         .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
-        .with_health(Arc::new(crate::status::PublicHealth));
+        .with_health(Arc::clone(status) as Arc<dyn zaino_grpc::Health>);
     if let Some(tls) = &config.serve.tls {
         let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
         server = server.with_tls(Tls::load(files)?);
     }
     let serving = Serving { routing: server.routing(), admission: server.admission() };
-    crate::hold::serving(server.retire());
+    status.serving(server.retire());
     let server = server.bind().await?;
     let span = component("Grpc");
     let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));
@@ -129,11 +134,12 @@ async fn upgrade_schedule<S: ChainDataSource>(
     network: NetworkType,
     balancer: &TrafficBalancer<S>,
     validators: usize,
+    status: &DaemonStatus,
 ) -> Result<LocalNetwork, IndexerError> {
     if let Some(schedule) = compiled_schedule(network) {
         return Ok(schedule);
     }
-    let listed = regtest_schedule(balancer, validators).await;
+    let listed = regtest_schedule(balancer, validators, status).await;
     listed.schedule().ok_or_else(|| {
         let listed = format!("{:?}", listed.activations);
         IndexerError::Config(format!(
@@ -146,6 +152,7 @@ async fn upgrade_schedule<S: ChainDataSource>(
 async fn regtest_schedule<S: ChainDataSource>(
     balancer: &TrafficBalancer<S>,
     validators: usize,
+    status: &DaemonStatus,
 ) -> BlockchainInfo {
     let members = (0..validators).filter_map(TrustedValidatorId::new);
     let mut observed: Vec<_> = members.map(|member| balancer.observe(member)).collect();
@@ -155,12 +162,12 @@ async fn regtest_schedule<S: ChainDataSource>(
             let observation = observation.borrow_and_update().clone();
             match observation.as_ref().map(|observation| &observation.polled) {
                 Some(Ok(reading)) => {
-                    crate::status::awaiting_validator(false);
+                    status.awaiting_validator(false);
                     return reading.info.clone();
                 }
                 Some(Err(cause)) if !warned => {
                     warn!(%cause, "No trusted validator answering yet, waiting to read the upgrade schedule");
-                    crate::status::awaiting_validator(true);
+                    status.awaiting_validator(true);
                     warned = true;
                 }
                 Some(Err(_)) | None => {}
@@ -180,16 +187,16 @@ async fn boot_over<S: ChainDataSource>(
     config: DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
     serving: Serving<S>,
+    status: Arc<DaemonStatus>,
     cancel: CancellationToken,
     mut tasks: JoinSet<TaskExit>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    let started = std::time::Instant::now();
     let chainview_span = component("ChainView");
     let wiring = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
     let balancing = wiring.balancing.run(cancel.child_token());
     spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
-    let schedule = upgrade_schedule(config.network, &wiring.balancer, validators);
+    let schedule = upgrade_schedule(config.network, &wiring.balancer, validators, &status);
     let schedule = schedule.instrument(chainview_span.clone()).await?;
     let viewed = chainview_span.in_scope(|| {
         crate::chainview::view(
@@ -202,13 +209,12 @@ async fn boot_over<S: ChainDataSource>(
     })?;
     let inputs = Inputs {
         fs: RealFs::shared(),
-        started,
         chain: viewed.header_sync.subscribe(),
         view: Arc::clone(&viewed.view),
         balancer: wiring.balancer.clone(),
         schedule,
     };
-    let mut tasks = pipeline(&config, inputs, serving, &cancel, tasks)?;
+    let mut tasks = pipeline(&config, inputs, serving, &status, &cancel, tasks)?;
 
     let header_sync = match config.p2p.enabled {
         true => viewed.header_sync.with_peers(Params::for_network(config.network, &schedule)),
@@ -233,7 +239,7 @@ async fn boot_over<S: ChainDataSource>(
         let run = watch.run(cancel.child_token(), on_change, on_link);
         spawn_infallible(&mut tasks, "push-stream", chainview_span.clone(), run);
     }
-    let heartbeat = crate::admin::beat(cancel.child_token());
+    let heartbeat = crate::admin::beat(status, cancel.child_token());
     spawn(&mut tasks, "heartbeat", component("Metrics"), heartbeat);
 
     Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals())))
@@ -242,7 +248,6 @@ async fn boot_over<S: ChainDataSource>(
 /// Pipeline inputs (production: header sync + trusted validators on disk; tests: mocks on `SimFs`)
 struct Inputs<S: ChainDataSource> {
     fs: Arc<dyn Fs>,
-    started: std::time::Instant,
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
     balancer: TrafficBalancer<S>,
@@ -255,11 +260,12 @@ fn pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
     inputs: Inputs<S>,
     serving: Serving<S>,
+    status: &DaemonStatus,
     cancel: &CancellationToken,
     tasks: JoinSet<TaskExit>,
 ) -> Result<JoinSet<TaskExit>, IndexerError> {
     let indexes = open_indexes(config, &inputs)?;
-    Ok(run_pipeline(config, indexes, inputs, serving, cancel, tasks))
+    Ok(run_pipeline(config, indexes, inputs, serving, status, cancel, tasks))
 }
 
 /// Every enabled index opened, subscribed to the final stream, added to the NFS
@@ -323,12 +329,13 @@ fn open_indexes<S: ChainDataSource>(
 }
 
 /// Every opened index's writer, the follower, NFS, publisher, progress + egress spawned into
-/// `tasks`; gRPC routed; `/statusz` sources published
+/// `tasks`; gRPC routed; `status` sources published
 fn run_pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
     indexes: Indexes<S>,
     inputs: Inputs<S>,
     serving: Serving<S>,
+    status: &DaemonStatus,
     cancel: &CancellationToken,
     mut tasks: JoinSet<TaskExit>,
 ) -> JoinSet<TaskExit> {
@@ -340,7 +347,6 @@ fn run_pipeline<S: ChainDataSource>(
     }
     let publisher = Publisher::new(nfs.indexed(), inputs.view.subscriber(), depth);
     let snapshots = publisher.handle();
-    let members = inputs.balancer.members();
 
     // --- run: every gRPC answer off one snapshot from here on
     let progress = follower.progress();
@@ -366,13 +372,11 @@ fn run_pipeline<S: ChainDataSource>(
         let run = polling.run(cancel.child_token());
         spawn_infallible(&mut tasks, "peer-mempool", component("ChainView"), run);
     }
-    let (disk, walked) = watch::channel(crate::progress::Disk::new());
     let (rate, block_rate) = watch::channel(None);
     let reporting = crate::progress::run(
         snapshots.clone(),
         progress.clone(),
         opened,
-        disk,
         rate,
         cancel.child_token(),
     );
@@ -380,13 +384,9 @@ fn run_pipeline<S: ChainDataSource>(
     let (egress, egress_windows) = watch::channel(None);
     let measuring = crate::egress::run(egress, cancel.child_token());
     spawn(&mut tasks, "egress", component("Grpc"), measuring);
-    crate::status::publish(crate::status::Sources {
-        network: network_name(network),
-        started: inputs.started,
+    status.publish(crate::status::Sources {
         snapshots,
         progress,
-        members,
-        disk: walked,
         block_rate,
         grpc_admission: serving.admission,
         egress: egress_windows,
@@ -668,8 +668,7 @@ mod tests {
         let view = Arc::new(view.expect("one endpoint"));
         let fold = view.observation_fold();
         let fs = zaino_persistence::fs::SimFs::new();
-        let started = std::time::Instant::now();
-        let inputs = Inputs { fs, started, chain, view: Arc::clone(&view), balancer, schedule };
+        let inputs = Inputs { fs, chain, view: Arc::clone(&view), balancer, schedule };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let address = probe.local_addr().expect("local addr");
         drop(probe);
@@ -681,10 +680,13 @@ mod tests {
         config.serve.grpc_listen_address = address;
         let cancel = CancellationToken::new();
         let mut tasks = JoinSet::new();
-        let serving = listen(&config, &cancel, &mut tasks).await.expect("the gRPC listener binds");
+        let status = Arc::new(DaemonStatus::new(config.network, []));
+        let serving =
+            listen(&config, &status, &cancel, &mut tasks).await.expect("the gRPC listener binds");
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
         spawn_infallible(&mut tasks, "chainview", Span::none(), fold.run(cancel.child_token()));
-        let mut tasks = pipeline(&config, inputs, serving, &cancel, tasks).expect("pipeline up");
+        let mut tasks =
+            pipeline(&config, inputs, serving, &status, &cancel, tasks).expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");
@@ -767,7 +769,7 @@ mod tests {
         let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
         assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");
 
-        let scrape = crate::metrics::scrape(&rendered);
+        let scrape = crate::metrics::scrape(&rendered, &status);
         let per_index = |family: &'static str| {
             let name = move |kind: IndexKind| format!("{family}{{index=\"{}\"}}", kind.name());
             IndexKind::ALL.into_iter().map(name)
