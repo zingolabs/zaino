@@ -379,8 +379,9 @@ impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<
             .get_block_range_nullifiers(range)
             .await
             .map_err(to_status)?;
-        let stream = futures::stream::iter(blocks.into_iter().map(Ok));
-        Ok(Response::new(stream.boxed()))
+        Ok(Response::new(
+            blocks.map(|block| block.map_err(to_status)).boxed(),
+        ))
     }
 
     // --- wired: routed address -> raw transactions ---

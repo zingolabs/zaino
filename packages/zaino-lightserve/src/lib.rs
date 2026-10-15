@@ -17,6 +17,7 @@
 
 mod error;
 mod grpc;
+mod range;
 mod transport;
 mod wire;
 
@@ -121,21 +122,32 @@ impl<S: LightWalletService> LightServe<S> {
 
     /// `GetBlockRange`: the composed compact blocks over `range`, as a stream.
     ///
-    /// The store composes the range eagerly, so the items are collected owned
-    /// and returned as a `'static` stream; a per-block read failure rides the
-    /// stream, classified by kind, rather than aborting the pin. Acquiring the
-    /// snapshot itself can still fail up front (transient).
+    /// The stream owns the pinned snapshot and reads the range in bounded steps
+    /// ([`range::steps`]), so a wide range is never composed whole before its
+    /// first block is sent. A reversed range (`start > end`) is served highest
+    /// first, as lightwalletd does. A per-block read failure rides the stream,
+    /// classified by kind, rather than aborting the pin. Acquiring the snapshot
+    /// itself can still fail up front (transient).
     pub async fn get_block_range(
         &self,
         range: HeightRange,
     ) -> Result<BoxStream<'static, Result<compact::CompactBlock, ServeError>>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        let blocks: Vec<Result<compact::CompactBlock, ServeError>> = snapshot
-            .stream_compact(range)
-            .map(|read| read.map(ToWire::to_wire).map_err(ServeError::from))
-            .collect()
-            .await;
-        Ok(Box::pin(futures::stream::iter(blocks)))
+        let (direction, steps) = range::steps(range);
+        Ok(futures::stream::iter(steps)
+            .then(move |step| {
+                let snapshot = snapshot.clone();
+                async move {
+                    let blocks: Vec<Result<compact::CompactBlock, ServeError>> = snapshot
+                        .stream_compact(step)
+                        .map(|read| read.map(ToWire::to_wire).map_err(ServeError::from))
+                        .collect()
+                        .await;
+                    futures::stream::iter(direction.order(blocks))
+                }
+            })
+            .flatten()
+            .boxed())
     }
 
     /// `GetTreeState`: the commitment tree state at `height`. Zaino does not
@@ -275,28 +287,47 @@ impl<S: LightWalletService> LightServe<S> {
     }
 
     /// `GetBlockRangeNullifiers`: the nullifier-populated compact blocks over
-    /// `range`. Composed per height and collected owned for a `'static` stream; a
-    /// height with no block is skipped rather than aborting the range.
+    /// `range`, as a stream read in bounded steps like
+    /// [`get_block_range`](Self::get_block_range). A height with no block is
+    /// skipped rather than aborting the range; a read failure ends the stream
+    /// with that error.
     pub async fn get_block_range_nullifiers(
         &self,
         range: HeightRange,
-    ) -> Result<Vec<compact::CompactBlock>, ServeError> {
+    ) -> Result<BoxStream<'static, Result<compact::CompactBlock, ServeError>>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        let mut blocks = Vec::new();
-        for raw_height in u32::from(range.start)..=u32::from(range.end) {
-            // The bound is a valid `Height` and `raw_height` stays within it, so
-            // the conversion cannot fail; classify a would-be failure as internal
-            // rather than panic.
-            let height = Height::try_from(raw_height)
-                .map_err(|e| ServeError::Internal(format!("height in range invalid: {e}")))?;
-            if let Some(block) = snapshot
-                .compact_block_nullifiers(BlockSelector::Height(height))
-                .await?
-            {
-                blocks.push(block.to_wire());
-            }
-        }
-        Ok(blocks)
+        let (direction, steps) = range::steps(range);
+        Ok(futures::stream::iter(steps)
+            .then(move |step| {
+                let snapshot = snapshot.clone();
+                async move {
+                    let mut blocks = Vec::new();
+                    for raw_height in u32::from(step.start)..=u32::from(step.end) {
+                        let read = match Height::try_from(raw_height) {
+                            // Within a step of valid heights, so always valid;
+                            // classified as internal rather than a panic.
+                            Err(e) => Err(ServeError::Internal(format!(
+                                "height in range invalid: {e}"
+                            ))),
+                            Ok(height) => snapshot
+                                .compact_block_nullifiers(BlockSelector::Height(height))
+                                .await
+                                .map_err(ServeError::from),
+                        };
+                        match read {
+                            Ok(Some(block)) => blocks.push(Ok(block.to_wire())),
+                            Ok(None) => {}
+                            Err(error) => {
+                                blocks.push(Err(error));
+                                break;
+                            }
+                        }
+                    }
+                    futures::stream::iter(direction.order(blocks))
+                }
+            })
+            .flatten()
+            .boxed())
     }
 
     /// `GetMempoolTx`: the compact projections of the mempool transactions the
