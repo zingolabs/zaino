@@ -1,12 +1,8 @@
 //! block_hash writer: the finalized stream → one [`fold`] per block → its store
 
-use std::time::{Duration, Instant};
-
 use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{
-    apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
-};
+use zaino_sync::{assert_next, fold_each, IndexHandle, IndexPublisher, Subscription};
 
 use crate::{
     by_hash::{encode_height, BY_HASH},
@@ -30,38 +26,13 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         self.publisher.handle()
     }
 
-    /// Follows `blocks` through `Shutdown` (a failure panics)
-    ///
-    /// - commits after the finalized tip + at `Shutdown` (a full buffer commits on its own)
-    pub async fn run(self, mut blocks: Subscription<Block>) {
-        let Self { mut store, publisher } = self;
-        while let Some(run) = blocks.next_run().await {
-            let started = Instant::now();
-            let write;
-            (store, write) = blocking(move || {
-                let mut write = Duration::ZERO;
-                for block in &run.blocks {
-                    if !held(&store, block) {
-                        let mut changes = store.changes(block.block_ref());
-                        fold(&BlockHashReader::new(store.applied()), block, &mut changes);
-                        write += apply(&mut store, changes);
-                    }
-                }
-                if run.ends_at_finalized_tip {
-                    write += commit(&mut store);
-                }
-                (store, write)
-            })
-            .await;
-            publisher.publish(&store);
-            ran(&store, started, write);
-        }
-        store = blocking(move || {
-            commit(&mut store);
-            store
+    /// Follows `blocks` through `Shutdown` ([`zaino_sync::fold_each`])
+    pub async fn run(self, blocks: Subscription<Block>) {
+        let Self { store, publisher } = self;
+        fold_each(store, publisher, blocks, |parent, block, out| {
+            fold(&BlockHashReader::new(parent), block, out)
         })
         .await;
-        publisher.publish(&store);
     }
 }
 
