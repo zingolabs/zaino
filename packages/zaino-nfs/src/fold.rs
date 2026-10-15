@@ -16,7 +16,7 @@ pub(crate) struct Folded {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FoldError {
-    #[error("value_balance: {0}")]
+    #[error("utxo_set: {0}")]
     UtxoSet(#[from] zaino_index_utxo_set::FoldError),
     #[error("tree_state: {0}")]
     TreeState(#[from] zaino_index_tree_state::FoldError),

@@ -90,7 +90,7 @@ pub(crate) fn walked(index: &'static str, bytes: u64) {
     metrics::gauge!(names::BYTES, "index" => index).set(bytes as f64);
 }
 
-/// The sampled set: each index's kind, directory and committed view now
+/// The sampled set: each index's kind, directory and durable view now
 pub(crate) fn views(indexes: &[Index]) -> Vec<(IndexKind, PathBuf, zaino_persistence::DiskView)> {
     indexes.iter().map(|index| (index.kind, index.dir.clone(), index.handle.view())).collect()
 }

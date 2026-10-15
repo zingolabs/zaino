@@ -1,7 +1,7 @@
-//! Non-final data over a committed view (`docs/architecture.md` §7)
+//! Non-final data over a durable view (`docs/architecture.md` §7)
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
-//! - [`OverlayView`] = rows [`Uncommitted`] the committed view they sit on: above first, then durable
+//! - [`OverlayView`] = rows [`Uncommitted`] the durable view they sit on: above first, then durable
 //! - a key removed above masks durable ([`Entry::Removed`]; usage.md "Deletes")
 
 use std::{
@@ -155,7 +155,7 @@ fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> 
     records
 }
 
-/// Rows above a committed view: [`Overlay`] (NFS snapshots) or a store's uncommitted
+/// Rows above a durable view: [`Overlay`] (NFS publications) or a store's uncommitted
 /// [`WriteBuffer`](crate::write_buffer::WriteBuffer)
 pub trait Uncommitted: Clone {
     fn schema(&self) -> &Schema;
@@ -261,7 +261,7 @@ impl<A: Uncommitted> Uncommitted for &A {
     }
 }
 
-/// Rows above over the committed view they sit on: one state, fixed while held
+/// Rows above over the durable view they sit on: one state, fixed while held
 #[derive(Clone)]
 pub struct OverlayView<V, A = Overlay> {
     durable: V,
