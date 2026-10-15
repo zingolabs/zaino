@@ -2382,7 +2382,11 @@ mod retained_mempool {
     async fn the_verbose_listing_is_answered_by_the_validator() {
         let engine = engine_with(MockChain::new()).with_mempool(retained().await);
         assert!(
-            engine.mempool_entries().await.expect("a listing").is_empty(),
+            engine
+                .mempool_entries()
+                .await
+                .expect("a listing")
+                .is_empty(),
             "the verbose listing comes from the validator, whose mempool is empty"
         );
     }

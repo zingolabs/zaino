@@ -175,7 +175,11 @@ where
         &self,
         at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
-        self.local.compact_block(at).await
+        static READ: crate::emit::Read = crate::emit::Read::new("compact_block");
+        crate::emit::measured(&READ, crate::emit::Source::Local, async move {
+            self.local.compact_block(at).await
+        })
+        .await
     }
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
         self.local.stream_compact(range)
@@ -195,11 +199,15 @@ where
         &self,
         at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
-        Ok(self
-            .local
-            .compact_block(at)
-            .await?
-            .map(crate::nullifiers::strip_to_nullifiers))
+        static READ: crate::emit::Read = crate::emit::Read::new("compact_block_nullifiers");
+        crate::emit::measured(&READ, crate::emit::Source::Local, async move {
+            Ok(self
+                .local
+                .compact_block(at)
+                .await?
+                .map(crate::nullifiers::strip_to_nullifiers))
+        })
+        .await
     }
 }
 
@@ -231,6 +239,10 @@ where
     R: Routing,
 {
     async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
-        self.passthrough.chain_info().await
+        static READ: crate::emit::Read = crate::emit::Read::new("chain_info");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            self.passthrough.chain_info().await
+        })
+        .await
     }
 }

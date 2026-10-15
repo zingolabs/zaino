@@ -80,62 +80,66 @@ where
         &self,
         at: BlockSelector,
     ) -> Result<Option<BlockDeltas>, BlockDeltasError> {
-        // The block carries the header fields; a miss is the domain not-found.
-        let block = self.block(at).await?;
-        // Resolve the height to a hash once (R50): the chain-position and
-        // transaction reads then name the one block the header came from, so they
-        // cannot straddle a tip reorg between them. With no block, the original
-        // selector still drives the subset/not-found detection below.
-        let contents = match &block {
-            Some(block) => BlockSelector::Hash(block.header.hash),
-            None => at,
-        };
-        let verbose = self.block_verbose(contents).await?;
-        let views = self.block_transaction_views(contents).await?;
-        // All three present is a block to compose; all absent a genuine miss; a
-        // subset present is a reorg race between the reads — transient, never a
-        // partial render.
-        let (block, verbose, views) = match (block, verbose, views) {
-            (Some(block), Some(verbose), Some(views)) => (block, verbose, views),
-            (None, None, None) => return Ok(None),
-            _ => {
-                return Err(BlockDeltasError::Block(BlockReadError::Transient(format!(
-                    "block {at:?} and its contents disagree; retry"
-                ))));
+        static READ: crate::emit::Read = crate::emit::Read::new("block_deltas");
+        crate::emit::measured(&READ, crate::emit::Source::Composed, async move {
+            // The block carries the header fields; a miss is the domain not-found.
+            let block = self.block(at).await?;
+            // Resolve the height to a hash once (R50): the chain-position and
+            // transaction reads then name the one block the header came from, so they
+            // cannot straddle a tip reorg between them. With no block, the original
+            // selector still drives the subset/not-found detection below.
+            let contents = match &block {
+                Some(block) => BlockSelector::Hash(block.header.hash),
+                None => at,
+            };
+            let verbose = self.block_verbose(contents).await?;
+            let views = self.block_transaction_views(contents).await?;
+            // All three present is a block to compose; all absent a genuine miss; a
+            // subset present is a reorg race between the reads — transient, never a
+            // partial render.
+            let (block, verbose, views) = match (block, verbose, views) {
+                (Some(block), Some(verbose), Some(views)) => (block, verbose, views),
+                (None, None, None) => return Ok(None),
+                _ => {
+                    return Err(BlockDeltasError::Block(BlockReadError::Transient(format!(
+                        "block {at:?} and its contents disagree; retry"
+                    ))));
+                }
+            };
+
+            let header = block.header;
+            // zcashd's `blockToDeltasJSON` reports confirmations only for a block on
+            // the main chain and throws "Block is an orphan" otherwise. The passthrough
+            // verbose block reports `-1` confirmations for an off-chain block, so the
+            // same condition is a negative count here: decline rather than compose a
+            // delta view for an orphan.
+            if header_is_orphan(verbose.confirmations) {
+                return Err(BlockDeltasError::Orphan { hash: header.hash });
             }
-        };
+            let median_time = self.median_time(&header).await?;
+            let deltas = transaction_deltas(&views)?;
 
-        let header = block.header;
-        // zcashd's `blockToDeltasJSON` reports confirmations only for a block on
-        // the main chain and throws "Block is an orphan" otherwise. The passthrough
-        // verbose block reports `-1` confirmations for an off-chain block, so the
-        // same condition is a negative count here: decline rather than compose a
-        // delta view for an orphan.
-        if header_is_orphan(verbose.confirmations) {
-            return Err(BlockDeltasError::Orphan { hash: header.hash });
-        }
-        let median_time = self.median_time(&header).await?;
-        let deltas = transaction_deltas(&views)?;
-
-        Ok(Some(BlockDeltas {
-            hash: header.hash,
-            confirmations: verbose.confirmations,
-            size: views.size,
-            height: header.height,
-            version: header.version,
-            merkle_root: header.merkle_root,
-            deltas,
-            time: header.time,
-            median_time,
-            nonce: header.nonce,
-            bits: header.bits,
-            difficulty: verbose.difficulty,
-            chainwork: verbose.chainwork,
-            // Genesis has no predecessor; the tip (and a side-chain block) has no
-            // next — mirroring `getblock`.
-            prev_hash: (u32::from(header.height) != 0).then_some(header.prev_hash),
-            next_hash: verbose.next_block_hash,
-        }))
+            Ok(Some(BlockDeltas {
+                hash: header.hash,
+                confirmations: verbose.confirmations,
+                size: views.size,
+                height: header.height,
+                version: header.version,
+                merkle_root: header.merkle_root,
+                deltas,
+                time: header.time,
+                median_time,
+                nonce: header.nonce,
+                bits: header.bits,
+                difficulty: verbose.difficulty,
+                chainwork: verbose.chainwork,
+                // Genesis has no predecessor; the tip (and a side-chain block) has no
+                // next — mirroring `getblock`.
+                prev_hash: (u32::from(header.height) != 0).then_some(header.prev_hash),
+                next_hash: verbose.next_block_hash,
+            }))
+        })
+        .await
     }
 }
 

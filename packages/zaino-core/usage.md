@@ -216,3 +216,22 @@ history that is a concatenation of deltas and txids, a checked sum of balances
 (`Zatoshis::checked_add`, `ZatoshisFlowSum::checked_join`), and store UTXOs
 filtered through the head's spend status. The split is `split_at_seam` in the
 snapshot module, tested on its own.
+
+## Read metrics (`prometheus` feature)
+
+The read layer of [Zaino's metrics](../../docs/observability.md). Off by default.
+With the feature, every `EngineSnapshot` port method that answers asynchronously
+times itself from call to answer and records once:
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `zaino.read.duration_seconds` | histogram | `read`, `placement`, `outcome` |
+
+`read` is the port method's name (`treestate`, `balance`, `compact_block`, …).
+`placement` is `local`, `passthrough` or `composed` (both in one read): taken
+from the routing's `Placement::KIND` for routed reads, and fixed per method for
+the rest. `outcome` is `ok` (a domain miss included), `not_serviceable`,
+`transient`, `fatal` or `refused` (a typed refusal of the request, e.g. over the
+address ceiling), mapped from each read error by the `Failure` impls in `emit`.
+A new read error type needs one before its read can be measured. Synchronous
+in-memory accessors and streams are not timed.

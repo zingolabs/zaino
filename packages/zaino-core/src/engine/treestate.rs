@@ -70,7 +70,13 @@ where
     R::Treestate: TreestatePlacement<F, N, Src>,
 {
     async fn treestate(&self, at: Height) -> Result<CommitmentTrees, TreestateReadError> {
-        R::Treestate::treestate(self.local(), self.passthrough(), at).await
+        static READ: crate::emit::Read = crate::emit::Read::new("treestate");
+        crate::emit::measured(
+            &READ,
+            <R::Treestate as crate::routing::Placement>::KIND,
+            async move { R::Treestate::treestate(self.local(), self.passthrough(), at).await },
+        )
+        .await
     }
 
     async fn subtree_roots(
@@ -79,8 +85,22 @@ where
         start_index: u16,
         limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
-        R::Treestate::subtree_roots(self.local(), self.passthrough(), pool, start_index, limit)
-            .await
+        static READ: crate::emit::Read = crate::emit::Read::new("subtree_roots");
+        crate::emit::measured(
+            &READ,
+            <R::Treestate as crate::routing::Placement>::KIND,
+            async move {
+                R::Treestate::subtree_roots(
+                    self.local(),
+                    self.passthrough(),
+                    pool,
+                    start_index,
+                    limit,
+                )
+                .await
+            },
+        )
+        .await
     }
 }
 
@@ -93,7 +113,15 @@ where
     R::Treestate: TreestatePlacement<F, N, Src>,
 {
     async fn treestate_with_roots(&self, at: Height) -> Result<Treestate, TreestateReadError> {
-        R::Treestate::treestate_with_roots(self.local(), self.passthrough(), at).await
+        static READ: crate::emit::Read = crate::emit::Read::new("treestate_with_roots");
+        crate::emit::measured(
+            &READ,
+            <R::Treestate as crate::routing::Placement>::KIND,
+            async move {
+                R::Treestate::treestate_with_roots(self.local(), self.passthrough(), at).await
+            },
+        )
+        .await
     }
 }
 

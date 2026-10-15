@@ -190,3 +190,14 @@ validator port in `ValidatorClient::with_retry`: \
 unavailable), retries and backoff included, and `zaino.source.attempts` by \
 port. `describe_metrics` and `METRIC_BUCKETS` register them with the exporter.
 """
+
+[[changes]]
+crate = "zaino-core"
+kind = "feature"
+description = """
+A non-default `prometheus` feature times every asynchronous `EngineSnapshot` \
+read: `zaino.read.duration_seconds` by read, placement (`local`, `passthrough`, \
+`composed`) and outcome (`ok`, `not_serviceable`, `transient`, `fatal`, \
+`refused`). `describe_metrics` and `METRIC_BUCKETS` register it with the \
+exporter.
+"""

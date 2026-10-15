@@ -52,7 +52,17 @@ where
         &self,
         id: TransactionId,
     ) -> Result<Option<RawTransaction>, TxReadError> {
-        R::TransactionLocation::raw_transaction(self.local(), self.passthrough(), id).await
+        static READ: crate::emit::Read = crate::emit::Read::new("raw_transaction");
+        crate::emit::measured(
+            &READ,
+            crate::emit::Source::alongside_validator(
+                <R::TransactionLocation as crate::routing::Placement>::KIND,
+            ),
+            async move {
+                R::TransactionLocation::raw_transaction(self.local(), self.passthrough(), id).await
+            },
+        )
+        .await
     }
 }
 

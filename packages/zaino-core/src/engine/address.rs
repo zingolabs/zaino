@@ -89,7 +89,15 @@ where
         range: HeightRange,
         budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
-        R::Address::balance(self.local(), self.passthrough(), addr, range, budget).await
+        static READ: crate::emit::Read = crate::emit::Read::new("balance");
+        crate::emit::measured(
+            &READ,
+            <R::Address as crate::routing::Placement>::KIND,
+            async move {
+                R::Address::balance(self.local(), self.passthrough(), addr, range, budget).await
+            },
+        )
+        .await
     }
 
     async fn unspent_outpoints(
@@ -97,7 +105,15 @@ where
         addr: &TransparentAddress,
         budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        R::Address::unspent_outpoints(self.local(), self.passthrough(), addr, budget).await
+        static READ: crate::emit::Read = crate::emit::Read::new("unspent_outpoints");
+        crate::emit::measured(
+            &READ,
+            <R::Address as crate::routing::Placement>::KIND,
+            async move {
+                R::Address::unspent_outpoints(self.local(), self.passthrough(), addr, budget).await
+            },
+        )
+        .await
     }
 
     async fn deltas(
@@ -106,7 +122,15 @@ where
         range: HeightRange,
         budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        R::Address::deltas(self.local(), self.passthrough(), addr, range, budget).await
+        static READ: crate::emit::Read = crate::emit::Read::new("deltas");
+        crate::emit::measured(
+            &READ,
+            <R::Address as crate::routing::Placement>::KIND,
+            async move {
+                R::Address::deltas(self.local(), self.passthrough(), addr, range, budget).await
+            },
+        )
+        .await
     }
 
     async fn tx_ids(
@@ -115,7 +139,15 @@ where
         range: HeightRange,
         budget: &mut ReadBudget,
     ) -> Result<Vec<LocatedTxid>, AddressReadError> {
-        R::Address::tx_ids(self.local(), self.passthrough(), addr, range, budget).await
+        static READ: crate::emit::Read = crate::emit::Read::new("tx_ids");
+        crate::emit::measured(
+            &READ,
+            <R::Address as crate::routing::Placement>::KIND,
+            async move {
+                R::Address::tx_ids(self.local(), self.passthrough(), addr, range, budget).await
+            },
+        )
+        .await
     }
 }
 

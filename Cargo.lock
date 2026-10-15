@@ -6069,6 +6069,8 @@ name = "zaino-core"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "metrics",
+ "metrics-util",
  "strum",
  "tokio",
  "tokio-util",
@@ -6596,6 +6598,7 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-common",
+ "zaino-core",
  "zaino-lightserve",
  "zaino-logging",
  "zaino-noderpc",

@@ -31,24 +31,32 @@ where
     R: Routing,
 {
     async fn transaction(&self, id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
-        // Passthrough: the decoded form, dropping the location the status read
-        // keeps. Placement never varies, so there is no placement-trait dispatch.
-        Ok(self
-            .passthrough()
-            .transaction(id)
-            .await?
-            .map(|decoded| decoded.transaction))
+        static READ: crate::emit::Read = crate::emit::Read::new("transaction");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            // Passthrough: the decoded form, dropping the location the status read
+            // keeps. Placement never varies, so there is no placement-trait dispatch.
+            Ok(self
+                .passthrough()
+                .transaction(id)
+                .await?
+                .map(|decoded| decoded.transaction))
+        })
+        .await
     }
 
     async fn transaction_status(&self, id: TransactionId) -> Result<TxStatus, TxReadError> {
-        let status = match self.passthrough().transaction(id).await? {
-            None => TxStatus::Unknown,
-            Some(decoded) => match decoded.location {
-                TransactionLocation::BestChain(height) => TxStatus::Mined(height),
-                TransactionLocation::NonBestChain => TxStatus::Orphaned,
-                TransactionLocation::Mempool => TxStatus::Unknown,
-            },
-        };
-        Ok(status)
+        static READ: crate::emit::Read = crate::emit::Read::new("transaction_status");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            let status = match self.passthrough().transaction(id).await? {
+                None => TxStatus::Unknown,
+                Some(decoded) => match decoded.location {
+                    TransactionLocation::BestChain(height) => TxStatus::Mined(height),
+                    TransactionLocation::NonBestChain => TxStatus::Orphaned,
+                    TransactionLocation::Mempool => TxStatus::Unknown,
+                },
+            };
+            Ok(status)
+        })
+        .await
     }
 }

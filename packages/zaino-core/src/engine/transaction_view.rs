@@ -38,74 +38,86 @@ where
         &self,
         id: TransactionId,
     ) -> Result<Option<LocatedTransactionView>, TransactionViewError> {
-        let Some(decoded) = self.passthrough().transaction_decoded(id).await? else {
-            return Ok(None);
-        };
-        // A single fetched transaction has no same-block context, so every prevout
-        // is fetched; passing it as a one-element set reuses the block path's
-        // resolver and dedup.
-        let resolved = resolve_prevouts(std::slice::from_ref(&decoded.transaction), |txid| {
-            self.passthrough().prevout_outputs(txid)
+        static READ: crate::emit::Read = crate::emit::Read::new("transaction_view");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            let Some(decoded) = self.passthrough().transaction_decoded(id).await? else {
+                return Ok(None);
+            };
+            // A single fetched transaction has no same-block context, so every prevout
+            // is fetched; passing it as a one-element set reuses the block path's
+            // resolver and dedup.
+            let resolved = resolve_prevouts(std::slice::from_ref(&decoded.transaction), |txid| {
+                self.passthrough().prevout_outputs(txid)
+            })
+            .await?;
+            let inputs = resolved.into_iter().next().unwrap_or_default();
+            Ok(Some(LocatedTransactionView {
+                view: TransactionView {
+                    transaction: decoded.transaction,
+                    detail: decoded.detail,
+                    inputs,
+                    raw: decoded.raw,
+                },
+                location: decoded.location,
+            }))
         })
-        .await?;
-        let inputs = resolved.into_iter().next().unwrap_or_default();
-        Ok(Some(LocatedTransactionView {
-            view: TransactionView {
-                transaction: decoded.transaction,
-                detail: decoded.detail,
-                inputs,
-                raw: decoded.raw,
-            },
-            location: decoded.location,
-        }))
+        .await
     }
 
     async fn block_transaction_views(
         &self,
         at: BlockSelector,
     ) -> Result<Option<BlockTransactionViews>, TransactionViewError> {
-        let decoded = match at {
-            BlockSelector::Height(height) => self.passthrough().block_decoded(height).await?,
-            BlockSelector::Hash(hash) => self.passthrough().block_decoded_by_hash(hash).await?,
-        };
-        let Some(DecodedBlock { size, transactions }) = decoded else {
-            return Ok(None);
-        };
-        // Resolve against the block's own transactions so an intra-block spend
-        // needs no fetch; the resolver returns one input list per transaction, in
-        // block order.
-        let shapes: Vec<Transaction> = transactions
-            .iter()
-            .map(|detailed| detailed.transaction.clone())
-            .collect();
-        let resolved =
-            resolve_prevouts(&shapes, |txid| self.passthrough().prevout_outputs(txid)).await?;
-        let views = transactions
-            .into_iter()
-            .zip(resolved)
-            .map(|(detailed, inputs)| TransactionView {
-                transaction: detailed.transaction,
-                detail: detailed.detail,
-                inputs,
-                raw: detailed.raw,
-            })
-            .collect();
-        Ok(Some(BlockTransactionViews {
-            size,
-            transactions: views,
-        }))
+        static READ: crate::emit::Read = crate::emit::Read::new("block_transaction_views");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            let decoded = match at {
+                BlockSelector::Height(height) => self.passthrough().block_decoded(height).await?,
+                BlockSelector::Hash(hash) => self.passthrough().block_decoded_by_hash(hash).await?,
+            };
+            let Some(DecodedBlock { size, transactions }) = decoded else {
+                return Ok(None);
+            };
+            // Resolve against the block's own transactions so an intra-block spend
+            // needs no fetch; the resolver returns one input list per transaction, in
+            // block order.
+            let shapes: Vec<Transaction> = transactions
+                .iter()
+                .map(|detailed| detailed.transaction.clone())
+                .collect();
+            let resolved =
+                resolve_prevouts(&shapes, |txid| self.passthrough().prevout_outputs(txid)).await?;
+            let views = transactions
+                .into_iter()
+                .zip(resolved)
+                .map(|(detailed, inputs)| TransactionView {
+                    transaction: detailed.transaction,
+                    detail: detailed.detail,
+                    inputs,
+                    raw: detailed.raw,
+                })
+                .collect();
+            Ok(Some(BlockTransactionViews {
+                size,
+                transactions: views,
+            }))
+        })
+        .await
     }
 
     async fn decoded_block(
         &self,
         at: BlockSelector,
     ) -> Result<Option<DecodedBlock>, TransactionViewError> {
-        // The decoded block as the validator served it — no prevout fetch, no
-        // resolution. `getblock` verbosity 1 takes size and txids from this, so a
-        // prevout the validator cannot serve never fails the hot per-page call.
-        match at {
-            BlockSelector::Height(height) => self.passthrough().block_decoded(height).await,
-            BlockSelector::Hash(hash) => self.passthrough().block_decoded_by_hash(hash).await,
-        }
+        static READ: crate::emit::Read = crate::emit::Read::new("decoded_block");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            // The decoded block as the validator served it — no prevout fetch, no
+            // resolution. `getblock` verbosity 1 takes size and txids from this, so a
+            // prevout the validator cannot serve never fails the hot per-page call.
+            match at {
+                BlockSelector::Height(height) => self.passthrough().block_decoded(height).await,
+                BlockSelector::Hash(hash) => self.passthrough().block_decoded_by_hash(hash).await,
+            }
+        })
+        .await
     }
 }

@@ -42,23 +42,35 @@ where
         &self,
         hash: BlockHash,
     ) -> Result<Option<BlockHeaderVerbose>, BlockReadError> {
-        self.passthrough().block_header_verbose(hash).await
+        static READ: crate::emit::Read = crate::emit::Read::new("block_header_verbose");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            self.passthrough().block_header_verbose(hash).await
+        })
+        .await
     }
 
     async fn block_verbose(
         &self,
         at: BlockSelector,
     ) -> Result<Option<BlockVerbose>, BlockReadError> {
-        match at {
-            BlockSelector::Height(height) => self.passthrough().block_verbose(height).await,
-            BlockSelector::Hash(hash) => self.passthrough().block_verbose_by_hash(hash).await,
-        }
+        static READ: crate::emit::Read = crate::emit::Read::new("block_verbose");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            match at {
+                BlockSelector::Height(height) => self.passthrough().block_verbose(height).await,
+                BlockSelector::Hash(hash) => self.passthrough().block_verbose_by_hash(hash).await,
+            }
+        })
+        .await
     }
 
     async fn raw_block(&self, at: BlockSelector) -> Result<Option<Vec<u8>>, BlockReadError> {
-        match at {
-            BlockSelector::Height(height) => self.passthrough().raw_block(height).await,
-            BlockSelector::Hash(hash) => self.passthrough().raw_block_by_hash(hash).await,
-        }
+        static READ: crate::emit::Read = crate::emit::Read::new("raw_block");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            match at {
+                BlockSelector::Height(height) => self.passthrough().raw_block(height).await,
+                BlockSelector::Hash(hash) => self.passthrough().raw_block_by_hash(hash).await,
+            }
+        })
+        .await
     }
 }

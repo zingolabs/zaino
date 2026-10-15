@@ -43,14 +43,26 @@ where
     R::Spend: SpendPlacement<F, N, Src>,
 {
     async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
-        R::Spend::spend_status(self.local(), self.passthrough(), outpoint).await
+        static READ: crate::emit::Read = crate::emit::Read::new("spend_status");
+        crate::emit::measured(
+            &READ,
+            <R::Spend as crate::routing::Placement>::KIND,
+            async move { R::Spend::spend_status(self.local(), self.passthrough(), outpoint).await },
+        )
+        .await
     }
 
     async fn spend_info(
         &self,
         outpoint: Outpoint,
     ) -> Result<Option<TransparentSpend>, SpendReadError> {
-        R::Spend::spend_info(self.local(), self.passthrough(), outpoint).await
+        static READ: crate::emit::Read = crate::emit::Read::new("spend_info");
+        crate::emit::measured(
+            &READ,
+            <R::Spend as crate::routing::Placement>::KIND,
+            async move { R::Spend::spend_info(self.local(), self.passthrough(), outpoint).await },
+        )
+        .await
     }
 }
 

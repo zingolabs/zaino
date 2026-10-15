@@ -25,6 +25,7 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
 pub mod chain_view;
+mod emit;
 mod engine;
 mod nullifiers;
 mod passthrough;
@@ -34,6 +35,8 @@ pub mod routing;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+#[cfg(feature = "prometheus")]
+pub use emit::{METRIC_BUCKETS, describe_metrics};
 pub use engine::{Engine, EngineSnapshot};
 pub use passthrough::PassthroughProvider;
 

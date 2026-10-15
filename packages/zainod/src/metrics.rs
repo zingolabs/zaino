@@ -11,8 +11,9 @@ use tracing::info;
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
 // never drift. On the runtime stack the emitters wired so far are the outbound
-// JSON-RPC client (`zaino-rpc`), the validator ports (`zaino-source`) and the
-// light-wallet gRPC server (`zaino-lightserve`); the sync/DB/mempool metric sets are re-added here as
+// JSON-RPC client (`zaino-rpc`), the validator ports (`zaino-source`), the
+// engine reads (`zaino-core`) and the light-wallet gRPC server
+// (`zaino-lightserve`); the sync/DB/mempool metric sets are re-added here as
 // the new stack's components start emitting them.
 use zaino_rpc::metric_names::*;
 
@@ -30,6 +31,7 @@ pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
     // histogram is exported as a summary, which cannot be aggregated.
     zaino_lightserve::METRIC_BUCKETS
         .iter()
+        .chain(zaino_core::METRIC_BUCKETS)
         .chain(zaino_source::METRIC_BUCKETS)
         .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
             builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
@@ -59,6 +61,9 @@ fn describe_metrics() {
 
     // Inbound light-wallet gRPC: per-method calls, latency, messages, bytes.
     zaino_lightserve::describe_metrics();
+
+    // Engine reads: per-read duration by placement and outcome.
+    zaino_core::describe_metrics();
 
     // Validator trips: per-port duration (retries included) and attempts.
     zaino_source::describe_metrics();

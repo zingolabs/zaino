@@ -10,6 +10,10 @@ description = "The engine every use case is served by: the finalised store, the 
 # engine in tests without the chain-head graph. Off by default so a production
 # consumer never pulls it.
 testing = []
+# Engine read metrics (duration by read, placement and outcome), recorded once
+# per port-method call on EngineSnapshot. Off by default: observability is
+# opt-in. Labels are the read name, placement and outcome only.
+prometheus = ["dep:metrics"]
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
@@ -19,6 +23,7 @@ zaino-source = { version = "0.2.0", path = "../zaino-source" }
 # the held set rather than walking the validator per request.
 zaino-mempool-service = { workspace = true }
 futures = { workspace = true }
+metrics = { workspace = true, optional = true }
 zaino-consensus = { version = "0.1.0", path = "../zaino-consensus" }
 zaino-address = { version = "0.1.0", path = "../zaino-address" }
 
@@ -46,3 +51,4 @@ tracing = { workspace = true }
 strum = { workspace = true }
 zaino-store-service = { path = "../zaino-store-service" }
 zaino-finality = { path = "../zaino-finality" }
+metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }

@@ -35,32 +35,48 @@ where
     R: Routing,
 {
     async fn tip(&self) -> Result<BlockRef, BlockReadError> {
-        // Local: the pinned tip is the coordinate the rest of the snapshot is
-        // read against. An empty snapshot has none to serve yet.
-        self.local()
-            .pinned_tip()
-            .ok_or(BlockReadError::NotServiceable(Capability::Blocks))
+        static READ: crate::emit::Read = crate::emit::Read::new("tip");
+        crate::emit::measured(&READ, crate::emit::Source::Local, async move {
+            // Local: the pinned tip is the coordinate the rest of the snapshot is
+            // read against. An empty snapshot has none to serve yet.
+            self.local()
+                .pinned_tip()
+                .ok_or(BlockReadError::NotServiceable(Capability::Blocks))
+        })
+        .await
     }
 
     async fn block(&self, at: BlockSelector) -> Result<Option<Block>, BlockReadError> {
-        match at {
-            BlockSelector::Height(height) => self.passthrough().block(height).await,
-            BlockSelector::Hash(hash) => self.passthrough().block_by_hash(hash).await,
-        }
+        static READ: crate::emit::Read = crate::emit::Read::new("block");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            match at {
+                BlockSelector::Height(height) => self.passthrough().block(height).await,
+                BlockSelector::Hash(hash) => self.passthrough().block_by_hash(hash).await,
+            }
+        })
+        .await
     }
 
     async fn block_header(&self, at: BlockSelector) -> Result<Option<BlockHeader>, BlockReadError> {
-        // The header rides on the block the selector names; no separate port.
-        Ok(self.block(at).await?.map(|block| block.header))
+        static READ: crate::emit::Read = crate::emit::Read::new("block_header");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            // The header rides on the block the selector names; no separate port.
+            Ok(self.block(at).await?.map(|block| block.header))
+        })
+        .await
     }
 
     async fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, BlockReadError> {
-        // The height is a field of the named block's header.
-        Ok(self
-            .passthrough()
-            .block_by_hash(hash)
-            .await?
-            .map(|block| block.header.height))
+        static READ: crate::emit::Read = crate::emit::Read::new("block_height");
+        crate::emit::measured(&READ, crate::emit::Source::Passthrough, async move {
+            // The height is a field of the named block's header.
+            Ok(self
+                .passthrough()
+                .block_by_hash(hash)
+                .await?
+                .map(|block| block.header.height))
+        })
+        .await
     }
 
     fn stream_blocks(&self, range: HeightRange) -> BoxStream<'_, Result<Block, ReadError>> {

@@ -27,9 +27,14 @@ slow call into where its time went.
 | Layer | Question | Hook | Prefix | Status |
 |---|---|---|---|---|
 | Wire | What did the client get: status, time to first message, duration, messages, bytes, hang-ups? | `zaino-lightserve` tower layer around the gRPC service; close-out when the response body drops | `zaino.grpc.*` | built |
-| Read | Which read, under which placement and tier, with which outcome, and how long? | the placement dispatch in `zaino-core` | `zaino.read.*` | planned |
+| Read | Which read, under which placement, with which outcome, and how long? | every `EngineSnapshot` port method in `zaino-core`; each owns a static `Read` | `zaino.read.*` | built |
 | Source port | How long did a trip to the validator take, retries included, and how did it end? | `ValidatorClient::with_retry`, the funnel every resilient port goes through; each generated port method owns a static `Port` | `zaino.source.*` | built |
 | Transport | What did each JSON-RPC call cost on the wire? | the `zaino-rpc` client | `zaino.rpc.outbound.*` | built |
+
+A read that calls other reads (`block_header` reads the block, `block_deltas`
+composes several) records itself and each read it makes, so sum durations per
+read, not across reads. Streams are timed at the wire, not as reads: a stream's
+duration is set by its consumer's pace.
 
 A wire call minus the reads behind it is encoding and network. A passthrough
 read minus its source trips is our own overhead. A source trip with more than
@@ -98,4 +103,6 @@ Estimates unless marked measured; recheck them when the hot path changes.
 - **The exporter runs on the serving runtime.** A scrape under overload
   competes with the requests it is measuring. Serving `/metrics` from its own
   thread and runtime removes that.
-- **Read layer.** Planned, under the rules above.
+- **Tier detail.** The read layer labels a read `local`, `passthrough` or
+  `composed`; which local tier (finalised store or chain-head window) answered
+  is not yet recorded.

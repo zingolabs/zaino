@@ -34,92 +34,100 @@ where
         low: BlockTime,
         high: BlockTime,
     ) -> Result<Vec<BlockHashAt>, BlockHashReadError> {
-        let view = self.local();
+        static READ: crate::emit::Read = crate::emit::Read::new("block_hashes");
+        crate::emit::measured(&READ, crate::emit::Source::Local, async move {
+            let view = self.local();
 
-        // Clamp to the pinned tip: the search reasons only over blocks the
-        // snapshot is coherent against, and an empty view holds none. A range
-        // beyond the tip is an empty list, never an error.
-        let Some(tip) = view.pinned_tip().map(|id| id.height) else {
-            return Ok(Vec::new());
-        };
+            // Clamp to the pinned tip: the search reasons only over blocks the
+            // snapshot is coherent against, and an empty view holds none. A range
+            // beyond the tip is an empty list, never an error.
+            let Some(tip) = view.pinned_tip().map(|id| id.height) else {
+                return Ok(Vec::new());
+            };
 
-        // Drive the pure candidate-bracket search over the chain view's header
-        // reads. The search requests only heights at or below the tip, where a
-        // block must exist, so a `None` header is a chain-view hole it fails loud
-        // on rather than narrowing the bracket and dropping an in-range block.
-        //
-        // The drift rule is the **mainnet** one (`nTime <= MTP + 90 min`,
-        // enforced at every height): the node-RPC deployment that serves the
-        // explorer's `getblockhashes` runs on mainnet. A testnet deployment would
-        // need `MaxBlockTimeDrift::TESTNET` here so the pre-activation region
-        // falls back to a full scan; the engine carries no network today, so this
-        // is the documented assumption, not a derived choice.
-        let mut search = CandidateSearch::new(tip, low, high, MaxBlockTimeDrift::MAINNET);
-        let bracket = loop {
-            match search.poll() {
-                SearchStep::Need(height) => {
-                    let time = view.header(height).await?.map(|summary| summary.time);
-                    search.supply(height, time);
+            // Drive the pure candidate-bracket search over the chain view's header
+            // reads. The search requests only heights at or below the tip, where a
+            // block must exist, so a `None` header is a chain-view hole it fails loud
+            // on rather than narrowing the bracket and dropping an in-range block.
+            //
+            // The drift rule is the **mainnet** one (`nTime <= MTP + 90 min`,
+            // enforced at every height): the node-RPC deployment that serves the
+            // explorer's `getblockhashes` runs on mainnet. A testnet deployment would
+            // need `MaxBlockTimeDrift::TESTNET` here so the pre-activation region
+            // falls back to a full scan; the engine carries no network today, so this
+            // is the documented assumption, not a derived choice.
+            let mut search = CandidateSearch::new(tip, low, high, MaxBlockTimeDrift::MAINNET);
+            let bracket = loop {
+                match search.poll() {
+                    SearchStep::Need(height) => {
+                        let time = view.header(height).await?.map(|summary| summary.time);
+                        search.supply(height, time);
+                    }
+                    SearchStep::Done(bracket) => break bracket,
+                    SearchStep::Failed(missing) => {
+                        return Err(BlockHashReadError::MissingHeader {
+                            height: missing.height,
+                        });
+                    }
                 }
-                SearchStep::Done(bracket) => break bracket,
-                SearchStep::Failed(missing) => {
-                    return Err(BlockHashReadError::MissingHeader {
-                        height: missing.height,
+            };
+
+            let Some(bracket) = bracket else {
+                return Ok(Vec::new());
+            };
+
+            // Scan the bracket — a guaranteed superset within `[genesis, tip]` — and
+            // keep the blocks whose own timestamp lies in the half-open range. A
+            // `None` header here is a hole below the tip (above-tip heights are
+            // excluded by the clamp), surfaced loud rather than dropping a block.
+            let mut hits: Vec<BlockHashAt> = Vec::new();
+            for height in heights(bracket.start, bracket.end) {
+                let summary = view
+                    .header(height)
+                    .await?
+                    .ok_or(BlockHashReadError::MissingHeader { height })?;
+                if low <= summary.time && summary.time < high {
+                    hits.push(BlockHashAt {
+                        height,
+                        hash: summary.hash,
+                        time: summary.time,
                     });
                 }
             }
-        };
 
-        let Some(bracket) = bracket else {
-            return Ok(Vec::new());
-        };
+            // zcashd's timestamp index yields hashes ascending by timestamp, then by
+            // hash; mirror that order. The explorer reverses the list itself.
+            hits.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.hash.cmp(&b.hash)));
+            Ok(hits)
+        })
+        .await
+    }
 
-        // Scan the bracket — a guaranteed superset within `[genesis, tip]` — and
-        // keep the blocks whose own timestamp lies in the half-open range. A
-        // `None` header here is a hole below the tip (above-tip heights are
-        // excluded by the clamp), surfaced loud rather than dropping a block.
-        let mut hits: Vec<BlockHashAt> = Vec::new();
-        for height in heights(bracket.start, bracket.end) {
+    async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, BlockHashReadError> {
+        static READ: crate::emit::Read = crate::emit::Read::new("block_hash");
+        crate::emit::measured(&READ, crate::emit::Source::Local, async move {
+            let view = self.local();
+
+            // Local over the chain view's header read, mirroring `block_hashes`'
+            // above-tip vs hole-below-tip split. An empty view holds no block at any
+            // height, and a height above the pinned tip is the domain miss `Ok(None)`
+            // — never a validator block fetch.
+            let Some(tip) = view.pinned_tip().map(|id| id.height) else {
+                return Ok(None);
+            };
+            if height > tip {
+                return Ok(None);
+            }
+
+            // At or below the tip a block must exist, so a `None` header is a
+            // chain-view hole, surfaced loud rather than collapsed into a miss.
             let summary = view
                 .header(height)
                 .await?
                 .ok_or(BlockHashReadError::MissingHeader { height })?;
-            if low <= summary.time && summary.time < high {
-                hits.push(BlockHashAt {
-                    height,
-                    hash: summary.hash,
-                    time: summary.time,
-                });
-            }
-        }
-
-        // zcashd's timestamp index yields hashes ascending by timestamp, then by
-        // hash; mirror that order. The explorer reverses the list itself.
-        hits.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.hash.cmp(&b.hash)));
-        Ok(hits)
-    }
-
-    async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, BlockHashReadError> {
-        let view = self.local();
-
-        // Local over the chain view's header read, mirroring `block_hashes`'
-        // above-tip vs hole-below-tip split. An empty view holds no block at any
-        // height, and a height above the pinned tip is the domain miss `Ok(None)`
-        // — never a validator block fetch.
-        let Some(tip) = view.pinned_tip().map(|id| id.height) else {
-            return Ok(None);
-        };
-        if height > tip {
-            return Ok(None);
-        }
-
-        // At or below the tip a block must exist, so a `None` header is a
-        // chain-view hole, surfaced loud rather than collapsed into a miss.
-        let summary = view
-            .header(height)
-            .await?
-            .ok_or(BlockHashReadError::MissingHeader { height })?;
-        Ok(Some(summary.hash))
+            Ok(Some(summary.hash))
+        })
+        .await
     }
 }
 
