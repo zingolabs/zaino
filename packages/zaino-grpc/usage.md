@@ -10,7 +10,7 @@ live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
 ```rust
 let routes = Routes {
-    snapshots: publisher.handle(),       // zaino_snapshot::Snapshots<V>: one load per request
+    snapshots: publisher.handle(),       // zaino_snapshot::GrpcSnapshots<V>: one load per request
     submit: Arc::clone(&view),           // Arc<ChainView<S>>: SendTransaction
     validators,                          // zaino_traffic::TrafficBalancer<S>: GetTransaction
     network,                             // declared (GetLightdInfo.chainName)
@@ -83,13 +83,13 @@ routing.route(routes);
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
 - `V` = the indexes' `zaino_persistence::DurableView` (zainod: `DiskView`): every read = an
   index's reader over a committed snapshot + the NFS's layers, on a read lane (any thread).
-  Any engine's committed view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
+  Any engine's durable view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
   snapshot's `block_hash` view: `height_of(hash)` names the height (above the
   tip = `NOT_FOUND`), and the answering index must hold the same hash there
   (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
-- Route tests build a snapshot with `zaino_snapshot::Snapshots::fixed` over
+- Route tests build a snapshot with `zaino_snapshot::GrpcSnapshots::fixed` over
   `Indexed::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
 - `GetLightdInfo` never calls a validator: one snapshot load (`lightd()`), so it

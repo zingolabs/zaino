@@ -31,7 +31,7 @@ use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
 let writer = BlockHashIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::BlockHash, handle.tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::BlockHash, handle.view().tip(), queue_bytes);
 nfs.add(IndexKind::BlockHash, handle);
 tokio::spawn(writer.run(blocks));
 ```
@@ -54,8 +54,8 @@ tokio::spawn(writer.run(blocks));
 ## Serving
 
 - A route reads `snap.views().block_hash()?.height_of(&hash)`.
-  `BlockHashReader<V>` works over any `V: MapRead`: a store's committed view or
-  a snapshot's `OverlayView`.
+  `BlockHashReader<V>` works over any `V: MapRead`: a store's durable view or
+  an `Indexed`'s `OverlayView`.
 - A hash it does not hold, or one located above the snapshot tip, is
   `NOT_FOUND`.
 - The caller confirms the block: compact-block's `block_at` checks the record's

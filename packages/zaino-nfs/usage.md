@@ -1,8 +1,7 @@
 # `zaino-nfs` — usage
 
 The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block above the indexes' durable tips folded in
-RAM, one `Indexed` publish across every index (the index half of `zaino-snapshot`'s global
-snapshot). Final blocks reach the writers on the final path (`zaino-sync`), never through here.
+RAM, one `Indexed` publish across every index (the index half of `zaino_snapshot::GrpcSnapshot`). Final blocks reach the writers on the final path (`zaino-sync`), never through here.
 
 ## Wiring: `Nfs`
 
@@ -16,7 +15,7 @@ let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clon
 // one per enabled index: its handle to both, its final stream out
 let utxo_set_writer = UtxoSetIndexWriter::new(utxo_set_store);
 let utxo_set = utxo_set_writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.view().tip(), queue_bytes);
 nfs.add(IndexKind::UtxoSet, utxo_set);
 
 let publisher = zaino_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
@@ -27,8 +26,8 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
   block, `Urgency::Tip`), the chain params, `depth` (the NFS folds only while the header just
   above the lowest durable tip is held and best is within `2 · depth` of it), `lookahead` (bodies
   fetched or folding ahead of the next fold).
-- `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's committed view is
-  what snapshots and folds read.
+- `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's durable view is
+  what publications and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
   `IndexGone(index)` = an input dropped.
 
@@ -44,7 +43,7 @@ let blocks = at.views().compact_block().ok_or_else(disabled)?; // None = disable
 let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 ```
 
-- One `Indexed` = one served tip across every enabled index: each view = the committed view +
+- One `Indexed` = one served tip across every enabled index: each view = the durable view +
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
 - `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
   best-branch block (final data), else the block.
@@ -82,7 +81,7 @@ Fetch counters and `zaino_fetch_height` come from the final path (`zaino-sync`).
 
 `NfsCore::step` is pure (no I/O): inputs = the chain, checked bodies, fold results, durable tips;
 outputs = `Fetch`, `Abandon`, `Fold`, `Publish`. The driver is one task `select!`ing over them;
-folds run on rayon. It reloads committed views only when it hands the core new durable tips, so
+folds run on rayon. It reloads durable views only when it hands the core new durable tips, so
 folds and publishes pair layers with exactly the tips the core knows.
 
 | ID | Invariant |
@@ -92,7 +91,7 @@ folds and publishes pair layers with exactly the tips the core knows.
 | N3 | durable tips never move back |
 | N4 | served tip = deepest folded best node, else the root |
 | N5 | nothing folded, held or fetched outside the window |
-| N6 | every index read through a snapshot = that index folded from genesis along best |
+| N6 | every index read through a publication = that index folded from genesis along best |
 
 ## Tests
 

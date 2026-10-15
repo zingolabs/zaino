@@ -34,7 +34,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: committed view after every commit
+    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -239,7 +239,7 @@ mod tests {
     }
 
     /// Tree sizes accumulate block by block, and a restart resending held heights (their fees
-    /// popped, their records untouched) folds the next block onto the committed tip record (not
+    /// popped, their records untouched) folds the next block onto the durable tip record (not
     /// zero)
     #[tokio::test]
     async fn tree_sizes_and_fees_accumulate_across_blocks_and_a_restart() {

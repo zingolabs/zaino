@@ -25,24 +25,24 @@ use crate::report::transitions;
 use crate::snapshot::GrpcSnapshot;
 
 #[derive(Debug, thiserror::Error)]
-pub enum SnapshotError {
+pub enum GrpcSnapshotError {
     #[error("the NFS stopped publishing")]
     IndexedGone,
 }
 
 /// Reader's end: one load per request or stream, never `None` (seq 0 stored at `new`)
-pub struct Snapshots<V> {
+pub struct GrpcSnapshots<V> {
     current: Arc<ArcSwap<GrpcSnapshot<V>>>,
     changed: watch::Receiver<()>,
 }
 
-impl<V> Clone for Snapshots<V> {
+impl<V> Clone for GrpcSnapshots<V> {
     fn clone(&self) -> Self {
         Self { current: Arc::clone(&self.current), changed: self.changed.clone() }
     }
 }
 
-impl<V> Snapshots<V> {
+impl<V> GrpcSnapshots<V> {
     pub fn load(&self) -> Arc<GrpcSnapshot<V>> {
         self.current.load_full()
     }
@@ -54,7 +54,7 @@ impl<V> Snapshots<V> {
 }
 
 #[cfg(any(test, feature = "testing"))]
-impl<V> Snapshots<V> {
+impl<V> GrpcSnapshots<V> {
     /// One snapshot for good, no publisher (consumers' tests)
     ///
     /// - never republished: `changed()` errs, a tail ends after its opening
@@ -87,8 +87,8 @@ impl<V> Core<V> {
         Self { depth, current, changed: watch::Sender::new(()), wake }
     }
 
-    pub(crate) fn handle(&self) -> Snapshots<V> {
-        Snapshots { current: Arc::clone(&self.current), changed: self.changed.subscribe() }
+    pub(crate) fn handle(&self) -> GrpcSnapshots<V> {
+        GrpcSnapshots { current: Arc::clone(&self.current), changed: self.changed.subscribe() }
     }
 
     /// One publish: open → store → seal (G5), then wake readers and tails
@@ -138,19 +138,19 @@ impl<V> Publisher<V> {
         Self { core, indexed, view, published }
     }
 
-    pub fn handle(&self) -> Snapshots<V> {
+    pub fn handle(&self) -> GrpcSnapshots<V> {
         self.core.handle()
     }
 
     /// Cancel → `Ok`; the NFS gone before it → `IndexedGone`
-    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), SnapshotError> {
+    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), GrpcSnapshotError> {
         loop {
             tokio::select! {
                 // cancel first (the NFS stops on the same cancel)
                 biased;
                 () = cancel.cancelled() => return Ok(()),
                 changed = self.indexed.changed() => {
-                    changed.map_err(|_| SnapshotError::IndexedGone)?;
+                    changed.map_err(|_| GrpcSnapshotError::IndexedGone)?;
                 }
                 // sender held by the view's core, alive while `self.view` is
                 _ = self.published.changed() => {}

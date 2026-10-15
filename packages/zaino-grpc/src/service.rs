@@ -20,7 +20,7 @@ use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
 use zaino_persistence::{DurableView, IndexKind};
-use zaino_snapshot::{Snapshots, Unavailable};
+use zaino_snapshot::{GrpcSnapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
@@ -160,7 +160,7 @@ impl Route {
 /// - `max_address_rows` = receives one transparent-address request may walk
 /// - `indexes` = the configured ones: a [`ROUTES`] row needing another = `UNIMPLEMENTED`
 pub struct Routes<S: ChainDataSource, V> {
-    pub snapshots: Snapshots<V>,
+    pub snapshots: GrpcSnapshots<V>,
     pub submit: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
     pub network: NetworkType,

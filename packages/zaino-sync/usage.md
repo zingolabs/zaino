@@ -60,7 +60,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 ## `FinalizedFollower`
 
-- `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
+- `new(chain, balancer, lookahead)`; `subscribe(kind, handle.view().tip(), queue)` per index;
   `progress()`; `run(cancel)`.
 - Streams `lowest durable + 1 ..= final tip`, `lookahead` blocks in flight, delivered in order;
   waits for the next chain past the final tip.
@@ -85,9 +85,9 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 ## `IndexHandle`
 
-What the rest of the daemon knows about one index: `view()` (committed), `tip()` (durable),
-`applied()` (last block folded into the store, committed or not), `changed()` (after each
-commit; `false` = writer gone).
+What the rest of the daemon knows about one index: `view()` (durable view),
+`durable_height()` (its tip), `applied_height()` (last block folded into the store, durable or
+not), `changed()` (after each commit; `false` = writer gone).
 
 ## `IndexerDataSink<T>`
 
@@ -118,7 +118,7 @@ commit; `false` = writer gone).
 - `commit(store)`: everything buffered → disk now; the writer's after a `finalized` run and at
   `Shutdown`.
 - `IndexPublisher::new(&store)`; `handle()`; `publish(&store)` after every hop: applied tip
-  (`IndexHandle::applied`, `zaino_index_applied_height`), committed view once its tip moved
+  (`IndexHandle::applied_height`, `zaino_index_applied_height`), durable view once its tip moved
   (`changed`, `zaino_index_finalized_height`).
 - `blocking(f)`: the fold + apply + commit hop (store moved in and back); `compute(f)` = CPU work
   on the rayon pool.

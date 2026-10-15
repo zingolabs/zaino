@@ -2,13 +2,13 @@
 
 use zaino_chainview::UnspentOutputs;
 use zaino_persistence::DiskView;
-use zaino_snapshot::Snapshots;
+use zaino_snapshot::GrpcSnapshots;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
 
 /// One snapshot load per ask: the UTXO set at the served tip (`None` = nothing served yet, or
 /// utxo-set off)
-pub(crate) struct ServedUtxos(pub(crate) Snapshots<DiskView>);
+pub(crate) struct ServedUtxos(pub(crate) GrpcSnapshots<DiskView>);
 
 impl UnspentOutputs for ServedUtxos {
     fn values(&self, outpoints: &[OutPoint]) -> Option<Vec<Option<Zatoshis>>> {

@@ -38,7 +38,7 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: committed view after every commit
+    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -609,8 +609,7 @@ mod tests {
             }
             let handle = writer.stop().await.expect("clean stop");
             assert_eq!(drained(&mut consumer).await, expected[1..], "queue {queue}: republished");
-            let tip = handle.tip().map(|tip| tip.height);
-            assert_eq!(tip, Some(h(4)), "held: nothing new");
+            assert_eq!(handle.durable_height(), Some(h(4)), "held: nothing new");
         }
     }
 

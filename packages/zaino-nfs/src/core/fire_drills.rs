@@ -325,7 +325,7 @@ fn a_stale_fold_result_is_ignored() {
 }
 
 /// Root A2 past the window of best A9 (bulk sync): every node, body, fold and want dropped, the
-/// root published (committed views alone)
+/// root published (durable views alone)
 #[test]
 fn a_root_past_the_window_drops_everything_and_publishes_the_root() {
     let world = World::new();

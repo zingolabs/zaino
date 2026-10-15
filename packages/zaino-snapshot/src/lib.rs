@@ -13,6 +13,6 @@ mod model;
 mod tests;
 
 pub use feed::{Logged, MempoolTail};
-pub use publisher::{Publisher, SnapshotError, Snapshots};
+pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
 pub use report::{describe_metrics, emit_gauges, notes};
 pub use snapshot::{Down, GrpcSnapshot, Lightd, Standing, Tips, Unavailable};

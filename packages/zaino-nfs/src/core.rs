@@ -71,20 +71,20 @@ pub(crate) enum Input<F> {
     Durable(Vec<Option<BlockRef>>),
 }
 
-/// - `Fold.parent` = `None`: fold on the committed stores at the root
+/// - `Fold.parent` = `None`: fold on the durable stores at the root
 /// - `Publish(None)` = nothing servable (nothing durable, or the root off best): the last
-///   snapshot withdrawn
+///   publication withdrawn
 #[derive(Debug, Clone)]
 pub(crate) enum Output<F> {
     Fetch { at: BlockRef, record: Record },
     Abandon(BlockRef),
     Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block>, covers: Indexes },
-    Publish(Option<SnapshotTip<F>>),
+    Publish(Option<Publication<F>>),
 }
 
-/// `tip` = a node of `graph`, or `root` (read from the committed stores alone)
+/// `tip` = a node of `graph`, or `root` (read from the durable stores alone)
 #[derive(Debug, Clone)]
-pub(crate) struct SnapshotTip<F> {
+pub(crate) struct Publication<F> {
     pub(crate) chain: Arc<VerifiedChain>,
     pub(crate) tip: BlockRef,
     pub(crate) root: Option<BlockRef>,
@@ -245,7 +245,7 @@ impl<F> NfsCore<F> {
         let tip = shown.tip;
         self.shown = Some(shown);
         let (chain, root, graph) = (Arc::clone(chain), self.root(), self.graph.clone());
-        out.push(Output::Publish(Some(SnapshotTip { chain, tip, root, graph })));
+        out.push(Output::Publish(Some(Publication { chain, tip, root, graph })));
     }
 
     /// First `lookahead` best heights above the root with no node: each held, folding or wanted

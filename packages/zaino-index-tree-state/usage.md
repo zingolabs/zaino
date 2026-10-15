@@ -56,7 +56,7 @@ let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TreeStateIndexWriter::new(store);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TreeState, handle.tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::TreeState, handle.view().tip(), queue_bytes);
 nfs.add(IndexKind::TreeState, handle);
 tokio::spawn(writer.run(blocks));
 ```

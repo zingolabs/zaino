@@ -1,4 +1,4 @@
-//! Typed reads over any view (a snapshot's layered view, the committed store alike)
+//! Typed reads over any view (an `Indexed`'s layered view, the durable store alike)
 
 use zaino_persistence::{MapRead, SequenceRead, View};
 use zaino_primitives::types::{Block, BlockFees};

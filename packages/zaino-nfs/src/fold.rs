@@ -6,7 +6,7 @@ use zaino_persistence::PerIndex;
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};
 use zaino_primitives::types::Block;
 
-use crate::snapshot::Views;
+use crate::publish::Views;
 
 /// One node's payload: each covered index's state as of the block
 #[derive(Debug)]

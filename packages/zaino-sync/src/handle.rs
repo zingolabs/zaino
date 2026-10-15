@@ -1,42 +1,42 @@
-//! [`IndexHandle`]: one index's committed view + applied tip, as the rest of the daemon reads them
+//! [`IndexHandle`]: one index's durable view + applied height, as the rest of the daemon reads them
 //! (`usage.md`)
 
 use tokio::sync::watch;
 use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
+use zcash_protocol::consensus::BlockHeight;
 
 /// From its writer (`XIndexWriter::handle`); cheap clone
 #[derive(Clone)]
 pub struct IndexHandle<V> {
-    committed: watch::Receiver<V>,
+    durable: watch::Receiver<V>,
     applied: watch::Receiver<Option<BlockRef>>,
 }
 
 impl<V: View> IndexHandle<V> {
     pub(crate) fn new(
-        committed: watch::Receiver<V>,
+        durable: watch::Receiver<V>,
         applied: watch::Receiver<Option<BlockRef>>,
     ) -> Self {
-        Self { committed, applied }
+        Self { durable, applied }
     }
 
-    /// Last block folded + applied to the store (committed or not)
-    pub fn applied(&self) -> Option<BlockRef> {
-        *self.applied.borrow()
+    /// Last block folded + applied to the store (durable or not)
+    pub fn applied_height(&self) -> Option<BlockHeight> {
+        self.applied.borrow().map(|tip| tip.height)
     }
 
-    /// Committed view (what snapshots and folds read)
+    /// Durable view (what NFS publications and folds read)
     pub fn view(&self) -> V {
-        self.committed.borrow().clone()
+        self.durable.borrow().clone()
     }
 
-    /// Durable tip
-    pub fn tip(&self) -> Option<BlockRef> {
-        self.committed.borrow().tip()
+    pub fn durable_height(&self) -> Option<BlockHeight> {
+        self.durable.borrow().tip().map(|tip| tip.height)
     }
 
-    /// Next commit; `false` = its writer gone
+    /// Next durable view; `false` = its writer gone
     pub async fn changed(&mut self) -> bool {
-        self.committed.changed().await.is_ok()
+        self.durable.changed().await.is_ok()
     }
 }

@@ -2,7 +2,7 @@
 //! stores, mock validators (`usage.md`)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
-//! - Every snapshot seen: tip on its best; `at` of every mined block (served, side, root): each
+//! - Every publication seen: tip on its best; `at` of every mined block (served, side, root): each
 //!   index = the oracle at its view's tip, that tip = the block's (or a durable-only view ahead)
 
 use std::collections::HashMap;
@@ -138,40 +138,40 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     folded
 }
 
-/// - N4: tip on its chain's best = the lowest view (a root snapshot: the lowest durable tip)
+/// - N4: tip on its chain's best = the lowest view (a root publication: the lowest durable tip)
 /// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
 ///   block's path vs the chain's; every enabled index readable, through the block or (durable at
 ///   or past it) its durable tip alone; either = the oracle there
 /// - `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
-    snapshot: &Indexed<DiskView>,
+    indexed: &Indexed<DiskView>,
     blocks: &MockChain,
     mined: &[BlockHash],
     oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
     context: &str,
 ) {
-    let (chain, tip) = (snapshot.chain(), snapshot.served().tip());
+    let (chain, tip) = (indexed.chain(), indexed.served().tip());
     assert!(chain.on_best(tip), "{context}: N4 tip {tip:?} off best");
-    assert_eq!(snapshot.served().branch(), Branch::Best, "{context}: N4 served on the best");
-    let durable: Vec<(IndexKind, Option<BlockRef>)> = snapshot.durable().collect();
-    let views = snapshot.served().views();
+    assert_eq!(indexed.served().branch(), Branch::Best, "{context}: N4 served on the best");
+    let durable: Vec<(IndexKind, Option<BlockRef>)> = indexed.durable().collect();
+    let views = indexed.served().views();
     let lowest = durable.iter().filter_map(|(kind, _)| views.view(*kind)?.tip());
     if let Some(lowest) = lowest.map(|at| at.height).min() {
         assert_eq!(lowest, tip.height, "{context}: N4 the tip = the lowest view served");
     }
-    let above_root = snapshot.root().map_or(0, |root| u32::from(root.height) as usize + 1);
+    let above_root = indexed.root().map_or(0, |root| u32::from(root.height) as usize + 1);
     let path = blocks.blocks(tip);
     let expected: Vec<BlockHash> =
         path[above_root..].iter().rev().map(|b| b.header().hash).collect();
     let nonfinalized: Vec<BlockHash> =
-        snapshot.served_nonfinalized().map(|b| b.header().hash).collect();
+        indexed.served_nonfinalized().map(|b| b.header().hash).collect();
     let message = "served_nonfinalized = served's own path above the root";
     assert_eq!(nonfinalized, expected, "{context}: {message}");
 
     for hash in mined {
-        let Some(at) = snapshot.at(hash) else {
+        let Some(at) = indexed.at(hash) else {
             let held =
-                snapshot.folded(hash) || snapshot.root().is_some_and(|root| root.hash == *hash);
+                indexed.folded(hash) || indexed.root().is_some_and(|root| root.hash == *hash);
             assert!(!held, "{context}: G7 at({hash:?}) = None for a folded block or the root");
             continue;
         };
@@ -240,7 +240,7 @@ impl Pipeline {
             let store = store.expect("store");
             let mut add = |handle: IndexHandle<DiskView>| {
                 handles.push((kind, handle.clone()));
-                let blocks = follower.subscribe(kind, handle.tip(), queue);
+                let blocks = follower.subscribe(kind, handle.view().tip(), queue);
                 nfs.add(kind, handle);
                 blocks
             };
@@ -283,7 +283,7 @@ impl Pipeline {
     }
 
     fn durable(&self) -> Vec<Option<BlockHeight>> {
-        self.handles.iter().map(|(_, handle)| handle.tip().map(|tip| tip.height)).collect()
+        self.handles.iter().map(|(_, handle)| handle.durable_height()).collect()
     }
 
     /// Cancel → both clean `Ok`, every writer through `Shutdown`
@@ -377,7 +377,8 @@ fn mine(
 /// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20; run 1: restart, E21..=24
 /// - bodies from an honest member + a `Lie::Poisoned` liar (each lie reported, never folded)
 #[tokio::test(start_paused = true)]
-async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart() {
+async fn every_publication_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart()
+{
     let miner = p2pkh([0xad; 20]);
     let mut blocks =
         MockChain::regtest().varied_work().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
@@ -423,8 +424,8 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
-    let mut check = |snapshot: &Indexed<DiskView>, context: &str| {
-        verify(snapshot, &blocks, &mined, &mut oracles, context)
+    let mut check = |indexed: &Indexed<DiskView>, context: &str| {
+        verify(indexed, &blocks, &mined, &mut oracles, context)
     };
 
     for (run, moves) in runs.iter().enumerate() {
@@ -457,7 +458,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
 /// - Run 0: four indexes synced through A8 (final 5)
 /// - Run 1: tree-state enabled on a fresh store; A 9..=16 one at a time (final = best − 3)
 /// - Served tip = the lowest durable tip until the window holds it, never back; tree-state
-///   readable in every snapshot; every snapshot = folding from genesis (`verify`)
+///   readable in every publication; every publication = folding from genesis (`verify`)
 /// - Settled: every index durable through final, served at best
 #[tokio::test(start_paused = true)]
 async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
@@ -478,8 +479,8 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
-    let mut check = |snapshot: &Indexed<DiskView>, context: &str| {
-        verify(snapshot, &blocks, &mined, &mut oracles, context)
+    let mut check = |indexed: &Indexed<DiskView>, context: &str| {
+        verify(indexed, &blocks, &mined, &mut oracles, context)
     };
     let four = [
         IndexKind::UtxoSet,
@@ -510,11 +511,11 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     for at in 9..=16 {
         let context = format!("run 1 A{at}");
         let (best, final_height) = add(&trunk[at..=at]);
-        let each = |snapshot: &Indexed<DiskView>| {
-            let tip = snapshot.served().tip().height;
+        let each = |indexed: &Indexed<DiskView>| {
+            let tip = indexed.served().tip().height;
             assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
             served = tip;
-            let readable = snapshot.served().views().tree_state().is_some();
+            let readable = indexed.served().views().tree_state().is_some();
             assert!(readable, "{context}: tree-state readable at {tip:?}");
         };
         pipeline.settle(best, final_height, each, &mut check, &context).await;

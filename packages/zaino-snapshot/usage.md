@@ -1,6 +1,6 @@
 # `zaino-snapshot` — usage
 
-One value for everything Zaino serves ([architecture §8](../../docs/architecture.md#8-serving-one-snapshot)): the chain view's
+One value for everything Zaino serves ([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)): the chain view's
 latest, the NFS's latest and a mempool feed keyed to the served tip, published together as one
 `Arc<GrpcSnapshot>`. Every read of chain, index, mempool or validator state, by a route, a probe, a
 scrape or a log line, loads one and asks it everything.
@@ -8,7 +8,7 @@ scrape or a log line, loads one and asks it everything.
 ## Wiring: `Publisher`
 
 ```rust,ignore
-use zaino_snapshot::{Publisher, SnapshotError};
+use zaino_snapshot::{Publisher, GrpcSnapshotError};
 
 let publisher = Publisher::new(nfs.indexed(), chain_view.subscriber(), depth); // seq 0 stored now
 let snapshots = publisher.handle();                    // clone per route / probe / scrape
@@ -22,7 +22,7 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
 - The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `final_tip`, `held_by`
   and `synced` are judged under it; the NFS's own chain stays inside its `at()`.
 
-## Readers: `Snapshots` → `GrpcSnapshot`
+## Readers: `GrpcSnapshots` → `GrpcSnapshot`
 
 ```rust,ignore
 let snap = snapshots.load();                           // one atomic load, never None: pin it
@@ -51,7 +51,7 @@ snapshots.changed().await?;                            // next publish
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
   `no trusted validator holds the verified tip {h} (of {n} configured)`, `the indexes are syncing:
   nothing served yet`.
-- Feature `testing`: `Snapshots::fixed(indexed, view)` = one snapshot for good, no publisher
+- Feature `testing`: `GrpcSnapshots::fixed(indexed, view)` = one snapshot for good, no publisher
   (`changed()` errs, a tail ends after its opening): route tests over `Indexed::fixed` +
   `ChainViewSnapshot::fixed`.
 

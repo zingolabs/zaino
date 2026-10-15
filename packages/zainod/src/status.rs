@@ -12,7 +12,7 @@ use std::sync::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_snapshot::{Down, GrpcSnapshot, Snapshots, Standing};
+use zaino_snapshot::{Down, GrpcSnapshot, GrpcSnapshots, Standing};
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::NetworkType;
@@ -41,7 +41,7 @@ pub(crate) struct DaemonStatus {
 /// - `block_rate` = blocks handed per second over its last ~60 s (`None` before its first tick)
 /// - `egress` = last closed 10-min window
 pub(crate) struct Sources {
-    pub(crate) snapshots: Snapshots<DiskView>,
+    pub(crate) snapshots: GrpcSnapshots<DiskView>,
     pub(crate) progress: SyncProgress,
     pub(crate) block_rate: watch::Receiver<Option<f64>>,
     pub(crate) grpc_admission: Arc<zaino_grpc::AdmissionState>,

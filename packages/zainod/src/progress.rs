@@ -19,9 +19,9 @@ use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::display::{ByteSize, Human};
-use zaino_primitives::types::BlockRef;
-use zaino_snapshot::{Snapshots, Tips};
+use zaino_snapshot::{GrpcSnapshots, Tips};
 use zaino_sync::{IndexHandle, SyncProgress};
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::error::IndexerError;
 use crate::logging::HeightCol;
@@ -92,7 +92,7 @@ impl Phase {
 
 /// Until `cancel`; each tick's blocks/s over the last two in `rate`
 pub(crate) async fn run(
-    snapshots: Snapshots<DiskView>,
+    snapshots: GrpcSnapshots<DiskView>,
     progress: SyncProgress,
     indexes: Vec<Index>,
     rate: watch::Sender<Option<f64>>,
@@ -124,8 +124,11 @@ pub(crate) async fn run(
         tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
         let tips = snapshots.load().tips();
         let now = sample(&tips);
-        let height = |tip: BlockRef| u32::from(tip.height);
-        let durable = indexes.iter().map(|index| index.handle.tip().map(height)).min().flatten();
+        let durable = indexes
+            .iter()
+            .map(|index| index.handle.durable_height().map(u32::from))
+            .min()
+            .flatten();
         let phase = Phase::of(&tips, progress.handed().map(u32::from), durable);
         let over_two = (now.at - before_last.at).as_secs_f64();
         rate.send_replace(phase.map(|phase| now.advanced(&before_last, phase) as f64 / over_two));
@@ -137,10 +140,10 @@ pub(crate) async fn run(
             report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
         if matches!(phase, Some(Phase::Final { .. })) {
-            let column = |tip: Option<BlockRef>| HeightCol(tip.map(|tip| tip.height.into()));
+            let column = |height: Option<BlockHeight>| HeightCol(height.map(u32::from));
             for index in &indexes {
-                let applied = column(index.handle.applied());
-                let durable = column(index.handle.tip());
+                let applied = column(index.handle.applied_height());
+                let durable = column(index.handle.durable_height());
                 let size = disk.get(index.kind.name()).map(|bytes| display(ByteSize(*bytes)));
                 index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
             }
@@ -241,7 +244,7 @@ mod tests {
     /// us-west-1 restart (durable = final = anchor 3,515,519, best 1,003 above) = the window
     #[test]
     fn the_phase_is_final_blocks_then_the_non_finalized_window_then_nothing() {
-        use zcash_protocol::consensus::BlockHeight;
+        use zaino_primitives::types::BlockRef;
         use zcash_protocol::BlockHash;
         let at =
             |height: u32| BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(height) };

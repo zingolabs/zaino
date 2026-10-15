@@ -26,7 +26,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: committed view after every commit
+    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }

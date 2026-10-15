@@ -153,7 +153,7 @@ or tailnet name:
   strings, or `null` while that RPC would be `UNAVAILABLE`.
 - Before boot, `tip`, `served`, `validators`, `egress` and `info` are `null`.
 
-`/metrics` sets every state gauge from the snapshot first (`zaino_best_tip`,
+`/metrics` sets every state gauge from the `GrpcSnapshot` first (`zaino_best_tip`,
 `zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
 [`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then renders; events
 (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they happen
@@ -323,7 +323,7 @@ network or format included).
 }
 ```
 
-`heights` = committed tip + 1; `units` = one entry per sealed file; `bad_pages` = 4 KiB page
+`heights` = durable tip + 1; `units` = one entry per sealed file; `bad_pages` = 4 KiB page
 indexes whose CRC disagrees; `bad_sums` = the `.crc` file no longer matches the digest the
 manifest committed; `null` = index disabled. A corrupt or lost file means delete that index's
 directory and resync it.
@@ -339,7 +339,7 @@ zainod dies rather than serve from a state it cannot vouch for
   the index and its directory: `<index> index commit failed: disk <dir> full`,
   or `… failed at <dir>: <error>`
   ([zaino-sync: Failure](../zaino-sync/usage.md#failure-panic-never-err))
-- any other task that ends first (the final-stream follower, the NFS, the snapshot
+- any other task that ends first (the final-stream follower, the NFS, the `GrpcSnapshot`
   publisher, gRPC), cleanly or not, cancels the rest and `zainod start` exits 1
   (`IndexerError::TaskEnded` or the task's own error, e.g. `FollowError::Diverged`
   = the next final block does not extend an index's stored tip, as for a directory
@@ -412,12 +412,12 @@ What an operator sees at `info`:
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
-| `Snapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `behind`). |
-| `Snapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
-| `Snapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
-| `Snapshot` | `Finality paused: no trusted validator holds the boundary` / `Finality resumed` | warn / info | A boundary block is `finalised_depth` deep but no trusted validator holds it, then one does (`best`). |
+| `GrpcSnapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `behind`). |
+| `GrpcSnapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
+| `GrpcSnapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
+| `GrpcSnapshot` | `Finality paused: no trusted validator holds the boundary` / `Finality resumed` | warn / info | A boundary block is `finalised_depth` deep but no trusted validator holds it, then one does (`best`). |
 | `ChainView` | `Validator peer list read failed, last kept` / `Validator release read failed, last kept` | warn | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on). |
-| `Snapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
+| `GrpcSnapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
 | `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's indexer push streams (`indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
 | `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
@@ -430,8 +430,8 @@ What an operator sees at `info`:
 | `ZainoNFS` | `Block fetch stalled` / `Non-finalized block fetch stalled` | warn | The phase above has not moved for 30 s or more (`stalled` = for how long). |
 | `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
-| `Snapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `durable` (committed, from the snapshot), `size` (bytes on disk, 3 significant figures, decimal units). |
+| `GrpcSnapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
+| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `applied` + `durable` (off its writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 

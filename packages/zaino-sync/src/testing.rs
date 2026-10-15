@@ -68,10 +68,10 @@ impl<V: View> Writer<V> {
         &self.handle
     }
 
-    /// Until the durable tip = `tip` (`None` = nothing committed)
+    /// Until the durable tip = `tip` (`None` = nothing durable)
     pub async fn durable_at(&mut self, tip: impl Into<Option<BlockHeight>>) {
         let tip = tip.into();
-        while self.handle.tip().map(|held| held.height) != tip {
+        while self.handle.durable_height() != tip {
             assert!(self.handle.changed().await, "writer alive until its durable tip = {tip:?}");
         }
     }

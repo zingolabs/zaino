@@ -1,4 +1,4 @@
-//! Typed reads over any `MapRead` view (a snapshot's layered view, the committed store alike)
+//! Typed reads over any `MapRead` view (an `Indexed`'s layered view, the durable store alike)
 
 use zaino_persistence::{MapRead, View};
 use zcash_protocol::consensus::BlockHeight;

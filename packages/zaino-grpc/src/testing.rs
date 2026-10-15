@@ -16,7 +16,7 @@ use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
-use zaino_snapshot::{Publisher, Snapshots};
+use zaino_snapshot::{GrpcSnapshots, Publisher};
 use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 use zcash_protocol::TxId;
@@ -98,10 +98,10 @@ pub(super) fn snapshot_held(
     views: Vec<(IndexKind, DiskView)>,
     held_by: TrustedValidatorSet,
     ours: &[(TxId, bytes::Bytes)],
-) -> Snapshots<DiskView> {
+) -> GrpcSnapshots<DiskView> {
     let verified = Some(Arc::new(chain.verified(tip)));
     let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);
-    Snapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
+    GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
 
 /// [`snapshot_held`] by no validator, empty mempool (index methods only)
@@ -109,7 +109,7 @@ pub(super) fn snapshot(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
-) -> Snapshots<DiskView> {
+) -> GrpcSnapshots<DiskView> {
     snapshot_held(chain, tip, views, TrustedValidatorSet::default(), &[])
 }
 
@@ -134,7 +134,7 @@ pub(super) fn routes_over(
     let view = view.expect("one endpoint");
     let fold = view.observation_fold();
     let routes = Routes {
-        snapshots: Snapshots::fixed(None, view.subscriber().current()),
+        snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
         submit: Arc::new(view),
         validators,
         network: MAINNET,

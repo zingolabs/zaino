@@ -27,8 +27,8 @@ use zaino_sync::{check_block, Checked};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use super::{Indexes, Input, NfsCore, Output, SnapshotTip};
-use crate::snapshot::Branch;
+use super::{Indexes, Input, NfsCore, Output, Publication};
+use crate::publish::Branch;
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 /// Fold window (the driver's `2 · depth`)
@@ -120,7 +120,7 @@ fn fold(parent: Option<Toy>, block: &Block) -> Toy {
     Toy { height: header.height, digest }
 }
 
-/// Final-path writer: `durable` = committed tip (a final block), `committing` = a commit due
+/// Final-path writer: `durable` = durable tip (a final block), `committing` = a commit due
 #[derive(Debug)]
 struct Writer {
     durable: Option<BlockRef>,
@@ -343,7 +343,7 @@ impl Sim {
 
     /// - N4: on its chain's best; every index = the oracle (node) or durable at or past it
     /// - G7: `at` of every node, the root and the decoy = the naive answer
-    fn served(&mut self, tip: SnapshotTip<Toys>, context: &str) {
+    fn served(&mut self, tip: Publication<Toys>, context: &str) {
         let at = tip.tip;
         assert!(tip.chain.on_best(at), "{context}: N4 served {at:?} off its best");
         let toys = tip.graph.at(&tip.chain, tip.root, &at.hash).and_then(|base| base.folded);
@@ -369,7 +369,7 @@ impl Sim {
     }
 
     /// Naive `at`: the root unfolded; a node folded, branch = its path vs the chain's
-    fn at(&self, tip: &SnapshotTip<Toys>, hash: BlockHash) -> Option<(BlockRef, Branch, bool)> {
+    fn at(&self, tip: &Publication<Toys>, hash: BlockHash) -> Option<(BlockRef, Branch, bool)> {
         if let Some(root) = tip.root.filter(|root| root.hash == hash) {
             return Some((root, Branch::Best, false));
         }

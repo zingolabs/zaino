@@ -48,8 +48,8 @@ possible, take everything else from as many peers as possible.**
   (zaino-sync)         tip overlay  │
        │ IndexerDataSink     │ Indexed
        ▼                     ▼      ▼
-  5 index writers ──▶ zaino-snapshot Publisher ──▶ one Arc<Snapshot> per request
-  (disk)  committed views                           → zaino-grpc, /status, /readyz, /metrics
+  5 index writers ──▶ zaino-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
+  (disk)  durable views                             → zaino-grpc, /status, /readyz, /metrics
 ```
 
 Every block takes one of two paths, which never meet:
@@ -90,7 +90,7 @@ netgroups (/16 IPv4, /32 IPv6; one operator ≈ one netgroup).
 The **Validated Header tree** (`zaino-header-chain`, memory only) holds every valid branch above the
 final tip; the best tip is the leaf with the most cumulative work. `HeaderSync`
 (`zaino-chainview`) is its only writer and publishes an immutable `VerifiedChain` on a watch that
-the NFS, the final path and the snapshot read.
+the NFS, the final path and the `GrpcSnapshot` publisher read.
 
 ```text
   final tip                          best tip (most work)
@@ -227,16 +227,16 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
   the root. Otherwise (first sync, an index enabled late) the final path does the work and the
   root is served.
 - Each best-chain block above the root is fetched by hash, checked against its header, and folded
-  over the indexes' committed views (utxo-set first: its fees feed compact-block).
+  over the indexes' durable views (utxo-set first: its fees feed compact-block).
 - **Served tip** = the deepest folded best-chain node, else the root. A reorg moves it to the fork
   point at once, then forward as the new branch folds. Side branches stay until the header chain
   drops them, so switching back costs nothing.
 - A node goes once every index has committed its height.
 
-## 8. Serving: one snapshot
+## 8. Serving: one `GrpcSnapshot`
 
 `zaino-snapshot`'s publisher combines the NFS's latest `Indexed` and the chain view's latest
-publish into one `Arc<Snapshot>`. Every gRPC request or stream, probe, scrape and state log loads
+publish into one `Arc<GrpcSnapshot>`. Every gRPC request or stream, probe, scrape and state log loads
 one and reads only it, so no answer mixes two moments.
 
 - No height named → the served tip, which every enabled index holds. A height named → up to that
@@ -246,7 +246,7 @@ one and reads only it, so no answer mixes two moments.
   does not count, one not polled since best moved does), and stays while it is on the best chain
   within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
-- `/readyz` state (`Snapshot::standing`): `Serving`, `Syncing`, `Down` (every trusted validator
+- `/readyz` state (`GrpcSnapshot::standing`): `Serving`, `Syncing`, `Down` (every trusted validator
   down, or none holds the best block), or `Degraded` = that same cause while synced to a best block
   under 30 min old (peers carry the tip).
 - `Unavailable` → gRPC `UNAVAILABLE`: no verified chain yet, no trusted validator holds the tip
@@ -266,7 +266,7 @@ The protocol says "close the stream when a new block is mined"; Zaino makes that
 | S3 | Opens with the servable mempool, then each new transaction once |
 | S4 | Every message `height: 0` |
 
-The stream ends only after the snapshot already serves the new tip, so the `GetLatestBlock` a
+The stream ends only after the `GrpcSnapshot` already serves the new tip, so the `GetLatestBlock` a
 wallet sends next sees it. One append-only log per served tip is shared by every subscriber, so
 per-transaction work never scales with subscribers.
 
@@ -305,7 +305,7 @@ its usage guide.
 
 ## 11. Telemetry
 
-Observation only: none of it changes a tip or what is served. State is read from one snapshot at
+Observation only: none of it changes a tip or what is served. State is read from one `GrpcSnapshot` at
 scrape (`zaino_*` and `zaino_chainview_*` gauges, `/status`); events are emitted where they
 happen. Alarms log once WARN when raised, once INFO when cleared:
 

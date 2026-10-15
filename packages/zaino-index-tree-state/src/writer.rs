@@ -43,7 +43,7 @@ pub struct TreeStateIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES)) at its committed tip
+    /// Over `store` (opened with [`TABLES`](crate::TABLES)) at its durable tip
     pub fn new(store: S) -> Self {
         let view = store.durable();
         let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
@@ -52,7 +52,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: committed view after every commit
+    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -555,7 +555,7 @@ mod tests {
     }
 
     /// Genesis + four bulk blocks, each its own commit, crashed after every operation: each state
-    /// reopens to an acknowledged or attempted commit, the committed tip's trees equal the naive
+    /// reopens to an acknowledged or attempted commit, the durable tip's trees equal the naive
     /// oracle's, and the next block folds on correctly
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {

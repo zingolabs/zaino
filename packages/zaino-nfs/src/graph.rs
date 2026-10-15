@@ -11,7 +11,7 @@ use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::snapshot::Branch;
+use crate::publish::Branch;
 
 #[derive(Debug)]
 pub(crate) struct Node<F> {
@@ -21,7 +21,7 @@ pub(crate) struct Node<F> {
     pub(crate) folded: Arc<F>,
 }
 
-/// O(1) clone: one per published snapshot
+/// O(1) clone: one per publication
 #[derive(Debug)]
 pub(crate) struct Graph<F> {
     nodes: imbl::HashMap<BlockHash, Arc<Node<F>>>,
@@ -33,7 +33,7 @@ impl<F> Clone for Graph<F> {
     }
 }
 
-/// `at()`'s answer: `folded` = `None` at the root (committed views alone)
+/// `at()`'s answer: `folded` = `None` at the root (durable views alone)
 #[derive(Debug)]
 pub(crate) struct Base<F> {
     pub(crate) at: BlockRef,

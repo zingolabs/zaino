@@ -25,7 +25,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: committed view after every commit
+    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -138,8 +138,8 @@ mod tests {
         writer.stop().await.expect("stops at Shutdown");
 
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        let resumed = writer.handle().tip().map(|tip| tip.height);
-        assert_eq!(resumed, Some(h(3)), "resumes at the committed tip");
+        let resumed = writer.handle().durable_height();
+        assert_eq!(resumed, Some(h(3)), "resumes at the durable tip");
         for block in &blocks[2..=4] {
             writer.send(step(block)).await;
         }

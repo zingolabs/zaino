@@ -46,7 +46,7 @@ let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` ta
 let schema = Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES);
 let writer = UtxoSetIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, handle.tip(), queue);
+let blocks = follower.subscribe(IndexKind::UtxoSet, handle.view().tip(), queue);
 nfs.add(IndexKind::UtxoSet, handle);
 tokio::spawn(writer.run(blocks, fee_sink));
 ```

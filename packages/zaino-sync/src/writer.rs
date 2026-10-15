@@ -64,16 +64,16 @@ pub fn ran<S: Store>(store: &S, started: Instant, write: Duration) {
     emit::index_run(store.schema().kind.name(), started.elapsed(), write);
 }
 
-/// Writer's end of its [`IndexHandle`]: applied tip after every hop, committed view on each commit
+/// Writer's end of its [`IndexHandle`]: applied tip after every hop, durable view on each commit
 pub struct IndexPublisher<V> {
-    committed: watch::Sender<V>,
+    durable: watch::Sender<V>,
     applied: watch::Sender<Option<BlockRef>>,
 }
 
 impl<V: View> IndexPublisher<V> {
     pub fn new<S: Store<View = V>>(store: &S) -> Self {
         let publisher = Self {
-            committed: watch::Sender::new(store.durable()),
+            durable: watch::Sender::new(store.durable()),
             applied: watch::Sender::new(store.durable().tip()),
         };
         publisher.publish(store);
@@ -81,17 +81,17 @@ impl<V: View> IndexPublisher<V> {
     }
 
     pub fn handle(&self) -> IndexHandle<V> {
-        IndexHandle::new(self.committed.subscribe(), self.applied.subscribe())
+        IndexHandle::new(self.durable.subscribe(), self.applied.subscribe())
     }
 
-    /// `store`'s applied tip out, its committed view too once its tip moved (+ both as metrics)
+    /// `store`'s applied tip out, its durable view too once its tip moved (+ both as metrics)
     pub fn publish<S: Store<View = V>>(&self, store: &S) {
         let (applied, durable) = (store.applied().tip(), store.durable().tip());
         let height = |tip: Option<BlockRef>| tip.map(|tip| tip.height);
         emit::index_tips(store.schema().kind.name(), height(applied), height(durable));
         self.applied.send_replace(applied);
-        if self.committed.borrow().tip() != durable {
-            self.committed.send_replace(store.durable());
+        if self.durable.borrow().tip() != durable {
+            self.durable.send_replace(store.durable());
         }
     }
 }

@@ -63,7 +63,7 @@ let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::CompactBlock, handle.view().tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
 tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
 ```
@@ -86,7 +86,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
 
 Routes read through one snapshot per request (`snap.views().compact_block()`,
 `None` = disabled), at heights `≤ snap.tip()`. `CompactBlockReader<V>` works
-over any `V: SequenceRead`: a store's committed view, or a snapshot's
+over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
 `OverlayView` with non-final blocks layered on top.
 
 - `block(h)` = one framed record, every pool. `GetBlock` is never filtered.

@@ -68,7 +68,7 @@ let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES)
 let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TransparentAddressIndexWriter::new(store);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.tip(), queue_bytes);
+let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.view().tip(), queue_bytes);
 nfs.add(IndexKind::TransparentAddress, handle);
 tokio::spawn(writer.run(blocks)); // returns at Shutdown
 ```
@@ -112,8 +112,8 @@ let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>
   a partial balance.
 - Every method is synchronous and reads mmapped pages, so a transport runs it
   off its async workers (`zaino-grpc`'s scan lane).
-- Non-final blocks are `zaino-nfs` layers keyed exactly like the maps. A
-  snapshot's reader merges them over the committed store by key.
+- Non-final blocks are `zaino-nfs` layers keyed exactly like the maps. An
+  `Indexed`'s reader merges them over the durable store by key.
 
 ### What it does not answer
 

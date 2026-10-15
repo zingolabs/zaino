@@ -28,8 +28,8 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, Publisher, SnapshotError, Snapshots,
-    Standing, Tips,
+    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
+    Publisher, Standing, Tips,
 };
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -87,7 +87,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let gone = Publisher::<DiskView>::new(nfs.subscribe(), view.subscriber(), DEPTH);
     drop(nfs);
     let stopped = within("the publisher stopped", gone.run(CancellationToken::new())).await;
-    assert!(matches!(stopped, Err(SnapshotError::IndexedGone)), "{stopped:?}");
+    assert!(matches!(stopped, Err(GrpcSnapshotError::IndexedGone)), "{stopped:?}");
 }
 
 /// A 0..=5 final through 2; one of two validators holds A5, the other degraded; block-hash
@@ -130,7 +130,7 @@ fn one_snapshot_renders_every_gauge() {
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
     let view = view.endpoint(1, Health::Degraded, 0);
-    let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
+    let snap = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -237,7 +237,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
             &[],
         );
         let view = view.endpoint(0, holder, behind).endpoint(1, other, 0);
-        let snap = Snapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+        let snap = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
         assert_eq!((snap.standing(now), notes(&snap)), (standing, expected_notes), "{case}");
     }
 }
@@ -265,7 +265,7 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let unheld =
         ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
     for (why, view) in [(Down::NoValidatorReachable, all_down), (Down::TipNotHeld, unheld)] {
-        let snap = Snapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+        let snap = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
         let standing = (snap.standing(now), snap.standing(stale - 1), snap.standing(stale));
         let expected = (Standing::Degraded(why), Standing::Degraded(why), Standing::Down(why));
         assert_eq!(standing, expected, "{why:?}");

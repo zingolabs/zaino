@@ -109,7 +109,7 @@ non-finalized window again (logged as `Fetching non-finalized blocks`).
 
 The admin listener's `/livez` and `/readyz`, and the public `/readyz` and `/status` on the
 gRPC listener, all read one published snapshot of what zainod serves
-([architecture §8](./architecture.md#8-serving-one-snapshot)). States, readiness rules and every
+([architecture §8](./architecture.md#8-serving-one-grpcsnapshot)). States, readiness rules and every
 field: [zainod: the admin listener](../packages/zainod/usage.md#the-admin-listener).
 
 ## Network exposure

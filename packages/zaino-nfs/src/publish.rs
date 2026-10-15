@@ -1,8 +1,8 @@
-//! [`Indexed`]: one served tip across every enabled index, the global snapshot's index half
+//! [`Indexed`]: one served tip across every enabled index, `GrpcSnapshot`'s index half
 //! (`usage.md`)
 //!
-//! - Pinned for a request's life: nodes through `Arc`, disk through the committed view
-//! - Layers rebased onto the committed views they pair with, at build (decision 4)
+//! - Pinned for a request's life: nodes through `Arc`, disk through the durable view
+//! - Layers rebased onto the durable views they pair with, at build (decision 4)
 //! - [`Indexed::at`]: any folded node or the root, side branches included (G7)
 
 use std::sync::Arc;
@@ -48,7 +48,7 @@ impl ChainParams {
     }
 }
 
-/// Which branch of the snapshot's chain a block sits on (`from` = the side branch's best parent)
+/// Which branch of the publication's chain a block sits on (`from` = the side branch's best parent)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Branch {
     Best,
@@ -99,7 +99,7 @@ impl<V> At<V> {
 /// One publish: the served tip + every folded node, judged under `chain`
 ///
 /// - `served` = deepest folded best block, else `root` (lowest durable tip of every index)
-/// - `durable` = each enabled index's committed view as of this publish (republished per commit)
+/// - `durable` = each enabled index's durable view as of this publish (republished per commit)
 pub struct Indexed<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
@@ -126,7 +126,7 @@ impl<V: View> Indexed<V> {
     /// Every enabled index as of `hash`: a folded node (best or side) or the root, no I/O
     ///
     /// - `None` = final below the root, never folded, or unknown
-    /// - an index durable at or past the block: its committed view alone (reads at heights `<=`)
+    /// - an index durable at or past the block: its durable view alone (reads at heights `<=`)
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;
         Some(at(self.served.params, &self.durable, base))
@@ -139,7 +139,7 @@ impl<V: View> Indexed<V> {
 }
 
 impl<V> Indexed<V> {
-    /// Chain `served` was judged under (the global snapshot judges under the chain view's)
+    /// Chain `served` was judged under (`GrpcSnapshot` judges under the chain view's)
     pub fn chain(&self) -> &Arc<VerifiedChain> {
         &self.chain
     }
@@ -148,7 +148,7 @@ impl<V> Indexed<V> {
         &self.served
     }
 
-    /// `hash` = a node folded in this snapshot (the root excluded)
+    /// `hash` = a node folded in this publication (the root excluded)
     pub fn folded(&self, hash: &BlockHash) -> bool {
         self.graph.contains(hash)
     }
@@ -173,7 +173,7 @@ fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -
     At { block: base.at, branch: base.branch, params, views }
 }
 
-/// Every enabled index's committed view + a layer above it: [`At`]'s state, and a fold's parent
+/// Every enabled index's durable view + a layer above it: [`At`]'s state, and a fold's parent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -192,7 +192,7 @@ impl<V: View> Views<V> {
     }
 
     /// As of the block at `height` (`None` = below genesis), per enabled index: an empty layer
-    /// when durable at or past `height` (its committed view), else its layer of `layers`
+    /// when durable at or past `height` (its durable view), else its layer of `layers`
     ///
     /// - panics: an index durable below `height` unfolded there
     pub(crate) fn at(
@@ -253,13 +253,13 @@ impl<V: SequenceRead + MapRead> Views<V> {
     }
 }
 
-/// Latest [`Indexed`] (`None` = nothing folded or committed yet), swapped whole per publish
+/// Latest [`Indexed`] (`None` = nothing folded or durable yet), swapped whole per publish
 pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;
 
 /// No driver publishes into it (consumers' tests)
 #[cfg(any(test, feature = "testing"))]
 impl<V: View> Indexed<V> {
-    /// At `tip` on `chain`, `tip` = the root: each enabled index = its committed view
+    /// At `tip` on `chain`, `tip` = the root: each enabled index = its durable view
     pub fn fixed(
         chain: Arc<VerifiedChain>,
         tip: BlockRef,

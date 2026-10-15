@@ -155,7 +155,7 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// - 0, 1 committed, 2 buffered (committed view + layer): 1 pays `paid` 42, 2 spends it
+    /// - 0, 1 committed, 2 buffered (durable view + layer): 1 pays `paid` 42, 2 spends it
     /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
     /// - Stranger + heights past the tip → empty, never an error
     #[test]

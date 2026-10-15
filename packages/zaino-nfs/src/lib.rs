@@ -5,7 +5,7 @@ mod core;
 mod emit;
 mod fold;
 mod graph;
-mod snapshot;
+mod publish;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -27,12 +27,12 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-use crate::core::{Indexes, Input, NfsCore, Output, SnapshotTip};
+use crate::core::{Indexes, Input, NfsCore, Output, Publication};
 use crate::fold::{fold_block, Folded};
 
 pub use crate::emit::describe_metrics;
 pub use crate::fold::FoldError;
-pub use crate::snapshot::{At, Branch, ChainParams, Indexed, Published, Views};
+pub use crate::publish::{At, Branch, ChainParams, Indexed, Published, Views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {
@@ -40,7 +40,7 @@ pub enum NfsError {
     Fold(#[from] FoldError),
     #[error("header sync stopped publishing the verified chain")]
     ChainGone,
-    #[error("{0} writer stopped publishing its committed view")]
+    #[error("{0} writer stopped publishing its durable view")]
     IndexGone(&'static str),
 }
 
@@ -56,7 +56,7 @@ pub struct Nfs<S, V> {
     window: u32,
     lookahead: NonZeroUsize,
     indexes: PerIndex<IndexHandle<V>>,
-    committed: PerIndex<V>,
+    durable: PerIndex<V>,
     published: watch::Sender<Option<Arc<Indexed<V>>>>,
     served: Option<BlockRef>,
 }
@@ -78,18 +78,18 @@ impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
             window: depth.get().saturating_mul(2),
             lookahead,
             indexes: PerIndex::default(),
-            committed: PerIndex::default(),
+            durable: PerIndex::default(),
             published: watch::Sender::new(None),
             served: None,
         }
     }
 
-    /// `kind` enabled: its committed view read and extended at the tip (panics: `kind` twice)
+    /// `kind` enabled: its durable view read and extended at the tip (panics: `kind` twice)
     pub fn add(&mut self, kind: IndexKind, index: IndexHandle<V>) {
         self.indexes.insert(kind, index);
     }
 
-    /// Every publish as a watch: served tip moved or a durable tip moved (the global snapshot's
+    /// Every publish as a watch: served tip moved or a durable tip moved (`GrpcSnapshot`'s
     /// input)
     pub fn indexed(&self) -> Published<V> {
         self.published.subscribe()
@@ -145,18 +145,18 @@ impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
         }
     }
 
-    /// Each index's committed view reloaded into `committed`; their durable tips
+    /// Each index's durable view reloaded into `durable`; their durable tips
     ///
-    /// - `committed` changes only here: every fold and snapshot pairs layers with exactly the
+    /// - `durable` changes only here: every fold and publication pairs layers with exactly the
     ///   durable tips the core was last told
     fn refresh(&mut self) -> Vec<Option<BlockRef>> {
-        let (mut committed, mut tips) = (PerIndex::default(), Vec::new());
+        let (mut durable, mut tips) = (PerIndex::default(), Vec::new());
         for (kind, handle) in self.indexes.iter() {
             let view = handle.view();
             tips.push(view.tip());
-            committed.insert(kind, view);
+            durable.insert(kind, view);
         }
-        self.committed = committed;
+        self.durable = durable;
         tips
     }
 
@@ -185,7 +185,7 @@ impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
                 let empty = PerIndex::default();
                 let layers = parent.as_deref().map_or(&empty, |folded| &folded.layers);
                 let below = u32::from(at.height).checked_sub(1);
-                let parent = Views::at(&self.committed, layers, below.map(BlockHeight::from));
+                let parent = Views::at(&self.durable, layers, below.map(BlockHeight::from));
                 work.spawn(async move {
                     let folded = compute(move || fold_block(&parent, &block, &covered)).await?;
                     Ok(Input::Folded { at, covers, folded: Arc::new(folded) })
@@ -194,9 +194,9 @@ impl<S: ChainDataSource, V: DurableView> Nfs<S, V> {
             Output::Publish(None) => {
                 self.published.send_replace(None);
             }
-            Output::Publish(Some(SnapshotTip { chain, tip, root, graph })) => {
+            Output::Publish(Some(Publication { chain, tip, root, graph })) => {
                 self.log_served(&chain, tip);
-                let views = self.committed.clone();
+                let views = self.durable.clone();
                 let indexed = Indexed::new(chain, tip, root, self.params, views, graph);
                 self.published.send_replace(Some(Arc::new(indexed)));
             }

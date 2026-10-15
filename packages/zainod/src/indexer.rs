@@ -12,7 +12,7 @@
 //!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──┘
 //!                                                    ▼
 //!                                   Indexed ─┐
-//!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ Snapshots ─▶ Routes ─▶ GrpcService
+//!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ Routes ─▶ GrpcService
 //!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────┘    └▶ admin, logs
 //! ```
 //!
@@ -42,7 +42,9 @@ use zaino_index_utxo_set::UtxoSetIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine};
+use zaino_persistence::{
+    DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine, View,
+};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_snapshot::Publisher;
@@ -426,7 +428,7 @@ impl<S: ChainDataSource> Indexes<S> {
             self.engine.open(&config.path, &schema, write_buffer).map(writer)
         })?;
         let handle = handle(&writer);
-        let blocks = self.follower.subscribe(kind, handle.tip(), config.queue_bytes);
+        let blocks = self.follower.subscribe(kind, handle.view().tip(), config.queue_bytes);
         self.nfs.add(kind, handle.clone());
         self.writers.push((kind, span.clone(), Box::pin(run(writer, blocks))));
         self.opened.push(crate::progress::Index { kind, span, dir: config.path.clone(), handle });
