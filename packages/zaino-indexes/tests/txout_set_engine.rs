@@ -12,8 +12,10 @@
 
 use std::collections::HashMap;
 
-use zaino_indexes::indexes::transparent_data::{TransparentDataIndex, TransparentTxCompact};
+use zaino_indexes::indexes::output_value::OutputValueIndex;
+use zaino_indexes::indexes::transparent_data::TransparentTxCompact;
 use zaino_indexes::indexes::transparent_spends::TransparentSpendsIndex;
+use zaino_indexes::indexes::tx_set_members::TxSetMembersIndex;
 use zaino_indexes::indexes::txid_location::TxidLocationIndex;
 use zaino_indexes::indexes::txout_set::{
     canonical_entry, TxOutSetDelta, TxOutSetIndex, DOMAIN_TAG, ENTRY_LEN,
@@ -249,7 +251,8 @@ fn engine_builds_the_utxo_set_summary() {
     let backend = InMemoryBackend::new();
     let pipelines = IndexPipelines::new()
         .with::<TxidLocationIndex>()
-        .with::<TransparentDataIndex>()
+        .with::<OutputValueIndex>()
+        .with::<TxSetMembersIndex>()
         .with::<TransparentSpendsIndex>()
         .with::<TxOutSetIndex>();
     let mut engine = SyncEngine::from_pipelines(

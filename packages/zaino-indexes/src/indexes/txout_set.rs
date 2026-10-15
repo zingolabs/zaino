@@ -19,12 +19,13 @@
 //! # Why a cross index
 //!
 //! A transparent input names the outpoint it spends and nothing else. Removing
-//! an output from the summary needs its value and script, so every spend is
-//! resolved against where the output was created: `txid_location` finds the
-//! creating transaction and `transparent_data` holds its outputs. Deciding
-//! whether a spend empties its transaction reads `transparent_spends` for the
-//! sibling outputs. All three are read through the [`DepsReader`], which also
-//! sees what they have persisted for the batch in flight.
+//! an output from the summary needs its value and script, which `output_value`
+//! holds keyed by exactly that outpoint — a direct point lookup, not a search.
+//! Deciding whether a spend empties its transaction reads `tx_set_members` for
+//! the creating transaction's other qualifying outputs, and `transparent_spends`
+//! plus `txid_location` to check each one's own spent status and ordering. All
+//! four are read through the [`DepsReader`], which also sees what they have
+//! persisted for the batch in flight.
 //!
 //! # The commitment is a contract
 //!
@@ -37,8 +38,6 @@
 //! Only outputs whose script parses as P2PKH or P2SH are in the set, mirroring
 //! zcashd's `IsUnspendable`; every other output contributes to no field.
 
-use std::collections::HashMap;
-
 use zaino_persistence_codec::keys::HeightKey;
 use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord};
 use zaino_primitives::types::{
@@ -48,10 +47,10 @@ use zaino_sync::descriptor::{Append, CrossIndex};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{DepsReadError, DepsReader, ExtractCross, IndexDef, MergeAppend, Schema};
 
-use crate::indexes::transparent_data::{
-    self, TransparentBlockValue, TransparentDataIndex, TransparentTxCompact,
-};
+use crate::indexes::output_value::{self, OutputValue, OutputValueIndex};
+use crate::indexes::transparent_data::TransparentTxCompact;
 use crate::indexes::transparent_spends::{self, OutpointKey, TransparentSpendsIndex};
+use crate::indexes::tx_set_members::{self, TxSetMembersIndex};
 use crate::indexes::txid_location::{self, TxLocation, TxidLocationIndex};
 
 /// Domain separator for the commitment, prepended to every entry before
@@ -310,7 +309,7 @@ pub enum TxOutSetError {
     /// A running sum left its range.
     #[error(transparent)]
     Arithmetic(#[from] TxOutSetArithmeticError),
-    /// An input spends a transaction `txid_location` does not know. The
+    /// A sibling's spending transaction is not in `txid_location`. The
     /// dependencies have persisted this batch and every earlier one, so on a
     /// valid chain this is an engine or store inconsistency.
     #[error("input at height {height} spends unknown transaction {txid:?}")]
@@ -320,16 +319,27 @@ pub enum TxOutSetError {
         /// The transaction the input names.
         txid: TransactionId,
     },
-    /// `txid_location` named a block or a position `transparent_data` does not
-    /// hold, or the input names an output index the transaction does not have.
-    #[error("no transparent output {index} of {txid:?} at height {height}")]
+    /// An input names an outpoint `output_value` has no entry for — on a valid
+    /// chain, a store inconsistency, discovered while processing the spend at
+    /// `height`.
+    #[error("no output_value entry for output {index} of {txid:?}, spent at height {height}")]
     MissingOutput {
-        /// The height `txid_location` gave for the transaction.
+        /// The height of the spending block.
         height: BlockHeight,
         /// The transaction the input names.
         txid: TransactionId,
         /// The output index the input names.
         index: OutputIndex,
+    },
+    /// A spend's creating transaction is a set member (it has at least this
+    /// one qualifying output) but `tx_set_members` has no entry for it — on a
+    /// valid chain, a store inconsistency between the two indexes.
+    #[error("no tx_set_members entry for {txid:?}, spent at height {height}")]
+    MissingSetMembers {
+        /// The height of the spending block.
+        height: BlockHeight,
+        /// The transaction with no `tx_set_members` entry.
+        txid: TransactionId,
     },
     /// The context's transaction ids and transparent data disagree in length.
     #[error("block at height {height} has {txids} transaction ids but {txs} transparent entries")]
@@ -370,11 +380,14 @@ impl IndexDef for TxOutSetIndex {
     type BlockContext = TxOutSetCtx;
 
     const NAME: IndexId = ID;
-    // `txid_location` and `transparent_data` resolve the output an input spends;
-    // `transparent_spends` says whether its sibling outputs are spent.
+    // `output_value` resolves the value and script of the output an input
+    // spends; `tx_set_members` names the creating transaction's other
+    // qualifying outputs; `transparent_spends` and `txid_location` say
+    // whether each of those siblings is spent, and in what order.
     const DEPENDENCIES: &'static [IndexId] = &[
         txid_location::ID,
-        transparent_data::ID,
+        output_value::ID,
+        tx_set_members::ID,
         transparent_spends::ID,
     ];
 }
@@ -386,88 +399,78 @@ struct SpendPosition {
     tx_index: u32,
 }
 
-/// The dependency reads of one block's extraction, with the per-block
-/// transparent data memoised: a block spending many outputs of one earlier
-/// block decodes that block once.
-struct Resolver<'a, 'deps> {
-    deps: &'a DepsReader<'deps>,
-    blocks: HashMap<BlockHeight, TransparentBlockValue>,
+/// The transaction-location entry for `txid`, if any.
+fn location(
+    deps: &DepsReader<'_>,
+    txid: &TransactionId,
+) -> Result<Option<TxLocation>, TxOutSetError> {
+    Ok(deps.get::<TxidLocationIndex>(txid)?)
 }
 
-impl<'a, 'deps> Resolver<'a, 'deps> {
-    fn location(&self, txid: &TransactionId) -> Result<Option<TxLocation>, TxOutSetError> {
-        Ok(self.deps.get::<TxidLocationIndex>(txid)?)
-    }
+/// The value and script of the output at `(txid, index)` — a direct point
+/// lookup, not a search. `height` is only for error reporting: it names the
+/// spending block, since resolving a creating transaction's own location is
+/// no longer needed to answer this.
+fn output_value(
+    deps: &DepsReader<'_>,
+    txid: TransactionId,
+    index: OutputIndex,
+    height: BlockHeight,
+) -> Result<OutputValue, TxOutSetError> {
+    deps.get::<OutputValueIndex>(&OutpointKey {
+        prev_txid: txid,
+        prev_index: index,
+    })?
+    .ok_or(TxOutSetError::MissingOutput {
+        height,
+        txid,
+        index,
+    })
+}
 
-    /// The transparent outputs of the transaction at `location`.
-    fn outputs(
-        &mut self,
-        txid: TransactionId,
-        location: &TxLocation,
-        index: OutputIndex,
-    ) -> Result<&[(Zatoshis, Script)], TxOutSetError> {
-        let missing = || TxOutSetError::MissingOutput {
-            height: location.height,
-            txid,
-            index,
+/// Whether the spend at `position` of output `spent_index` is the last spend
+/// of `txid`'s set members — the one that empties the transaction.
+///
+/// True exactly when every other set member of the transaction is spent, and
+/// spent no later than this one. Ties inside one spending transaction go to
+/// the highest output index, so exactly one of its spends is the last.
+fn empties_transaction(
+    deps: &DepsReader<'_>,
+    txid: TransactionId,
+    spent_index: OutputIndex,
+    position: SpendPosition,
+) -> Result<bool, TxOutSetError> {
+    let members =
+        deps.get::<TxSetMembersIndex>(&txid)?
+            .ok_or(TxOutSetError::MissingSetMembers {
+                height: position.height,
+                txid,
+            })?;
+    for sibling in members.0 {
+        if sibling == spent_index {
+            continue;
+        }
+        let Some(spender) = deps.get::<TransparentSpendsIndex>(&OutpointKey {
+            prev_txid: txid,
+            prev_index: sibling,
+        })?
+        else {
+            return Ok(false);
         };
-        if !self.blocks.contains_key(&location.height) {
-            let block = self
-                .deps
-                .get::<TransparentDataIndex>(&location.height)?
-                .ok_or_else(missing)?;
-            self.blocks.insert(location.height, block);
+        let spender_location =
+            location(deps, &spender)?.ok_or(TxOutSetError::UnknownTransaction {
+                height: position.height,
+                txid: spender,
+            })?;
+        let sibling_position = SpendPosition {
+            height: spender_location.height,
+            tx_index: spender_location.tx_index,
+        };
+        if sibling_position > position || (sibling_position == position && sibling > spent_index) {
+            return Ok(false);
         }
-        let position = usize::try_from(location.tx_index).map_err(|_| missing())?;
-        self.blocks
-            .get(&location.height)
-            .and_then(|block| block.0.get(position))
-            .map(|tx| tx.outputs.as_slice())
-            .ok_or_else(missing)
     }
-
-    /// Whether the spend at `position` of output `spent_index` is the last spend
-    /// of `txid`'s set members — the one that empties the transaction.
-    ///
-    /// True exactly when every other set member of the transaction is spent, and
-    /// spent no later than this one. Ties inside one spending transaction go to
-    /// the highest output index, so exactly one of its spends is the last.
-    fn empties_transaction(
-        &self,
-        txid: TransactionId,
-        siblings: &[OutputIndex],
-        spent_index: OutputIndex,
-        position: SpendPosition,
-    ) -> Result<bool, TxOutSetError> {
-        for &sibling in siblings {
-            if sibling == spent_index {
-                continue;
-            }
-            let Some(spender) = self.deps.get::<TransparentSpendsIndex>(&OutpointKey {
-                prev_txid: txid,
-                prev_index: sibling,
-            })?
-            else {
-                return Ok(false);
-            };
-            let spender_location =
-                self.location(&spender)?
-                    .ok_or(TxOutSetError::UnknownTransaction {
-                        height: position.height,
-                        txid: spender,
-                    })?;
-            let sibling_position = SpendPosition {
-                height: spender_location.height,
-                tx_index: spender_location.tx_index,
-            };
-            if sibling_position > position
-                || (sibling_position == position && sibling > spent_index)
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
+    Ok(true)
 }
 
 impl ExtractCross for TxOutSetIndex {
@@ -483,10 +486,6 @@ impl ExtractCross for TxOutSetIndex {
         }
 
         let mut delta = TxOutSetDelta::EMPTY;
-        let mut resolver = Resolver {
-            deps,
-            blocks: HashMap::new(),
-        };
 
         for (position, (txid, tx)) in ctx.txids.iter().zip(&ctx.txs).enumerate() {
             let tx_index =
@@ -516,46 +515,19 @@ impl ExtractCross for TxOutSetIndex {
                 if <[u8; 32]>::from(*prev_txid) == [0u8; 32] {
                     continue;
                 }
-                let location =
-                    resolver
-                        .location(prev_txid)?
-                        .ok_or(TxOutSetError::UnknownTransaction {
-                            height: ctx.height,
-                            txid: *prev_txid,
-                        })?;
-                let outputs = resolver.outputs(*prev_txid, &location, *prev_index)?;
+                let OutputValue { value, script } =
+                    output_value(deps, *prev_txid, *prev_index, ctx.height)?;
 
-                let mut members = Vec::new();
-                let mut spent = None;
-                for (index, (value, script)) in outputs.iter().enumerate() {
-                    let index = OutputIndex::try_from(index).map_err(|_| {
-                        TxOutSetError::PositionOverflow {
-                            height: location.height,
-                            position: index,
-                        }
-                    })?;
-                    if let Some(member) = set_member(*prev_txid, index, *value, script) {
-                        members.push(index);
-                        if index == *prev_index {
-                            spent = Some(member);
-                        }
-                    }
-                }
-                if usize::try_from(*prev_index).map_or(true, |index| index >= outputs.len()) {
-                    return Err(TxOutSetError::MissingOutput {
-                        height: location.height,
-                        txid: *prev_txid,
-                        index: *prev_index,
-                    });
-                }
                 // An output outside the set was never added, so spending it
                 // removes nothing.
-                let Some(spent) = spent else { continue };
+                let Some(spent) = set_member(*prev_txid, *prev_index, value, &script) else {
+                    continue;
+                };
 
                 delta.spend(&spent)?;
-                if resolver.empties_transaction(
+                if empties_transaction(
+                    deps,
                     *prev_txid,
-                    &members,
                     *prev_index,
                     SpendPosition {
                         height: ctx.height,
