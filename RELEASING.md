@@ -3,8 +3,9 @@
 Every crate shares one version (`[workspace.package] version` in `Cargo.toml`), and
 [Knope](https://knope.tech) (`knope.toml`, in the nix devshell) does the release work. Each PR
 records its changes as change files in `.changeset/`. A release turns them into the version bump,
-the `CHANGELOG.md` section, the GitHub release and the `vX.Y.Z` tag. Pushing that tag builds the
-Docker images (`.github/workflows/release.yaml`).
+the `CHANGELOG.md` section, the GitHub release and the `vX.Y.Z` tag. Pushing the tag runs the one
+release workflow, `.github/workflows/release.yaml`, which builds the `zainod` image and pushes it to
+Docker Hub as `zainod:X.Y.Z`, plus `zainod:latest` unless it is a pre-release.
 
 ## Every PR: a change file
 
