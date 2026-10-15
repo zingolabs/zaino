@@ -66,6 +66,10 @@ pub mod keys;
 pub mod layout;
 pub mod watermark;
 
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::sync::{OnceLock, PoisonError, RwLock};
+
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 
 /// How an index's keys order relative to the chain walk — stated by each codec
@@ -181,7 +185,11 @@ pub trait PersistentRecord: RecordLayout {
 /// `PersistentValue::decode(b)?.into_domain()` on read (see [`put`], [`load`],
 /// and the [`encode_key`]/[`decode_value`] helpers). It owns format only; the
 /// namespace is supplied by the caller.
-pub trait EntryCodec {
+///
+/// `'static` because a codec is a type-level description of a format, never a
+/// borrowing value; [`format_version`] keys its per-process cache on the
+/// codec's type.
+pub trait EntryCodec: 'static {
     /// The typed key.
     type Key;
     /// The typed value.
@@ -257,7 +265,33 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 ///
 /// This is the on-disk version. It changes iff the encoded bytes of a covered
 /// value change, so the version can never silently desync from the format.
+///
+/// A pure function of the codec, computed once per codec per process: every
+/// [`freshness`] check consults it, and rebuilding and hashing the samples on
+/// each read cost more than the read itself.
 pub fn format_version<C: EntryCodec>() -> FormatVersion {
+    static VERSIONS: OnceLock<RwLock<HashMap<TypeId, FormatVersion>>> = OnceLock::new();
+    let versions = VERSIONS.get_or_init(Default::default);
+    let codec = TypeId::of::<C>();
+    // Every critical section is one map operation on `Copy` values, so a
+    // poisoned lock still guards a consistent map.
+    if let Some(version) = versions
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&codec)
+    {
+        return *version;
+    }
+    let version = compute_format_version::<C>();
+    versions
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(codec, version);
+    version
+}
+
+/// [`format_version`]'s computation, uncached.
+fn compute_format_version<C: EntryCodec>() -> FormatVersion {
     let mut framed = Vec::new();
     for (key, value) in C::fingerprint_samples() {
         for blob in [encode_key::<C>(&key), encode_value::<C>(&value)] {

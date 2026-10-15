@@ -201,3 +201,12 @@ read: `zaino.read.duration_seconds` by read, placement (`local`, `passthrough`, 
 `refused`). `describe_metrics` and `METRIC_BUCKETS` register it with the \
 exporter.
 """
+
+[[changes]]
+crate = "zaino-persistence-codec"
+kind = "fix"
+description = """
+`format_version` is computed once per codec per process instead of on every \
+call, so a `freshness` check no longer rebuilds and hashes the codec's samples \
+on each read. `EntryCodec` is now `'static`, the cache's key.
+"""
