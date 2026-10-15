@@ -22,6 +22,7 @@ use zaino_source::{NonDomainError, SendRawTransactionError};
 
 use zaino_traffic::TrustedValidatorId;
 
+use crate::chain_view_snapshot::MempoolState;
 use crate::trusted_validators::TrustedValidatorSet;
 
 /// How hard Zaino pushes one transaction into the network (zainod's `[submission]`)
@@ -90,7 +91,7 @@ impl Seen {
             }
         }
         Self {
-            listed: !listing.is_empty() || quorum,
+            listed: MempoolState::of(listing, quorum).listed(),
             spread: !listing.without(tried_trusted).is_empty() || quorum,
             observable: !readers.without(tried_trusted).is_empty() || quorate,
         }

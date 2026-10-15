@@ -103,7 +103,7 @@ Cheap to clone; cannot drive polling or submit.
 | `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
 | `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
-| `spread(txid)` / `spreads()` | `Spread { peers: Count, trusted: Count, quorum, ours }` |
+| `mempool_states()` | each held transaction's `MempoolState`: `Verified` (a trusted listing), `Quorum` (a peer quorum's only), `Ours` (our relay, neither) |
 | `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
 | `alarms()`, `shared_outbound_min()` | below |
 

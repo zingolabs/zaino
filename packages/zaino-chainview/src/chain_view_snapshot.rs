@@ -62,19 +62,6 @@ impl PartialEq for Projection {
 
 impl Eq for Projection {}
 
-/// `seen` of the `of` sources whose mempool is being read right now
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Count {
-    pub seen: usize,
-    pub of: usize,
-}
-
-impl std::fmt::Display for Count {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.seen, self.of)
-    }
-}
-
 /// When one transaction reached each milestone (tokio clock: paused tests advance it)
 ///
 /// - `all_trusted` = first moment every mempool-reading trusted validator listed it at once
@@ -85,14 +72,38 @@ pub(crate) struct Timeline {
     pub(crate) all_trusted: Option<Instant>,
 }
 
-/// How far one transaction has spread (`peers: x/y, trusted: x/y`), and how it got there
+/// Why one held transaction is held, first match: a trusted listing, a peer quorum, our relay
+///
+/// - `Ours` = neither listing (a merge drops one not ours)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Spread {
-    pub peers: Count,
-    pub trusted: Count,
-    pub quorum: bool,
-    pub ours: bool,
-    pub(crate) timeline: Timeline,
+pub enum MempoolState {
+    Verified,
+    Quorum,
+    Ours,
+}
+
+impl MempoolState {
+    pub(crate) fn of(trusted: TrustedValidatorSet, quorum: bool) -> Self {
+        match (trusted.is_empty(), quorum) {
+            (false, _) => Self::Verified,
+            (true, true) => Self::Quorum,
+            (true, false) => Self::Ours,
+        }
+    }
+
+    /// Listed by a trusted validator (each admits only after full validation), or admitted by a
+    /// peer quorum
+    pub(crate) fn listed(self) -> bool {
+        self != Self::Ours
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Quorum => "quorum",
+            Self::Ours => "ours_unverified",
+        }
+    }
 }
 
 /// One transaction the view serves, and where it has been seen
@@ -144,17 +155,6 @@ impl Sighting {
         first
     }
 
-    /// `listers` = fresh peers listing it, of `polled`
-    fn spread(&self, readers: TrustedValidatorSet, listers: usize, polled: usize) -> Spread {
-        Spread {
-            peers: Count { seen: listers, of: polled },
-            trusted: Count { seen: self.trusted.count(), of: readers.count() },
-            quorum: self.quorum,
-            ours: self.ours,
-            timeline: self.timeline,
-        }
-    }
-
     /// First known fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
     ///
     /// - priced at last → fresh projection (the old one rendered `fee: None`)
@@ -180,10 +180,8 @@ impl Sighting {
         self.ours
     }
 
-    /// Listed by a trusted validator (each admits only after full validation), or admitted by a
-    /// peer quorum
-    pub(crate) fn listed(&self) -> bool {
-        !self.trusted.is_empty() || self.quorum
+    pub(crate) fn state(&self) -> MempoolState {
+        MempoolState::of(self.trusted, self.quorum)
     }
 
     pub(crate) fn quorum(&self) -> bool {
@@ -413,19 +411,9 @@ impl ChainViewSnapshot {
             .collect()
     }
 
-    /// One held transaction's spread (telemetry; never gates serving)
-    pub fn spread(&self, txid: &TxId) -> Option<Spread> {
-        let polled = self.listings.polled().len();
-        let listers = self.listings.listers(txid).len();
-        Some(self.mempool.get(txid)?.spread(self.mempool_readers(), listers, polled))
-    }
-
-    /// Every held transaction's spread, in txid order
-    pub fn spreads(&self) -> impl Iterator<Item = (TxId, Spread)> + '_ {
-        let (readers, polled) = (self.mempool_readers(), self.listings.polled().len());
-        self.mempool.iter().map(move |(txid, sighting)| {
-            (*txid, sighting.spread(readers, self.listings.listers(txid).len(), polled))
-        })
+    /// Every held transaction's [`MempoolState`], in txid order (telemetry; never gates serving)
+    pub fn mempool_states(&self) -> impl Iterator<Item = MempoolState> + '_ {
+        self.mempool.values().map(Sighting::state)
     }
 
     /// The served mempool; `None` while neither a `Live` trusted validator (its mempool

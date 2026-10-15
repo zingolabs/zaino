@@ -5,7 +5,7 @@
 //! - Gauge names = ztest's `zainod` families (a rename breaks its sync probes)
 
 use tracing::{info, warn};
-use zaino_chainview::{Agreement, ChainViewSnapshot, Spread};
+use zaino_chainview::{Agreement, ChainViewSnapshot, MempoolState};
 
 use zaino_persistence::View;
 use zaino_sync::SyncProgress;
@@ -41,45 +41,6 @@ const AGREEMENTS: [Agreement; 5] = [
     Agreement::Behind,
     Agreement::Diverged,
 ];
-
-/// Why one held transaction is held, first match: a trusted listing, a peer quorum, our relay
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MempoolState {
-    Verified,
-    Quorum,
-    Ours,
-}
-
-impl MempoolState {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Verified => "verified",
-            Self::Quorum => "quorum",
-            Self::Ours => "ours_unverified",
-        }
-    }
-}
-
-fn mempool_state(spread: &Spread) -> MempoolState {
-    match (spread.trusted.seen > 0, spread.quorum) {
-        (true, _) => MempoolState::Verified,
-        (false, true) => MempoolState::Quorum,
-        (false, false) => MempoolState::Ours,
-    }
-}
-
-/// Held transactions per [`MempoolState`], one pass
-fn mempool(view: &ChainViewSnapshot) -> [(MempoolState, usize); 3] {
-    let mut held =
-        [(MempoolState::Verified, 0), (MempoolState::Quorum, 0), (MempoolState::Ours, 0)];
-    for (_, spread) in view.spreads() {
-        let state = mempool_state(&spread);
-        if let Some((_, count)) = held.iter_mut().find(|(each, _)| *each == state) {
-            *count += 1;
-        }
-    }
-    held
-}
 
 const PARTITIONED: &str = "Two live validators share no outbound peer (possible partition)";
 const ECLIPSED: &str = "Live validators reach few distinct outbound peers (possible eclipse)";
@@ -182,7 +143,8 @@ pub fn emit_gauges<V: View>(grpc_snapshot: &GrpcSnapshot<V>, progress: &SyncProg
 
 /// `zaino.chainview.*`: per endpoint, then the view's
 fn chain_view_gauges(view: &ChainViewSnapshot) {
-    for (state, held) in mempool(view) {
+    for state in [MempoolState::Verified, MempoolState::Quorum, MempoolState::Ours] {
+        let held = view.mempool_states().filter(|each| *each == state).count();
         metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => state.label()).set(held as f64);
     }
 

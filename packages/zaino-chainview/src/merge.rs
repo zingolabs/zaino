@@ -331,7 +331,7 @@ impl ChainViewCore {
         let dropped: Vec<TxId> = state
             .mempool
             .iter()
-            .filter(|(_, sighting)| !sighting.listed() && (moved || !sighting.ours()))
+            .filter(|(_, sighting)| !sighting.state().listed() && (moved || !sighting.ours()))
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {

@@ -27,9 +27,7 @@ use zcash_transparent::bundle::OutPoint;
 
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
-use crate::{
-    Agreement, ChainView, Count, MempoolEntry, Projection, SubmitError, TrustedValidatorSet,
-};
+use crate::{Agreement, ChainView, MempoolEntry, Projection, SubmitError, TrustedValidatorSet};
 
 /// The view over `validators` (`addresses` in order) + `peer_set`, its balancer + poll merge
 /// spawned (they run once the test awaits)
@@ -215,7 +213,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     assert_eq!(answered, expected, "an answer, no failure");
     assert_eq!(balancer.members().borrow().rows[0].failures, 0);
     assert!(catching_up.mempool().is_none(), "no mempool served");
-    assert_eq!(catching_up.spread(&one), None, "its only listing retracted: dropped");
+    assert_eq!(catching_up.sighting(&one), None, "its only listing retracted: dropped");
 
     validator.follow(&chain, at(12));
     validator.estimate(h(12));
@@ -260,10 +258,10 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     polled(&balancer).await;
     let first = reader.current();
     assert_eq!((first.best(), first.held_by()), (Some(agreed), TrustedValidatorSet::at([0])));
-    let spread = first.spread(&tx7).expect("validator a reported it");
-    let one_of_one = Count { seen: 1, of: 1 };
-    assert_eq!(spread.trusted, one_of_one, "b, c not yet read");
-    assert!(spread.timeline.all_trusted.is_some(), "every reader so far lists it");
+    let sighting = first.sighting(&tx7).expect("validator a reported it");
+    let trusted = (sighting.trusted().count(), first.mempool_readers().count());
+    assert_eq!(trusted, (1, 1), "b, c not yet read");
+    assert!(sighting.timeline().all_trusted.is_some(), "every reader so far lists it");
     let servable: Vec<_> = first.arrivals(None).iter().map(|entry| entry.txid).collect();
     assert_eq!(servable, [tx7], "servable once a holder lists it");
 
@@ -286,8 +284,9 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
         Agreement::Diverged,
         "holds neither 100 nor 97"
     );
-    let trusted = pinned.spread(&tx7).map(|spread| spread.trusted);
-    assert_eq!(trusted, Some(Count { seen: 2, of: 3 }), "a and c list it, of three read");
+    let trusted = pinned.sighting(&tx7).map(|sighting| sighting.trusted().count());
+    let trusted = (trusted, pinned.mempool_readers().count());
+    assert_eq!(trusted, (Some(2), 3), "a and c list it, of three read");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
         .trusted_validators()
         .iter()
@@ -332,7 +331,7 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     };
     assert!(code == -25 && message.contains("expiry height 50"), "{code}: {message}");
     assert_eq!((pushes(), checks()), (vec![0, 0, 0], 0), "precheck refuses before any ask");
-    assert!(reader.current().spread(&expired_txid).is_none());
+    assert!(reader.current().sighting(&expired_txid).is_none());
 
     // a 5 s `sendrawtransaction` never delays the answer: it comes off the check
     for validator in &validators {
@@ -350,10 +349,11 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     }
 
     let pinned = reader.current();
-    let spread = pinned.spread(&txid).expect("the submission recorded it");
-    assert!(spread.ours);
-    assert_eq!(spread.trusted, Count { seen: 0, of: 3 }, "not polled since");
-    assert_eq!(spread.timeline.first_trusted, None);
+    let sighting = pinned.sighting(&txid).expect("the submission recorded it");
+    assert!(sighting.ours());
+    let trusted = (sighting.trusted().count(), pinned.mempool_readers().count());
+    assert_eq!(trusted, (0, 3), "not polled since");
+    assert_eq!(sighting.timeline().first_trusted, None);
     let servable = |view: &crate::ChainViewSnapshot| {
         view.mempool().expect("tip held").entries().find(|entry| entry.txid == txid)
     };
@@ -367,9 +367,9 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     let pinned = reader.current();
     let listed = servable(&pinned).expect("still servable");
     assert_eq!((listed.raw, listed.fee), (Bytes::from(sent), Some(zats(0))));
-    let spread = pinned.spread(&txid).expect("held");
-    assert_eq!(spread.trusted, Count { seen: 1, of: 3 });
-    let timeline = spread.timeline;
+    let sighting = pinned.sighting(&txid).expect("held");
+    assert_eq!((sighting.trusted().count(), pinned.mempool_readers().count()), (1, 3));
+    let timeline = sighting.timeline();
     assert!(timeline.first_trusted.is_some_and(|at| at >= timeline.first_seen), "{timeline:?}");
     assert_eq!(timeline.all_trusted, None, "b, c have not listed it");
 
@@ -439,13 +439,13 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
     polled(&balancer).await;
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.calls().sends).collect() };
     let (txid, sent) = raw_transaction(5, 0);
-    let trusted = || view.subscriber().current().spread(&txid).expect("held").trusted;
+    let trusted = || view.subscriber().current().sighting(&txid).expect("held").trusted().count();
 
     view.submit(sent.clone()).await.expect("the first entry accepts");
     let first = pushes();
     assert_eq!(first.iter().sum::<usize>(), 1);
     polled(&balancer).await;
-    assert_eq!(trusted(), Count { seen: 1, of: 3 }, "the entry lists it");
+    assert_eq!(trusted(), 1, "the entry lists it, of 3");
 
     // ≤ 1 s polled + 8 s: inside the threshold
     tokio::time::sleep(Duration::from_secs(8)).await;
@@ -462,7 +462,7 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
     polled(&balancer).await;
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(pushes(), second, "spread past its entries: the job ended, nothing more pushed");
-    assert_eq!(trusted(), Count { seen: 3, of: 3 });
+    assert_eq!(trusted(), 3);
     cancel.cancel();
 }
 
@@ -499,14 +499,15 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
     peers.list(peer(1), vec![id(gossiped)]);
     peers.list(peer(2), vec![id(gossiped)]);
     round().await;
-    assert_eq!(view.subscriber().current().spread(&gossiped), None, "peer-listed only = not held");
+    let pinned = view.subscriber().current();
+    assert_eq!(pinned.sighting(&gossiped), None, "peer-listed only = not held");
     validators[0].hear(&chain, gossiped);
     polled(&balancer).await;
-    let spread = view.subscriber().current().spread(&gossiped).expect("held once listed");
-    assert_eq!(
-        (spread.peers, spread.trusted),
-        (Count { seen: 2, of: 4 }, Count { seen: 1, of: 2 })
-    );
+    let pinned = view.subscriber().current();
+    let sighting = pinned.sighting(&gossiped).expect("held once listed");
+    let listers = pinned.listings.listers(&gossiped).len();
+    let trusted = (sighting.trusted().count(), pinned.mempool_readers().count());
+    assert_eq!((listers, trusted), (2, (1, 2)));
 
     // checked by a holder: answered at once, then relayed through the peers only
     view.set_verified(Some(chain.verified(chain.genesis())));
@@ -526,12 +527,12 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
     validators[1].hear(&chain, txid);
     round().await;
     polled(&balancer).await;
-    let spread = view.subscriber().current().spread(&txid).expect("held");
-    assert!(spread.ours);
-    assert_eq!(
-        (spread.peers, spread.trusted),
-        (Count { seen: 1, of: 4 }, Count { seen: 1, of: 2 })
-    );
+    let pinned = view.subscriber().current();
+    let sighting = pinned.sighting(&txid).expect("held");
+    assert!(sighting.ours());
+    let listers = pinned.listings.listers(&txid).len();
+    let trusted = (sighting.trusted().count(), pinned.mempool_readers().count());
+    assert_eq!((listers, trusted), (1, (1, 2)));
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(peers.pushes(), 2, "a trusted validator never pushed to lists it: nothing more");
     assert_eq!(validator_pushes(), 0, "no trusted validator relayed it");
@@ -612,7 +613,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
         entries.sort();
         entries
     };
-    let first_seen = |txid: &TxId| reader.current().spread(txid).map(|s| s.timeline.first_seen);
+    let first_seen = |txid: &TxId| reader.current().sighting(txid).map(|s| s.timeline().first_seen);
 
     // listed by the validator and the quorum, then the validator gone: handed over, never dropped
     view.set_verified(Some(chain.verified(tip)));
@@ -644,11 +645,11 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     round().await;
     let bad_fetches = peers.fetched().into_iter().filter(|fetched| fetched.txid == bad).count();
     assert_eq!(bad_fetches, 1, "refused once, never re-fetched while the quorum keeps listing it");
-    let spread = reader.current().spread(&a).expect("held");
-    assert_eq!(
-        (spread.peers, spread.trusted),
-        (Count { seen: 7, of: 7 }, Count { seen: 0, of: 0 })
-    );
+    let pinned = reader.current();
+    let sighting = pinned.sighting(&a).expect("held");
+    let listers = pinned.listings.listers(&a).len();
+    let trusted = (sighting.trusted().count(), pinned.mempool_readers().count());
+    assert_eq!((listers, trusted), (7, (0, 0)));
 
     listing(&[a, parent, child], &seven[..3]);
     round().await;
@@ -864,8 +865,9 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     let pinned = reader.current();
     assert_eq!(pinned.held_by(), TrustedValidatorSet::default(), "no holder left");
     assert!(pinned.mempool().is_none(), "fail closed");
-    let trusted = pinned.spread(&tx1).map(|spread| spread.trusted);
-    assert_eq!(trusted.unwrap_or_default(), Count::default(), "retracted, and none left reading");
+    let listing = pinned.sighting(&tx1).map(|sighting| sighting.trusted()).unwrap_or_default();
+    let trusted = (listing.count(), pinned.mempool_readers().count());
+    assert_eq!(trusted, (0, 0), "retracted, and none left reading");
 
     validator.reachable(&Port::ALL, true);
     until("back", serves_tx1).await;

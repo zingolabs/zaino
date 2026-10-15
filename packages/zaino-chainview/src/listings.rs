@@ -62,11 +62,6 @@ impl Listings {
         self.by_peer.iter().filter(move |(_, listed)| fresh(listed.at)).map(|(p, l)| (p, &l.ids))
     }
 
-    /// Peers whose listing counts (`peers: x/y`'s `y`)
-    pub(crate) fn polled(&self) -> OrdSet<SocketAddr> {
-        self.fresh().map(|(peer, _)| *peer).collect()
-    }
-
     /// Fresh peers listing `txid`, whatever its authorizing data
     pub(crate) fn listers(&self, txid: &TxId) -> OrdSet<SocketAddr> {
         let first = PeerTxId { txid: *txid, auth_digest: None };
@@ -190,7 +185,8 @@ mod tests {
                     .map(|(peer, (_, listed))| (peer, listed))
                     .collect();
                 let polled: BTreeSet<SocketAddr> = fresh.iter().map(|(p, _)| **p).collect();
-                prop_assert_eq!(real.polled().into_iter().collect::<BTreeSet<_>>(), polled.clone());
+                let real_polled: BTreeSet<SocketAddr> = real.fresh().map(|(p, _)| *p).collect();
+                prop_assert_eq!(real_polled, polled.clone());
                 let groups = |peers: &[SocketAddr]| {
                     peers.iter().map(|p| Netgroup::of(*p)).collect::<BTreeSet<_>>().len()
                 };
@@ -255,8 +251,8 @@ mod tests {
         listings.round(answers(&spread, 9, a), start);
         let failed: Vec<_> = spread.iter().map(|p| (*p, None)).collect();
         listings.round(failed.clone(), start + LISTING_FRESH - Duration::from_secs(1));
-        assert_eq!(listings.polled().len(), 9, "kept while fresh");
+        assert_eq!(listings.fresh().count(), 9, "kept while fresh");
         listings.round(failed, start + LISTING_FRESH);
-        assert_eq!((listings.polled().len(), listings.admitted()), (0, vec![]), "stale");
+        assert_eq!((listings.fresh().count(), listings.admitted()), (0, vec![]), "stale");
     }
 }

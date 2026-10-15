@@ -28,7 +28,7 @@ mod network_model;
 mod tests;
 
 pub use chain_view_snapshot::{
-    ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread,
+    ChainViewSnapshot, MempoolEntry, MempoolState, MempoolView, Projection,
 };
 pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
