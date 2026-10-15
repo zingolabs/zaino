@@ -15,8 +15,8 @@ by_hash   hash 32 (protocol byte order) → height u32 BE      point lookups onl
 
 - Each block contributes one row, from its own header. `fold` reads nothing but
   the parent's tip.
-- Insert only: a final block's height never changes. Non-final blocks are
-  `zaino-nfs` layers.
+- Insert only: a finalized block's height never changes. Blocks above the
+  durable tip are `zaino-nfs` layers.
 - A read is one point probe, and the store's per-segment filter turns most
   misses into no read at all.
 - There is no height → hash direction. Height is every other index's native

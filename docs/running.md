@@ -103,8 +103,8 @@ what it holds, and exits 0. Behind a load balancer that routes by polling `/read
 zainod never restarts in-process and stops on any fault it cannot vouch past
 ([failure policy](../packages/zainod/usage.md#failure-policy)), so run it under a service
 manager that restarts it with backoff. Opening an index reads only file lengths and one tail
-page per file, so a restarted zainod is serving again within seconds, after it fetches the
-non-finalized window again (logged as `Fetching non-finalized blocks`).
+page per file, so a restarted zainod is serving again within seconds, after the NFS fetches
+every block above the durable tips again (progress logged as `Fetching non-finalized blocks`).
 
 ## Status
 

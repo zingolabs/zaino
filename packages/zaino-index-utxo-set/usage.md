@@ -29,8 +29,8 @@ in `fees` and read back for a held height.
   insert in whichever order the engine merges them.
 - Keeping only unspent outputs keeps the set small enough to stay in the page
   cache. Every transparent input of every block probes it.
-- Reorgs never reach storage: the NFS holds a non-final block's removals in
-  memory, like its inserts.
+- Reorgs never reach storage: the NFS holds the removals of every block above
+  the durable tip in memory, like its inserts.
 - The index folds from genesis, so a missing prevout is never a gap to work
   around. It is a double spend, a foreign directory or a bug.
 

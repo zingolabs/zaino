@@ -54,7 +54,7 @@ pub(crate) fn check<V>(
     next: &crate::GrpcSnapshot<V>,
     depth: ReorgDepth,
 ) {
-    use crate::feed::nonfinalized_txids;
+    use crate::feed::above_durable_txids;
 
     assert_eq!(next.seq, prev.seq + 1, "G2: seq + 1 per publish");
     let tips = next.tips;
@@ -87,7 +87,7 @@ pub(crate) fn check<V>(
     let reads = mempool_read(next);
     assert_eq!(gate, reads, "G6: mempool() Ok iff a `Live` holder of the tip or a peer quorum");
 
-    let mined = nonfinalized_txids(next.indexed.as_deref());
+    let mined = above_durable_txids(next.indexed.as_deref());
     let carried = mined.iter().find(|txid| next.feed.carries(txid));
     assert_eq!(carried, None, "G10: the epoch carries a tx of the served tip's own chain");
 }

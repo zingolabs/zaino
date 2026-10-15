@@ -88,7 +88,7 @@ Routes read through one `GrpcSnapshot` per request (`at.views().compact_block()`
 `None` = disabled), at heights `≤ at.answers_through(IndexKind::CompactBlock)`.
 `CompactBlockReader<V>` works
 over any `V: SequenceRead`: a store's durable view, or an `Indexed`'s
-`OverlayView` with non-final blocks layered on top.
+`OverlayView` with the blocks above its durable tip layered on top.
 
 - `block(h)` = one framed record, every pool. `GetBlock` is never filtered.
 - `block_at(h, hash)` = `GetBlock` by hash, with `h` found by the block-hash

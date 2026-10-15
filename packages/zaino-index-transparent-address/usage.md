@@ -112,7 +112,7 @@ let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>
   a partial balance.
 - Every method is synchronous and reads mmapped pages, so a transport runs it
   off its async workers (`zaino-grpc`'s scan lane).
-- Non-final blocks are `zaino-nfs` layers keyed exactly like the maps. An
+- Blocks above the durable tip are `zaino-nfs` layers keyed exactly like the maps. An
   `Indexed`'s reader merges them over the durable store by key.
 
 ### What it does not answer

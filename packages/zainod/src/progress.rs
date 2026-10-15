@@ -1,8 +1,8 @@
 //! One progress task: every [`REPORT_INTERVAL`], read from the `GrpcSnapshot` + `SyncProgress`
 //!
 //! - one line per tick for the [`Phase`] still outstanding: `Syncing blocks` (final, to the
-//!   writers), then `Fetching non-finalized blocks` (the NFS window up to best); a stall warning
-//!   once it has not moved for [`REPORT_INTERVAL`]
+//!   writers), then `Fetching non-finalized blocks` (served → best, above the finalized tip)
+//! - stall warning once that line has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
 //!   final blocks outstanding
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)

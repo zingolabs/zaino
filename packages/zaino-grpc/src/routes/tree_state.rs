@@ -171,7 +171,7 @@ where
     if id.hash.is_empty() {
         let height = wire::height(id.height, "height")?;
         let state = answering.state_at(height);
-        if answering.trees.is_non_finalized(height) {
+        if answering.trees.is_above_durable(height) {
             return answering.once(|memos| &memos.states, height, state).await?;
         }
         let trees = answering.trees.clone();

@@ -52,14 +52,17 @@ possible, take everything else from as many peers as possible.**
   (disk)  durable views                             → zaino-grpc, /status, /readyz, /metrics
 ```
 
-Every block takes one of two paths, which never meet:
+Two paths fold blocks, and their windows overlap:
 
-- **Final path** (durable): blocks at or below the final tip, folded and committed by each index
-  writer. Writers never see a reorg.
-- **Tip path** (RAM): blocks above the indexes' durable tips, folded in memory by the NFS,
-  served at once, dropped once durable. Reorgs live here alone.
+- **Finalized path** (disk): blocks at or below the finalized tip, folded and committed by each
+  index writer. Writers never see a reorg.
+- **Tip path** (RAM, the NFS): every block above the indexes' durable tips, finalized blocks not
+  yet durable included, folded in memory and served at once. A block leaves once every index has
+  committed it. Reorgs live here alone.
 
-Both run the same `fold` per index, so a tip block is folded twice: once in RAM, once by its writer.
+Both run the same `fold` per index. While the NFS folds, a block above the lowest durable tip is
+folded on both paths: in RAM by the NFS, and by its writer once finalized. When the NFS stands down
+(first sync, an index enabled late: §7) the finalized path folds alone.
 
 ## 3. Sources and what each is trusted for
 
@@ -262,7 +265,7 @@ The protocol says "close the stream when a new block is mined"; Zaino makes that
 | ID | Rule |
 | -- | ---- |
 | S1 | Bound to the served tip's hash; ends `OK` once it moves (extend or reorg), never on an empty mempool |
-| S2 | Never a transaction mined in the served tip's own non-final blocks |
+| S2 | Never a transaction mined in a block the served tip extends above the root |
 | S3 | Opens with the servable mempool, then each new transaction once |
 | S4 | Every message `height: 0` |
 

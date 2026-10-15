@@ -107,7 +107,7 @@ Routes read through one `GrpcSnapshot` per request (`at.views().tree_state()`,
 |---|---|
 | `treestate(height)` | `Treestate` with all three pools; `NotFound` with no record, `Inconsistent` if stored nodes will not rebuild |
 | `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>`; `max_entries == 0` = to the end, `start_index == count` = empty |
-| `is_non_finalized(height)` | `height` is in the NFS layer above the durable files |
+| `is_above_durable(height)` | `height` is in the NFS layer above the durable files |
 
 `zaino-grpc` adds what the reader does not know:
 
@@ -124,7 +124,7 @@ Routes read through one `GrpcSnapshot` per request (`at.views().tree_state()`,
 - By `BlockID.hash`, the block-hash index
   ([`zaino-internal-block-hash-to-height`](../zaino-internal-block-hash-to-height/usage.md))
   names a height, and the route checks `Treestate.block_hash` matches.
-- `is_non_finalized` marks the ~1000 heights every synced wallet asks about.
+- `is_above_durable` marks the ~1000 heights every synced wallet asks about.
   `zaino-grpc` memoizes those answers per NFS publish, not per wallet.
 
 Blocks above the durable tip are `zaino-nfs` layers, keyed exactly as the

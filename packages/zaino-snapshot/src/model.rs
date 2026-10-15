@@ -5,7 +5,7 @@
 //!   best), mempool (relays, drops), a block mining a held tx while the view still lists it
 //!   (listings lag a block)
 //! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet;
-//!   root = genesis (every served block above it nonfinalized)
+//!   root = genesis (every served block above it)
 //! - Each move published or coalesced with the next (the run loop's `watch`es keep the latest)
 //! - Tails opened at random, drained after every publish: each tx once per epoch, every one the
 //!   epoch carried, end iff the served tip moved and only once the new snapshot is stored
@@ -143,7 +143,7 @@ impl Model {
         Some(Arc::new(Indexed::fixed_above(self.chain(), root, &path[1..], params, none)))
     }
 
-    /// Txids of the served path above genesis (by the builder, not `served_nonfinalized`)
+    /// Txids of the served path above genesis (by the builder, not `served_above_durable`)
     fn mined_under_served(&self) -> BTreeSet<TxId> {
         let path = self.served.map(|served| self.builder.blocks(served)).unwrap_or_default();
         path.iter().skip(1).flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()

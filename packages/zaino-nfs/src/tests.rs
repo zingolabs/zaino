@@ -163,10 +163,10 @@ fn verify(
     let path = blocks.blocks(tip);
     let expected: Vec<BlockHash> =
         path[above_root..].iter().rev().map(|b| b.header().hash).collect();
-    let nonfinalized: Vec<BlockHash> =
-        indexed.served_nonfinalized().map(|b| b.header().hash).collect();
-    let message = "served_nonfinalized = served's own path above the root";
-    assert_eq!(nonfinalized, expected, "{context}: {message}");
+    let above_root: Vec<BlockHash> =
+        indexed.served_above_durable().map(|b| b.header().hash).collect();
+    let message = "served_above_durable = served's own path above the root";
+    assert_eq!(above_root, expected, "{context}: {message}");
 
     for hash in mined {
         let Some(at) = indexed.at(hash) else {

@@ -20,7 +20,7 @@ use zaino_nfs::{Indexed, Published};
 use zaino_primitives::types::ReorgDepth;
 
 use crate::compose::compose;
-use crate::feed::{nonfinalized_txids, Feed};
+use crate::feed::{above_durable_txids, Feed};
 use crate::report::transitions;
 use crate::snapshot::GrpcSnapshot;
 
@@ -80,7 +80,7 @@ impl<V> Core<V> {
     ) -> Self {
         let wake = watch::Sender::new(());
         let tips = compose(false, indexed.as_deref(), &view, depth);
-        let mined = nonfinalized_txids(indexed.as_deref());
+        let mined = above_durable_txids(indexed.as_deref());
         let feed = Feed::open(view.arrivals(None), mined, wake.subscribe());
         let first = GrpcSnapshot { seq: 0, tips, indexed, view, feed };
         let current = Arc::new(ArcSwap::from_pointee(first));
@@ -98,7 +98,7 @@ impl<V> Core<V> {
         let moved = tips.served != prev.tips.served;
         let feed = match moved {
             true => {
-                let mined = nonfinalized_txids(indexed.as_deref());
+                let mined = above_durable_txids(indexed.as_deref());
                 Feed::open(view.arrivals(None), mined, self.wake.subscribe())
             }
             false => {

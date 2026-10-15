@@ -77,7 +77,7 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 - Arrivals = `ChainViewSnapshot::arrivals` between two consecutive publishes (an `imbl` diff),
   appended to the open epoch; an epoch never carries a transaction twice nor un-sends one.
 - Never a transaction of the served tip's own chain: the opening and every arrival skip the
-  txids of `Indexed::served_nonfinalized()`, collected once per epoch (the chain view's listings
+  txids of `Indexed::served_above_durable()`, collected once per epoch (the chain view's listings
   trail a block by up to a poll, so its mempool still lists what the new tip mined).
 - Contract S1–S4 (bound to the tip hash, never mined, once per stream, `height: 0`):
   [architecture §8](../../docs/architecture.md#getmempoolstream).
@@ -115,7 +115,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
 | G8 | every NFS node on best or a side branch the chain holds (`VerifiedChain::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
-| G10 | an epoch carries no txid of a block in `served_nonfinalized()` | `compose::check`; model |
+| G10 | an epoch carries no txid of a block in `served_above_durable()` | `compose::check`; model |
 
 `compose::check(prev, next, depth)` is test-only: the model calls it after every publish.
 

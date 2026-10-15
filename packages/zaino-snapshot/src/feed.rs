@@ -22,9 +22,9 @@ use zaino_nfs::Indexed;
 
 use zcash_protocol::TxId;
 
-/// Txids of the nonfinalized blocks the served tip extends (finalized: no live listing holds them)
-pub(crate) fn nonfinalized_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TxId> {
-    let blocks = indexed.into_iter().flat_map(Indexed::served_nonfinalized);
+/// Txids of the blocks the served tip extends above the root (below it: no live listing holds them)
+pub(crate) fn above_durable_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TxId> {
+    let blocks = indexed.into_iter().flat_map(Indexed::served_above_durable);
     blocks.flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
 }
 
@@ -66,7 +66,7 @@ pub(crate) struct Feed {
 }
 
 impl Feed {
-    /// `mined` = [`nonfinalized_txids`] at the served tip: dropped from `mempool` and every append
+    /// `mined` = [`above_durable_txids`] at the served tip: dropped from `mempool` and every append
     pub(crate) fn open(
         mempool: Vec<MempoolEntry>,
         mined: HashSet<TxId>,

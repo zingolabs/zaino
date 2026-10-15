@@ -154,7 +154,7 @@ impl<V> Indexed<V> {
     }
 
     /// Blocks `served` extends above the root, served first (`served` = the root → none)
-    pub fn served_nonfinalized(&self) -> impl Iterator<Item = &Block> + '_ {
+    pub fn served_above_durable(&self) -> impl Iterator<Item = &Block> + '_ {
         let served = self.graph.get(&self.served.block.hash);
         std::iter::successors(served, |node| self.graph.get(&node.parent))
             .map(|node| node.block.as_ref())
@@ -269,12 +269,12 @@ impl<V: View> Indexed<V> {
         Self::fixed_above(chain, tip, &[], params, durable)
     }
 
-    /// [`fixed`](Self::fixed) at `root`, then `nonfinalized` (root's child first) folded with no
+    /// [`fixed`](Self::fixed) at `root`, then `above_root` (root's child first) folded with no
     /// layers: served = its last
     pub fn fixed_above(
         chain: Arc<VerifiedChain>,
         root: BlockRef,
-        nonfinalized: &[Arc<Block>],
+        above_root: &[Arc<Block>],
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
     ) -> Self {
@@ -283,12 +283,12 @@ impl<V: View> Indexed<V> {
             views.insert(kind, view);
         }
         let mut graph = Graph::new();
-        for block in nonfinalized {
+        for block in above_root {
             let (at, parent) = (block.at(), block.header().prev_hash);
             let folded = Arc::new(Folded { layers: PerIndex::default() });
             graph.insert(Node { at, parent, block: Arc::clone(block), folded });
         }
-        let tip = nonfinalized.last().map_or(root, |block| block.at());
+        let tip = above_root.last().map_or(root, |block| block.at());
         Self::new(chain, tip, Some(root), params, views, graph)
     }
 }
