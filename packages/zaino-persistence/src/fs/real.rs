@@ -125,8 +125,15 @@ impl ReadHandle for RealFile {
         self.0.read_exact_at(buf, at)
     }
 
+    #[cfg(target_os = "linux")]
     fn drop_cache(&self) -> io::Result<()> {
         Ok(rustix::fs::fadvise(&self.0, 0, None, rustix::fs::Advice::DontNeed)?)
+    }
+
+    /// No `posix_fadvise` off Linux
+    #[cfg(not(target_os = "linux"))]
+    fn drop_cache(&self) -> io::Result<()> {
+        Ok(())
     }
 
     fn map(&self) -> io::Result<Option<Mapping>> {
