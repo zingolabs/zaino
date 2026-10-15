@@ -31,6 +31,7 @@
 //! business and not this tier's.
 
 use zaino_address::{script_paying, transparent_address_key};
+use zaino_async::{run_blocking, TaskError, TaskName};
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::address_history::{self, read_receives, AddrId, ReceivesReadError};
 use zaino_indexes::indexes::transparent_spends::{self, OutpointKey};
@@ -75,12 +76,104 @@ struct SpendSite {
 
 /// The store answers address history wherever its index set builds the four
 /// indexes the capability composes from.
+///
+/// Each read is one address-prefix scan plus a spend resolution per receive, so
+/// a pool-scale address faults in a large slice of the store. Every method runs
+/// its read on the blocking pool ([`off_executor`](StoreSnapshot::off_executor)):
+/// on an async worker it would stall every task queued behind it, the server's
+/// own connection handling included.
 impl<B, M> AddressRead for StoreSnapshot<B, M>
 where
     B: Backend + 'static,
     M: Backs<local::AddressHistory>,
 {
     async fn balance(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+        budget: &mut ReadBudget,
+    ) -> Result<AddressBalance, AddressReadError> {
+        let addr = addr.clone();
+        self.off_executor(budget, move |snapshot, budget| {
+            snapshot.scan_balance(&addr, range, budget)
+        })
+        .await
+    }
+
+    async fn unspent_outpoints(
+        &self,
+        addr: &TransparentAddress,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<Utxo>, AddressReadError> {
+        let addr = addr.clone();
+        self.off_executor(budget, move |snapshot, budget| {
+            snapshot.scan_unspent_outpoints(&addr, budget)
+        })
+        .await
+    }
+
+    async fn deltas(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<AddressDelta>, AddressReadError> {
+        let addr = addr.clone();
+        self.off_executor(budget, move |snapshot, budget| {
+            snapshot.scan_deltas(&addr, range, budget)
+        })
+        .await
+    }
+
+    async fn tx_ids(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<LocatedTxid>, AddressReadError> {
+        let addr = addr.clone();
+        self.off_executor(budget, move |snapshot, budget| {
+            snapshot.scan_tx_ids(&addr, range, budget)
+        })
+        .await
+    }
+}
+
+impl<B, M> StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Backs<local::AddressHistory>,
+{
+    /// Run one blocking address read on the runtime's blocking pool.
+    ///
+    /// The read owns a clone of this snapshot (an `Arc` bump) and borrows the
+    /// request's budget for its duration: the budget moves into the blocking task
+    /// and back, so charges made there count against the rest of the request.
+    /// While lent, the caller's slot holds an exhausted budget, so a read that
+    /// never returns its budget (it panicked) leaves the request refusing further
+    /// entries rather than holding a fresh allowance.
+    async fn off_executor<T, F>(
+        &self,
+        budget: &mut ReadBudget,
+        read: F,
+    ) -> Result<T, AddressReadError>
+    where
+        F: FnOnce(&Self, &mut ReadBudget) -> Result<T, AddressReadError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let snapshot = self.clone();
+        let mut lent = std::mem::replace(budget, ReadBudget::with_limit(0));
+        let (result, returned) = run_blocking(TaskName("store-address-read"), move || {
+            let result = read(&snapshot, &mut lent);
+            (result, lent)
+        })
+        .await
+        .map_err(task_error)?;
+        *budget = returned;
+        result
+    }
+
+    fn scan_balance(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
@@ -112,7 +205,7 @@ where
         Ok(AddressBalance { balance, received })
     }
 
-    async fn unspent_outpoints(
+    fn scan_unspent_outpoints(
         &self,
         addr: &TransparentAddress,
         budget: &mut ReadBudget,
@@ -146,7 +239,7 @@ where
             .collect())
     }
 
-    async fn deltas(
+    fn scan_deltas(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
@@ -190,7 +283,7 @@ where
         Ok(deltas)
     }
 
-    async fn tx_ids(
+    fn scan_tx_ids(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
@@ -229,13 +322,7 @@ where
             .map(|(height, position, txid)| (Some(height), position, txid))
             .collect())
     }
-}
 
-impl<B, M> StoreSnapshot<B, M>
-where
-    B: Backend + 'static,
-    M: Backs<local::AddressHistory>,
-{
     /// Every receive of `addr` with height in `[start, end]` (at or below the
     /// watermark), each joined with where it was spent if this tier spent it.
     ///
@@ -457,6 +544,18 @@ fn address_read_error(error: ResolveError) -> AddressReadError {
     match error {
         ResolveError::Transient(message) => transient(message),
         ResolveError::Fatal(message) => fatal(message),
+    }
+}
+
+/// Fold a blocking-pool failure into this read's error.
+///
+/// A panic in the read is a defect, so a retry would only repeat it: fatal. A
+/// cancelled task means the runtime dropped it on shutdown, which says nothing
+/// about the read itself: transient.
+fn task_error(error: TaskError) -> AddressReadError {
+    match error {
+        TaskError::Panicked { .. } => fatal(error.to_string()),
+        TaskError::Cancelled { .. } => transient(error.to_string()),
     }
 }
 

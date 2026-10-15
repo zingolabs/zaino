@@ -29,10 +29,11 @@
 //!
 //! # Known limitation
 //!
-//! Reads run on the async executor without `spawn_blocking`. An LMDB read is
-//! a memory-mapped lookup and short, so a per-height compact-block read is
-//! fine; a scan-shaped read (address history, when it lands) must move off
-//! the executor.
+//! Point reads run on the async executor without `spawn_blocking`. An LMDB read
+//! is a memory-mapped lookup and short, so a per-height compact-block read is
+//! fine. The address-history reads are scan-shaped and run on the blocking
+//! pool. Other ranged reads (a compact-block range, subtree roots) still run
+//! on the executor.
 #![forbid(unsafe_code)]
 
 mod address;
