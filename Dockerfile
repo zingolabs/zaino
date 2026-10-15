@@ -11,7 +11,8 @@ ARG CARGO_FEATURES=""
 ############################
 # Builder
 ############################
-FROM docker.io/library/rust:1.98.0-bookworm AS builder
+# Same toolchain as rust-toolchain.toml (else rustup downloads that one at build)
+FROM docker.io/library/rust:1.96.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
@@ -21,7 +22,7 @@ ARG CARGO_FEATURES
 
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
-# match the candidate versions in docker.io/library/rust:1.98.0-bookworm; bump
+# match the candidate versions in docker.io/library/rust:1.96.0-bookworm; bump
 # them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
@@ -29,11 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates=20250419~deb12u1 \
       protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
-
-# rust-toolchain.toml lists these components; installing them here keeps
-# the download in a cached layer instead of re-syncing the channel on
-# every build of the workspace layer below.
-RUN rustup component add clippy rustfmt
 
 # Copy entire workspace (prevents missing members)
 COPY . .
@@ -99,9 +95,6 @@ COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
 # Default port
 ARG ZAINO_GRPC_PORT=8137
 EXPOSE ${ZAINO_GRPC_PORT}
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
 
 USER ${USER}
 

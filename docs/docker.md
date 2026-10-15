@@ -77,7 +77,6 @@ docker run --rm -v ./config:/app/config zaino generate-config
 
 ## Health check
 
-The image's `HEALTHCHECK` runs `zainod --version` every 30 seconds. It proves the
-binary runs, not that an index is synced or that the gRPC server is serving. For a
-liveness probe that tracks the serving runtime, set `[metrics] listen_address` and probe
-`/livez` (see [`packages/zainod/usage.md`](../packages/zainod/usage.md#the-admin-listener)).
+The image declares no `HEALTHCHECK`: the admin listener that serves `/livez` and
+`/readyz` is off unless `[metrics] listen_address` is set. Set it and probe those paths
+(see [`packages/zainod/usage.md`](../packages/zainod/usage.md#the-admin-listener)).

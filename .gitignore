@@ -1,15 +1,6 @@
-/target
-# Cargo build output. live-tests/ is a separate standalone workspace with its
-# own committed Cargo.lock (both lockfiles are tracked on purpose); only the
-# build directories are ignored.
+# Cargo build output, both workspaces (live-tests/ = standalone; both Cargo.lock files tracked)
 target/
-/db
-/docs/cargo_docs/debug
-/.helix
-/live-tests/chain_cache/*
-/live-tests/target/*
-!/live-tests/chain_cache/testnet_get_subtree_roots_sapling
-!/live-tests/chain_cache/testnet_get_subtree_roots_orchard
-.cargo
-.local/
+# nix build
 /result
+/.helix
+.local/

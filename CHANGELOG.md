@@ -6,7 +6,7 @@ files merged since the last one ([RELEASING.md](./RELEASING.md)). Under 0.x, a b
 change bumps the minor version and everything else bumps the patch version.
 
 Releases before 0.11.0 were versioned per crate. Their crate-level history is in each
-crate's own `CHANGELOG.md`.
+crate's `CHANGELOG.md` as of tag `zainod-0.10.2` (removed since).
 
 ## 0.4.1 (2026-06-18)
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around
