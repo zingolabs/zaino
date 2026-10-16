@@ -21,7 +21,7 @@ zcash_transparent.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }
 
 [lints.rust]

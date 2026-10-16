@@ -90,11 +90,10 @@ mod tests {
     use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{BlockFees, Fee, TreeSize, TreeSizes};
+    use zaino_source::testing::{h, p2pkh, MockChain};
     use zcash_protocol::consensus::H0;
     use zcash_protocol::value::Zatoshis;
-    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
 
@@ -108,15 +107,16 @@ mod tests {
     #[test]
     fn utxo_set_folds_first_and_disabled_indexes_fold_nothing() {
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
+        let funding = chain.output(chain.genesis(), 0, 0);
         let one = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 10_000)).tx(|t| {
-                t.spend(OutPoint::new([0x10; 32], 0))
+                t.spend(funding)
                     .pay(&alice, 49_000)
                     .fee(1_000)
                     .sapling_output(1)
-                    .orchard_action([0x04; 32], 1)
+                    .orchard_action(0x04, 1)
             })
         });
         let (genesis, block) = (chain.block(chain.genesis().hash), chain.block(one.hash));

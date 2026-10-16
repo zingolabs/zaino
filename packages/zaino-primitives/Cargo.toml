@@ -9,10 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 
-[features]
-# `testing::MockChain`: regtest block trees with real header bytes, for every test
-testing = []
-
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10"

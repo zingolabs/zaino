@@ -77,7 +77,7 @@ mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_source::testing::{h, MockChain};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::consensus::NetworkType;

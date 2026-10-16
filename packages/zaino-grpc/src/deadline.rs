@@ -308,7 +308,7 @@ mod tests {
         use crate::service::{Method, RouteDeps};
         use crate::testing::{dispatch, grpc_snapshots, indexed, routes, MAINNET};
 
-        let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
+        let chain = zaino_source::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
         let mut router = dispatch(RouteDeps {

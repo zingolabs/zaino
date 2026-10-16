@@ -126,30 +126,37 @@ impl<'a> HeaderBytes<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::MockChain;
 
-    /// - `encode_header` → `split` → every field back, the rest untouched
-    /// - each layout fault named
+    /// - Header laid out field by field → `split` → every field back, the rest untouched
+    /// - Each layout fault named
     #[test]
-    fn split_reads_back_every_encoded_field_and_names_each_layout_fault() {
-        let chain = MockChain::regtest();
-        let header = chain.block(chain.genesis().hash).header().clone();
-        let mut raw = chain.header_bytes(header.hash);
+    fn split_reads_back_every_field_and_names_each_layout_fault() {
+        let mut raw = Vec::new();
+        raw.extend(4i32.to_le_bytes()); // version
+        raw.extend([0x11; 32]); // prev_hash
+        raw.extend([0x22; 32]); // merkle_root
+        raw.extend([0x33; 32]); // block_commitments
+        raw.extend(1_700_000_000u32.to_le_bytes()); // time
+        raw.extend(0x200f_0f0fu32.to_le_bytes()); // bits
+        raw.extend([0x44; 32]); // nonce
+        raw.push(36); // solution length
+        raw.extend([0x55; 36]); // solution
         let len = raw.len();
         raw.extend([7, 7]);
 
-        let (split, rest) = HeaderBytes::split(&raw).expect("an encoded header");
+        let (split, rest) = HeaderBytes::split(&raw).expect("a laid-out header");
         let fields = (
             (split.hash(), split.version(), split.prev_hash(), split.merkle_root()),
             (split.block_commitments(), split.time(), split.bits(), split.nonce()),
         );
+        let hash = BlockHash(sha256d(&raw[..len]));
         let expected = (
-            (header.hash, header.version as i32, header.prev_hash, header.merkle_root),
-            (header.block_commitments, header.time, header.bits.bits(), header.nonce),
+            (hash, 4, BlockHash([0x11; 32]), MerkleRoot([0x22; 32])),
+            (BlockCommitments([0x33; 32]), 1_700_000_000, 0x200f_0f0f, [0x44; 32]),
         );
         assert_eq!(fields, expected);
         assert_eq!((split.as_bytes().len(), rest), (len, &[7u8, 7][..]));
-        assert_eq!(split.equihash_solution(), header.solution);
+        assert_eq!(split.equihash_solution(), EquihashSolution::Regtest([0x55; 36]));
         assert_eq!(split.equihash_input(), &raw[..EQUIHASH_INPUT]);
 
         let truncated = |len| Err(HeaderError::Truncated { len });

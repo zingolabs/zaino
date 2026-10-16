@@ -4,8 +4,8 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{BlockRef, FinalityDepth};
+use zaino_source::testing::{h, MockChain};
 use zcash_protocol::BlockHash;
 
 use super::{HeaderChain, Node};

@@ -55,11 +55,18 @@ impl std::error::Error for NonDomainError {
     }
 }
 
-/// `Domain` = the validator's answer, `NonDomain` = none
+/// Why a query has no value
+///
+/// - `Domain` = the validator's answer
+/// - `Unsupported` = no such method on it (JSON-RPC `-32601`: an answer about the node, never a
+///   failure)
+/// - `NonDomain` = no answer
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError<E: fmt::Debug + fmt::Display> {
     #[error("{0}")]
     Domain(E),
+    #[error("no such method on this validator")]
+    Unsupported,
     #[error(transparent)]
     NonDomain(NonDomainError),
 }

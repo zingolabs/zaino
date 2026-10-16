@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
-use zaino_source::testing::Lie;
+use zaino_source::testing::{h, Lie, MockChain};
 use zaino_sync::testing::check_block;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -155,7 +154,8 @@ fn check_catches_a_node_holding_another_block() {
 fn check_catches_a_node_body_off_its_merkle_root() {
     let world = World::new();
     let mut core = world.valid();
-    let block = Arc::new(Lie::Poisoned.told(&world.block(world.a[5])));
+    let poisoned = Lie::Poisoned.told(world.builder.block_bytes(world.a[5]));
+    let block = Arc::new(zaino_source::decode_block(&poisoned).expect("a lie still decodes"));
     core.graph.insert(Node { block, ..world.node(world.a[5]) });
     core.check();
 }

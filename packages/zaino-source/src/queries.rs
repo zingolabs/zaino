@@ -1,9 +1,11 @@
 //! [`ChainDataSource`]: every question Zaino asks a trusted validator's RPC, one port
 //!
 //! - `Err(QueryError::Domain(_))` = the validator's answer (never worth asking again)
+//! - `Err(QueryError::Unsupported)` = it has no such method (an older node: ask another)
 //! - `Err(QueryError::NonDomain(_))` = no answer (unreachable, timed out, undecodable)
 //! - batched questions: one `Result` per item inside the batch's own `NonDomainError`
 
+use std::convert::Infallible;
 use std::future::Future;
 
 use zaino_primitives::types::{Block, TransactionLocation};
@@ -76,19 +78,17 @@ pub trait ChainDataSource: Send + Sync + 'static {
 
     /// `checkadmission`: `sendrawtransaction`'s verdict, nothing admitted or relayed
     ///
-    /// - no such method (zcashd, stock zebrad) = `Unsupported`: an answer, never a transport
-    ///   failure (validator stays healthy)
+    /// - zebra fork only (zcashd + stock zebrad: `Unsupported`)
     fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TxId, QueryError<CheckAdmissionError>>> + Send;
+    ) -> impl Future<Output = Result<TxId, QueryError<SendRawTransactionError>>> + Send;
 
-    /// `getstandardfee`: the ZIP 317 marginal fee, zatoshis per logical action
-    ///
-    /// - method-not-found = `Unsupported`, a domain answer
+    /// `getstandardfee`: the ZIP 317 marginal fee, zatoshis per logical action (no answer of its
+    /// own beside it)
     fn get_standard_fee(
         &self,
-    ) -> impl Future<Output = Result<StandardFee, QueryError<GetStandardFeeError>>> + Send;
+    ) -> impl Future<Output = Result<StandardFee, QueryError<Infallible>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -133,7 +133,7 @@ pub struct MetadataReading {
     pub release: Result<NodeRelease, NonDomainError>,
 }
 
-/// - `Unavailable` = no mempool on the node (`-32601`): stop asking
+/// - `Unavailable` = no mempool on the node (no `getrawmempool`): stop asking
 /// - `Inactive` = off until the node reaches the network tip (its own tip still valid)
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetMempoolListingError {
@@ -170,22 +170,6 @@ pub struct TransactionResponse {
 pub enum GetTransactionError {
     #[error("transaction not found: {0}")]
     NotFound(TxId),
-}
-
-/// `checkadmission`'s answer other than the txid
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum CheckAdmissionError {
-    #[error(transparent)]
-    Refused(SendRawTransactionError),
-    #[error("no checkadmission on this validator")]
-    Unsupported,
-}
-
-/// `getstandardfee`'s rejection: the validator predates the method
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetStandardFeeError {
-    #[error("the validator predates getstandardfee")]
-    Unsupported,
 }
 
 /// Verdict on the transaction, as the validator's JSON-RPC error spelled it (`code` = its own)

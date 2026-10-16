@@ -202,7 +202,7 @@ mod tests {
     use zaino_source::{BlockchainInfo, PeerInfo};
     use zcash_protocol::BlockHash;
 
-    use zaino_primitives::testing::h;
+    use zaino_source::testing::h;
 
     use super::*;
 

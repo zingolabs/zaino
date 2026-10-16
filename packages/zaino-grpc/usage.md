@@ -51,7 +51,11 @@ routing.route(routes);
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
 | `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
+| `GetTransaction` | `validators.lookup(..get_transaction(txid))` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
+| `GetStandardFee` | `validators.lookup(..get_standard_fee())` |
+
+A forwarded call every member asked lacks (`QueryError::Unsupported`) = `UNIMPLEMENTED`, any
+other unanswered call = `UNAVAILABLE`: one mapping for every forwarding route.
 
 - **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
   the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
@@ -107,23 +111,24 @@ routing.route(routes);
 
 ### Adding a method
 
-Every method lives in one registry, `ROUTES` in `service.rs`: one row per
-method with its wire name (also its `method` metric label), its admission
-`Class` (`Work`, or `Subscription` for a stream that idles between arrivals:
-own pool, never cut for silence, no latency recorded) and the index whose view
-its handler reads (`None` = reads none, so never disabled). A new RPC is:
+Every method is one `Method` variant in `service.rs`. Its name is its wire
+name and its `method` metric label. A new RPC is:
 
-1. a `Method` variant (rows stay in `Method` order: a const assertion checks it),
-2. its `ROUTES` row,
+1. a `Method` variant,
+2. its arm in `Method::route`: its admission `Class` (`Work`, or
+   `Subscription` for a stream that idles between arrivals: own pool, never cut
+   for silence, no latency recorded) and the index whose view its handler reads
+   (`None` = reads none, so never disabled),
 3. its arm in `Routed::handle`, returning `Result<Response<Body>, Status>`
    (built with `wire::unary_response`, `wire::streamed_response` or
    `wire::streaming`, never by hand: `streaming` joins ready records into full
    DATA frames).
 
-The path is resolved to its row once per request (`Method::resolve`, in the
-outermost layer); admission, the silence bound, metrics labels and the
-disabled-index answer all read that row; an `Err` becomes its status in one
-place (`Wired::answer`).
+Both matches are exhaustive, so the compiler names the two arms a new variant
+still needs. The path is resolved to its `Method` once per request
+(`Method::resolve`, in the outermost layer). Admission, the silence bound,
+metrics labels and the disabled-index answer all read it. An `Err` becomes its
+status in one place (`Wired::answer`).
 
 ### Why `GetTransaction` forwards
 

@@ -9,6 +9,8 @@ mod endpoint;
 mod envelope;
 mod error;
 
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use client::Served;
 pub(crate) use client::{Call, RpcClient, RpcClientConfig, REPLY_ENVELOPE_BYTES};
 pub use client::{LinkLimits, ResponseSizeCap, Timeouts};
 pub use emit::{describe_metrics, METRIC_BUCKETS};

@@ -12,11 +12,12 @@ equihash = "0.3"
 imbl.workspace = true
 thiserror.workspace = true
 zaino-primitives.workspace = true
+zaino-source = { workspace = true, optional = true }
 zcash_protocol.workspace = true
 
 [features]
 # `testing::{HeaderViews, insert}`
-testing = ["zaino-primitives/testing"]
+testing = ["zaino-source/testing"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -27,4 +28,4 @@ const-hex.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true
-zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }

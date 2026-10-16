@@ -281,10 +281,10 @@ mod tests {
     use prost::Message as _;
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{all_at, h, MockChain};
     use zaino_primitives::types::{BlockRef, SubtreeRoot, TreeRoot};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::service;
+    use zaino_source::testing::{all_at, h, MockChain};
     use zcash_protocol::consensus::NetworkUpgrade;
     use zcash_protocol::local_consensus::LocalNetwork;
     use zcash_protocol::BlockHash;

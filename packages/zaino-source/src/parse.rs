@@ -6,7 +6,7 @@
 
 use zaino_primitives::types::{BlockRef, TransactionLocation};
 
-use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::consensus::{BlockHeight, BranchId, UPGRADES_IN_ORDER};
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 use zcash_protocol::{BlockHash, TxId};
 
@@ -133,6 +133,7 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
 ///
 /// - Branch id unknown to this build = skipped
 /// - Every other field ignored
+/// - Activations in protocol order (a JSON object carries none)
 pub(crate) fn parse_blockchain_info(
     value: &serde_json::Value,
 ) -> Result<BlockchainInfo, ParseError> {
@@ -146,6 +147,9 @@ pub(crate) fn parse_blockchain_info(
             activations.push((branch, as_height(field(upgrade, "activationheight")?)?));
         }
     }
+    activations.sort_by_key(|(branch, _)| {
+        UPGRADES_IN_ORDER.iter().position(|upgrade| upgrade.branch_id() == *branch)
+    });
     let tip = BlockRef {
         hash: as_block_hash(field(value, "bestblockhash")?)?,
         height: as_height(field(value, "blocks")?)?,
@@ -377,10 +381,11 @@ mod tests {
         let parsed = parse_blockchain_info(&info).expect("well-formed");
         let tip = BlockRef { hash: BlockHash(reversed_bytes), height: height(3_451_543) };
         assert_eq!((parsed.tip, parsed.estimated_height), (tip, height(3_451_544)));
-        let mut activations = parsed.activations;
-        activations.sort_by_key(|(_, at)| *at);
         let known = [(BranchId::Sapling, height(419_200)), (BranchId::Nu5, height(1_687_104))];
-        assert_eq!(activations, known, "NU9 (unknown to this build) skipped");
+        assert_eq!(
+            parsed.activations, known,
+            "protocol order; NU9 (unknown to this build) skipped"
+        );
 
         let mut no_height = info.clone();
         let nu5 = no_height["upgrades"]["c2d6d0b4"].as_object_mut().expect("object");

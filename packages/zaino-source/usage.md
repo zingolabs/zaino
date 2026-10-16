@@ -15,7 +15,13 @@ what its test asks and `unimplemented!()`s the rest.
 | `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | JSON-RPC, as legacy | bytes per entry |
 | `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
 | `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
-| `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, `CheckAdmissionError::Refused` (the send's verdict), or `Unsupported` (`-32601`: zcashd, stock zebrad) |
+| `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, or the send's verdict (`SendRawTransactionError`) |
+| `get_standard_fee()` | `getstandardfee` | JSON-RPC, as legacy | `StandardFee` (ZIP 317 marginal fee + estimator version) |
+
+Every method answers `Err(QueryError::Unsupported)` when the validator has no such method
+(JSON-RPC `-32601`: zcashd and stock zebrad lack `checkadmission`, older ones
+`getstandardfee`). It is classified once, for every call, and is an answer about the node:
+never a failure, so a balancer asks the next member and the node stays healthy.
 
 What a validator reports about itself is this crate's, beside its parser:
 `BlockchainInfo` (tip, network-tip estimate, each known upgrade's activation;
@@ -158,58 +164,163 @@ call).
 agent and `EndOfService`: `At { height }` on
 mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
 
-## Testing: `MockValidator`
+## Testing: `MockChain`
 
-Behind the `testing` feature (always compiled for this crate's own tests): one
-simulated zebrad over a `zaino_primitives::testing::MockChain`, a whole
-`ChainDataSource`, made by the `ValidatorViews` extension on the chain. N nodes over
-one chain = N validators, each following its own tip.
+The `testing` feature (always on for this crate's own tests; enable it from
+`[dev-dependencies]` only) holds the one chain builder every test below the live suite takes
+its blocks, headers, fees, mempool and validators from. Every transaction is real consensus
+bytes, written by librustzcash; every block handed out is `decode_block` of its own bytes.
 
 ```rust,ignore
-use zaino_source::testing::{decoded, raw_transaction, raw_transparent, Lie, Port, ValidatorViews};
+use zaino_source::testing::{all_at, commitment, h, nullifier, p2pkh, Ledger, MockChain, Unmined};
+use zcash_protocol::ShieldedPool;
 
-let validator = chain.validator(chain.tip());        // a MockValidator
+let alice = p2pkh([0xaa; 20]);
+let mut chain = MockChain::regtest();                // every upgrade through NU6.3 at 1, bare genesis
+let funded = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
+let funding = chain.output(funded, 0, 0);            // block, tx slot, vout → OutPoint
+let spent = chain.mine(|b| {
+    b.tx(|t| t.spend(funding).pay(&alice, 30_000).pay(&alice, 19_000).fee(1_000))
+        .tx(|t| {
+            t.spend_in_block(1, 1)                   // slot 1's vout 1, minted just before
+                .sapling_output(7)                   // cmu = commitment(7)
+                .orchard_action(4, 9)                // nf = nullifier(4), cmx = commitment(9)
+                .value_balance(ShieldedPool::Sapling, -19_000)
+        })
+});
+let txid = chain.tx(spent, 1).txid;                  // the hash of its bytes
+let raw = chain.tx_bytes(txid);                      // every transaction keeps its bytes
+let served = chain.block_bytes(spent.hash);          // what `getblock <hash> 0` serves
+let fees = chain.fees(spent.hash);                   // [Coinbase, Paid(1 000), Paid(0)]
+
+let tip = chain.mine_empty(3);                       // bare blocks on the best tip
+let blocks = chain.blocks(tip);                      // genesis ..= tip, as `Arc<Block>`s
+let side = chain.fork(h(2)).mine_empty(1).tip();     // a side branch: not best
+let mut varied = MockChain::regtest().varied_work(); // reorg-by-work tests opt in
+let twelve = varied.mine_empty(12);
+let retreat = varied.fork(h(10)).outweigh().mine_empty(1).tip(); // 12 → 11, now the best
+
+let change = chain.output(spent, 1, 0);
+let parent = chain.submit(|t| t.spend(change).pay(&alice, 29_000)); // minted for the next block
+let txid = chain.submit_raw(raw_transaction(1, 0).1); // bytes from elsewhere
+let held: &[Unmined] = chain.mempool();              // submission order, each with bytes + fee
+let mined = chain.mine_mempool();                    // one block on tip() carrying all of it
+let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs, txids, nullifiers
+```
+
+- **Who writes what.** A test states values, scripts, spends, fees and note tags. The
+  chain derives everything else:
+  - the transaction format and branch from the upgrade active at that height (v1 before
+    Overwinter, v3, v4 from Sapling, v5 from NU5, v6 when Ironwood actions are present, v4 when
+    Sprout is)
+  - txid = the hash of the written bytes; merkle root over them
+  - the coinbase script = BIP 34 height + extranonce; an NU5+ coinbase expires at its height
+    (ZIP 203: a v5 txid skips `scriptSig`, so this is its height commitment)
+  - each other transaction's lock time = a mint counter (unique bytes, always final)
+  - points, proofs, signatures, ciphertexts = deterministic filler (librustzcash's lazy
+    readers never decompress them)
+- **Note tags.** Nullifiers and leaves are small `u32`s, little-endian, canonical in every
+  pool's field; compare against `nullifier(tag)` / `commitment(leaf)`.
+- **A balance needs a description.** `value_balance(pool, ..)` without a spend, output or
+  action in that pool panics (an empty bundle carries no balance); Sprout + Orchard / Ironwood
+  in one transaction panics (no format carries both).
+- **Configure first.** `upgrades`, `varied_work`, `network` and `genesis_with` rebuild
+  genesis, so they panic after the first `mine`.
+- **Work.** `Work::Limit` (default): every nBits is the regtest limit, so only a longer
+  branch wins. A reorg-by-work test declares `varied_work()`; then `outweigh()` gives the
+  branch's next block the least work that makes it the best, and `BlockBuilder::bits`
+  sets any nBits.
+- **Txids and nullifiers are distinct per branch**, not chain-wide: the same bytes re-mined
+  on a competing branch (`raw_tx(chain.tx_bytes(txid))`) is the reorg shape mempool and index
+  tests need.
+- **Mempool.** `submit` / `submit_raw` admit each on the best after every entry before it,
+  through the same `Ledger` mining uses, and panic with the `Refused` rule otherwise. Whenever
+  the best moves, the mempool is re-admitted on the new best: transactions only the old best
+  mined come back first (block order, coinbases never), and mined, conflicting or orphaned
+  entries leave.
+
+### Views in other crates
+
+Each lives in the crate that owns its type, behind that crate's `testing` feature:
+
+| View | Crate | Gives |
+|---|---|---|
+| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_finalized(tip, finalized_at)` |
+| `ValidatorViews` (trait on `MockChain`) | here | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (below) |
+| `MockPeerSet::new(&chain, tip)` | `zaino-traffic` | a `PeerTransport` over one path, `hold(height)` to move its tip |
+| `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
+| `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
+| `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
+
+Finality is the header chain's, never the builder's: ask for it with `verified_finalized`.
+
+### Invariants
+
+Every block `MockChain` hands out passes these. A construction that would break one
+panics with a message naming the rule. The labels appear in test docs across the
+workspace.
+
+| | Invariant |
+|---|---|
+| M1 | hash = SHA-256d of `encode_header`; genesis pinned byte for byte |
+| M2 | `prev_hash` = parent's hash, height = parent + 1, time after the parent's median time past (default time = parent + target spacing: 150 s pre-Blossom, 75 s, 25 s from NU7) |
+| M3 | merkle root = the minted txids'; txids distinct on the branch |
+| M4 | exactly one coinbase, in slot 0, spending nothing and stating no fee |
+| M5 | `Work::Limit` = every nBits the regtest limit; `outweigh()` = best right after its first block, by the least work that wins |
+| M6 | each spend = an output unspent on its own branch (an ancestor, or earlier in the block); nullifiers fresh on the branch; chain value pools never negative (ZIP 209); a stated fee = the derived one |
+| M7 | pool data only once its upgrade is active (Sapling; Orchard from NU5; Ironwood from NU6.3) |
+| M8 | every path inserts into `HeaderViews::header_chain`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
+| M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
+
+M1–M7: `src/testing/chain.rs` (minting in `mint.rs`, the transaction rules in `ledger.rs`),
+tested in `chain/tests.rs`. `encode_header` / `header_hash` = the consensus header bytes and
+their SHA-256d (version 4, a zero 36-byte regtest solution, a mint counter as each nonce),
+pinned against five mainnet headers in the decode tests.
+
+## Testing: `MockValidator`
+
+One simulated zebrad over a `MockChain`, answering zebrad's JSON-RPC as bytes. A test reaches
+it through Zaino's own client, so every test above it runs the production request builder,
+envelope, batching, parsers and error classification:
+
+```rust,ignore
+use zaino_source::testing::{raw_transaction, raw_transparent, Lie, ValidatorViews};
+
+let validator = chain.validator(chain.tip());        // one node, following that tip
+let source = Arc::new(validator.client());           // a ZcashLegacyRpcClient, served in-process
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
 validator.estimate(h(500));                          // getblockchaininfo estimatedheight
-let info = chain.blockchain_info(tip);               // getblockchaininfo with `tip` as best
-let txid = chain.submit(decoded(raw));               // the network's mempool (MockChain)
 validator.hear(&chain, txid);                        // relayed here: listed from the next poll
 validator.evict(txid);                               // evicted: unlisted from the next poll
 validator.listing(Err(GetMempoolListingError::Inactive));
-let fee = SendRawTransactionError::Rejected { code: -26, message: "fee".into() };
-validator.relay(Err(fee));                           // sendrawtransaction + checkadmission verdict
-validator.checks_admission(false);                   // checkadmission = Unsupported (zcashd)
-validator.metadata(None, Some(release));             // peers read times out
-validator.latency(&[Port::Block], Duration::from_secs(2)); // before each answer there (tokio::time)
-validator.fail_next(2, FailureMode::Timeout);         // any port
-validator.reachable(&[Port::Send], false);           // refused in transport there; Port::ALL = gone
+validator.relay(Err(fee_too_low));                   // sendrawtransaction + checkadmission verdict
+validator.lacks(&["checkadmission"]);                // an older node: -32601 (zcashd, stock zebrad)
+validator.metadata(None, Some(release));             // getpeerinfo answers -1
+validator.latency(&["getblock"], Duration::from_secs(2)); // before each request carrying it
+validator.reachable(&["sendrawtransaction"], false); // requests carrying it: HTTP 503
+validator.down(true);                                // every request: HTTP 503
 validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
-let served = Lie::Mutated.told(&honest);             // the same shape, no validator (sans-IO models)
 validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
-assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1, checks: 0 });
-let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
-let (txid, raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &[(&alice, 4_000)]); // a real spend
-chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: get_transaction serves them
+assert_eq!(validator.calls("getblockheader"), 12);   // each batch item counted
 ```
 
-- Answers as zebrad: blocks by hash and links by height from its best chain only,
-  nothing above its tip; `getblockchaininfo` = `chain.blockchain_info(tip)` (the
-  chain's upgrade schedule, statuses by its tip).
-- Its mempool is its own view of the chain's: entries it `hear`s plus sends it accepts,
-  each admitted in order on its tip by the chain's own `Ledger` (unspent inputs, fresh
-  nullifiers, fee ≥ 0) and listed at the fee its bytes leave there. Nodes differ in what
-  they heard, never in the rules. `hear` panics on a txid outside `chain.mempool()` or
-  refused on its tip.
-- Each `follow` re-admits its mempool on the new tip: mined, conflicting and orphaned
-  entries leave. `evict` drops an entry and every entry spending its outputs.
-- A send refused on its tip + mempool = `Rejected { code: -25, message }` naming the
-  `Refused` rule (e.g. `spends …, not unspent on this branch`); undecodable = `Malformed`.
-- `get_transaction` of a mined `TxBuilder` transaction panics: it has no bytes, and
-  the double never invents a body (mine real bytes with `raw_tx`).
-- Each `Lie` fails the NFS body check (`check_block`) by the rule that names it.
-- One double backs the traffic balancer, the chain view, the gRPC routes, the NFS and
-  zainod's pipeline alike; reorgs = `follow` another tip of the same `MockChain`.
+- **One dispatch table** (`METHODS` in `validator.rs`): each method a plain handler, params in,
+  zebrad's result or `(code, message)` out. A name it lacks (or `lacks`) answers `-32601`.
+  Scripting names are checked against it: a typo panics.
+- **Faults look like the network.** Latency delays a whole request (a batch waits for its
+  slowest method); `reachable` / `down` refuse it with HTTP 503 before anything is answered;
+  `-1` / `-5` / `-8` / `-25` / `-32602` are zebrad's own codes.
+- Answers from its best chain only, nothing above its tip. Its mempool is its own view of the
+  chain's: entries it `hear`s plus sends it accepts, each admitted in order on its tip by the
+  chain's own `Ledger` and listed at the fee its bytes leave there. `hear` panics on a txid
+  outside `chain.mempool()` or refused on its tip; `follow` re-admits on the new tip.
+- **Lies are byte edits** on what `getblock` serves: a flipped nonce, an appended or repeated
+  transaction, a coinbase claiming the next height (a v5 coinbase's txid skips `scriptSig`, so
+  `WrongHeight` keeps a valid merkle root). Each fails the NFS body check by its rule.
+- The seam is `RpcClient`'s wire: HTTP in production, an in-process server under `testing` (no
+  socket, so a paused clock stays deterministic). Status, body cap and pacing over real HTTP
+  are `rpc/client.rs`'s own tests.
 
 `testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`
 (419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000). `block(height)` = its consensus

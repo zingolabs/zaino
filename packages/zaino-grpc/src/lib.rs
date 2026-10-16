@@ -1,6 +1,6 @@
 //! lightwalletd-compatible `CompactTxStreamer` endpoint
 //!
-//! - [`GrpcService`] = every method in the one registry (`service.rs` `ROUTES`), dispatched by
+//! - [`GrpcService`] = every method in the one registry (`service.rs` `Method`), dispatched by
 //!   path over [`RouteDeps`] (`GrpcSnapshots`, the chain view, the validators)
 //! - compact blocks = stored bytes, never re-encoded
 //! - one `GrpcSnapshot` per request or stream (`service.rs`)

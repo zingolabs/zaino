@@ -240,7 +240,7 @@ impl<T: Weight> FinalizedStream<T> {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::h;
+    use zaino_source::testing::h;
     use zcash_protocol::consensus::BlockHeight;
 
     use super::*;

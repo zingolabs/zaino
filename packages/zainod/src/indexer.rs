@@ -716,13 +716,13 @@ mod tests {
         use std::time::Duration;
 
         use zaino_header_chain::testing::{insert, HeaderViews};
-        use zaino_primitives::testing::{h, MockChain};
         use zaino_primitives::types::Block;
         use zaino_proto::proto::service::{
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
         use zaino_source::testing::ValidatorViews;
+        use zaino_source::testing::{h, MockChain};
         use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
@@ -741,12 +741,12 @@ mod tests {
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
-        let validator = Arc::new(blocks.validator(a8));
+        let validator = blocks.validator(a8);
         let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = zaino_traffic::TrustedValidator {
             address: "mock".to_owned(),
-            source: Arc::clone(&validator),
+            source: Arc::new(validator.client()),
             priority: 0,
             limits,
         };

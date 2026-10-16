@@ -16,7 +16,7 @@ zcash_protocol.workspace = true
 
 [dev-dependencies]
 zaino-persistence = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 zaino-sync = { workspace = true, features = ["testing"] }
 

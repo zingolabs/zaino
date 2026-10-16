@@ -17,9 +17,8 @@ use std::time::Duration;
 use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
-use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
+use zaino_source::testing::{within, MockChain, MockValidator, ValidatorViews};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, TrustedValidator, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -81,7 +80,7 @@ proptest! {
 }
 
 struct Node {
-    validator: Arc<MockValidator>,
+    validator: MockValidator,
     tip: BlockRef,
 }
 
@@ -141,15 +140,12 @@ async fn run(n: usize, moves: Vec<Move>) {
     let shared = chain.mine_empty(3);
     let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut headers = chain.header_chain(depth);
-    let nodes = (0..n).map(|_| {
-        let validator = Arc::new(chain.validator(shared));
-        Node { validator, tip: shared }
-    });
+    let nodes = (0..n).map(|_| Node { validator: chain.validator(shared), tip: shared });
     let mut sim = Sim { nodes: nodes.collect(), chain };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = sim.nodes.iter().enumerate().map(|(index, node)| TrustedValidator {
         address: format!("v{index}"),
-        source: Arc::clone(&node.validator),
+        source: Arc::new(node.validator.client()),
         priority: 0,
         limits,
     });
@@ -184,9 +180,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                 let base = sim.chain.ancestor(tip, BlockHeight::from(kept));
                 sim.mine(node, base, mine);
             }
-            Move::Reachable { node, reachable } => {
-                sim.nodes[node % n].validator.reachable(&Port::ALL, reachable)
-            }
+            Move::Reachable { node, reachable } => sim.nodes[node % n].validator.down(!reachable),
             Move::Poll { node } => {
                 let node = node % n;
                 let under = reader.current().best();

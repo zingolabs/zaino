@@ -31,7 +31,7 @@ zcash_protocol.workspace = true
 
 [features]
 # `Indexed::fixed` (no driver) + `ChainParams::of(MockChain)`
-testing = ["zaino-primitives/testing"]
+testing = ["zaino-source/testing"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -42,7 +42,6 @@ proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }
 zcash_transparent.workspace = true

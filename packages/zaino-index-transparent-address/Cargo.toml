@@ -17,7 +17,7 @@ zcash_protocol.workspace = true
 zcash_transparent.workspace = true
 
 [dev-dependencies]
-zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 zcash_script.workspace = true
 zaino-persistence = { workspace = true, features = ["testing"] }
 proptest.workspace = true

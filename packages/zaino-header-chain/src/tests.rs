@@ -4,8 +4,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
-use zaino_primitives::testing::{all_at, MockChain};
 use zaino_primitives::types::{BlockRef, FinalityDepth, HeaderError};
+use zaino_source::testing::{all_at, MockChain};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;

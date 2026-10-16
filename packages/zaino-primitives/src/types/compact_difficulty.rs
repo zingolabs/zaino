@@ -67,8 +67,7 @@ impl CompactDifficulty {
         Ok(Self(bits))
     }
 
-    #[cfg(any(test, feature = "testing"))]
-    pub(crate) fn bits(self) -> u32 {
+    pub fn bits(self) -> u32 {
         self.0
     }
 

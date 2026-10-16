@@ -32,8 +32,9 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
   (64); `TrafficBalancer::new` panics outside that, so a config is refused before (zainod's
   `validate`). `addresses()[i]` = its address, the chain view's name for it.
 - `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in
-  production (one type per balancer: zainod's `validator_client`),
-  `zaino_source::testing::MockValidator` in tests.
+  production (one type per balancer: zainod's `validator_client`); in tests the same
+  `ZcashLegacyRpcClient`, served by a `zaino_source::testing::MockValidator`
+  (`validator.client()`).
 - `peers`: `Option<Peers>`, the p2p network's whole peer set as one member (`MemberId::Peers`,
   below every trusted tier); `None` = trusted only. Its transport (`PeerTransport`: `headers`,
   `block`) picks the peer itself and must check a block body against its header, blaming the
@@ -61,15 +62,26 @@ it).
 | `headers(HeaderAsk::Pinned { validator, heights })` | `Headers` (control) | that trusted validator only | unanswered if it fails or is out |
 | `headers(HeaderAsk::Peers { locator })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
-| `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
-| `standard_fee()` | `Lookup` (interactive) | trusted only, `Unsupported` → next | unanswered once every one is tried |
-| `submit(member, raw)` / `check_admission(member, raw)` | `Submit` (control) | that trusted member only | one attempt (`sendrawtransaction` / `checkadmission`) |
+| `lookup(ask)` | `Lookup` (interactive) | trusted only, a domain answer or `Unsupported` → next | unanswered once every one is tried |
+| `submit(member, ask)` | `Submit` (control) | that trusted member only | one attempt |
+
+`lookup` and `submit` name a traffic class, not an RPC: `ask` is the `ChainDataSource` call,
+so a new forwarded method needs no balancer change:
+
+```rust,ignore
+balancer.lookup(move |source| async move { source.get_transaction(txid).await }).await
+balancer.submit(member, move |source| {
+    let raw = raw.clone();                     // one attempt, but `ask` is `Fn`
+    async move { source.check_admission(raw).await }
+}).await
+```
 
 - Within the best tier with room: the route's preferred member, else the least in flight (ties:
   configured order). A freed permit goes to the control lane first, then interactive, then bulk.
 
 - `Unanswered { last }`: the first transport failure, else the last domain answer (absent,
-  rejected); `None` = no eligible member to ask at all (benched, down, none of that kind).
+  rejected), else `Unsupported` (every member asked lacks the method: never a failure, health
+  untouched); `None` = no eligible member to ask at all (benched, down, none of that kind).
 - Dropping the future abandons the ask: its sends are dropped and their permits return. There is
   no cancel API.
 - Hedges (`TipBlock` 2 s, `Lookup` 1 s, `BulkBlock` 15 s after the latest send) go to another

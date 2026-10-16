@@ -111,13 +111,11 @@ pub fn compact_tx(
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::{p2pkh, MockChain};
     use zaino_primitives::types::{CompactCiphertext, EphemeralKey, TreeSize};
     use zaino_proto::frame::framed_len;
-    use zcash_transparent::bundle::OutPoint;
+    use zaino_source::testing::{commitment, nullifier, p2pkh, MockChain};
 
     use super::*;
-    use crate::HASH;
 
     /// Block 2's tx (spends block 1's output 7, every pool, fee 5 000) → one gRPC frame decoding
     /// to every field built from it (transparent kept: pruning = read-side)
@@ -125,20 +123,18 @@ mod tests {
     fn a_record_decodes_back_to_every_pool_it_was_built_from() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| {
-            b.coinbase(|c| (0..8).fold(c.txid([0x22; 32]), |c, _| c.pay(&alice, 17_345)))
-        });
+        let one = chain.mine(|b| b.coinbase(|c| (0..8).fold(c, |c, _| c.pay(&alice, 17_345))));
+        let paid = chain.output(one, 0, 7);
         let two = chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x0c; 32])).tx(|t| {
-                t.txid([0x11; 32])
-                    .spend(OutPoint::new([0x22; 32], 7))
+            b.tx(|t| {
+                t.spend(paid.clone())
                     .pay(&alice, 12_345)
                     .fee(5_000)
-                    .sapling_spend([0x33; 32])
+                    .sapling_spend(0x33)
                     .sapling_output(0x44)
-                    .orchard_action([0x77; 32], 0x78)
-                    .ironwood_action([0x88; 32], 0x89)
-                    .ironwood_action([0x99; 32], 0x9a)
+                    .orchard_action(0x77, 0x78)
+                    .ironwood_action(0x88, 0x89)
+                    .ironwood_action(0x99, 0x9a)
             })
         });
         let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
@@ -156,14 +152,16 @@ mod tests {
         let shielded = &block.transactions()[1];
         let key = |key: EphemeralKey| key.0.to_vec();
         let ciphertext = |bytes: CompactCiphertext| bytes.0.to_vec();
-        let leaf = |leaf: u8| [[leaf].as_slice(), &[0; HASH - 1]].concat();
+        let leaf = |leaf: u32| commitment(leaf).0.to_vec();
+        let nf = |tag: u32| nullifier(tag).0.to_vec();
         let action =
-            |nullifier: u8, cmx: u8, built: &OrchardAction| compact_formats::CompactOrchardAction {
-                nullifier: vec![nullifier; HASH],
+            |tag: u32, cmx: u32, built: &OrchardAction| compact_formats::CompactOrchardAction {
+                nullifier: nf(tag),
                 cmx: leaf(cmx),
                 ephemeral_key: key(built.ephemeral_key),
                 ciphertext: ciphertext(built.enc_ciphertext),
             };
+        let txid = |slot: usize| chain.tx(two, slot).txid.as_ref().to_vec();
         let output = &shielded.sapling.outputs[0];
         let ironwood = &shielded.ironwood.actions;
         let expected = compact_formats::CompactBlock {
@@ -175,14 +173,14 @@ mod tests {
             vtx: vec![
                 compact_formats::CompactTx {
                     index: 0,
-                    txid: vec![0x0c; HASH],
+                    txid: txid(0),
                     ..compact_formats::CompactTx::default()
                 },
                 compact_formats::CompactTx {
                     index: 1,
-                    txid: vec![0x11; HASH],
+                    txid: txid(1),
                     fee: 5_000,
-                    spends: vec![compact_formats::CompactSaplingSpend { nf: vec![0x33; HASH] }],
+                    spends: vec![compact_formats::CompactSaplingSpend { nf: nf(0x33) }],
                     outputs: vec![compact_formats::CompactSaplingOutput {
                         cmu: leaf(0x44),
                         ephemeral_key: key(output.ephemeral_key),
@@ -194,7 +192,7 @@ mod tests {
                         action(0x99, 0x9a, &ironwood[1]),
                     ],
                     vin: vec![compact_formats::CompactTxIn {
-                        prevout_txid: vec![0x22; HASH],
+                        prevout_txid: paid.hash().to_vec(),
                         prevout_index: 7,
                     }],
                     vout: vec![compact_formats::TxOut {

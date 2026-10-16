@@ -42,7 +42,7 @@ impl ChainParams {
 #[cfg(any(test, feature = "testing"))]
 impl ChainParams {
     /// `chain`'s schedule under its network label
-    pub fn of(chain: &zaino_primitives::testing::MockChain) -> Self {
+    pub fn of(chain: &zaino_source::testing::MockChain) -> Self {
         let schedule = chain.schedule();
         Self { network: schedule.network, schedule: schedule.upgrades }
     }
