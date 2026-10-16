@@ -251,7 +251,7 @@ one and reads only it, so no answer mixes two moments.
   does not count, one not polled since best moved does), and stays while it is on the best chain
   within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
-- `GrpcSnapshot::standing` judges serving from the same load: `Down` when no trusted validator
+- `GrpcSnapshot::serving_status` judges serving from the same load: `Down` when no trusted validator
   vouches for the best block, `Degraded` for that cause while synced to a fresh best (peers carry
   the tip). States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
   what each method answers meanwhile: [rpc_api.md](./rpc_api.md).

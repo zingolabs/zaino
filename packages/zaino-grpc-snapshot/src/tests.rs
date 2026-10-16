@@ -26,8 +26,8 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
-    Publisher, Standing, Tips,
+    describe_metrics, emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
+    Publisher, ServingStatus, StatusReason, Tips,
 };
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -197,14 +197,14 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         );
         let target = grpc_snapshot.sync_target().map(u32::from);
         assert_eq!(
-            (grpc_snapshot.standing(now), target),
-            (Standing::Syncing, Some(height + 1_200)),
+            (grpc_snapshot.serving_status(now), target),
+            (ServingStatus::Syncing, Some(height + 1_200)),
             "{height}"
         );
     }
 }
 
-/// Synced to a fresh best held by validator 0: each (holder, other) health → standing + notes
+/// Synced to a fresh best held by validator 0: each (holder, other) health → serving status + notes
 #[test]
 fn each_holder_health_gives_its_standing_and_notes() {
     let mut builder = MockChain::regtest();
@@ -216,14 +216,14 @@ fn each_holder_health_gives_its_standing_and_notes() {
     let indexed =
         Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let cases = [
-        ("caught up", Health::Live, 0, Health::Pending, Standing::Serving, vec![]),
-        ("one failed poll", Health::Degraded, 0, Health::Pending, Standing::Serving, vec![]),
+        ("caught up", Health::Live, 0, Health::Pending, ServingStatus::Serving, vec![]),
+        ("one failed poll", Health::Degraded, 0, Health::Pending, ServingStatus::Serving, vec![]),
         (
             "holder stale",
             Health::Live,
             30,
             Health::Pending,
-            Standing::Serving,
+            ServingStatus::Serving,
             vec!["1 validator on a stale tip".to_owned()],
         ),
         (
@@ -231,11 +231,11 @@ fn each_holder_health_gives_its_standing_and_notes() {
             Health::Down,
             0,
             Health::Down,
-            Standing::Degraded(Down::NoValidatorReachable),
+            ServingStatus::Degraded(StatusReason::NoValidatorReachable),
             vec![],
         ),
     ];
-    for (case, holder, behind, other, standing, expected_notes) in cases {
+    for (case, holder, behind, other, serving_status, expected_notes) in cases {
         let view = ChainViewSnapshot::fixed(
             Some(Arc::clone(&chain)),
             TrustedValidatorSet::at([0]),
@@ -245,8 +245,8 @@ fn each_holder_health_gives_its_standing_and_notes() {
         let view = view.trusted_validator(0, holder, behind).trusted_validator(1, other, 0);
         let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
         assert_eq!(
-            (grpc_snapshot.standing(now), notes(&grpc_snapshot)),
-            (standing, expected_notes),
+            (grpc_snapshot.serving_status(now), notes(&grpc_snapshot)),
+            (serving_status, expected_notes),
             "{case}"
         );
     }
@@ -274,15 +274,18 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let all_down = held.trusted_validator(0, Health::Down, 0).trusted_validator(1, Health::Down, 0);
     let unheld =
         ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
-    for (why, view) in [(Down::NoValidatorReachable, all_down), (Down::TipNotHeld, unheld)] {
+    for (why, view) in
+        [(StatusReason::NoValidatorReachable, all_down), (StatusReason::TipNotHeld, unheld)]
+    {
         let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
-        let standing = (
-            grpc_snapshot.standing(now),
-            grpc_snapshot.standing(stale - 1),
-            grpc_snapshot.standing(stale),
+        let serving_status = (
+            grpc_snapshot.serving_status(now),
+            grpc_snapshot.serving_status(stale - 1),
+            grpc_snapshot.serving_status(stale),
         );
-        let expected = (Standing::Degraded(why), Standing::Degraded(why), Standing::Down(why));
-        assert_eq!(standing, expected, "{why:?}");
+        let expected =
+            (ServingStatus::Degraded(why), ServingStatus::Degraded(why), ServingStatus::Down(why));
+        assert_eq!(serving_status, expected, "{why:?}");
     }
 }
 

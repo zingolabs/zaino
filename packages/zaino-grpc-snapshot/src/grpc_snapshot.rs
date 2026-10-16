@@ -51,21 +51,21 @@ pub enum Unavailable {
 ///   (peers')
 /// - `Down` = that best stale or not yet served
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Standing {
+pub enum ServingStatus {
     Serving,
-    Degraded(Down),
+    Degraded(StatusReason),
     Syncing,
-    Down(Down),
+    Down(StatusReason),
 }
 
 /// Why no trusted validator vouches for the best block
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Down {
+pub enum StatusReason {
     NoValidatorReachable,
     TipNotHeld,
 }
 
-impl Down {
+impl StatusReason {
     /// `/readyz` + `/status` `detail`
     pub const fn detail(self) -> &'static str {
         match self {
@@ -149,30 +149,30 @@ impl<V> GrpcSnapshot<V> {
     /// - all validators down, or best unheld → `Degraded` while synced to a fresh best, else `Down`
     /// - not synced, or best held only by validators catching up → `Syncing`
     /// - else `Serving`
-    pub fn standing(&self, now_unix: i64) -> Standing {
+    pub fn serving_status(&self, now_unix: i64) -> ServingStatus {
         let trusted_validators = self.view.trusted_validators();
         let health = |at: usize| trusted_validators.get(at).map(|meta| meta.health);
-        let unvouched = if !trusted_validators.is_empty()
+        let reason = if !trusted_validators.is_empty()
             && trusted_validators.iter().all(|meta| meta.health == Health::Down)
         {
-            Some(Down::NoValidatorReachable)
+            Some(StatusReason::NoValidatorReachable)
         } else if self.tips.best.is_some() && self.tips.held_by.is_empty() {
-            Some(Down::TipNotHeld)
+            Some(StatusReason::TipNotHeld)
         } else {
             None
         };
-        if let Some(why) = unvouched {
+        if let Some(reason) = reason {
             return match self.tips.synced && self.fresh(now_unix) {
-                true => Standing::Degraded(why),
-                false => Standing::Down(why),
+                true => ServingStatus::Degraded(reason),
+                false => ServingStatus::Down(reason),
             };
         }
         let holders = || self.tips.held_by.positions().filter_map(health);
         let catching_up = holders().any(|health| health == Health::CatchingUp)
             && !holders().any(|health| health == Health::Live);
         match self.tips.synced && !catching_up {
-            true => Standing::Serving,
-            false => Standing::Syncing,
+            true => ServingStatus::Serving,
+            false => ServingStatus::Syncing,
         }
     }
 

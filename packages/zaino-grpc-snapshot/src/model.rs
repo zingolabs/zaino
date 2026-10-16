@@ -28,7 +28,7 @@ use zaino_source::testing::{decoded, raw_transaction};
 use zcash_protocol::TxId;
 
 use crate::publisher::Core;
-use crate::{Down, MempoolTail, Standing, Tips};
+use crate::{MempoolTail, ServingStatus, StatusReason, Tips};
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
@@ -76,7 +76,8 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// - every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6), standing
+    /// - every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6), serving
+    ///   status
     /// - every tail = its epoch exactly, ended iff the served tip moved past it (G5)
     #[test]
     fn every_publish_composes_the_latest_inputs_and_tails_follow_the_served_tip(moves in moves()) {
@@ -282,9 +283,9 @@ fn run(moves: Vec<(Input, bool)>) {
                 "{context}: G2-G4 tips"
             );
             assert_eq!(
-                grpc_snapshot.standing(EPOCH),
-                standing_of(&expected),
-                "{context}: standing"
+                grpc_snapshot.serving_status(EPOCH),
+                serving_status_of(&expected),
+                "{context}: serving status"
             );
         }
         let grpc_snapshot = handle.load();
@@ -324,15 +325,15 @@ fn run(moves: Vec<(Input, bool)>) {
     }
 }
 
-/// Clock the model reads standing at (before every block: every best fresh)
+/// Clock the model reads serving status at (before every block: every best fresh)
 const EPOCH: i64 = 0;
 
 /// From tips alone (a chain always verified, holders `Live`, the rest `Pending`)
-fn standing_of(tips: &Tips) -> Standing {
+fn serving_status_of(tips: &Tips) -> ServingStatus {
     match (tips.held_by.is_empty(), tips.synced) {
-        (true, true) => Standing::Degraded(Down::TipNotHeld),
-        (true, false) => Standing::Down(Down::TipNotHeld),
-        (false, false) => Standing::Syncing,
-        (false, true) => Standing::Serving,
+        (true, true) => ServingStatus::Degraded(StatusReason::TipNotHeld),
+        (true, false) => ServingStatus::Down(StatusReason::TipNotHeld),
+        (false, false) => ServingStatus::Syncing,
+        (false, true) => ServingStatus::Serving,
     }
 }

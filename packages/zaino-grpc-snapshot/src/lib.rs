@@ -13,6 +13,6 @@ mod model;
 mod tests;
 
 pub use feed::{Logged, MempoolTail};
-pub use grpc_snapshot::{Down, GrpcSnapshot, Lightd, Standing, Tips, Unavailable};
+pub use grpc_snapshot::{GrpcSnapshot, Lightd, ServingStatus, StatusReason, Tips, Unavailable};
 pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
 pub use report::{describe_metrics, emit_gauges, notes};

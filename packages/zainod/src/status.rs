@@ -12,7 +12,7 @@ use std::sync::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_grpc::{Hold, Retire};
-use zaino_grpc_snapshot::{Down, GrpcSnapshot, GrpcSnapshots, Standing};
+use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus, StatusReason};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
@@ -48,7 +48,7 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set, first match wins: held, not booted, runtime stalled, `GrpcSnapshot`'s [`Standing`]
+/// Closed set, first match wins: held, not booted, runtime stalled, `GrpcSnapshot`'s [`ServingStatus`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DaemonState {
@@ -114,7 +114,7 @@ enum Stage {
 
 /// One snapshot's facts: `done` = served height (else handed), `target` = [`GrpcSnapshot::sync_target`]
 struct Booted {
-    standing: Standing,
+    serving_status: ServingStatus,
     overloaded: bool,
     done: Option<u32>,
     target: Option<u32>,
@@ -129,7 +129,7 @@ impl Booted {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
-            standing: grpc_snapshot.standing(now),
+            serving_status: grpc_snapshot.serving_status(now),
             overloaded: sources.grpc_admission.report().overloaded,
             done: served.or(progress.handed()).map(u32::from),
             target: grpc_snapshot.sync_target().map(u32::from),
@@ -158,22 +158,27 @@ fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
         (false, Stage::Booted(booted)) => {
             at(DaemonState::Down, None, Some(RUNTIME_STALLED), booted.notes)
         }
-        (_, Stage::Starting { awaiting_validator: true, .. }) => {
-            at(DaemonState::Down, None, Some(Down::NoValidatorReachable.detail()), Vec::new())
-        }
+        (_, Stage::Starting { awaiting_validator: true, .. }) => at(
+            DaemonState::Down,
+            None,
+            Some(StatusReason::NoValidatorReachable.detail()),
+            Vec::new(),
+        ),
         (_, Stage::Starting { bootstrap, .. }) => {
             at(DaemonState::Provisioning, bootstrap, None, Vec::new())
         }
         (true, Stage::Booted(booted)) if booted.overloaded => {
             at(DaemonState::Down, None, Some(OVERLOADED), booted.notes)
         }
-        (true, Stage::Booted(booted)) => match booted.standing {
-            Standing::Down(down) => at(DaemonState::Down, None, Some(down.detail()), booted.notes),
-            Standing::Degraded(why) => {
+        (true, Stage::Booted(booted)) => match booted.serving_status {
+            ServingStatus::Down(why) => {
+                at(DaemonState::Down, None, Some(why.detail()), booted.notes)
+            }
+            ServingStatus::Degraded(why) => {
                 at(DaemonState::Degraded, None, Some(why.detail()), booted.notes)
             }
-            Standing::Serving => at(DaemonState::Serving, None, None, booted.notes),
-            Standing::Syncing => {
+            ServingStatus::Serving => at(DaemonState::Serving, None, None, booted.notes),
+            ServingStatus::Syncing => {
                 let progress = booted.target.map(|total| Progress {
                     done: u64::from(booted.done.unwrap_or(0)),
                     total: u64::from(total),
@@ -482,18 +487,18 @@ mod tests {
     /// - `progress` only provisioning or syncing
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
-        let stage = |standing, overloaded, target: Option<u32>, rate: Option<f64>| {
+        let stage = |serving_status, overloaded, target: Option<u32>, rate: Option<f64>| {
             let notes = vec!["1 validator on a stale tip".to_owned()];
             let done = Some(3_514_194);
-            Stage::Booted(Booted { standing, overloaded, done, target, rate, notes })
+            Stage::Booted(Booted { serving_status, overloaded, done, target, rate, notes })
         };
-        let booted = |standing, target, rate| stage(standing, false, target, rate);
-        let overloaded = |standing| stage(standing, true, Some(3_515_406), Some(6.2));
+        let booted = |serving_status, target, rate| stage(serving_status, false, target, rate);
+        let overloaded = |serving_status| stage(serving_status, true, Some(3_515_406), Some(6.2));
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
         let stale = serde_json::json!(["1 validator on a stale tip"]);
-        let no_holder = Standing::Down(Down::TipNotHeld);
-        let unreachable = Standing::Down(Down::NoValidatorReachable);
+        let no_holder = ServingStatus::Down(StatusReason::TipNotHeld);
+        let unreachable = ServingStatus::Down(StatusReason::NoValidatorReachable);
         let cases = [
             (
                 "plain startup",
@@ -513,19 +518,19 @@ mod tests {
             (
                 "runtime stalled beats serving",
                 false,
-                booted(Standing::Serving, Some(3_514_194), None),
+                booted(ServingStatus::Serving, Some(3_514_194), None),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "runtime stalled beats overloaded",
                 false,
-                overloaded(Standing::Serving),
+                overloaded(ServingStatus::Serving),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "overloaded beats syncing",
                 true,
-                overloaded(Standing::Syncing),
+                overloaded(ServingStatus::Syncing),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
@@ -537,19 +542,23 @@ mod tests {
             (
                 "overloaded beats degraded",
                 true,
-                overloaded(Standing::Degraded(Down::NoValidatorReachable)),
+                overloaded(ServingStatus::Degraded(StatusReason::NoValidatorReachable)),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
                 "runtime stalled beats degraded",
                 false,
-                booted(Standing::Degraded(Down::TipNotHeld), None, None),
+                booted(ServingStatus::Degraded(StatusReason::TipNotHeld), None, None),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "every validator down, a fresh peer-verified tip served",
                 true,
-                booted(Standing::Degraded(Down::NoValidatorReachable), Some(3_514_194), None),
+                booted(
+                    ServingStatus::Degraded(StatusReason::NoValidatorReachable),
+                    Some(3_514_194),
+                    None,
+                ),
                 serde_json::json!({
                     "state": "degraded", "progress": null,
                     "detail": "No trusted validator reachable", "notes": stale,
@@ -558,7 +567,7 @@ mod tests {
             (
                 "best unheld, a fresh peer-verified tip served",
                 true,
-                booted(Standing::Degraded(Down::TipNotHeld), Some(3_514_194), None),
+                booted(ServingStatus::Degraded(StatusReason::TipNotHeld), Some(3_514_194), None),
                 serde_json::json!({
                     "state": "degraded", "progress": null,
                     "detail": "No trusted validator holds the verified tip", "notes": stale,
@@ -585,7 +594,7 @@ mod tests {
             (
                 "syncing",
                 true,
-                booted(Standing::Syncing, Some(3_515_406), Some(6.2)),
+                booted(ServingStatus::Syncing, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
                     "state": "syncing", "detail": null, "notes": stale,
                     "progress": { "done": 3_514_194, "total": 3_515_406, "unit": "block", "rate": 6.2 },
@@ -594,13 +603,13 @@ mod tests {
             (
                 "syncing, no header chain yet",
                 true,
-                booted(Standing::Syncing, None, None),
+                booted(ServingStatus::Syncing, None, None),
                 serde_json::json!({ "state": "syncing", "progress": null, "detail": null, "notes": stale }),
             ),
             (
                 "serving",
                 true,
-                booted(Standing::Serving, Some(3_514_194), Some(1.0)),
+                booted(ServingStatus::Serving, Some(3_514_194), Some(1.0)),
                 serde_json::json!({ "state": "serving", "progress": null, "detail": null, "notes": stale }),
             ),
             (
@@ -640,7 +649,7 @@ mod tests {
                 "held while serving",
                 Hold::Draining,
                 true,
-                booted(Standing::Serving, None, None),
+                booted(ServingStatus::Serving, None, None),
                 held("GOAWAY pending", stale.clone()),
             ),
             (
@@ -654,14 +663,14 @@ mod tests {
                 "held while degraded",
                 Hold::Drained,
                 true,
-                booted(Standing::Degraded(Down::NoValidatorReachable), None, None),
+                booted(ServingStatus::Degraded(StatusReason::NoValidatorReachable), None, None),
                 held("GOAWAY sent", stale.clone()),
             ),
             (
                 "held with a stalled runtime",
                 Hold::Draining,
                 false,
-                booted(Standing::Syncing, None, None),
+                booted(ServingStatus::Syncing, None, None),
                 held("GOAWAY pending", stale.clone()),
             ),
             (
@@ -703,7 +712,7 @@ mod tests {
         );
 
         let serving = Stage::Booted(Booted {
-            standing: Standing::Serving,
+            serving_status: ServingStatus::Serving,
             overloaded: false,
             done: Some(3_515_400),
             target: Some(3_515_406),
