@@ -5294,6 +5294,7 @@ name = "zaino-proto"
 version = "0.11.0-alpha.2"
 dependencies = [
  "prost",
+ "serde",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

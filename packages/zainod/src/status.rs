@@ -247,8 +247,9 @@ impl DaemonStatus {
     /// Public `/status` body, now
     fn public_status_json(&self) -> String {
         let sources = self.sources.get();
-        let chain =
-            sources.map(|sources| Chain::of(sources, &sources.grpc_snapshots.load(), self.network));
+        let chain = sources
+            .map(|sources| Chain::of(sources, &sources.grpc_snapshots.load(), self.network))
+            .unwrap_or_default();
         let status = public_status(self.current_readiness(), self.network, chain, &self.configured);
         serde_json::to_string(&status).unwrap_or_default()
     }
@@ -353,12 +354,9 @@ struct PublicStatus {
     readiness: Readiness,
     version: &'static str,
     network: &'static str,
-    tip: Option<PublicBlock>,
-    served: Option<u32>,
-    validators: Option<ValidatorCounts>,
+    #[serde(flatten)]
+    chain: Chain,
     indexes: IndexCounts,
-    egress: Option<Egress>,
-    info: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -381,13 +379,14 @@ struct IndexCounts {
     total: usize,
 }
 
-/// Booted facts of the public status (`None` before boot)
+/// Booted facts of the public status (`Chain::default()` before boot = every one `null`)
+#[derive(Debug, Default, Serialize, PartialEq)]
 struct Chain {
     tip: Option<PublicBlock>,
     served: Option<u32>,
-    validators: ValidatorCounts,
+    validators: Option<ValidatorCounts>,
     egress: Option<Egress>,
-    info: Option<serde_json::Value>,
+    info: Option<zaino_grpc::LightdInfo>,
 }
 
 impl Chain {
@@ -404,62 +403,30 @@ impl Chain {
                 hash: best.hash.to_string(),
             }),
             served: tips.served.map(|served| u32::from(served.height)),
-            validators: ValidatorCounts {
+            validators: Some(ValidatorCounts {
                 configured: trusted_validators.len(),
                 connected: trusted_validators.iter().filter(answering).count(),
-            },
+            }),
             egress: *sources.egress.borrow(),
-            info: info.map(lightd_json),
+            info,
         }
     }
-}
-
-/// `GetLightdInfo` as lightwalletd's JSON names it (camelCase, every field)
-fn lightd_json(info: zaino_grpc::LightdInfo) -> serde_json::Value {
-    serde_json::json!({
-        "version": info.version,
-        "vendor": info.vendor,
-        "taddrSupport": info.taddr_support,
-        "chainName": info.chain_name,
-        "saplingActivationHeight": info.sapling_activation_height,
-        "consensusBranchId": info.consensus_branch_id,
-        "blockHeight": info.block_height,
-        "gitCommit": info.git_commit,
-        "branch": info.branch,
-        "buildDate": info.build_date,
-        "buildUser": info.build_user,
-        "estimatedHeight": info.estimated_height,
-        "zcashdBuild": info.zcashd_build,
-        "zcashdSubversion": info.zcashd_subversion,
-        "donationAddress": info.donation_address,
-        "upgradeName": info.upgrade_name,
-        "upgradeHeight": info.upgrade_height,
-        "lightwalletProtocolVersion": info.lightwallet_protocol_version,
-    })
 }
 
 fn public_status(
     readiness: Readiness,
     network: NetworkType,
-    chain: Option<Chain>,
+    chain: Chain,
     configured: &[IndexKind],
 ) -> PublicStatus {
     let all = IndexKind::ALL;
     let enabled = all.iter().copied().filter(|kind| configured.contains(kind)).map(IndexKind::name);
-    let (tip, served, validators, egress, info) = match chain {
-        Some(chain) => (chain.tip, chain.served, Some(chain.validators), chain.egress, chain.info),
-        None => (None, None, None, None, None),
-    };
     PublicStatus {
         readiness,
         version: env!("CARGO_PKG_VERSION"),
         network: crate::config::network_name(network),
-        tip,
-        served,
-        validators,
+        chain,
         indexes: IndexCounts { enabled: enabled.collect(), total: all.len() },
-        egress,
-        info,
     }
 }
 
@@ -694,7 +661,8 @@ mod tests {
             serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": total });
         let version = env!("CARGO_PKG_VERSION");
 
-        let before = public_status(readiness(starting), NetworkType::Main, None, &configured);
+        let before =
+            public_status(readiness(starting), NetworkType::Main, Chain::default(), &configured);
         assert_eq!(
             serde_json::to_value(before).expect("serializes"),
             serde_json::json!({
@@ -715,11 +683,16 @@ mod tests {
         let chain = Chain {
             tip: Some(PublicBlock { height: 3_515_406, hash: "00ab".to_owned() }),
             served: Some(3_515_400),
-            validators: ValidatorCounts { configured: 2, connected: 1 },
+            validators: Some(ValidatorCounts { configured: 2, connected: 1 }),
             egress: Some(Egress { start: 1_790_000_400, mbps: 12.5 }),
-            info: Some(serde_json::json!({ "blockHeight": 3_515_400 })),
+            info: Some(zaino_grpc::LightdInfo {
+                chain_name: "main".to_owned(),
+                block_height: 3_515_400,
+                lightwallet_protocol_version: "v0.4.0".to_owned(),
+                ..Default::default()
+            }),
         };
-        let after = public_status(readiness(serving), NetworkType::Main, Some(chain), &configured);
+        let after = public_status(readiness(serving), NetworkType::Main, chain, &configured);
         assert_eq!(
             serde_json::to_value(after).expect("serializes"),
             serde_json::json!({
@@ -728,7 +701,14 @@ mod tests {
                 "tip": { "height": 3_515_406, "hash": "00ab" }, "served": 3_515_400,
                 "validators": { "configured": 2, "connected": 1 }, "indexes": indexes,
                 "egress": { "start": 1_790_000_400, "mbps": 12.5 },
-                "info": { "blockHeight": 3_515_400 },
+                "info": {
+                    "version": "", "vendor": "", "taddrSupport": false, "chainName": "main",
+                    "saplingActivationHeight": 0, "consensusBranchId": "", "blockHeight": 3_515_400,
+                    "gitCommit": "", "branch": "", "buildDate": "", "buildUser": "",
+                    "estimatedHeight": 0, "zcashdBuild": "", "zcashdSubversion": "",
+                    "donationAddress": "", "upgradeName": "", "upgradeHeight": 0,
+                    "lightwalletProtocolVersion": "v0.4.0",
+                },
             }),
         );
     }
