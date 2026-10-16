@@ -9,7 +9,7 @@ use zaino_source::testing::{h, MockChain};
 use zcash_protocol::BlockHash;
 
 use super::{HeaderChain, Node};
-use crate::testing::{insert, HeaderViews};
+use crate::testing::insert;
 use crate::{decode_header, Inserted};
 
 /// Depth 9, `builder` mined both branches
@@ -28,7 +28,8 @@ fn valid() -> Valid {
     let tip = builder.mine_empty(12);
     let trunk: Vec<BlockHash> = builder.blocks(tip).iter().map(|b| b.header().hash).collect();
     let side = builder.fork(h(11)).mine_empty(1).tip().hash;
-    let mut chain = builder.header_chain(FinalityDepth::new(NonZeroU32::new(9).expect("nz")));
+    let depth = FinalityDepth::new(NonZeroU32::new(9).expect("nz"));
+    let mut chain = HeaderChain::anchored(&builder, depth);
     insert(&mut chain, &builder.blocks(tip)).expect("valid");
     insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
     chain.finalize(chain.finalizable().expect("12 − 9"));

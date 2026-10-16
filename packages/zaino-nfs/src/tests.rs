@@ -15,13 +15,14 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::insert;
+use zaino_header_chain::HeaderChain;
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine, SequenceRead, Store,
     View,
 };
 use zaino_primitives::types::Block;
-use zaino_source::testing::{p2pkh, Lie, MockChain, ValidatorViews};
+use zaino_source::testing::{p2pkh, Lie, MockChain};
 use zaino_source::ZcashLegacyRpcClient;
 use zaino_sync::{FinalizedFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, TrustedValidator};
@@ -309,7 +310,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
         &[(&[], false), (&extension_e[8..], true)],
     ];
 
-    let mut headers = blocks.header_chain(DEPTH);
+    let mut headers = HeaderChain::anchored(&blocks, DEPTH);
     let members = [None, Some(Lie::Poisoned)].map(|lie| {
         let member = blocks.validator(genesis);
         member.lie(lie);
@@ -376,7 +377,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let trunk = [blocks.blocks(genesis), mine(&mut blocks, &mut 0, genesis, 16, false)].concat();
     let blocks = blocks;
     let mined: Vec<BlockHash> = trunk.iter().map(|block| block.header().hash).collect();
-    let mut headers = blocks.header_chain(DEPTH);
+    let mut headers = HeaderChain::anchored(&blocks, DEPTH);
     let member = blocks.validator(genesis);
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (address, source) = ("member".to_owned(), Arc::new(member.client()));
@@ -438,7 +439,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
 async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let mut blocks = MockChain::regtest();
     let a5 = blocks.mine_empty(5);
-    let mut headers = blocks.header_chain(DEPTH);
+    let mut headers = HeaderChain::anchored(&blocks, DEPTH);
     insert(&mut headers, &blocks.blocks(a5)).expect("valid headers");
     let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");

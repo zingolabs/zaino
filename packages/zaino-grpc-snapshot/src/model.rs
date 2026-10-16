@@ -18,7 +18,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::insert;
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskView, IndexKind};
@@ -247,7 +247,7 @@ impl Model {
 
 fn run(moves: Vec<(Input, bool)>) {
     let builder = MockChain::regtest().varied_work();
-    let headers = builder.header_chain(DEPTH);
+    let headers = HeaderChain::anchored(&builder, DEPTH);
     let mut model = Model {
         builder,
         headers,

@@ -206,7 +206,7 @@ pub(crate) fn expected_bits(
     match params.difficulty {
         Difficulty::Adjusted => {}
         Difficulty::Limit => return Some(params.limit_bits()),
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         Difficulty::Any => return None,
     }
     let gap = i64::from(time) - i64::from(parent_time);

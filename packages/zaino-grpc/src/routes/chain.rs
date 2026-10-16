@@ -253,9 +253,9 @@ mod tests {
     use zaino_primitives::protocol::compiled_schedule;
 
     use http::HeaderValue;
-    use zaino_header_chain::testing::HeaderViews;
+    use zaino_header_chain::VerifiedChain;
     use zaino_primitives::types::BlockRef;
-    use zaino_source::testing::{h, raw_transaction, MockChain, ValidatorViews};
+    use zaino_source::testing::{h, raw_transaction, MockChain};
 
     use crate::service::Method;
     use crate::testing::{
@@ -376,7 +376,7 @@ mod tests {
 
         let unserved = "the indexes are syncing: nothing served yet";
         assert!(refused(unserved), "no chain yet");
-        routes.submit.set_verified(Some(chain.verified(tip_7)));
+        routes.submit.set_verified(Some(VerifiedChain::of(&chain, tip_7)));
         rounds("verified, nothing served", || refused(unserved)).await;
 
         nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));
@@ -439,7 +439,7 @@ mod tests {
         tokio::spawn(merge.run(cancel.child_token()));
         let mut router = dispatch(routes);
         // the header chain's verdict + the NFS's served tip, standing in for both
-        let verified = |tip: BlockRef| view.set_verified(Some(chain.verified(tip)));
+        let verified = |tip: BlockRef| view.set_verified(Some(VerifiedChain::of(&chain, tip)));
         let serve = |tip: BlockRef| {
             nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
         };
@@ -586,7 +586,7 @@ mod tests {
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(merge.run(cancel.child_token()));
-        routes.submit.set_verified(Some(chain.verified(tip)));
+        routes.submit.set_verified(Some(VerifiedChain::of(&chain, tip)));
         let mut router = dispatch(routes);
         let three = || grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
         rounds("three servable", three).await;

@@ -281,7 +281,7 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_proto::proto::service;
-        use zaino_source::testing::{p2pkh, raw_transparent, MockChain, ValidatorViews};
+        use zaino_source::testing::{p2pkh, raw_transparent, MockChain};
         use zcash_script::script::Code;
         use zcash_transparent::address::Script;
         use zcash_transparent::bundle::OutPoint;

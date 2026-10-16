@@ -214,8 +214,8 @@ logged in `zaino-grpc-snapshot`'s report).
 
 ## Testing (feature `testing`)
 
-- `ChainView::set_verified(Some(chain.verified(tip)))` stands in for header sync
-  (`zaino_header_chain::testing::HeaderViews`).
+- `ChainView::set_verified(Some(VerifiedChain::of(&chain, tip)))` stands in for header sync
+  (`zaino-header-chain`'s `testing` feature).
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).

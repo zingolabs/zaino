@@ -113,15 +113,15 @@ bookkeeping (cumulative work, child counts, leaf set), naming the invariant in i
 - Fire drills: each check in `check()` and each precondition, seen firing on a planted bug.
 - Builder agreement (`testing`): random `MockChain` shapes, `MockChain::tip()` =
   `HeaderChain::best()` after each.
-- For consumers' tests (`testing` feature), `testing::HeaderViews` on a `MockChain`:
+- For consumers' tests (`testing` feature), constructors over a `MockChain`:
 
   ```rust,ignore
-  use zaino_header_chain::testing::{insert, HeaderViews};
+  use zaino_header_chain::{testing::insert, HeaderChain, VerifiedChain};
 
-  let mut headers = chain.header_chain(depth);         // anchored at genesis
-  insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
-  let verified = chain.verified(tip);                  // finalized = genesis
-  let pinned = chain.verified_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
+  let mut headers = HeaderChain::anchored(&chain, depth);       // anchored at genesis
+  insert(&mut headers, &chain.blocks(tip))?;                    // a trusted run: its last vouched
+  let verified = VerifiedChain::of(&chain, tip);                // finalized = genesis
+  let pinned = VerifiedChain::finalized(&chain, tip, h(9));     // finalized through 9
   ```
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

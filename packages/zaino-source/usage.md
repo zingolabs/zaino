@@ -244,14 +244,13 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 
 | View | Crate | Gives |
 |---|---|---|
-| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_finalized(tip, finalized_at)` |
-| `ValidatorViews` (trait on `MockChain`) | here | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (below) |
+| `HeaderChain::anchored(&chain, depth)`, `VerifiedChain::of(&chain, tip)`, `VerifiedChain::finalized(&chain, tip, finalized_at)` | `zaino-header-chain` | its header chain, anchored at genesis, verified as built |
 | `MockPeerSet::new(&chain, tip)` | `zaino-traffic` | a `PeerTransport` over one path, `hold(height)` to move its tip |
 | `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
 | `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
 | `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
 
-Finality is the header chain's, never the builder's: ask for it with `verified_finalized`.
+Finality is the header chain's, never the builder's: ask for it with `VerifiedChain::finalized`.
 
 ### Invariants
 
@@ -268,7 +267,7 @@ workspace.
 | M5 | `Work::Limit` = every nBits the regtest limit; `outweigh()` = best right after its first block, by the least work that wins |
 | M6 | each spend = an output unspent on its own branch (an ancestor, or earlier in the block); nullifiers fresh on the branch; chain value pools never negative (ZIP 209); a stated fee = the derived one |
 | M7 | pool data only once its upgrade is active (Sapling; Orchard from NU5; Ironwood from NU6.3) |
-| M8 | every path inserts into `HeaderViews::header_chain`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
+| M8 | every path inserts into `HeaderChain::anchored`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
 | M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
 
 M1–M7: `src/testing/chain.rs` (minting in `mint.rs`, the transaction rules in `ledger.rs`),
@@ -283,9 +282,10 @@ it through Zaino's own client, so every test above it runs the production reques
 envelope, batching, parsers and error classification:
 
 ```rust,ignore
-use zaino_source::testing::{raw_transaction, raw_transparent, Lie, ValidatorViews};
+use zaino_source::testing::{raw_transaction, raw_transparent, Lie};
 
 let validator = chain.validator(chain.tip());        // one node, following that tip
+let info = chain.blockchain_info(tip);               // its getblockchaininfo at `tip`
 let source = Arc::new(validator.client());           // a ZcashLegacyRpcClient, served in-process
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`

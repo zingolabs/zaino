@@ -13,7 +13,7 @@ use zcash_protocol::BlockHash;
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
 use crate::rules::{validate, Ancestor};
-use crate::testing::{insert, HeaderViews};
+use crate::testing::insert;
 use crate::{decode_header, Header, HeaderChain, Inserted, Params};
 use crate::{DecodeError, Fault, Rejected};
 
@@ -326,7 +326,8 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let five = builder.mine_empty(5);
     let orphan = builder.mine_empty(2);
     let below = builder.fork(height(1)).mine_empty(1).tip();
-    let mut chain = builder.header_chain(FinalityDepth::new(NonZeroU32::new(2).expect("nz")));
+    let depth = FinalityDepth::new(NonZeroU32::new(2).expect("nz"));
+    let mut chain = HeaderChain::anchored(&builder, depth);
     let one = |mock: &MockChain, at: BlockRef| [Arc::clone(mock.block(at.hash))];
     insert(&mut chain, &builder.blocks(five)).expect("trunk");
     chain.finalize(chain.finalizable().expect("6 headers, depth 2"));

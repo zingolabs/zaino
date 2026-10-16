@@ -28,7 +28,7 @@ pub struct Params {
 pub(crate) enum Difficulty {
     Adjusted,
     Limit,
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     Any,
 }
 
@@ -97,13 +97,13 @@ impl Params {
     }
 
     /// Same rules over another genesis (tests building their own chains)
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(crate) fn with_genesis(self, genesis: BlockHash) -> Self {
         Self { genesis, ..self }
     }
 
     /// Any valid nBits accepted (model tests: work varies per branch)
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(crate) fn any_bits(self) -> Self {
         Self { difficulty: Difficulty::Any, ..self }
     }

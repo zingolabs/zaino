@@ -671,13 +671,13 @@ mod tests {
         use std::num::NonZeroU32;
         use std::time::Duration;
 
-        use zaino_header_chain::testing::{insert, HeaderViews};
+        use zaino_header_chain::testing::insert;
+        use zaino_header_chain::HeaderChain;
         use zaino_primitives::types::Block;
         use zaino_proto::proto::service::{
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
-        use zaino_source::testing::ValidatorViews;
         use zaino_source::testing::{h, MockChain};
         use zcash_protocol::BlockHash;
 
@@ -695,7 +695,7 @@ mod tests {
         let hash = |block: &Block| block.header().hash;
 
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
-        let mut headers = blocks.header_chain(depth);
+        let mut headers = HeaderChain::anchored(&blocks, depth);
         let (verified, chain) = watch::channel(None);
         let validator = blocks.validator(a8);
         let schedule = blocks.schedule().upgrades;

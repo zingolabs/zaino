@@ -273,21 +273,14 @@ impl Node {
 
 // ---- the node: what it holds and what a test scripts ----
 
-/// [`MockValidator`]s on a [`MockChain`]
-pub trait ValidatorViews {
+impl MockChain {
     /// Best chain = genesis ..= `tip`, reachable, accepting, mempool empty, no latency
-    fn validator(&self, tip: BlockRef) -> MockValidator;
-
-    /// `getblockchaininfo` with `tip` as the validator's best
-    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo;
-}
-
-impl ValidatorViews for MockChain {
-    fn validator(&self, tip: BlockRef) -> MockValidator {
+    pub fn validator(&self, tip: BlockRef) -> MockValidator {
         MockValidator::following(self, tip)
     }
 
-    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
+    /// `getblockchaininfo` with `tip` as the validator's best
+    pub fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
         assert_eq!(self.block(tip.hash).block_ref(), tip, "tip held at its height");
         let upgrades = &self.schedule().upgrades;
         let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {

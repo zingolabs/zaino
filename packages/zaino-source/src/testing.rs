@@ -26,7 +26,7 @@ pub use chain::{Branch, MockChain, Schedule, Work};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mint::{commitment, nullifier};
 pub use upgrades::all_at;
-pub use validator::{Lie, MockValidator, ValidatorViews};
+pub use validator::{Lie, MockValidator};
 
 /// `BlockHeight` from a literal (`chain.fork(h(9))`)
 pub fn h(height: u32) -> BlockHeight {
