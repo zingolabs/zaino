@@ -67,8 +67,8 @@ pub mod layout;
 pub mod watermark;
 
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{OnceLock, PoisonError, RwLock};
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 
@@ -187,8 +187,7 @@ pub trait PersistentRecord: RecordLayout {
 /// namespace is supplied by the caller.
 ///
 /// `'static` because a codec is a type-level description of a format, never a
-/// borrowing value; [`format_version`] keys its per-process cache on the
-/// codec's type.
+/// borrowing value; [`format_version`] keys its cache on the codec's type.
 pub trait EntryCodec: 'static {
     /// The typed key.
     type Key;
@@ -266,27 +265,21 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// This is the on-disk version. It changes iff the encoded bytes of a covered
 /// value change, so the version can never silently desync from the format.
 ///
-/// A pure function of the codec, computed once per codec per process: every
+/// A pure function of the codec, computed once per codec per thread: every
 /// [`freshness`] check consults it, and rebuilding and hashing the samples on
-/// each read cost more than the read itself.
+/// each read cost more than the read itself. Per thread rather than per
+/// process so concurrent readers share nothing: a process-wide lock here put
+/// every read on all cores on one contended cache line.
 pub fn format_version<C: EntryCodec>() -> FormatVersion {
-    static VERSIONS: OnceLock<RwLock<HashMap<TypeId, FormatVersion>>> = OnceLock::new();
-    let versions = VERSIONS.get_or_init(Default::default);
+    thread_local! {
+        static VERSIONS: RefCell<HashMap<TypeId, FormatVersion>> = RefCell::new(HashMap::new());
+    }
     let codec = TypeId::of::<C>();
-    // Every critical section is one map operation on `Copy` values, so a
-    // poisoned lock still guards a consistent map.
-    if let Some(version) = versions
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&codec)
-    {
-        return *version;
+    if let Some(version) = VERSIONS.with(|versions| versions.borrow().get(&codec).copied()) {
+        return version;
     }
     let version = compute_format_version::<C>();
-    versions
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(codec, version);
+    VERSIONS.with(|versions| versions.borrow_mut().insert(codec, version));
     version
 }
 
