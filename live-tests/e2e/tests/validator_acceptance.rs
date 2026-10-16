@@ -43,9 +43,7 @@ async fn indexer_mempool_view_trails_validator_acceptance() -> Result<()> {
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let ua = recipient.address(Pool::Orchard.ztest()).await?;
     let txid = faucet
@@ -126,9 +124,7 @@ async fn received_note_spends_to_receiver(target: Pool, age: u32) -> Result<()> 
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let ua = recipient.address(Pool::Orchard.ztest()).await?;
     faucet.send(&ua, SEND_AMOUNT).await?;
@@ -137,12 +133,9 @@ async fn received_note_spends_to_receiver(target: Pool, age: u32) -> Result<()> 
     recipient.sync().await?;
 
     let target_addr = faucet.address(target.ztest()).await?;
-    recipient
-        .send(&target_addr, SPEND_AMOUNT)
-        .await
-        .with_context(|| {
-            format!("the validator must accept a spend of a note aged {age} to {target:?}")
-        })?;
+    recipient.send(&target_addr, SPEND_AMOUNT).await.with_context(|| {
+        format!("the validator must accept a spend of a note aged {age} to {target:?}")
+    })?;
     Ok(())
 }
 
@@ -183,9 +176,7 @@ async fn coinbase_spends_to_receiver(target: Pool, age: u32) -> Result<()> {
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     if age > 0 {
         let tip = validator.generate_blocks(age).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -193,14 +184,11 @@ async fn coinbase_spends_to_receiver(target: Pool, age: u32) -> Result<()> {
     }
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let target_addr = recipient.address(target.ztest()).await?;
-    faucet
-        .send(&target_addr, SPEND_AMOUNT)
-        .await
-        .with_context(|| {
-            format!(
-                "the validator must accept the miner's spend of a coinbase aged {age} to {target:?}"
-            )
-        })?;
+    faucet.send(&target_addr, SPEND_AMOUNT).await.with_context(|| {
+        format!(
+            "the validator must accept the miner's spend of a coinbase aged {age} to {target:?}"
+        )
+    })?;
     Ok(())
 }
 
