@@ -28,28 +28,27 @@ pub struct FullTransaction {
     tx_id: Vec<u8>,
 }
 
-/// Maps an iterator of shielded-pool actions to (nullifier, cmx,
-/// ephemeral_key, enc_ciphertext) byte tuples. A macro rather than an `fn`
-/// because the orchard and ironwood action types are distinct nominal types
-/// that only share field names, which functions cannot abstract over.
-macro_rules! actions_to_byte_tuples {
-    ($actions:expr) => {
-        $actions
-            .map(|action| {
-                let nullifier: [u8; 32] = action.nullifier.into();
-                let cmx: [u8; 32] = action.cm_x.into();
-                let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
-                let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
+/// An Orchard-shaped action as zebra's transaction accessors yield it.
+type AuthorizedAction =
+    orchard::Action<<orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth>;
 
-                (
-                    nullifier.to_vec(),
-                    cmx.to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
-                )
-            })
-            .collect()
-    };
+/// Maps an iterator of Orchard or Ironwood actions to (nullifier, cmx,
+/// ephemeral_key, enc_ciphertext) byte tuples.
+#[allow(clippy::complexity)]
+fn actions_to_byte_tuples<'a>(
+    actions: impl Iterator<Item = &'a AuthorizedAction>,
+) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    actions
+        .map(|action| {
+            let note = action.encrypted_note();
+            (
+                action.nullifier().to_bytes().to_vec(),
+                action.cmx().to_bytes().to_vec(),
+                note.epk_bytes.to_vec(),
+                note.enc_ciphertext.0.to_vec(),
+            )
+        })
+        .collect()
 }
 
 /// Collects `items()` mapped through `to_compact` when `included`, and the
@@ -213,7 +212,7 @@ impl FullTransaction {
     pub fn shielded_spends(&self) -> Vec<Vec<u8>> {
         self.transaction
             .sapling_nullifiers()
-            .map(|nullifier| <[u8; 32]>::from(*nullifier).to_vec())
+            .map(|nullifier| <[u8; 32]>::from(nullifier).to_vec())
             .collect()
     }
 
@@ -222,13 +221,10 @@ impl FullTransaction {
         self.transaction
             .sapling_outputs()
             .map(|output| {
-                let ephemeral_key: [u8; 32] = (&output.ephemeral_key).into();
-                let enc_ciphertext: [u8; 580] = output.enc_ciphertext.into();
-
                 (
-                    output.cm_u.to_bytes().to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
+                    output.cmu().to_bytes().to_vec(),
+                    output.ephemeral_key().0.to_vec(),
+                    output.enc_ciphertext().to_vec(),
                 )
             })
             .collect()
@@ -242,13 +238,13 @@ impl FullTransaction {
     /// Returns a vec of orchard actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
     #[allow(clippy::complexity)]
     pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
-        actions_to_byte_tuples!(self.transaction.orchard_actions())
+        actions_to_byte_tuples(self.transaction.orchard_actions())
     }
 
     /// Returns a vec of ironwood actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
     #[allow(clippy::complexity)]
     pub fn ironwood_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
-        actions_to_byte_tuples!(self.transaction.ironwood_actions())
+        actions_to_byte_tuples(self.transaction.ironwood_actions())
     }
 
     /// Returns the orchard anchor of the transaction.
@@ -256,8 +252,8 @@ impl FullTransaction {
     /// If this is the Coinbase transaction then this returns the AuthDataRoot of the block.
     pub fn anchor_orchard(&self) -> Option<Vec<u8>> {
         self.transaction
-            .orchard_shielded_data()
-            .map(|shielded_data| <[u8; 32]>::from(&shielded_data.shared_anchor).to_vec())
+            .orchard_anchor()
+            .map(|anchor| <[u8; 32]>::from(&anchor).to_vec())
     }
 
     /// Returns the transaction as raw bytes.

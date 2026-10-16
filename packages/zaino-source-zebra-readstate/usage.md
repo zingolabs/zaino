@@ -68,6 +68,19 @@ emits; the names come from the enum's serde renames. This produced a live-suite
 failure where the RPC path (which takes the name from the validator's reply) and
 this path disagreed on the same upgrade.
 
+## Zebra database version
+
+This adapter opens the state database format its `zebra-state` crate was
+built for — format **29** (`state/v29/<network>`) with zebra-state 15, the
+zebrad 7.0.0-rc.0 crates. It is a read-only secondary: it never creates or
+migrates a database, it only follows the primary zebrad owns. So zebrad must
+be at least the matching release **and must already have run once** to
+migrate its state (zebrad 7 moves a compatible v28 state into `state/v29`
+automatically). Pointed at a directory holding only an older format, the
+adapter fails at open rather than serving stale data. Keep a copy of the
+previous format directory if a zebrad rollback may be needed; a newer format
+cannot be read by an older zebrad.
+
 ## Related
 
 - ADR-0008 — structural capability, and why partial ports are not allowed.

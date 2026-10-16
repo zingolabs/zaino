@@ -13,7 +13,7 @@ use crate::IndexedBlock;
 use std::collections::HashSet;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
@@ -481,6 +481,11 @@ pub trait ChainIndexRpcExt: ChainIndex {
         &self,
         height: u32,
     ) -> impl std::future::Future<Output = Result<BlockSubsidy, Self::Error>>;
+
+    /// Returns the `getstandardfee` response.
+    fn get_standard_fee(
+        &self,
+    ) -> impl std::future::Future<Output = Result<StandardFee, Self::Error>>;
 
     /// Returns the `getmininginfo` response.
     fn get_mining_info(&self)

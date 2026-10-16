@@ -5,6 +5,7 @@ use crate::rpc::jsonrpc::wire::block_header::GetBlockHeader;
 use crate::rpc::jsonrpc::wire::block_subsidy::GetBlockSubsidy;
 use crate::rpc::jsonrpc::wire::mining_info::GetMiningInfoWire;
 use crate::rpc::jsonrpc::wire::peer_info::GetPeerInfo;
+use crate::rpc::jsonrpc::wire::standard_fee::GetStandardFee;
 use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -140,6 +141,14 @@ pub trait ZcashIndexerRpc {
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
     #[method(name = "getblocksubsidy")]
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, ErrorObjectOwned>;
+
+    /// Returns the fee per logical action wallets should pay for a transaction mined in the next block.
+    ///
+    /// A `zebrad` RPC with no legacy full node counterpart; the validator's policy is passed through.
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getstandardfee")]
+    async fn get_standard_fee(&self) -> Result<GetStandardFee, ErrorObjectOwned>;
 
     /// Returns the current block count in the best valid block chain.
     ///
@@ -710,6 +719,15 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .get_block_subsidy(height)
             .await
             .map(GetBlockSubsidy::from_domain)
+            .map_err(invalid_params_error_object)
+    }
+
+    async fn get_standard_fee(&self) -> Result<GetStandardFee, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_standard_fee()
+            .await
+            .map(GetStandardFee::from_domain)
             .map_err(invalid_params_error_object)
     }
 

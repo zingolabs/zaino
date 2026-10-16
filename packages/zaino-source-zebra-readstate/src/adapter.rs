@@ -489,7 +489,15 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
 
         let valid = parse_addresses(addresses)?;
 
-        let response = read(&self.state, ReadRequest::UtxosByAddresses(valid)).await?;
+        let response = read(
+            &self.state,
+            ReadRequest::UtxosByAddresses {
+                addresses: valid,
+                height_range: zebra_chain::block::Height(0)..=zebra_chain::block::Height::MAX,
+                max_entries: None,
+            },
+        )
+        .await?;
         let utxos = match response {
             ReadResponse::AddressUtxos(utxos) => utxos,
             _ => return Err(unexpected_response("UtxosByAddresses").into()),
@@ -1134,6 +1142,8 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
         // Every pool the interface has a slot for, in its order. Omitting one
         // reports it as zero, which is indistinguishable from an empty pool —
         // that is how ironwood read as empty across NU6.3 activation.
+        // The NU7 NSM reserve (`nsm_amount`) is deliberately absent: it is not
+        // issued supply, and zebra's own `getblockchaininfo` omits it too.
         let pools = [
             ("transparent", balance.transparent_amount()),
             ("sprout", balance.sprout_amount()),
@@ -1426,7 +1436,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     })?;
                 let output = previous
                     .outputs()
-                    .get(outpoint.index as usize)
+                    .into_iter()
+                    .nth(outpoint.index as usize)
                     .ok_or_else(|| {
                         ReadStateError::off_contract(format!(
                             "getblockdeltas: prevout index {} out of range for {}",

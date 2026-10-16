@@ -24,7 +24,7 @@ thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 incrementalmerkletree.workspace = true
 zcash_primitives.workspace = true
-sapling-crypto = "0.7.0"
+sapling-crypto.workspace = true
 
 [features]
 tracing = ["dep:tracing"]

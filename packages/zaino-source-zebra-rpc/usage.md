@@ -36,8 +36,8 @@ so the decision is made once per class rather than once per method:
 | `submission_rejection` | `sendrawtransaction` | `-22`, `-25..=-27` → the rejection reason |
 | `spent_info_rejection` | `getspentinfo` | `-5` → `NotSpent`, `-32601` → `Unsupported` |
 
-Ten methods deliberately use plain `call_parsed`: whole-node-state queries
-(`getblockchaininfo`, `getmininginfo`, …) where the only domain error is
+Eleven methods deliberately use plain `call_parsed`: whole-node-state queries
+(`getblockchaininfo`, `getmininginfo`, `getstandardfee`, …) where the only domain error is
 "validator not ready", which is not something the node reports with a code.
 
 ### Why reading `-8` as "absent" is safe — and where it is not
