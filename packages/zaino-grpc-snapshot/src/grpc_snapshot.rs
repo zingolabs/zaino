@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet, STALE_TIP_BLOCKS};
+use zaino_chainview::{
+    Agreement, ChainViewSnapshot, MempoolView, TrustedValidatorMeta, TrustedValidatorSet,
+    STALE_TIP_BLOCKS,
+};
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::View;
@@ -46,7 +49,7 @@ pub enum Unavailable {
 
 /// Serving judged from one snapshot (zainod adds held, provisioning, a stalled runtime)
 ///
-/// - `Syncing` also while every holder of best is catching up (best trails the network)
+/// - `Syncing` also while a validator catches up and none `Live` holds best
 /// - `Degraded` = serving a fresh proof-of-work-verified best no trusted validator vouches for
 ///   (peers')
 /// - `Down` = that best stale or not yet served
@@ -146,17 +149,20 @@ impl<V> GrpcSnapshot<V> {
 
     /// First match (`now_unix` = the clock):
     ///
-    /// - all validators down, or best unheld → `Degraded` while synced to a fresh best, else `Down`
-    /// - not synced, or best held only by validators catching up → `Syncing`
+    /// - all validators down, or best unheld and none catching up to it → `Degraded` while synced
+    ///   to a fresh best, else `Down`
+    /// - not synced, or no `Live` holder and a validator catching up → `Syncing`
     /// - else `Serving`
     pub fn serving_status(&self, now_unix: i64) -> ServingStatus {
         let trusted_validators = self.view.trusted_validators();
         let health = |at: usize| trusted_validators.get(at).map(|meta| meta.health);
+        let live_holder = self.tips.held_by.positions().any(|at| health(at) == Some(Health::Live));
+        let catching_up = !live_holder && trusted_validators.iter().any(catching_up_to_best);
         let reason = if !trusted_validators.is_empty()
             && trusted_validators.iter().all(|meta| meta.health == Health::Down)
         {
             Some(StatusReason::NoValidatorReachable)
-        } else if self.tips.best.is_some() && self.tips.held_by.is_empty() {
+        } else if self.tips.best.is_some() && self.tips.held_by.is_empty() && !catching_up {
             Some(StatusReason::TipNotHeld)
         } else {
             None
@@ -167,9 +173,6 @@ impl<V> GrpcSnapshot<V> {
                 false => ServingStatus::Down(reason),
             };
         }
-        let holders = || self.tips.held_by.positions().filter_map(health);
-        let catching_up = holders().any(|health| health == Health::CatchingUp)
-            && !holders().any(|health| health == Health::Live);
         match self.tips.synced && !catching_up {
             true => ServingStatus::Serving,
             false => ServingStatus::Syncing,
@@ -196,6 +199,12 @@ impl<V> GrpcSnapshot<V> {
             catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()
     }
+}
+
+/// `CatchingUp` on our chain (holding best, or `Behind` it): on its way to best, not lost
+fn catching_up_to_best(meta: &TrustedValidatorMeta) -> bool {
+    meta.health == Health::CatchingUp
+        && matches!(meta.agreement, Agreement::Agreed | Agreement::Ahead | Agreement::Behind)
 }
 
 impl<V: View> GrpcSnapshot<V> {

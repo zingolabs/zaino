@@ -345,6 +345,25 @@ impl ChainViewSnapshot {
         self
     }
 
+    /// Consumers' tests: holder `at` lags `by` blocks below best on our chain (`Behind`, not a
+    /// holder: header sync past it, e.g. peers ahead of a validator catching up)
+    #[cfg(any(test, feature = "testing"))]
+    pub fn behind(mut self, at: usize, by: u32) -> Self {
+        let chain = self.chain.clone().expect("behind a verified best");
+        let height = chain.best().height - by;
+        let hash = chain.hash_at(height).expect("a height on the verified chain");
+        let id = TrustedValidatorId::new(at).expect("a small position");
+        assert!(self.held_by.contains(id), "{at}: not a holder");
+        let meta =
+            self.trusted_validators.get_mut(at).expect("a holder = a configured trusted validator");
+        let info = meta.info.as_mut().expect("a holder answered");
+        info.tip = BlockRef { hash, height };
+        info.estimated_height = height;
+        meta.agreement = meta.agreement_with(Some(&chain));
+        self.held_by.remove(id);
+        self
+    }
+
     /// An answering validator claims past best, not shown off our chain (best ≠ the network's
     /// tip yet: header sync short of it, e.g. anchored `depth` below its claim at boot)
     pub fn claimed_past_best(&self) -> bool {

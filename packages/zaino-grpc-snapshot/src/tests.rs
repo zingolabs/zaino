@@ -204,6 +204,42 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     }
 }
 
+/// Best = peers' A12, served A4, validator 0 at A4 (no holder): catching up on our chain =
+/// `Syncing`; `Live` there, or catching up off our chain = `Down(TipNotHeld)`
+#[test]
+fn a_validator_catching_up_behind_best_is_syncing_but_live_or_diverged_is_down() {
+    let mut builder = MockChain::regtest();
+    let a12 = builder.mine_empty(12);
+    let a = builder.blocks(a12);
+    let now = i64::from(a[12].header().time);
+    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+    let none: [(IndexKind, DiskView); 0] = [];
+    let chain = Arc::new(builder.verified(a12));
+    let params = ChainParams::of(&builder);
+    let indexed =
+        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a[4].block_ref(), params, none));
+    let held = ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
+    let not_held = ServingStatus::Down(StatusReason::TipNotHeld);
+    let cases = [
+        (
+            "catching up behind best",
+            held.clone().behind(0, 8).trusted_validator(0, Health::CatchingUp, 8),
+            ServingStatus::Syncing,
+        ),
+        ("live behind best", held.clone().behind(0, 8), not_held),
+        (
+            "catching up off our chain",
+            held.ahead(0, 1, false).trusted_validator(0, Health::CatchingUp, 0),
+            not_held,
+        ),
+    ];
+    for (case, view, expected) in cases {
+        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+        assert!(grpc_snapshot.tips().held_by.is_empty(), "{case}: best held");
+        assert_eq!(grpc_snapshot.serving_status(now), expected, "{case}");
+    }
+}
+
 /// Synced to a fresh best held by validator 0: each (holder, other) health → serving status + notes
 #[test]
 fn each_holder_health_gives_its_standing_and_notes() {

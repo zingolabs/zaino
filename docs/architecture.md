@@ -253,7 +253,7 @@ one and reads only it, so no answer mixes two moments.
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
 - `GrpcSnapshot::serving_status` judges serving from the same load: `Down` when no trusted validator
   vouches for the best block, `Degraded` for that cause while synced to a fresh best (peers carry
-  the tip). States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
+  the tip). A validator catching up on our chain is on its way to best, not missing: `Syncing`. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
   what each method answers meanwhile: [rpc_api.md](./rpc_api.md).
 
 ### `GetMempoolStream`
