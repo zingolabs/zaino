@@ -279,6 +279,12 @@ impl Deferral {
                 );
             }
         }
+        let deferring: Vec<&str> = state.deferrable.iter().map(Namespace::as_str).collect();
+        tracing::info!(
+            enabled = policy.enabled,
+            namespaces = ?deferring,
+            "entering bulk mode"
+        );
     }
 
     /// Partition `ops` for a commit: direct ops (applied in the transaction) and
