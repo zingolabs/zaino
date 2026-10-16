@@ -49,6 +49,7 @@ pub use watermark_repair::{WatermarkRepair, WatermarkRepairError};
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
@@ -64,7 +65,7 @@ use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
 use zaino_indexes::indexes::txids::{self, TxidsIndex};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
-    decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
+    decode_key, decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
 };
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, Height, HeightRange, PoolActivations,
@@ -290,14 +291,13 @@ where
         // Eager, not lazy: the whole range is read up front. Streaming in
         // chunks with backpressure is the known follow-up for wide ranges.
         let blocks: Vec<Result<CompactBlock, ReadError>> = match self.backend.reader() {
-            Ok(reader) => (u32::from(range.start)..=u32::from(range.end))
-                .filter_map(|height| Height::try_from(height).ok())
-                .filter_map(|height| {
-                    read_compact_block::<B>(&reader, height)
-                        .map_err(Into::into)
-                        .transpose()
-                })
-                .collect(),
+            Ok(reader) => match read_compact_range::<B>(&reader, range) {
+                Ok(blocks) => blocks
+                    .into_iter()
+                    .map(|block| block.map_err(Into::into))
+                    .collect(),
+                Err(e) => vec![Err(e.into())],
+            },
             Err(e) => vec![Err(ReadError::Fatal(format!("open reader: {e}")))],
         };
         Box::pin(futures::stream::iter(blocks))
@@ -441,6 +441,17 @@ pub(crate) fn serviceability_gate<B: Backend>(
     Ok(None)
 }
 
+/// The seven index values a compact block composes from, all at one height.
+struct BlockParts {
+    header: <HeadersIndex as EntryCodec>::Value,
+    chain_metadata: <ChainMetadataIndex as EntryCodec>::Value,
+    txids: <TxidsIndex as EntryCodec>::Value,
+    transparent: <TransparentDataIndex as EntryCodec>::Value,
+    sapling: <SaplingIndex as EntryCodec>::Value,
+    orchard: <OrchardIndex as EntryCodec>::Value,
+    ironwood: <IronwoodIndex as EntryCodec>::Value,
+}
+
 /// Compose a true `CompactBlock` at `height` on read from the granular indexes
 /// (the `Blocks` capability's backing set): headers + txids + per-pool compact
 /// data, plus the `ChainMetadata` tree sizes. Returns `None` when no block is
@@ -465,23 +476,183 @@ fn read_compact_block<B: Backend>(
     };
 
     // Companions are granted co-present with the header (atomic commit).
-    let chain_metadata = require::<ChainMetadataIndex, B>(
-        reader,
-        chain_metadata::ID.into(),
-        height,
-        "chain_metadata",
-    )?;
-    let txids = require::<TxidsIndex, B>(reader, txids::ID.into(), height, "txids")?.0;
-    let transparent = require::<TransparentDataIndex, B>(
-        reader,
-        transparent_data::ID.into(),
-        height,
-        "transparent",
-    )?
-    .0;
-    let sapling = require::<SaplingIndex, B>(reader, sapling::ID.into(), height, "sapling")?.0;
-    let orchard = require::<OrchardIndex, B>(reader, orchard::ID.into(), height, "orchard")?.0;
-    let ironwood = require::<IronwoodIndex, B>(reader, ironwood::ID.into(), height, "ironwood")?.0;
+    let parts = BlockParts {
+        header,
+        chain_metadata: require::<ChainMetadataIndex, B>(
+            reader,
+            chain_metadata::ID.into(),
+            height,
+            "chain_metadata",
+        )?,
+        txids: require::<TxidsIndex, B>(reader, txids::ID.into(), height, "txids")?,
+        transparent: require::<TransparentDataIndex, B>(
+            reader,
+            transparent_data::ID.into(),
+            height,
+            "transparent",
+        )?,
+        sapling: require::<SaplingIndex, B>(reader, sapling::ID.into(), height, "sapling")?,
+        orchard: require::<OrchardIndex, B>(reader, orchard::ID.into(), height, "orchard")?,
+        ironwood: require::<IronwoodIndex, B>(reader, ironwood::ID.into(), height, "ironwood")?,
+    };
+    assemble(height, parts).map(Some)
+}
+
+/// Compose every compact block in `range` on read, one range scan per index
+/// rather than seven point lookups per height.
+///
+/// Each index is checked for freshness once and walked once over the range;
+/// the columns are then paired by height and each height composed as
+/// [`read_compact_block`] composes it, under the same rules: a height with no
+/// header is not in the result, a header without a companion is `Fatal`, and a
+/// height whose entries fail to decode is an error item in its place. A failed
+/// scan fails the whole range.
+fn read_compact_range<B: Backend>(
+    reader: &B::Reader,
+    range: HeightRange,
+) -> Result<Vec<Result<CompactBlock, BlockReadError>>, BlockReadError> {
+    let mut headers = scan_column::<HeadersIndex, B>(reader, headers::ID.into(), range)?;
+    let mut chain_metadata =
+        scan_column::<ChainMetadataIndex, B>(reader, chain_metadata::ID.into(), range)?;
+    let mut txids = scan_column::<TxidsIndex, B>(reader, txids::ID.into(), range)?;
+    let mut transparent =
+        scan_column::<TransparentDataIndex, B>(reader, transparent_data::ID.into(), range)?;
+    let mut sapling = scan_column::<SaplingIndex, B>(reader, sapling::ID.into(), range)?;
+    let mut orchard = scan_column::<OrchardIndex, B>(reader, orchard::ID.into(), range)?;
+    let mut ironwood = scan_column::<IronwoodIndex, B>(reader, ironwood::ID.into(), range)?;
+
+    let mut blocks = Vec::new();
+    for (slot, header) in headers.iter_mut().enumerate() {
+        let Some(header) = header.take() else {
+            continue;
+        };
+        let height = range_height(range, slot)?;
+        let block = header.and_then(|header| {
+            let parts = BlockParts {
+                header,
+                chain_metadata: companion(&mut chain_metadata, slot, height, "chain_metadata")?,
+                txids: companion(&mut txids, slot, height, "txids")?,
+                transparent: companion(&mut transparent, slot, height, "transparent")?,
+                sapling: companion(&mut sapling, slot, height, "sapling")?,
+                orchard: companion(&mut orchard, slot, height, "orchard")?,
+                ironwood: companion(&mut ironwood, slot, height, "ironwood")?,
+            };
+            assemble(height, parts)
+        });
+        blocks.push(block);
+    }
+    Ok(blocks)
+}
+
+/// One index's entries over a height range, by offset from the range's start:
+/// `None` where the index holds nothing, the decoded value or its decode error
+/// where it does.
+type Column<V> = Vec<Option<Result<V, BlockReadError>>>;
+
+/// Walk one height-keyed index over `range` with a single range scan, decoding
+/// each entry in place from the backend's borrowed bytes.
+///
+/// Applies the codec version guard once for the whole range: a stale index
+/// reads as holding nothing, as [`read_index_value`] reads it per height.
+fn scan_column<C, B>(
+    reader: &B::Reader,
+    namespace: Namespace,
+    range: HeightRange,
+) -> Result<Column<C::Value>, BlockReadError>
+where
+    C: EntryCodec<Key = BlockHeight>,
+    B: Backend,
+{
+    let first = u32::from(range.start);
+    let Some(width) = u32::from(range.end)
+        .checked_sub(first)
+        .and_then(|span| span.checked_add(1))
+    else {
+        return Ok(Vec::new());
+    };
+    let width = usize::try_from(width)
+        .map_err(|_| BlockReadError::Fatal("range wider than the address space".to_owned()))?;
+    let mut column: Column<C::Value> = std::iter::repeat_with(|| None).take(width).collect();
+    if freshness::<C>(reader, namespace)
+        .map_err(|e| BlockReadError::Transient(format!("freshness {}: {e}", namespace.as_str())))?
+        == Freshness::Stale
+    {
+        return Ok(column);
+    }
+
+    let start = encode_key::<C>(&BlockHeight::new(u64::from(first)));
+    let end = encode_key::<C>(&BlockHeight::new(u64::from(u32::from(range.end)) + 1));
+    let mut stray_key = None;
+    reader
+        .scan_range(namespace, &start, &end, &mut |key, value| {
+            let slot = decode_key::<C>(key)
+                .ok()
+                .and_then(|height| u64::from(height).checked_sub(u64::from(first)))
+                .and_then(|offset| usize::try_from(offset).ok())
+                .filter(|slot| *slot < width);
+            let Some(slot) = slot else {
+                stray_key = Some(key.to_vec());
+                return ControlFlow::Break(());
+            };
+            column[slot] = Some(decode_value::<C>(value).map_err(|e| {
+                BlockReadError::Transient(format!("decode {}: {e}", namespace.as_str()))
+            }));
+            ControlFlow::Continue(())
+        })
+        .map_err(|e| BlockReadError::Transient(format!("read {}: {e}", namespace.as_str())))?;
+    match stray_key {
+        Some(key) => Err(BlockReadError::Transient(format!(
+            "read {}: key {key:02x?} is not a height in the scanned range",
+            namespace.as_str()
+        ))),
+        None => Ok(column),
+    }
+}
+
+/// The height at `slot` of `range`.
+fn range_height(range: HeightRange, slot: usize) -> Result<Height, BlockReadError> {
+    u32::try_from(slot)
+        .ok()
+        .and_then(|offset| u32::from(range.start).checked_add(offset))
+        .and_then(|height| Height::try_from(height).ok())
+        .ok_or_else(|| BlockReadError::Fatal(format!("slot {slot} is outside the range")))
+}
+
+/// Take the companion entry a present header grants at `slot`. Absent →
+/// `Fatal`: the block exists but this index does not, which is corruption.
+fn companion<V>(
+    column: &mut Column<V>,
+    slot: usize,
+    height: Height,
+    name: &str,
+) -> Result<V, BlockReadError> {
+    column
+        .get_mut(slot)
+        .and_then(Option::take)
+        .unwrap_or_else(|| Err(missing_companion(height, name)))
+}
+
+fn missing_companion(height: Height, name: &str) -> BlockReadError {
+    BlockReadError::Fatal(format!(
+        "inconsistent index at height {}: header present but no {name}",
+        u32::from(height),
+    ))
+}
+
+/// Compose the compact block at `height` from its index values, checking the
+/// per-transaction alignment the atomic commit grants.
+fn assemble(height: Height, parts: BlockParts) -> Result<CompactBlock, BlockReadError> {
+    let BlockParts {
+        header,
+        chain_metadata,
+        txids,
+        transparent,
+        sapling,
+        orchard,
+        ironwood,
+    } = parts;
+    let (txids, transparent, sapling, orchard, ironwood) =
+        (txids.0, transparent.0, sapling.0, orchard.0, ironwood.0);
 
     // Per-tx alignment is granted (same tx list): all pools have `txids.len()`.
     let count = txids.len();
@@ -563,7 +734,7 @@ fn read_compact_block<B: Backend>(
         )
         .collect();
 
-    Ok(Some(CompactBlock {
+    Ok(CompactBlock {
         hash: header.hash,
         prev_hash: header.prev_hash,
         height: u32::from(height),
@@ -571,7 +742,7 @@ fn read_compact_block<B: Backend>(
         bits: header.bits,
         transactions,
         chain_metadata,
-    }))
+    })
 }
 
 /// Read a height-keyed index value, mapping errors to [`BlockReadError`]
@@ -600,12 +771,7 @@ where
     C: EntryCodec<Key = BlockHeight>,
     B: Backend,
 {
-    read_present::<C, B>(reader, namespace, height)?.ok_or_else(|| {
-        BlockReadError::Fatal(format!(
-            "inconsistent index at height {}: header present but no {name}",
-            u32::from(height),
-        ))
-    })
+    read_present::<C, B>(reader, namespace, height)?.ok_or_else(|| missing_companion(height, name))
 }
 
 #[cfg(test)]
@@ -1022,5 +1188,177 @@ mod readiness_tests {
             ),
             "the readiness gate is lifted after finish_bulk"
         );
+    }
+}
+
+#[cfg(test)]
+mod compact_range_tests {
+    //! The range read composes each height exactly as the point read does:
+    //! the same blocks, the same gaps, the same corruption verdicts.
+
+    use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
+    use zaino_indexes::indexes::headers::{self, HeaderValue, HeadersIndex};
+    use zaino_indexes::indexes::ironwood::{self, IronwoodBlockValue, IronwoodIndex};
+    use zaino_indexes::indexes::orchard::{self, OrchardBlockValue, OrchardIndex};
+    use zaino_indexes::indexes::sapling::{self, SaplingBlockValue, SaplingIndex};
+    use zaino_indexes::indexes::transparent_data::{
+        self, TransparentBlockValue, TransparentDataIndex,
+    };
+    use zaino_indexes::indexes::txids::{self, TxidsIndex, TxidsValue};
+    use zaino_persistence::in_memory::InMemoryBackend;
+    use zaino_persistence::{Backend, BackendWriter, Namespace, WriteOp};
+    use zaino_persistence_codec::{put, version_stamp, EntryCodec};
+    use zaino_primitives::types::{
+        BlockHash, ChainMetadata, CompactDifficulty, Height, HeightRange, TransactionId,
+    };
+    use zaino_sync::primitives::BlockHeight;
+
+    use super::{read_compact_block, read_compact_range};
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
+    fn range(start: u32, end: u32) -> HeightRange {
+        HeightRange {
+            start: height(start),
+            end: height(end),
+        }
+    }
+
+    /// Each index's namespace and its format-version stamp.
+    fn stamps() -> [(Namespace, WriteOp); 7] {
+        fn stamp<C: EntryCodec>(namespace: Namespace) -> (Namespace, WriteOp) {
+            (namespace, version_stamp::<C>(namespace))
+        }
+        [
+            stamp::<HeadersIndex>(headers::ID.into()),
+            stamp::<ChainMetadataIndex>(chain_metadata::ID.into()),
+            stamp::<TxidsIndex>(txids::ID.into()),
+            stamp::<TransparentDataIndex>(transparent_data::ID.into()),
+            stamp::<SaplingIndex>(sapling::ID.into()),
+            stamp::<OrchardIndex>(orchard::ID.into()),
+            stamp::<IronwoodIndex>(ironwood::ID.into()),
+        ]
+    }
+
+    /// Every index entry of an empty-transaction block at `h`, except `skip`.
+    fn block_ops(h: u32, skip: Option<&str>) -> Vec<WriteOp> {
+        let bh = BlockHeight::new(u64::from(h));
+        let seed = u8::try_from(h).expect("small test height");
+        let entries = [
+            (
+                "headers",
+                put::<HeadersIndex>(
+                    headers::ID.into(),
+                    &bh,
+                    &HeaderValue {
+                        hash: BlockHash::from([seed; 32]),
+                        prev_hash: BlockHash::from([seed.wrapping_sub(1); 32]),
+                        time: h,
+                        bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+                    },
+                ),
+            ),
+            (
+                "chain_metadata",
+                put::<ChainMetadataIndex>(chain_metadata::ID.into(), &bh, &ChainMetadata::ZERO),
+            ),
+            (
+                "txids",
+                put::<TxidsIndex>(txids::ID.into(), &bh, &TxidsValue(Vec::new())),
+            ),
+            (
+                "transparent",
+                put::<TransparentDataIndex>(
+                    transparent_data::ID.into(),
+                    &bh,
+                    &TransparentBlockValue(Vec::new()),
+                ),
+            ),
+            (
+                "sapling",
+                put::<SaplingIndex>(sapling::ID.into(), &bh, &SaplingBlockValue(Vec::new())),
+            ),
+            (
+                "orchard",
+                put::<OrchardIndex>(orchard::ID.into(), &bh, &OrchardBlockValue(Vec::new())),
+            ),
+            (
+                "ironwood",
+                put::<IronwoodIndex>(ironwood::ID.into(), &bh, &IronwoodBlockValue(Vec::new())),
+            ),
+        ];
+        entries
+            .into_iter()
+            .filter(|(name, _)| Some(*name) != skip)
+            .map(|(_, op)| op)
+            .collect()
+    }
+
+    /// Heights 1, 3 and 6 hold whole blocks; 2 holds nothing; 4 has a header
+    /// but no sapling entry; 5 lists a txid its pools do not. Every index is
+    /// stamped with its format version except those named in `unstamped`.
+    fn backend(unstamped: &[Namespace]) -> InMemoryBackend {
+        let backend = InMemoryBackend::new();
+        let mut ops: Vec<WriteOp> = stamps()
+            .into_iter()
+            .filter(|(namespace, _)| !unstamped.contains(namespace))
+            .map(|(_, stamp)| stamp)
+            .collect();
+        for h in [1, 3, 6] {
+            ops.extend(block_ops(h, None));
+        }
+        ops.extend(block_ops(4, Some("sapling")));
+        ops.extend(block_ops(5, Some("txids")));
+        ops.push(put::<TxidsIndex>(
+            txids::ID.into(),
+            &BlockHeight::new(5),
+            &TxidsValue(vec![TransactionId::from([5u8; 32])]),
+        ));
+        backend
+            .writer()
+            .expect("a writer")
+            .commit(ops)
+            .expect("commit the fixture");
+        backend
+    }
+
+    /// The point read over each height of `range`, absent heights dropped:
+    /// what the range read must equal.
+    fn point_reads(reader: &<InMemoryBackend as Backend>::Reader, range: HeightRange) -> String {
+        let blocks: Vec<_> = (u32::from(range.start)..=u32::from(range.end))
+            .filter_map(|h| read_compact_block::<InMemoryBackend>(reader, height(h)).transpose())
+            .collect();
+        format!("{blocks:?}")
+    }
+
+    #[test]
+    fn a_range_read_matches_the_point_reads() {
+        let backend = backend(&[]);
+        let reader = backend.reader().expect("a reader");
+        for (start, end) in [(0, 7), (1, 1), (2, 2), (3, 6), (4, 5), (7, 9)] {
+            let ranged = read_compact_range::<InMemoryBackend>(&reader, range(start, end))
+                .expect("the scans succeed");
+            assert_eq!(
+                format!("{ranged:?}"),
+                point_reads(&reader, range(start, end)),
+                "range {start}..={end}"
+            );
+        }
+        let whole =
+            read_compact_range::<InMemoryBackend>(&reader, range(0, 7)).expect("the scans succeed");
+        let verdicts: Vec<_> = whole.iter().map(Result::is_ok).collect();
+        assert_eq!(verdicts, [true, true, false, false, true]);
+    }
+
+    #[test]
+    fn a_stale_header_index_serves_no_blocks() {
+        let backend = backend(&[headers::ID.into()]);
+        let reader = backend.reader().expect("a reader");
+        let ranged =
+            read_compact_range::<InMemoryBackend>(&reader, range(0, 7)).expect("the scans succeed");
+        assert!(ranged.is_empty());
+        assert_eq!(point_reads(&reader, range(0, 7)), "[]");
     }
 }

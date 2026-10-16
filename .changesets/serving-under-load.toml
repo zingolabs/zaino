@@ -221,3 +221,14 @@ the lock, and the reader table holds 2,048 slots instead of LMDB's 126, which \
 the blocking pool alone could exceed. Taking a reader no longer copies the \
 namespace map.
 """
+
+[[changes]]
+crate = "zaino-store"
+kind = "fix"
+description = """
+`stream_compact` reads a height range with one range scan per index instead of \
+seven point lookups per height, checking each index's format version once per \
+range rather than once per lookup and decoding entries in place from the \
+backend's borrowed bytes. A 100-height step through the LMDB store takes about \
+30% less time.
+"""
