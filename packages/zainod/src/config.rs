@@ -313,7 +313,7 @@ impl P2pConfig {
     pub(crate) fn peers(&self, network: NetworkType) -> zaino_peers::PeerConfig {
         zaino_peers::PeerConfig {
             peer_target: self.peer_target,
-            initial_peers: (!self.initial_peers.is_empty()).then(|| self.initial_peers.clone()),
+            initial_peers: self.initial_peers.clone(),
             cache_dir: Some(self.cache_dir.clone()),
             ..zaino_peers::PeerConfig::new(network)
         }
@@ -1147,13 +1147,14 @@ cache_dir = "/var/cache/zaino/peers"
             (
                 NetworkType::Test,
                 12,
-                Some(vec!["203.0.113.7:18233".to_owned()]),
+                vec!["203.0.113.7:18233".to_owned()],
                 Some(PathBuf::from("/var/cache/zaino/peers")),
             )
         );
 
         let defaults = DaemonConfig::default();
         assert!(!defaults.p2p.enabled, "off unless asked");
-        assert_eq!(defaults.p2p.peers(NetworkType::Main).initial_peers, None, "DNS seeders");
+        let seeded = defaults.p2p.peers(NetworkType::Main).initial_peers;
+        assert!(seeded.is_empty(), "DNS seeders");
     }
 }
