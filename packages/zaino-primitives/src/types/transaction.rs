@@ -1,7 +1,7 @@
 //! Transaction and per-pool data
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
-use zcash_protocol::TxId;
+use zcash_protocol::{ShieldedPool, TxId};
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
 
@@ -36,6 +36,39 @@ impl Transaction {
             + slots(&self.sapling.outputs)
             + slots(&self.orchard.actions)
             + slots(&self.ironwood.actions)
+    }
+
+    /// Nullifiers revealed in `pool`, in order (sapling spends, orchard / ironwood actions)
+    pub fn nullifiers(&self, pool: ShieldedPool) -> impl Iterator<Item = Nullifier> + '_ {
+        let (spends, actions) = match pool {
+            ShieldedPool::Sapling => (&self.sapling.spends[..], &[][..]),
+            ShieldedPool::Orchard => (&[][..], &self.orchard.actions[..]),
+            ShieldedPool::Ironwood => (&[][..], &self.ironwood.actions[..]),
+        };
+        let actions = actions.iter().map(|action| action.nullifier);
+        spends.iter().map(|spend| spend.nullifier).chain(actions)
+    }
+
+    /// Leaves appended to `pool`'s tree, in order (sapling `cmu`s, orchard / ironwood `cmx`s)
+    pub fn note_commitments(
+        &self,
+        pool: ShieldedPool,
+    ) -> impl Iterator<Item = NoteCommitment> + '_ {
+        let (outputs, actions) = match pool {
+            ShieldedPool::Sapling => (&self.sapling.outputs[..], &[][..]),
+            ShieldedPool::Orchard => (&[][..], &self.orchard.actions[..]),
+            ShieldedPool::Ironwood => (&[][..], &self.ironwood.actions[..]),
+        };
+        let actions = actions.iter().map(|action| action.cmx);
+        outputs.iter().map(|output| output.cmu).chain(actions)
+    }
+
+    pub fn value_balance(&self, pool: ShieldedPool) -> ZatBalance {
+        match pool {
+            ShieldedPool::Sapling => self.sapling.value_balance,
+            ShieldedPool::Orchard => self.orchard.value_balance,
+            ShieldedPool::Ironwood => self.ironwood.value_balance,
+        }
     }
 }
 

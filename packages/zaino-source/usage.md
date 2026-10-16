@@ -251,7 +251,7 @@ workspace.
 | M4 | exactly one coinbase, in slot 0, spending nothing and stating no fee |
 | M5 | `Work::Limit` = every nBits the regtest limit; `outweigh()` = best right after its first block, by the least work that wins |
 | M6 | each spend = an output unspent on its own branch (an ancestor, or earlier in the block); nullifiers fresh on the branch; chain value pools never negative (ZIP 209); a stated fee = the derived one |
-| M7 | pool data only once its upgrade is active (Sapling; Orchard from NU5; Ironwood from NU6.3) |
+| M7 | pool data only once its `ShieldedPool::activation_upgrade` is active |
 | M8 | every path inserts into `HeaderChain::anchored`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
 | M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
 

@@ -16,7 +16,7 @@ use std::{
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store};
-use zaino_primitives::types::{Block, NoteCommitment, PerPool, Transaction, TreeRoot, TreeSizes};
+use zaino_primitives::types::{Block, PerPool, TreeRoot, TreeSizes};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
@@ -30,7 +30,7 @@ use crate::{
     nodes::{self, slot, Slot, MERKLE_DEPTH, NODE},
     subtree_table,
     subtrees::{self, SubtreeEntry},
-    TreeStateReader, HEIGHTS, POOLS,
+    TreeStateReader, HEIGHTS,
 };
 
 const NAME: &str = IndexKind::TreeState.name();
@@ -175,7 +175,7 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
         for block in blocks {
             let height = block.header().height;
             let txs = block.transactions().iter();
-            for commitment in txs.flat_map(|tx| commitments(tx, pool)) {
+            for commitment in txs.flat_map(|tx| tx.note_commitments(pool)) {
                 let leaf = nodes::decode(&commitment.0);
                 leaves.push(leaf.ok_or(FoldError::Commitment { height })?);
             }
@@ -215,17 +215,6 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
     }
 }
 
-/// `tx`'s note commitments to `pool`'s tree, in order (sapling `cmu`s, orchard / ironwood `cmx`s)
-fn commitments(tx: &Transaction, pool: ShieldedPool) -> impl Iterator<Item = NoteCommitment> + '_ {
-    let (outputs, actions) = match pool {
-        ShieldedPool::Sapling => (&tx.sapling.outputs[..], &[][..]),
-        ShieldedPool::Orchard => (&[][..], &tx.orchard.actions[..]),
-        ShieldedPool::Ironwood => (&[][..], &tx.ironwood.actions[..]),
-    };
-    let actions = actions.iter().map(|action| action.cmx);
-    outputs.iter().map(|output| output.cmu).chain(actions)
-}
-
 /// `retained` per pool per block → each block's delta, every table appended at its end
 fn split<V: SequenceRead>(
     parent: &TreeStateReader<V>,
@@ -238,7 +227,7 @@ fn split<V: SequenceRead>(
         let levels = (0..MERKLE_DEPTH).map(|level| parent.len(level_table(pool, level)));
         (levels.collect::<Vec<u64>>(), parent.len(subtree_table(pool)))
     };
-    let mut ends = POOLS.map(|pool| (pool, ends_of(pool)));
+    let mut ends = ShieldedPool::ALL.map(|pool| (pool, ends_of(pool)));
     for (at, (block, out)) in blocks.iter().zip(out).enumerate() {
         let header = block.header();
         sizes = sizes.advance(block);
@@ -521,21 +510,18 @@ mod tests {
         assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
     }
 
-    type Trees = (CommitmentTreeBytes, CommitmentTreeBytes, CommitmentTreeBytes);
-
     /// Oracle: the three trees both clients parse, every commitment of `blocks` appended in order
-    fn naive_trees(blocks: &[Arc<Block>]) -> Trees {
+    fn naive_trees(blocks: &[Arc<Block>]) -> PerPool<CommitmentTreeBytes> {
         let txs = || blocks.iter().flat_map(|block| block.transactions());
         let sapling = txs().flat_map(|tx| &tx.sapling.outputs).map(|output| output.cmu);
         let orchard = txs().flat_map(|tx| &tx.orchard.actions).map(|action| action.cmx);
         let ironwood = txs().flat_map(|tx| &tx.ironwood.actions).map(|action| action.cmx);
         // ironwood reuses orchard's node
-        let sapling = naive_tree::<sapling_crypto::Node>(sapling);
-        (
-            sapling,
-            naive_tree::<MerkleHashOrchard>(orchard),
-            naive_tree::<MerkleHashOrchard>(ironwood),
-        )
+        PerPool {
+            sapling: naive_tree::<sapling_crypto::Node>(sapling),
+            orchard: naive_tree::<MerkleHashOrchard>(orchard),
+            ironwood: naive_tree::<MerkleHashOrchard>(ironwood),
+        }
     }
 
     fn naive_tree<H: Hashable + HashSer + Clone>(
@@ -591,8 +577,7 @@ mod tests {
         writer.stop().await.expect("stops at Shutdown");
 
         let trees = |view: DiskView, at: u32| {
-            let trees = TreeStateReader::new(view).treestate(h(at)).expect("held");
-            (trees.sapling, trees.orchard, trees.ironwood)
+            TreeStateReader::new(view).treestate(h(at)).expect("held").trees
         };
         let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
@@ -679,8 +664,8 @@ mod tests {
             for height in 0..sent {
                 let served = reader.treestate(h(height));
                 let served = served.unwrap_or_else(|error| panic!("{label}: {error}"));
-                let trees = (served.sapling, served.orchard, served.ironwood);
-                assert_eq!(trees, trees_through(height as usize), "{label}: trees at {height}");
+                let expected = trees_through(height as usize);
+                assert_eq!(served.trees, expected, "{label}: trees at {height}");
             }
             let absent = Err(ServeError::NotFound { height: h(sent) });
             assert_eq!(reader.treestate(h(sent)), absent, "{label}: past the tip");
@@ -724,7 +709,7 @@ mod tests {
             |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
         // level-16 root of the subtree holding the tip of the orchard tree served at `height`
         let tree_root = |view: &TreeStateReader<DiskView>, height: u32| {
-            let tree = view.treestate(h(height)).expect("served").orchard;
+            let tree = view.treestate(h(height)).expect("served").trees.orchard;
             let frontier = read_commitment_tree::<MerkleHashOrchard, _, 32>(tree.as_bytes())
                 .expect("parses")
                 .to_frontier();
@@ -781,7 +766,7 @@ mod tests {
         }
         let handle = writer.stop().await.expect("stops at Shutdown");
         let reader = TreeStateReader::new(handle.durable_view());
-        let trees = reader.treestate(h(1)).expect("served");
+        let trees = reader.treestate(h(1)).expect("served").trees;
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())
             .expect("the clients' own parser accepts it");

@@ -4,18 +4,14 @@
 //!   hashing
 
 use zaino_primitives::types::PerPool;
-use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
+use zcash_protocol::consensus::{BlockHeight, Parameters};
 use zcash_protocol::local_consensus::LocalNetwork;
 
-/// Height each pool's tree begins: Sapling, NU5 (orchard), NU6.3 (ironwood), `None` = unscheduled
+/// Height each pool's tree begins (`None` = unscheduled)
 ///
 /// - zebra's `z_gettreestate` omits a pool below its upgrade (lightwalletd then answers `""`)
 pub fn pool_activations(schedule: &LocalNetwork) -> PerPool<Option<BlockHeight>> {
-    PerPool {
-        sapling: schedule.activation_height(NetworkUpgrade::Sapling),
-        orchard: schedule.activation_height(NetworkUpgrade::Nu5),
-        ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
-    }
+    PerPool::from_fn(|pool| schedule.activation_height(pool.activation_upgrade()))
 }
 
 /// Small (transport maps these onto gRPC codes)

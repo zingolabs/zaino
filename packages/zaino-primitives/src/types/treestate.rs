@@ -3,15 +3,15 @@
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
+use super::PerPool;
+
 /// Every pool always present
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Treestate {
     pub block_hash: BlockHash,
     pub height: BlockHeight,
     pub time: u32,
-    pub sapling: CommitmentTreeBytes,
-    pub orchard: CommitmentTreeBytes,
-    pub ironwood: CommitmentTreeBytes,
+    pub trees: PerPool<CommitmentTreeBytes>,
 }
 
 /// One pool's `write_commitment_tree` bytes (`000000` = active and empty)

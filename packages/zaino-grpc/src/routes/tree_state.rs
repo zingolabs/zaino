@@ -12,7 +12,7 @@ use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::{IndexKind, OverlayView, PinnedView};
-use zaino_primitives::types::{CommitmentTreeBytes, SubtreeRoot, Treestate};
+use zaino_primitives::types::{SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, ShieldedPool};
@@ -208,8 +208,8 @@ where
 fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     let activations = params.activations();
     let active = |pool| activations.get(pool).is_some_and(|from| from <= state.height);
-    let tree = |pool, tree: &CommitmentTreeBytes| match active(pool) {
-        true => const_hex::encode(tree.as_bytes()),
+    let tree = |pool| match active(pool) {
+        true => const_hex::encode(state.trees.get(pool).as_bytes()),
         false => String::new(),
     };
     wire::frame(&service::TreeState {
@@ -217,9 +217,9 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
         height: u64::from(state.height),
         hash: state.block_hash.to_string(),
         time: state.time,
-        sapling_tree: tree(ShieldedPool::Sapling, &state.sapling),
-        orchard_tree: tree(ShieldedPool::Orchard, &state.orchard),
-        ironwood_tree: tree(ShieldedPool::Ironwood, &state.ironwood),
+        sapling_tree: tree(ShieldedPool::Sapling),
+        orchard_tree: tree(ShieldedPool::Orchard),
+        ironwood_tree: tree(ShieldedPool::Ironwood),
     })
 }
 

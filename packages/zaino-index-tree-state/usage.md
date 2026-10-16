@@ -60,8 +60,8 @@ Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nf
   record per durable height. `run` panics on a failed commit or an unfoldable
   block ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - `pool_activations(&LocalNetwork)` gives each pool's first height as a
-  `PerPool<Option<BlockHeight>>`: Sapling, NU5 (Orchard), NU6.3 (Ironwood), or `None` when
-  unscheduled.
+  `PerPool<Option<BlockHeight>>` (each pool's `ShieldedPool::activation_upgrade`), or `None`
+  when unscheduled.
 - zainod builds it only when `index.tree_state.enabled`. Disabled, the three
   methods answer `UNIMPLEMENTED`.
 

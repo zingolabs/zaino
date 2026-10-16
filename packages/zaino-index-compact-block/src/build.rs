@@ -5,7 +5,9 @@
 
 use bytes::Bytes;
 use prost::Message;
-use zaino_primitives::types::{Block, BlockFees, Fee, OrchardAction, Transaction, TreeSizes};
+use zaino_primitives::types::{
+    Block, BlockFees, Fee, OrchardAction, Transaction, TreeSize, TreeSizes,
+};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
 use zcash_protocol::value::Zatoshis;
@@ -36,16 +38,28 @@ pub fn encode_compact_block(block: &Block, fees: &BlockFees, sizes: &TreeSizes) 
             .zip(0..)
             .map(|((tx, fee), index)| compact_tx(index, tx, paid(fee)))
             .collect(),
-        chain_metadata: Some(compact_formats::ChainMetadata {
-            sapling_commitment_tree_size: u32::from(sizes.sapling),
-            orchard_commitment_tree_size: u32::from(sizes.orchard),
-            ironwood_commitment_tree_size: u32::from(sizes.ironwood),
-        }),
+        chain_metadata: Some(encode_chain_metadata(sizes)),
     };
 
     let mut framed = Vec::with_capacity(FRAME_HEADER + compact.encoded_len());
     frame_into(&mut framed, |out| compact.encode_raw(out));
     Bytes::from(framed)
+}
+
+fn encode_chain_metadata(sizes: &TreeSizes) -> compact_formats::ChainMetadata {
+    compact_formats::ChainMetadata {
+        sapling_commitment_tree_size: u32::from(sizes.sapling),
+        orchard_commitment_tree_size: u32::from(sizes.orchard),
+        ironwood_commitment_tree_size: u32::from(sizes.ironwood),
+    }
+}
+
+pub(crate) fn decode_chain_metadata(metadata: &compact_formats::ChainMetadata) -> TreeSizes {
+    TreeSizes {
+        sapling: TreeSize::from(metadata.sapling_commitment_tree_size),
+        orchard: TreeSize::from(metadata.orchard_commitment_tree_size),
+        ironwood: TreeSize::from(metadata.ironwood_commitment_tree_size),
+    }
 }
 
 /// `tx` → `CompactTx`
