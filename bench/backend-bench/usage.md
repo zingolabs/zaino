@@ -68,6 +68,8 @@ Two constraints on this, both of which invalidate a comparison if ignored:
 | `compose_block_x{N}` | the same fan-out from N threads at once (`BACKEND_BENCH_THREADS`, default 16), a reader taken per block as the store does. The workload that shows contention between readers — a lock or a shared cache line — which every single-threaded body above is blind to. |
 | `store_compose` | one served compact block through the real `zaino-store` `StoreReader`: the reader, each lookup's format-freshness check, the decodes and the assembly. Above the backend fan-out by the codec and store layers' cost. |
 | `store_compose_x{N}` | `store_compose` from N threads, a snapshot per thread as each request has its own. |
+| `store_range` | one `GetBlockRange` step: 100 consecutive compact blocks through the store's `stream_compact`, throughput per block. |
+| `store_range_x{N}` | `store_range` from N threads, a snapshot per thread. |
 | `scan_namespace` | the whole-namespace walk pipeline state loading does today — and the shape a ranged read would replace, so this is the number a `range` addition has to beat. |
 | the `on-disk growth` lines | on-disk bytes beside logical bytes written, per backend, so write amplification is visible. Printed once at the start of a run, not timed. |
 

@@ -13,7 +13,10 @@ use criterion::{
 };
 
 use backend_bench::data::Shape;
-use backend_bench::store::{height, snapshot, store_compose, store_compose_concurrent};
+use backend_bench::store::{
+    height, snapshot, store_compose, store_compose_concurrent, store_range, store_range_concurrent,
+    RANGE_STEP,
+};
 use backend_bench::target::{namespaces, BenchTarget, InMemory, Lmdb};
 use backend_bench::workloads::{
     commit_batches, compose_block, compose_concurrent, read_by_hash, read_by_height,
@@ -168,6 +171,44 @@ where
     });
 }
 
+/// One `GetBlockRange` step of `RANGE_STEP` blocks through the store.
+fn range_one<T: BenchTarget>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale)
+where
+    T::Backend: Clone + 'static,
+{
+    let store = populated::<T>(scale);
+    let snapshot = snapshot(&store).unwrap_or_else(|e| panic!("snapshot: {e}"));
+    let mut index = 0usize;
+    group.bench_function(BenchmarkId::new(T::NAME, scale.label()), |b| {
+        b.iter(|| {
+            index = index.wrapping_add(37);
+            store_range(&store, &snapshot, index).unwrap_or_else(|e| panic!("range: {e}"))
+        });
+    });
+}
+
+/// Range steps from many threads at once, a snapshot per thread.
+fn range_many<T: BenchTarget + Sync>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale)
+where
+    T::Backend: Clone + 'static,
+{
+    let store = populated::<T>(scale);
+    let (threads, _) = concurrency();
+    group.bench_function(BenchmarkId::new(T::NAME, scale.label()), |b| {
+        b.iter_custom(|iters| {
+            (0..iters)
+                .map(|_| {
+                    store_range_concurrent(&store, threads, RANGE_STEPS_PER_THREAD)
+                        .unwrap_or_else(|e| panic!("range: {e}"))
+                })
+                .sum()
+        });
+    });
+}
+
+/// Range steps each thread serves per measured run.
+const RANGE_STEPS_PER_THREAD: usize = 10;
+
 /// A whole-namespace walk — where a ranged read would slot in.
 fn scan<T: BenchTarget>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale) {
     let store = populated::<T>(scale);
@@ -291,6 +332,28 @@ fn store_compose_concurrent_group(c: &mut Criterion) {
     group.finish();
 }
 
+fn store_range_group(c: &mut Criterion) {
+    let scale = Scale::from_env();
+    let mut group = c.benchmark_group("store_range");
+    // Throughput in blocks, so a step reads as per-block cost.
+    group.throughput(Throughput::Elements(u64::from(RANGE_STEP)));
+    range_one::<Lmdb>(&mut group, &scale);
+    range_one::<InMemory>(&mut group, &scale);
+    group.finish();
+}
+
+fn store_range_concurrent_group(c: &mut Criterion) {
+    let scale = Scale::from_env();
+    let (threads, _) = concurrency();
+    let mut group = c.benchmark_group(format!("store_range_x{threads}"));
+    group.throughput(Throughput::Elements(
+        u64::try_from(threads * RANGE_STEPS_PER_THREAD).unwrap_or(u64::MAX) * u64::from(RANGE_STEP),
+    ));
+    range_many::<Lmdb>(&mut group, &scale);
+    range_many::<InMemory>(&mut group, &scale);
+    group.finish();
+}
+
 fn scan_group(c: &mut Criterion) {
     let scale = Scale::from_env();
     let mut group = c.benchmark_group("scan_namespace");
@@ -317,6 +380,8 @@ mod harness_entry {
         compose_concurrent_group,
         store_compose_group,
         store_compose_concurrent_group,
+        store_range_group,
+        store_range_concurrent_group,
         scan_group,
     );
 }

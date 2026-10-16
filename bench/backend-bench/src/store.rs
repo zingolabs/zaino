@@ -11,9 +11,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
 use zaino_indexes::sets::compact_blocks::CompactBlocks;
 use zaino_persistence::Backend;
-use zaino_primitives::types::{BlockSelector, CompactBlock, Height};
+use zaino_primitives::types::{BlockSelector, CompactBlock, Height, HeightRange};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_store::{StoreReader, StoreSnapshot};
 
@@ -51,6 +52,78 @@ where
     futures::executor::block_on(snapshot.compact_block(BlockSelector::Height(height)))
         .map_err(|e| BenchError::Generate(format!("store read: {e}")))?
         .ok_or_else(|| BenchError::Generate(format!("no block at {}", u32::from(height))))
+}
+
+/// Heights one range step covers: `GetBlockRange` streams a range in steps of
+/// this many heights, each one `stream_compact` call on the store.
+pub const RANGE_STEP: u32 = 100;
+
+/// One range step of [`RANGE_STEP`] blocks starting at block `index`, through
+/// the store's `stream_compact`, as one `GetBlockRange` step reads it. Returns
+/// the blocks served.
+pub fn store_range<T: BenchTarget>(
+    store: &Populated<T>,
+    snapshot: &StoreSnapshot<T::Backend, CompactBlocks>,
+    index: usize,
+) -> Result<usize, BenchError>
+where
+    T::Backend: 'static,
+{
+    let blocks = u32::try_from(store.blocks()).unwrap_or(u32::MAX);
+    let last_start = blocks.saturating_sub(RANGE_STEP);
+    let start = u32::try_from(index).unwrap_or_default() % last_start.max(1);
+    let range = HeightRange {
+        start: Height::try_from(start).unwrap_or(Height::GENESIS),
+        end: Height::try_from(start + RANGE_STEP - 1).unwrap_or(Height::GENESIS),
+    };
+    futures::executor::block_on(async {
+        let mut served = 0usize;
+        let mut stream = snapshot.stream_compact(range);
+        while let Some(block) = stream.next().await {
+            std::hint::black_box(block.map_err(|e| BenchError::Generate(format!("range: {e}")))?);
+            served += 1;
+        }
+        Ok(served)
+    })
+}
+
+/// [`store_range`] from `threads` threads at once, each over its own snapshot,
+/// serving `steps` range steps. Returns the wall time of the run.
+pub fn store_range_concurrent<T>(
+    store: &Populated<T>,
+    threads: usize,
+    steps: usize,
+) -> Result<Duration, BenchError>
+where
+    T: BenchTarget + Sync,
+    T::Backend: Clone + 'static,
+{
+    let snapshots = (0..threads)
+        .map(|_| snapshot(store))
+        .collect::<Result<Vec<_>, _>>()?;
+    let started = Instant::now();
+    std::thread::scope(|scope| -> Result<(), BenchError> {
+        let workers: Vec<_> = snapshots
+            .iter()
+            .enumerate()
+            .map(|(thread, snapshot)| {
+                scope.spawn(move || -> Result<(), BenchError> {
+                    for step in 0..steps {
+                        let index = thread.wrapping_mul(7919).wrapping_add(step * 37);
+                        std::hint::black_box(store_range(store, snapshot, index)?);
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| BenchError::Generate("a range thread panicked".to_owned()))??;
+        }
+        Ok(())
+    })?;
+    Ok(started.elapsed())
 }
 
 /// [`store_compose`] from `threads` threads at once, each over its own
@@ -94,7 +167,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{height, snapshot, store_compose};
+    use super::{height, snapshot, store_compose, store_range, RANGE_STEP};
     use crate::data::Shape;
     use crate::target::{InMemory, Lmdb};
     use crate::workloads::Populated;
@@ -116,5 +189,16 @@ mod tests {
         }
         check::<Lmdb>();
         check::<InMemory>();
+    }
+
+    /// A range step serves every height in it, in order.
+    #[test]
+    fn a_range_step_serves_every_block_in_it() {
+        let store = Populated::<Lmdb>::build(Shape::Typical, 7, 300, 64).expect("populate");
+        let snapshot = snapshot(&store).expect("snapshot");
+        for index in [0, 57, 199] {
+            let served = store_range(&store, &snapshot, index).expect("range");
+            assert_eq!(served, usize::try_from(RANGE_STEP).expect("small"));
+        }
     }
 }
