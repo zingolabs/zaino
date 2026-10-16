@@ -13,61 +13,17 @@ use zaino_primitives::display::{ByteSize, Human};
 
 use super::{log::Landed, writer::Merged, SegmentMeta};
 
+/// Registered by `crate::METRICS`
 pub(crate) mod metric_names {
-    pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
-    pub(super) const MERGING: &str = "zaino.lsm.merging";
-    pub(super) const STALL_AT: &str = "zaino.lsm.stall_at";
-    pub(super) const BATCH_ROWS_TOTAL: &str = "zaino.lsm.batch_rows_total";
-    pub(super) const MERGE_ROWS_TOTAL: &str = "zaino.lsm.merge_rows_total";
-    pub(super) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
-    pub(super) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
+    pub(crate) const SEGMENTS: &str = "zaino.lsm.segments";
+    pub(crate) const MERGING: &str = "zaino.lsm.merging";
+    pub(crate) const STALL_AT: &str = "zaino.lsm.stall_at";
+    pub(crate) const BATCH_ROWS_TOTAL: &str = "zaino.lsm.batch_rows_total";
+    pub(crate) const MERGE_ROWS_TOTAL: &str = "zaino.lsm.merge_rows_total";
+    pub(crate) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
+    pub(crate) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
     pub(crate) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
     pub(crate) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
-}
-
-/// `# HELP` registrations for every metric this module emits
-pub(crate) fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
-
-    describe_gauge!(
-        metric_names::SEGMENTS,
-        "Committed segments a read searches, by index, table and size tier (⌊log_fanout rows⌋)"
-    );
-    describe_gauge!(
-        metric_names::MERGING,
-        "1 = a background merge of this size tier is running, by index, table and tier"
-    );
-    describe_gauge!(
-        metric_names::STALL_AT,
-        "Segments a merging tier may list before a commit waits on its merge, by index and table"
-    );
-    describe_counter!(
-        metric_names::BATCH_ROWS_TOTAL,
-        "Rows written as new segments by commits, by index and table"
-    );
-    describe_counter!(
-        metric_names::MERGE_ROWS_TOTAL,
-        "Rows rewritten by finished background merges, by index and table"
-    );
-    describe_counter!(
-        metric_names::MERGE_BYTES_TOTAL,
-        Unit::Bytes,
-        "Segment bytes written by finished background merges, by index and table"
-    );
-    describe_counter!(
-        metric_names::MERGE_CANCELLED_TOTAL,
-        "Key value + tombstone pairs dropped by finished background merges, by index and table"
-    );
-    describe_histogram!(
-        metric_names::MERGE_DURATION_SECONDS,
-        Unit::Seconds,
-        "One background merge, read through sealed and linked, by index, table and input tier"
-    );
-    describe_histogram!(
-        metric_names::STALL_DURATION_SECONDS,
-        Unit::Seconds,
-        "Commit time spent waiting on a merge that fell two windows behind, by index and table"
-    );
 }
 
 /// One map's label values (table names repeat across indexes: `index` keeps series apart)

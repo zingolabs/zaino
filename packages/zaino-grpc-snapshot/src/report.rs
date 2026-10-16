@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use zaino_chainview::{Agreement, ChainViewSnapshot, MempoolState};
 
 use zaino_persistence::View;
+use zaino_primitives::metric::Metric;
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, TrustedValidatorId};
 
@@ -71,60 +72,59 @@ pub fn notes<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Vec<String> {
     flags.chain(stale).chain(ending).collect()
 }
 
-/// `# HELP` registrations for every gauge [`emit_gauges`] sets
-pub fn describe_metrics() {
-    use metrics::describe_gauge;
+/// Every gauge [`emit_gauges`] sets
+pub const METRICS: &[Metric] = {
+    use names::*;
 
-    describe_gauge!(names::BEST_TIP, "Height of the header chain's most-work verified block");
-    describe_gauge!(
-        names::FETCH_HEIGHT,
-        "Last finalized block height the follower sent to the index writers"
-    );
-    describe_gauge!(
-        names::INDEX_SYNCED,
-        "1 = served at the verified tip, 0 = the served tip trails it (still syncing), by index"
-    );
-    describe_gauge!(
-        names::ENDPOINT_STATE,
-        "1 on the endpoint's health as of its last poll, by endpoint"
-    );
-    describe_gauge!(
-        names::AGREEMENT,
-        "1 on where the endpoint's chain stands against the verified best block, by endpoint"
-    );
-    describe_gauge!(names::TIP_HEIGHT, "Endpoint's own best-chain tip height, by endpoint");
-    describe_gauge!(
-        names::STALE_BLOCKS,
-        "Blocks the endpoint's tip trails its own clock-based network estimate, by endpoint"
-    );
-    describe_gauge!(names::PEERS, "Endpoint's getpeerinfo connections, by endpoint and direction");
-    describe_gauge!(names::PUSH_STREAM, "1 while the endpoint's indexer push streams are up");
-    describe_gauge!(
-        names::RELEASE,
-        "1 on the endpoint's release, by endpoint, build and user agent"
-    );
-    describe_gauge!(
-        names::END_OF_SERVICE_HEIGHT,
-        "Height past which the endpoint's release halts (mainnet; absent = not enforced/unknown)"
-    );
-    describe_gauge!(
-        names::TIP_HOLDERS,
-        "Trusted validators holding the verified best block (0 = no tip: nothing served)"
-    );
-    describe_gauge!(
-        names::FINALITY_PAUSED,
-        "1 while the finalized boundary waits for a trusted validator to hold it"
-    );
-    describe_gauge!(
-        names::SHARED_OUTBOUND_MIN,
-        "Fewest outbound peers any two live endpoints share; 0 = possible partition"
-    );
-    describe_gauge!(
-        names::MEMPOOL_TRANSACTIONS,
-        "Held mempool transactions, by state (verified = a trusted listing; quorum = a peer \
-         quorum's, no trusted listing; ours_unverified = our relay, neither)"
-    );
-}
+    &[
+        Metric::gauge(BEST_TIP, "Height of the header chain's most-work verified block"),
+        Metric::gauge(
+            FETCH_HEIGHT,
+            "Last finalized block height the follower sent to the index writers",
+        ),
+        Metric::gauge(
+            INDEX_SYNCED,
+            "1 = served at the verified tip, 0 = the served tip trails it (still syncing), by index",
+        ),
+        Metric::gauge(
+            ENDPOINT_STATE,
+            "1 on the endpoint's health as of its last poll, by endpoint",
+        ),
+        Metric::gauge(
+            AGREEMENT,
+            "1 on where the endpoint's chain stands against the verified best block, by endpoint",
+        ),
+        Metric::gauge(TIP_HEIGHT, "Endpoint's own best-chain tip height, by endpoint"),
+        Metric::gauge(
+            STALE_BLOCKS,
+            "Blocks the endpoint's tip trails its own clock-based network estimate, by endpoint",
+        ),
+        Metric::gauge(PEERS, "Endpoint's getpeerinfo connections, by endpoint and direction"),
+        Metric::gauge(PUSH_STREAM, "1 while the endpoint's indexer push streams are up"),
+        Metric::gauge(RELEASE, "1 on the endpoint's release, by endpoint, build and user agent"),
+        Metric::gauge(
+            END_OF_SERVICE_HEIGHT,
+            "Height past which the endpoint's release halts (mainnet; absent = not enforced/unknown)",
+        ),
+        Metric::gauge(
+            TIP_HOLDERS,
+            "Trusted validators holding the verified best block (0 = no tip: nothing served)",
+        ),
+        Metric::gauge(
+            names::FINALITY_PAUSED,
+            "1 while the finalized boundary waits for a trusted validator to hold it",
+        ),
+        Metric::gauge(
+            SHARED_OUTBOUND_MIN,
+            "Fewest outbound peers any two live endpoints share; 0 = possible partition",
+        ),
+        Metric::gauge(
+            MEMPOOL_TRANSACTIONS,
+            "Held mempool transactions, by state (verified = a trusted listing; quorum = a peer \
+             quorum's, no trusted listing; ours_unverified = our relay, neither)",
+        ),
+    ]
+};
 
 /// Every gauge from `grpc_snapshot` + `progress`, set at scrape (fresh, no mirror tasks)
 pub fn emit_gauges<V: View>(grpc_snapshot: &GrpcSnapshot<V>, progress: &SyncProgress) {

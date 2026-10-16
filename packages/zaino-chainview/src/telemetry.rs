@@ -5,6 +5,9 @@
 
 use std::collections::HashSet;
 
+use metrics::Unit;
+use zaino_primitives::metric::Metric;
+
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
 use zaino_traffic::{Health, TrustedValidatorId};
 
@@ -24,43 +27,37 @@ mod names {
 const SPREAD_BUCKETS: &[f64] =
     &[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
 
-/// Per-histogram bucket edges (installed by the daemon's exporter)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
-    (names::FIRST_TRUSTED, SPREAD_BUCKETS),
-    (names::ALL_TRUSTED, SPREAD_BUCKETS),
-    (names::RESIDENCE, SPREAD_BUCKETS),
-    (names::SUBMISSION_ATTEMPTS, &[1.0, 2.0, 3.0, 4.0, 6.0, 8.0]),
-];
-
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    use metrics::{describe_counter, describe_histogram};
-
-    describe_counter!(
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = &[
+    Metric::counter(
         names::SUBMISSIONS,
         "Submissions ended, by outcome (spread = seen past its entries; unconfirmed = accepted, \
-         spread unobservable; rejected; unreachable)"
-    );
-    describe_histogram!(
+         spread unobservable; rejected; unreachable)",
+    ),
+    Metric::histogram(
         names::SUBMISSION_ATTEMPTS,
-        "Entries one submission pushed to before it ended, by outcome"
-    );
-    describe_histogram!(
+        &[1.0, 2.0, 3.0, 4.0, 6.0, 8.0],
+        "Entries one submission pushed to before it ended, by outcome",
+    ),
+    Metric::histogram(
         names::FIRST_TRUSTED,
-        metrics::Unit::Seconds,
-        "First sighting to first trusted listing, by origin (ours = our relay)"
-    );
-    describe_histogram!(
+        SPREAD_BUCKETS,
+        "First sighting to first trusted listing, by origin (ours = our relay)",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
         names::ALL_TRUSTED,
-        metrics::Unit::Seconds,
-        "First trusted listing to every mempool-reading trusted validator listing it"
-    );
-    describe_histogram!(
+        SPREAD_BUCKETS,
+        "First trusted listing to every mempool-reading trusted validator listing it",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
         names::RESIDENCE,
-        metrics::Unit::Seconds,
-        "First sighting to leaving the view, by how (block = at a tip move; unlisted = evicted)"
-    );
-}
+        SPREAD_BUCKETS,
+        "First sighting to leaving the view, by how (block = at a tip move; unlisted = evicted)",
+    )
+    .unit(Unit::Seconds),
+];
 
 /// Raised conditions as of one merge (`zaino-grpc-snapshot` logs each edge)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

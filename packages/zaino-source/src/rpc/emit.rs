@@ -3,6 +3,9 @@
 
 use std::time::Duration;
 
+use metrics::Unit;
+use zaino_primitives::metric::Metric;
+
 use crate::FailureMode;
 
 const DURATION_SECONDS: &str = "zaino.validator_rpc.duration_seconds";
@@ -10,30 +13,22 @@ const IN_FLIGHT: &str = "zaino.validator_rpc.in_flight";
 const RECEIVED_BYTES: &str = "zaino.validator_rpc.received_bytes_total";
 const FAILURES_TOTAL: &str = "zaino.validator_rpc.failures_total";
 
-/// `(metric, bucket edges)` for the exporter (ms-scale `getblock` → minutes-scale heavy calls)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[(
-    DURATION_SECONDS,
-    &[1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 50e-3, 100e-3, 250e-3, 1.0, 5.0, 30.0, 120.0],
-)];
-
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    metrics::describe_histogram!(
+/// Every metric this crate emits (duration buckets: ms-scale `getblock` → minutes-scale heavy calls)
+pub const METRICS: &[Metric] = &[
+    Metric::histogram(
         DURATION_SECONDS,
-        metrics::Unit::Seconds,
-        "Validator JSON-RPC call (one attempt), by validator and method"
-    );
-    metrics::describe_gauge!(IN_FLIGHT, "Validator JSON-RPC calls in flight, by validator");
-    metrics::describe_counter!(
-        RECEIVED_BYTES,
-        metrics::Unit::Bytes,
-        "Validator JSON-RPC response bytes, by validator"
-    );
-    metrics::describe_counter!(
+        &[1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 50e-3, 100e-3, 250e-3, 1.0, 5.0, 30.0, 120.0],
+        "Validator JSON-RPC call (one attempt), by validator and method",
+    )
+    .unit(Unit::Seconds),
+    Metric::gauge(IN_FLIGHT, "Validator JSON-RPC calls in flight, by validator"),
+    Metric::counter(RECEIVED_BYTES, "Validator JSON-RPC response bytes, by validator")
+        .unit(Unit::Bytes),
+    Metric::counter(
         FAILURES_TOTAL,
-        "Validator JSON-RPC calls that settled on an error, by validator, method and failure"
-    );
-}
+        "Validator JSON-RPC calls that settled on an error, by validator, method and failure",
+    ),
+];
 
 /// One call in flight (gauge down on drop, whatever ends the call)
 pub(crate) struct InFlight(metrics::Gauge);

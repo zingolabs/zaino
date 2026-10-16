@@ -83,7 +83,7 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ## Reporting
 
 ```rust,ignore
-describe_metrics();                                     // once, at boot
+METRICS.iter().for_each(Metric::describe);              // once, at boot
 emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then render
 ```
 

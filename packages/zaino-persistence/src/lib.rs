@@ -26,7 +26,7 @@ mod thread;
 mod write_buffer;
 
 pub use disk::{manifest_fits, DiskEngine, DiskStore, DiskView, TableFootprint};
-pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use emit::METRICS;
 pub use lsm::{Fanout, LsmConfig, SegmentError};
 pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{AppliedLayer, Entry, Overlay, OverlayView};

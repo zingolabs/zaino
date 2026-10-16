@@ -33,7 +33,7 @@ use crate::core::{Indexes, Input, NfsCore, Output, Publication};
 use crate::fold::{fold_block, Folded};
 use crate::per_index::PerIndex;
 
-pub use crate::emit::describe_metrics;
+pub use crate::emit::METRICS;
 pub use crate::indexes::{
     fold, schema, write_buffer, writer, FeeWiring, FoldError, RunFuture, WriterRun,
 };

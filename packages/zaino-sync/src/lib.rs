@@ -19,7 +19,7 @@ mod progress;
 pub mod testing;
 mod writer;
 
-pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use emit::METRICS;
 pub(crate) use fetch::fetch_at;
 pub use fetch::{fetch, Checked};
 pub use finalized_stream::{FinalizedStream, Run, Step, Subscription, Weight};

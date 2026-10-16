@@ -32,7 +32,7 @@ pub use queries::{
     MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
     TransactionResponse,
 };
-pub use rpc::{describe_metrics, METRIC_BUCKETS};
+pub use rpc::METRICS;
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
 pub use standard_fee::StandardFee;
 pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};

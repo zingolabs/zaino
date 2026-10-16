@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use zaino_primitives::metric::Metric;
 use zaino_primitives::types::Block;
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
@@ -30,6 +31,14 @@ use crate::member::{Health, Limits, MemberId, Synced, TrustedValidatorId};
 
 /// Block ask open this long without an answer → warn, and again each period after
 const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+const MISANSWERS_TOTAL: &str = "zaino.traffic.misanswers_total";
+
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = &[Metric::counter(
+    MISANSWERS_TOTAL,
+    "Answers that failed the caller's check (sender benched), by member and class",
+)];
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …, `address` = its name in
 /// logs and status)
@@ -361,7 +370,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer");
         let class = ticket.class.label();
         let labels = [("member", member), ("class", class.to_owned())];
-        metrics::counter!("zaino_traffic_misanswers_total", &labels).increment(1);
+        metrics::counter!(MISANSWERS_TOTAL, &labels).increment(1);
         self.shared.step(Input::Report(ticket));
     }
 

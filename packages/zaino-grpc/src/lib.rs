@@ -33,7 +33,7 @@ mod wire;
 
 pub use admission::{AdmissionReport, AdmissionState};
 pub use client::TrustedProxies;
-pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
+pub use emit::{sent_bytes_total, METRICS};
 pub use health::Health;
 pub use lifetime::{Hold, Retire};
 pub use limits::GrpcLimits;

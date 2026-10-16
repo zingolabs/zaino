@@ -25,8 +25,8 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
-    Publisher, Standing, Tips,
+    emit_gauges, notes, Down, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots, Publisher, Standing,
+    Tips, METRICS,
 };
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -133,7 +133,7 @@ fn one_snapshot_renders_every_gauge() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let render = recorder.handle();
     metrics::with_local_recorder(&recorder, || {
-        describe_metrics();
+        METRICS.iter().for_each(|metric| metric.describe());
         emit_gauges(&grpc_snapshot, &progress);
     });
     let rendered = render.render();

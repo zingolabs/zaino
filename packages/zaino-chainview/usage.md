@@ -196,8 +196,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 ## Telemetry
 
-zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` gauges are
-`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only (buckets: `METRIC_BUCKETS`):
+zainod registers each from `METRICS` (help, unit, buckets). The `zaino.chainview.*` gauges are
+`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only:
 
 | Metric | Kind | Labels |
 |---|---|---|
