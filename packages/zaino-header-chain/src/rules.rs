@@ -151,8 +151,7 @@ pub(crate) fn in_context(
 ) -> Result<(), Rejected> {
     let bits = header.bits();
     let time = header.time();
-    let needed =
-        (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN);
+    let needed = needed_context(params, height);
     if context.len() < needed {
         return Err(Rejected::ShortContext { held: context.len(), needed });
     }
@@ -177,6 +176,12 @@ pub(crate) fn in_context(
         return Err(Rejected::FromTheFuture { time, max: horizon });
     }
     Ok(())
+}
+
+/// Ancestors [`in_context`] reads at `height`: every one near genesis, else the window + one
+/// median span
+pub(crate) fn needed_context(params: &Params, height: BlockHeight) -> usize {
+    (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN)
 }
 
 /// Equihash (200, 9) over the bytes before the nonce, the nonce, the solution

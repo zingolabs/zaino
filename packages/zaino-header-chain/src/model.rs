@@ -27,14 +27,13 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 
 use proptest::prelude::*;
-use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
+use zaino_primitives::protocol::median_time_past;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::testing::{all_at, MockChain};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::params::AVERAGING_WINDOW;
-use crate::rules::{header_work, Rejected, CONTEXT};
+use crate::rules::{header_work, needed_context, Rejected, CONTEXT};
 use crate::{decode_header, BestTip, Header, HeaderChain, Inserted, Params, Record, VerifiedChain};
 
 const DEPTH: u32 = 3;
@@ -204,16 +203,13 @@ impl Model {
 
     /// What the chain owes an untrusted `header`: the rules a valid `MockChain` header can break
     /// here (too few ancestors held, a time not past the median: an edited one), else `offer`
-    fn offer_untrusted(&mut self, header: &Header) -> Result<Inserted, Rejected> {
+    fn offer_untrusted(&mut self, header: &Header, params: &Params) -> Result<Inserted, Rejected> {
         let prev = header.prev_hash();
         let known = self.alive.contains_key(&header.hash())
             || self.tail().iter().any(|record| record.hash == header.hash());
         let parent = self.parent(prev);
         if let (false, Ok((at, _))) = (known, parent) {
-            let (held, needed) = (
-                self.held_ancestors(prev),
-                (u32::from(at) as usize).min(AVERAGING_WINDOW + MEDIAN_TIME_SPAN),
-            );
+            let (held, needed) = (self.held_ancestors(prev), needed_context(params, at));
             if held < needed {
                 return Err(Rejected::ShortContext { held, needed });
             }
@@ -493,7 +489,10 @@ fn run(moves: Vec<Move>) {
         }
         let (expected, got) = match trusted {
             true => (model.offer(header), chain.insert(header)),
-            false => (model.offer_untrusted(header), chain.insert_untrusted(header, &params, NOW)),
+            false => (
+                model.offer_untrusted(header, &params),
+                chain.insert_untrusted(header, &params, NOW),
+            ),
         };
         assert_eq!(got, expected, "{context}: insert {header:?} (trusted {trusted})");
         chain.check();
