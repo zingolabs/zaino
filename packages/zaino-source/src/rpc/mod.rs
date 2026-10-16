@@ -14,6 +14,6 @@ pub(crate) use client::Served;
 pub(crate) use client::{Call, RpcClient, RpcClientConfig, REPLY_ENVELOPE_BYTES};
 pub use client::{LinkLimits, ResponseSizeCap, Timeouts};
 pub use emit::METRICS;
-pub use endpoint::EndpointError;
-pub(crate) use endpoint::{auth_from_parts, validator_url};
+pub(crate) use endpoint::validator_url;
+pub use endpoint::{Auth, Endpoint, EndpointError};
 pub use error::RpcError;

@@ -114,15 +114,7 @@ pub(crate) fn view<S: ChainDataSource>(
 pub(crate) fn legacy_client(
     validator: &TrustedValidatorConfig,
 ) -> Result<ZcashLegacyRpcClient, IndexerError> {
-    ZcashLegacyRpcClient::new(
-        &validator.jsonrpc_address,
-        validator.cookie_path.as_deref(),
-        validator.user.clone(),
-        validator.password.clone(),
-        validator.timeouts(),
-        validator.link(),
-    )
-    .map_err(IndexerError::from)
+    ZcashLegacyRpcClient::new(&validator.endpoint()?).map_err(IndexerError::from)
 }
 
 /// `validator_client = "grpc"`: blocks over its indexer gRPC, the rest over its JSON-RPC

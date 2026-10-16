@@ -18,7 +18,7 @@ let trusted = validators
     .iter()
     .map(|v| TrustedValidator {
         address: v.address.clone(),                            // its name in logs and status
-        source: Arc::new(ZcashLegacyRpcClient::new(&v.address, cookie, user, password, timeouts, link)?),
+        source: Arc::new(ZcashLegacyRpcClient::new(&v.endpoint)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections)?,               // None below 5
     })

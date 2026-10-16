@@ -32,23 +32,23 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 ## Building a client: one per validator
 
 ```rust,ignore
-use zaino_source::{LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
+use zaino_source::{Auth, Endpoint, LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
 let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
-let legacy = ZcashLegacyRpcClient::new(address, cookie, user, password, Timeouts::default(), link)?;
+let endpoint = Endpoint { address, auth: Auth::Cookie(path), timeouts: Timeouts::default(), limits: link };
+let legacy = ZcashLegacyRpcClient::new(&endpoint)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
 let grpc = ZebraIndexerGrpcClient::new(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `TrustedValidator` member
 ```
 
-`at` builds the client from config without contacting the validator. An
-unreachable validator is the caller's retry, never a construction failure;
-`EndpointError` means a bad address, an unreadable cookie or TLS file, a user
-without a password (or the reverse), or a client that cannot be built. zainod
-picks one for every validator (`validator_client`).
+`new` builds the client without contacting the validator. An unreachable
+validator is the caller's retry, never a construction failure; `EndpointError`
+means a bad address, an unreadable cookie or TLS file, or a client that cannot
+be built. zainod picks one for every validator (`validator_client`).
 
-Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
-`password` together are basic auth, and neither sends no `Authorization` header.
+`Auth`: `Cookie` sends basic auth as `__cookie__` with the file's token, `Basic`
+sends the pair, `None` sends no `Authorization` header.
 
 ## The indexer gRPC: plaintext or mutual TLS
 

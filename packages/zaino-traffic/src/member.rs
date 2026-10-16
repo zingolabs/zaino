@@ -52,12 +52,11 @@ impl Limits {
     }
 }
 
-/// 32 (zebrad admits 100 across every client)
+/// The transport's pool ([`LinkLimits`](zaino_source::LinkLimits)`::default()`)
 impl Default for Limits {
     fn default() -> Self {
-        const DEFAULT: NonZeroU32 = NonZeroU32::new(32).expect("32 is non-zero");
-        const _: () = assert!(DEFAULT.get() >= MIN_CONNECTIONS, "default under MIN_CONNECTIONS");
-        Self { max_connections: DEFAULT }
+        let max_connections = zaino_source::LinkLimits::default().max_connections;
+        Self::new(max_connections.get()).expect("LinkLimits default >= MIN_CONNECTIONS")
     }
 }
 

@@ -33,7 +33,7 @@ pub use queries::{
     TransactionResponse,
 };
 pub use rpc::METRICS;
-pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
+pub use rpc::{Auth, Endpoint, EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
 pub use standard_fee::StandardFee;
 pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};
 

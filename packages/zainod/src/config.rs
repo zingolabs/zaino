@@ -21,7 +21,7 @@ use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
 use zaino_persistence::{manifest_fits, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zaino_primitives::serde_secs;
-use zaino_source::{LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
+use zaino_source::{Auth, Endpoint, LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
 use zaino_traffic::{Limits, TrustedValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
@@ -139,6 +139,29 @@ impl TrustedValidatorConfig {
 
     pub(crate) fn timeouts(&self) -> Timeouts {
         Timeouts { connect: self.connect_timeout, read: self.read_timeout }
+    }
+
+    /// `cookie_path`, or `user` + `password` together, or neither (`Err` = any other mix)
+    pub(crate) fn auth(&self) -> Result<Auth, IndexerError> {
+        let address = &self.jsonrpc_address;
+        match (&self.cookie_path, &self.user, &self.password) {
+            (None, None, None) => Ok(Auth::None),
+            (Some(path), None, None) => Ok(Auth::Cookie(path.clone())),
+            (None, Some(user), Some(password)) => {
+                Ok(Auth::Basic { user: user.clone(), password: password.clone() })
+            }
+            (Some(_), _, _) => Err(IndexerError::Config(format!(
+                "[[trusted_validators]] {address} sets cookie_path and user/password: pick one"
+            ))),
+            _ => Err(IndexerError::Config(format!(
+                "[[trusted_validators]] {address}: user and password go together"
+            ))),
+        }
+    }
+
+    pub(crate) fn endpoint(&self) -> Result<Endpoint, IndexerError> {
+        let (address, auth) = (self.jsonrpc_address.clone(), self.auth()?);
+        Ok(Endpoint { address, auth, timeouts: self.timeouts(), limits: self.link() })
     }
 }
 
@@ -472,6 +495,7 @@ impl DaemonConfig {
                     "[[trusted_validators]] lists {address} twice: one validator counted as two"
                 )));
             }
+            validator.auth()?;
             if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
                 return Err(IndexerError::Config(format!(
                     "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
@@ -1048,7 +1072,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             priority: 1,
             ..TrustedValidatorConfig::default()
         };
-        assert_eq!(config.trusted_validators, [local, eu.clone()]);
+        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
 
         let link = LinkLimits {
             max_connections: n(8),
@@ -1058,6 +1082,26 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         assert_eq!(eu.link(), link, "the transport's");
         let timeouts = Timeouts { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
         assert_eq!(eu.timeouts(), timeouts, "defaults");
+
+        let basic = Auth::Basic { user: "zaino".to_owned(), password: "secret".to_owned() };
+        assert_eq!(eu.auth().expect("a pair"), basic);
+        assert_eq!(local.auth().expect("neither"), Auth::None);
+        let cookie = |user: Option<&str>, password: Option<&str>| TrustedValidatorConfig {
+            cookie_path: Some("/zebra/.cookie".into()),
+            user: user.map(str::to_owned),
+            password: password.map(str::to_owned),
+            ..TrustedValidatorConfig::default()
+        };
+        assert_eq!(
+            cookie(None, None).auth().expect("a cookie"),
+            Auth::Cookie("/zebra/.cookie".into())
+        );
+        let half = TrustedValidatorConfig { password: None, ..eu.clone() };
+        for (case, config) in [("cookie + pair", cookie(Some("u"), Some("p"))), ("half pair", half)]
+        {
+            assert!(config.auth().is_err(), "{case} accepted");
+        }
+
         let refusals = [
             ("max_response_mib = 3", "must be 4 ..= 32"),
             ("max_response_mib = 33", "must be 4 ..= 32"),
