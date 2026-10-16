@@ -20,8 +20,8 @@ use zaino_proto::proto::zebra_indexer::{
 };
 use zaino_source::testing::fixtures::block;
 use zaino_source::{
-    ChainDataSource, FailureMode, GetAtHeightError, LinkLimits, QueryError, Timeouts,
-    ZcashLegacyRpcClient, ZebraIndexerGrpcClient,
+    Auth, ChainDataSource, Endpoint, FailureMode, GetAtHeightError, LinkLimits, QueryError,
+    Timeouts, ZcashLegacyRpcClient, ZebraIndexerGrpcClient,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -347,7 +347,8 @@ async fn both_clients_decode_every_block_to_the_explorers_facts() {
     tokio::spawn(server);
 
     let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
-    let legacy = || ZcashLegacyRpcClient::new(&rpc_address, None, None, None, timeouts, limits);
+    let endpoint = Endpoint { address: rpc_address, auth: Auth::None, timeouts, limits };
+    let legacy = || ZcashLegacyRpcClient::new(&endpoint);
     let legacy_client = legacy().expect("host:port");
     let grpc = ZebraIndexerGrpcClient::new(
         legacy().expect("host:port"),

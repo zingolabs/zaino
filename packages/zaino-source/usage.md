@@ -3,20 +3,11 @@
 `ChainDataSource`: every question Zaino asks one trusted validator, one trait,
 declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its
 own domain error, nothing about the transport. Blocks come back decoded once, from consensus bytes,
-into `zaino_primitives::types::Block`. Two implementations; a test fake answers
-what its test asks and `unimplemented!()`s the rest.
-
-| Method | `ZcashLegacyRpcClient` | `ZebraIndexerGrpcClient` | Answer |
-|---|---|---|---|
-| `get_block_by_hash(hash)` | `getblock <hash> 0` | indexer `GetBlock` | `Block`, or `GetBlockByHashError::NotFound` |
-| `get_blocks_by_height(heights)` | `getblock "<h>" 0`, batched | indexer `GetBlockRange`, one per consecutive run | `Block` per height, or `GetAtHeightError::HeightNotFound` |
-| `get_block_links(heights)` | `getblockheader <h> false`, batched | JSON-RPC, as legacy | `BlockLink` per height, or `HeightNotFound` |
-| `get_poll_reading(metadata, holds)` | one poll batch (below) | JSON-RPC, as legacy | `PollReading` |
-| `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | JSON-RPC, as legacy | bytes per entry |
-| `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
-| `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
-| `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, or the send's verdict (`SendRawTransactionError`) |
-| `get_standard_fee()` | `getstandardfee` | JSON-RPC, as legacy | `StandardFee` (ZIP 317 marginal fee + estimator version) |
+into `zaino_primitives::types::Block`. Each method, its JSON-RPC call and its answer: the
+`ChainDataSource` rustdoc (`queries.rs`). Two implementations: `ZcashLegacyRpcClient`, and
+`ZebraIndexerGrpcClient`, which fetches blocks over zebrad's indexer gRPC (`GetBlock`,
+`GetBlockRange` per consecutive run) and asks everything else of its inner legacy client. Tests
+drive the real legacy client against [`MockValidator`](#testing-mockvalidator).
 
 Every method answers `Err(QueryError::Unsupported)` when the validator has no such method
 (JSON-RPC `-32601`: zcashd and stock zebrad lack `checkadmission`, older ones
@@ -32,23 +23,23 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 ## Building a client: one per validator
 
 ```rust,ignore
-use zaino_source::{LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
+use zaino_source::{Auth, Endpoint, LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
 let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
-let legacy = ZcashLegacyRpcClient::new(address, cookie, user, password, Timeouts::default(), link)?;
+let endpoint = Endpoint { address, auth: Auth::Cookie(path), timeouts: Timeouts::default(), limits: link };
+let legacy = ZcashLegacyRpcClient::new(&endpoint)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
 let grpc = ZebraIndexerGrpcClient::new(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `TrustedValidator` member
 ```
 
-`at` builds the client from config without contacting the validator. An
-unreachable validator is the caller's retry, never a construction failure;
-`EndpointError` means a bad address, an unreadable cookie or TLS file, a user
-without a password (or the reverse), or a client that cannot be built. zainod
-picks one for every validator (`validator_client`).
+`new` builds the client without contacting the validator. An unreachable
+validator is the caller's retry, never a construction failure; `EndpointError`
+means a bad address, an unreadable cookie or TLS file, or a client that cannot
+be built. zainod picks one for every validator (`validator_client`).
 
-Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
-`password` together are basic auth, and neither sends no `Authorization` header.
+`Auth`: `Cookie` sends basic auth as `__cookie__` with the file's token, `Basic`
+sends the pair, `None` sends no `Authorization` header.
 
 ## The indexer gRPC: plaintext or mutual TLS
 
@@ -131,16 +122,15 @@ The balancer's poll asks one validator `get_poll_reading`; the chain view then
 asks `get_raw_mempool_transactions` for the bytes of what it newly lists, and its
 header sync `get_block_links`:
 
-- `get_poll_reading(metadata, holds)`: `getblockchaininfo` +
-  `getrawmempool true` + `getblockhash <h>` per height in `holds`, in one batch,
-  so the listing and the answers are tagged with the tip read beside them.
+- `get_poll_reading(metadata, holds)`: one batch (its calls: the method's rustdoc), so the
+  listing and the answers are tagged with the tip read beside them.
   `PollReading::held` has one answer per height, in order: the hash on the
   validator's best chain, `GetAtHeightError::HeightNotFound` above its tip (zebrad's
   `-32602`, zcashd's `-8`), or that item's own failure (the rest of the poll
   stands). The chain view asks this to learn which validators hold a verified
-  block. With `metadata`, also `getpeerinfo` + `getinfo` +
-  `getdeprecationinfo`, each its own outcome (`MetadataReading`): telemetry, so
-  a failed half never fails the poll. The listing carries each entry's txid,
+  block. With `metadata`, `MetadataReading` = the answered `Telemetry` + each failed read,
+  named: a failed read never fails the poll, and `Telemetry::absorb` keeps the last answer
+  in its place. The listing carries each entry's txid,
   fee and `encoded_len`; the fee is the validator's (it resolved the prevouts),
   sent by zebra as an `f64` and parsed back to exact zatoshis. `Unavailable`
   means the validator has no mempool. `Inactive` means zebrad's mempool is off
@@ -241,18 +231,11 @@ let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs,
 
 ### Views in other crates
 
-Each lives in the crate that owns its type, behind that crate's `testing` feature:
-
-| View | Crate | Gives |
-|---|---|---|
-| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_finalized(tip, finalized_at)` |
-| `ValidatorViews` (trait on `MockChain`) | here | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (below) |
-| `MockPeerSet::new(&chain, tip)` | `zaino-traffic` | a `PeerTransport` over one path, `hold(height)` to move its tip |
-| `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
-| `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
-| `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
-
-Finality is the header chain's, never the builder's: ask for it with `verified_finalized`.
+Each lives in the crate that owns its type, behind that crate's `testing` feature, and is
+documented there: header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer
+sets ([`zaino-traffic`](../zaino-traffic/usage.md)), peers and the UTXO set
+([`zaino-chainview`](../zaino-chainview/usage.md#testing-feature-testing)), chain params
+([`zaino-nfs`](../zaino-nfs/usage.md)). Finality is the header chain's, never the builder's.
 
 ### Invariants
 
@@ -268,8 +251,8 @@ workspace.
 | M4 | exactly one coinbase, in slot 0, spending nothing and stating no fee |
 | M5 | `Work::Limit` = every nBits the regtest limit; `outweigh()` = best right after its first block, by the least work that wins |
 | M6 | each spend = an output unspent on its own branch (an ancestor, or earlier in the block); nullifiers fresh on the branch; chain value pools never negative (ZIP 209); a stated fee = the derived one |
-| M7 | pool data only once its upgrade is active (Sapling; Orchard from NU5; Ironwood from NU6.3) |
-| M8 | every path inserts into `HeaderViews::header_chain`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
+| M7 | pool data only once its `ShieldedPool::activation_upgrade` is active |
+| M8 | every path inserts into `HeaderChain::anchored`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
 | M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
 
 M1–M7: `src/testing/chain.rs` (minting in `mint.rs`, the transaction rules in `ledger.rs`),
@@ -284,9 +267,10 @@ it through Zaino's own client, so every test above it runs the production reques
 envelope, batching, parsers and error classification:
 
 ```rust,ignore
-use zaino_source::testing::{raw_transaction, raw_transparent, Lie, ValidatorViews};
+use zaino_source::testing::{raw_transaction, raw_transparent, Lie};
 
 let validator = chain.validator(chain.tip());        // one node, following that tip
+let info = chain.blockchain_info(tip);               // its getblockchaininfo at `tip`
 let source = Arc::new(validator.client());           // a ZcashLegacyRpcClient, served in-process
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
@@ -296,7 +280,7 @@ validator.evict(txid);                               // evicted: unlisted from t
 validator.listing(Err(GetMempoolListingError::Inactive));
 validator.relay(Err(fee_too_low));                   // sendrawtransaction + checkadmission verdict
 validator.lacks(&["checkadmission"]);                // an older node: -32601 (zcashd, stock zebrad)
-validator.metadata(None, Some(release));             // getpeerinfo answers -1
+validator.telemetry(Telemetry { peers: None, release: Some(release) }); // getpeerinfo: -1
 validator.latency(&["getblock"], Duration::from_secs(2)); // before each request carrying it
 validator.reachable(&["sendrawtransaction"], false); // requests carrying it: HTTP 503
 validator.down(true);                                // every request: HTTP 503

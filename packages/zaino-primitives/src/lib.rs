@@ -5,6 +5,7 @@
 use sha2::{Digest, Sha256};
 
 pub mod display;
+pub mod metric;
 pub mod protocol;
 pub mod serde_secs;
 pub mod types;

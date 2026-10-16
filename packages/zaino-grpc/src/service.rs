@@ -264,21 +264,20 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
         let served = || grpc_snapshot.served().map_err(wire::unavailable);
         let compact = || {
             let at = served()?;
-            let blocks = view(at.views().compact_block(), method, IndexKind::CompactBlock)?;
+            let blocks = view(at.views().compact_block(), method)?;
             Ok::<_, Status>((at, blocks))
         };
         let trees = || {
             // the NFS publish itself: memo identity (`served()` = its served tip)
             let nothing = || wire::unavailable(Unavailable::NothingServed);
             let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
-            let trees = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
+            let trees = view(indexed.served().views().tree_state(), method)?;
             let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
             Ok::<_, Status>(tree_state::Answering { indexed, trees, reads: reads.clone(), memos })
         };
         let addresses = || {
             let at = served()?;
-            let index = at.views().transparent_address();
-            let reader = view(index, method, IndexKind::TransparentAddress)?;
+            let reader = view(at.views().transparent_address(), method)?;
             let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
             Ok::<_, Status>(transparent_address::Addresses { reader, network: at.params().network })
         };
@@ -316,8 +315,9 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
     }
 }
 
-/// A configured index's view, absent = disabled (an NFS publish built without it)
-fn view<T>(view: Option<T>, method: Method, index: IndexKind) -> Result<T, Status> {
+/// `method`'s index view ([`Method::route`]), absent = disabled (an NFS publish built without it)
+fn view<T>(view: Option<T>, method: Method) -> Result<T, Status> {
+    let index = method.route().index.expect("a method reading a view names its index");
     view.ok_or_else(|| disabled(method, index))
 }
 

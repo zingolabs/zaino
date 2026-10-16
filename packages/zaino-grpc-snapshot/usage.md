@@ -46,7 +46,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `IndexesAtBlock`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `chain_view()`          | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `standing(now_unix)`    | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or best held only by validators catching up); `Serving`. `Down::detail()` = zainod's `/readyz` + `/status` `detail` |
+| `standing(now_unix)`    | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` target spacings of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or best held only by validators catching up); `Serving`. `Down::detail()` = zainod's `/readyz` + `/status` `detail` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
@@ -83,7 +83,7 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ## Reporting
 
 ```rust,ignore
-describe_metrics();                                     // once, at boot
+METRICS.iter().for_each(Metric::describe);              // once, at boot
 emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then render
 ```
 

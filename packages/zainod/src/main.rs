@@ -34,7 +34,6 @@ mod paths;
 mod peers;
 mod progress;
 mod status;
-mod stores;
 mod utxos;
 mod verify;
 
@@ -101,7 +100,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     let config = load_config(&config_path)?;
     // Before any startup work (a bad `[snapshot]` must fail before it downloads)
     config.validate()?;
-    let enabled = zaino_persistence::IndexKind::ALL.into_iter();
+    let enabled = zaino_persistence::IndexKind::ALL.iter().copied();
     let enabled = enabled.filter(|kind| config.enabled(*kind).is_some());
     let status = Arc::new(DaemonStatus::new(config.network, enabled));
     // Before the index-snapshot bootstrap (a held node reads held from its first answer)

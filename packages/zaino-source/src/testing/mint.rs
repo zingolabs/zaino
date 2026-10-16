@@ -15,7 +15,7 @@ use sapling_crypto::bundle::{
     SpendDescriptionBytes,
 };
 use zaino_primitives::sha256d;
-use zaino_primitives::types::{NoteCommitment, Nullifier};
+use zaino_primitives::types::{NoteCommitment, Nullifier, PerPool};
 use zcash_primitives::transaction::components::orchard::bundle_version_for_branch;
 use zcash_primitives::transaction::components::sprout::{
     Bundle as SproutBundle, JsDescription, SproutProof, NOTE_CIPHERTEXT_SIZE,
@@ -67,11 +67,12 @@ pub(super) fn transaction(
     };
     let sprout = sprout(tx.sprout_balance);
     let sapling = sapling(tx, &at);
+    let balances = &tx.balances;
     let orchard =
-        actions(&tx.orchard_actions, tx.orchard_balance, ValuePool::Orchard, branch, coinbase, &at);
+        actions(&tx.orchard_actions, balances.orchard, ValuePool::Orchard, branch, coinbase, &at);
     let ironwood = actions(
         &tx.ironwood_actions,
-        tx.ironwood_balance,
+        balances.ironwood,
         ValuePool::Ironwood,
         branch,
         coinbase,
@@ -122,13 +123,18 @@ fn version(tx: &TxBuilder, at: &At) -> TxVersion {
     let require = |upgrade, used: bool| {
         assert!(!used || active(upgrade), "{}", Refused::Inactive(upgrade));
     };
-    let sapling = !tx.sapling_spends.is_empty() || !tx.sapling_outputs.is_empty();
-    let orchard = !tx.orchard_actions.is_empty();
-    let ironwood = !tx.ironwood_actions.is_empty();
+    let used = PerPool {
+        sapling: !tx.sapling_spends.is_empty() || !tx.sapling_outputs.is_empty(),
+        orchard: !tx.orchard_actions.is_empty(),
+        ironwood: !tx.ironwood_actions.is_empty(),
+    };
+    for (pool, used) in used.iter() {
+        require(pool.activation_upgrade(), *used);
+    }
     let sprout = tx.sprout_balance != 0;
-    require(NetworkUpgrade::Sapling, sapling || sprout);
-    require(NetworkUpgrade::Nu5, orchard);
-    require(NetworkUpgrade::Nu6_3, ironwood);
+    // v4 = the one format carrying JoinSplits here
+    require(NetworkUpgrade::Sapling, sprout);
+    let (orchard, ironwood) = (used.orchard, used.ironwood);
     assert!(
         !(sprout && (orchard || ironwood)),
         "sprout_balance() beside Orchard / Ironwood: no format carries both"
@@ -240,10 +246,10 @@ fn sapling(tx: &TxBuilder, at: &At) -> Option<SaplingBytes<SaplingAuth, ZatBalan
     let bundle = SaplingBytes::from_parts(
         spends.collect(),
         outputs.collect(),
-        balance(tx.sapling_balance),
+        balance(tx.balances.sapling),
         SaplingAuth { binding_sig },
     );
-    assert!(bundle.is_some() || tx.sapling_balance == 0, "value_balance(Sapling) with no Sapling spend or output (an empty bundle carries no balance)");
+    assert!(bundle.is_some() || tx.balances.sapling == 0, "value_balance(Sapling) with no Sapling spend or output (an empty bundle carries no balance)");
     bundle
 }
 

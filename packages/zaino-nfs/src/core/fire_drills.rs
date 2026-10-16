@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::testing::insert;
+use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::{h, Lie, MockChain};
 use zaino_sync::testing::check_block;
@@ -59,7 +59,7 @@ impl World {
     /// Header chain over `blocks` (genesis first), finalized through `finalized_height`
     fn verified(&self, blocks: &[BlockHash], finalized_height: u32) -> Arc<VerifiedChain> {
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("nz"));
-        let mut headers = self.builder.header_chain(depth);
+        let mut headers = HeaderChain::anchored(&self.builder, depth);
         let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
         insert(&mut headers, &path).expect("valid");
         let through = self.at(blocks[finalized_height as usize]);

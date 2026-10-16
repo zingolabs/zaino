@@ -3,21 +3,20 @@
 //! - blocks = `getblock … 0` hex in JSON: one SIMD hex pass into an exact-size buffer
 
 use std::convert::Infallible;
-use std::path::Path;
 
 use zaino_primitives::types::Block;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::rpc::{
-    auth_from_parts, validator_url, Call, EndpointError, LinkLimits, ResponseSizeCap, RpcClient,
-    RpcClientConfig, RpcError, Timeouts, REPLY_ENVELOPE_BYTES,
+    validator_url, Call, Endpoint, EndpointError, ResponseSizeCap, RpcClient, RpcClientConfig,
+    RpcError, REPLY_ENVELOPE_BYTES,
 };
 use crate::{
     decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    SendRawTransactionError, Telemetry, TransactionResponse,
 };
 
 /// Validator's link
@@ -30,22 +29,15 @@ pub struct ZcashLegacyRpcClient {
 }
 
 impl ZcashLegacyRpcClient {
-    /// Validator at `address` (`host:port`), unprobed (down at boot = the first call's failure +
-    /// the caller's retry, never a boot failure)
-    pub fn new(
-        address: &str,
-        cookie_path: Option<&Path>,
-        user: Option<String>,
-        password: Option<String>,
-        timeouts: Timeouts,
-        limits: LinkLimits,
-    ) -> Result<Self, EndpointError> {
+    /// Validator at `endpoint`, unprobed (down at boot = the first call's failure + the caller's
+    /// retry, never a boot failure)
+    pub fn new(endpoint: &Endpoint) -> Result<Self, EndpointError> {
         let rpc = RpcClient::new(RpcClientConfig {
-            url: validator_url(address)?,
-            name: address.to_owned(),
-            auth: auth_from_parts(cookie_path, user, password)?,
-            timeouts,
-            limits,
+            url: validator_url(&endpoint.address)?,
+            name: endpoint.address.clone(),
+            auth: endpoint.auth.credentials()?,
+            timeouts: endpoint.timeouts,
+            limits: endpoint.limits,
         })
         .map_err(EndpointError::Client)?;
         Ok(Self { rpc })
@@ -264,13 +256,17 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                 Err(QueryError::NonDomain(error)) => Err(error),
                 Err(QueryError::Domain(never)) => match never {},
             };
-            MetadataReading {
-                peers: peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse)),
-                release: info.and_then(|info| {
-                    let deprecation = deprecation?;
-                    parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
-                }),
-            }
+            let mut failed = Vec::new();
+            let peers = peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse));
+            let release = info.and_then(|info| {
+                let deprecation = deprecation?;
+                parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
+            });
+            let answered = Telemetry {
+                peers: answered(&mut failed, "peer list", peers),
+                release: answered(&mut failed, "release", release),
+            };
+            MetadataReading { answered, failed }
         });
         Ok(PollReading { info, listing, held, metadata })
     }
@@ -345,6 +341,15 @@ where
         }
         Err(QueryError::NonDomain(cause)) => Err(cause),
     }
+}
+
+/// A telemetry read's answer, its failure named into `failed`
+fn answered<T>(
+    failed: &mut Vec<(&'static str, NonDomainError)>,
+    what: &'static str,
+    read: Result<T, NonDomainError>,
+) -> Option<T> {
+    read.map_err(|cause| failed.push((what, cause))).ok()
 }
 
 /// Calls per batch (one batch holds one connection for its whole reply)

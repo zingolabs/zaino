@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_grpc::{GrpcLimits, GrpcService, RouteDeps};
 use zaino_persistence::DiskView;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zaino_source::testing::{MockChain, ValidatorViews};
+use zaino_source::testing::MockChain;
 use zaino_source::ZcashLegacyRpcClient;
 
 /// Nothing served, chain view never polled → every `GetLightdInfo` = `UNAVAILABLE` (what these

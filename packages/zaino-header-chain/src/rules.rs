@@ -66,10 +66,30 @@ pub enum Rejected {
     ShortContext { held: usize, needed: usize },
 }
 
+/// Whose refusal: `Sender` = blamed, `Deferred` = valid once the clock passes it (H7, never cached),
+/// `Unplaced` = we hold too little to judge it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    Sender,
+    Deferred,
+    Unplaced,
+}
+
 impl Rejected {
-    /// Time-bound only: valid once the clock passes it (H7: deferred, never blamed or cached)
-    pub fn is_deferred(&self) -> bool {
-        matches!(self, Self::FromTheFuture { .. })
+    pub fn fault(&self) -> Fault {
+        match self {
+            Self::Version { .. }
+            | Self::Bits { .. }
+            | Self::Difficulty { .. }
+            | Self::TimeTooEarly { .. }
+            | Self::TimeTooLate { .. }
+            | Self::SolutionSize { .. }
+            | Self::AboveTarget { .. }
+            | Self::Solution
+            | Self::WorkOverflow => Fault::Sender,
+            Self::FromTheFuture { .. } => Fault::Deferred,
+            Self::Orphan | Self::BelowFinalized | Self::ShortContext { .. } => Fault::Unplaced,
+        }
     }
 }
 
@@ -131,8 +151,7 @@ pub(crate) fn in_context(
 ) -> Result<(), Rejected> {
     let bits = header.bits();
     let time = header.time();
-    let needed =
-        (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN);
+    let needed = needed_context(params, height);
     if context.len() < needed {
         return Err(Rejected::ShortContext { held: context.len(), needed });
     }
@@ -159,6 +178,12 @@ pub(crate) fn in_context(
     Ok(())
 }
 
+/// Ancestors [`in_context`] reads at `height`: every one near genesis, else the window + one
+/// median span
+pub(crate) fn needed_context(params: &Params, height: BlockHeight) -> usize {
+    (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN)
+}
+
 /// Equihash (200, 9) over the bytes before the nonce, the nonce, the solution
 pub(crate) fn equihash_valid(header: &Header) -> Result<(), Rejected> {
     let (input, nonce) = (header.equihash_input(), header.nonce());
@@ -181,7 +206,7 @@ pub(crate) fn expected_bits(
     match params.difficulty {
         Difficulty::Adjusted => {}
         Difficulty::Limit => return Some(params.limit_bits()),
-        #[cfg(any(test, feature = "testing"))]
+        #[cfg(test)]
         Difficulty::Any => return None,
     }
     let gap = i64::from(time) - i64::from(parent_time);

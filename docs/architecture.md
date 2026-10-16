@@ -48,7 +48,7 @@ possible, take everything else from as many peers as possible.**
   (zaino-sync)         tip overlay  │
        │ FinalizedStream     │ NfsPublication
        ▼                     ▼      ▼
-  5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
+  index writers   ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
   (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
 ```
 
@@ -312,7 +312,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 
 | Alarm             | Raised when                                                                         |
 | ----------------- | ----------------------------------------------------------------------------------- |
-| stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ 24 blocks |
+| stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ `STALE_TIP_BLOCKS` |
 | end of service    | a validator's release halts within 8,064 blocks (a week) of its tip                 |
 | partitioned       | two `Live` validators share no outbound peer                                        |
 | eclipsed          | `Live` validators reach 1–2 distinct outbound peers in total                        |

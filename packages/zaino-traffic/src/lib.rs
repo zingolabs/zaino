@@ -13,7 +13,7 @@ pub mod testing;
 
 pub use balancer::{
     Answered, HeaderAsk, Observation, PeerTransport, Peers, TrafficBalancer, TrafficDriver,
-    TrustedValidator, Unanswered, Urgency,
+    TrustedValidator, Unanswered, Urgency, METRICS,
 };
 pub use core::{Push, Ticket};
 pub use member::{Health, Limits, MemberId, TrustedValidatorId};

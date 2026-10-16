@@ -75,8 +75,7 @@ The merge is `O(change)`. Raw bytes are fetched once per txid, the lister prefer
   header is vouched.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
-  vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
-  other refusal → `report`.
+  vouched. A refusal ends the run, and only `Fault::Sender` → `report`.
 - **Vouches** after every poll merge: each answering validator's claim and its held `getblockhash`
   answer.
 - **Stall** (fetch failed, retreated, malformed, empty, refused, or a fully read branch still not
@@ -196,8 +195,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 ## Telemetry
 
-zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` gauges are
-`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only (buckets: `METRIC_BUCKETS`):
+zainod registers each from `METRICS` (help, unit, buckets). The `zaino.chainview.*` gauges are
+`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only:
 
 | Metric | Kind | Labels |
 |---|---|---|
@@ -207,14 +206,16 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 | `submission_attempts` | histogram | `outcome` |
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
-`alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
-(definitions and thresholds: [architecture §11](../../docs/architecture.md#11-telemetry); in
-`config.rs`).
+`alarms()` → `Alarms`: each raised `Alarm` (`Partitioned`, `Eclipsed`, `FinalityPaused`, and
+per validator `Stale`, `Ending`), derived per merge (definitions and thresholds:
+[architecture §11](../../docs/architecture.md#11-telemetry); in `config.rs`). A new alarm = an
+`Alarm` variant: the compiler then names its arms (raised in `telemetry::alarms`, noted and
+logged in `zaino-grpc-snapshot`'s report).
 
 ## Testing (feature `testing`)
 
-- `ChainView::set_verified(Some(chain.verified(tip)))` stands in for header sync
-  (`zaino_header_chain::testing::HeaderViews`).
+- `ChainView::set_verified(Some(VerifiedChain::of(&chain, tip)))` stands in for header sync
+  (`zaino-header-chain`'s `testing` feature).
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).

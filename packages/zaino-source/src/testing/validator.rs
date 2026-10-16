@@ -29,8 +29,8 @@ use super::{
 };
 use crate::rpc::{LinkLimits, RpcClient, RpcError, Served};
 use crate::{
-    BlockchainInfo, EndOfService, GetMempoolListingError, NodeRelease, PeerInfo,
-    SendRawTransactionError, ZcashLegacyRpcClient,
+    BlockchainInfo, EndOfService, GetMempoolListingError, NodeRelease, SendRawTransactionError,
+    Telemetry, ZcashLegacyRpcClient,
 };
 
 /// zebrad's JSON-RPC methods this node answers
@@ -168,13 +168,13 @@ fn getstandardfee(_: &mut Node, _: &[Value]) -> Reply {
 }
 
 fn getpeerinfo(node: &mut Node, _: &[Value]) -> Reply {
-    let peers = node.peers.as_ref().ok_or_else(|| scripted_failure("getpeerinfo"))?;
+    let peers = node.telemetry.peers.as_ref().ok_or_else(|| scripted_failure("getpeerinfo"))?;
     let peers = peers.iter().map(|peer| json!({ "addr": peer.addr, "inbound": peer.inbound }));
     Ok(Value::Array(peers.collect()))
 }
 
 fn getinfo(node: &mut Node, _: &[Value]) -> Reply {
-    let release = node.release.as_ref().ok_or_else(|| scripted_failure("getinfo"))?;
+    let release = node.telemetry.release.as_ref().ok_or_else(|| scripted_failure("getinfo"))?;
     Ok(json!({
         "build": release.build,
         "subversion": release.user_agent,
@@ -184,7 +184,7 @@ fn getinfo(node: &mut Node, _: &[Value]) -> Reply {
 
 /// zebrad ≥ 6.3 (`EndOfService::Unknown` = an older one: no such method)
 fn getdeprecationinfo(node: &mut Node, _: &[Value]) -> Reply {
-    let release = node.release.as_ref().ok_or_else(|| scripted_failure("getinfo"))?;
+    let release = node.telemetry.release.as_ref().ok_or_else(|| scripted_failure("getinfo"))?;
     match release.end_of_service {
         EndOfService::Unknown => Err(method_not_found()),
         EndOfService::NotEnforced => Ok(json!({})),
@@ -273,21 +273,14 @@ impl Node {
 
 // ---- the node: what it holds and what a test scripts ----
 
-/// [`MockValidator`]s on a [`MockChain`]
-pub trait ValidatorViews {
+impl MockChain {
     /// Best chain = genesis ..= `tip`, reachable, accepting, mempool empty, no latency
-    fn validator(&self, tip: BlockRef) -> MockValidator;
-
-    /// `getblockchaininfo` with `tip` as the validator's best
-    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo;
-}
-
-impl ValidatorViews for MockChain {
-    fn validator(&self, tip: BlockRef) -> MockValidator {
+    pub fn validator(&self, tip: BlockRef) -> MockValidator {
         MockValidator::following(self, tip)
     }
 
-    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
+    /// `getblockchaininfo` with `tip` as the validator's best
+    pub fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
         assert_eq!(self.block(tip.hash).block_ref(), tip, "tip held at its height");
         let upgrades = &self.schedule().upgrades;
         let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {
@@ -310,8 +303,7 @@ struct Node {
     mempool: Vec<Unmined>,
     listing: Result<(), GetMempoolListingError>,
     relay: Result<(), SendRawTransactionError>,
-    peers: Option<Vec<PeerInfo>>,
-    release: Option<NodeRelease>,
+    telemetry: Telemetry,
     lie: Option<Lie>,
     latency: BTreeMap<&'static str, Duration>,
     unreachable: BTreeSet<&'static str>,
@@ -348,8 +340,7 @@ impl MockValidator {
             mempool: Vec::new(),
             listing: Ok(()),
             relay: Ok(()),
-            peers: Some(Vec::new()),
-            release: Some(release),
+            telemetry: Telemetry { peers: Some(Vec::new()), release: Some(release) },
             lie: None,
             latency: BTreeMap::new(),
             unreachable: BTreeSet::new(),
@@ -435,10 +426,9 @@ impl MockValidator {
         self.node().lacks.extend(methods.iter().map(|name| method(name)));
     }
 
-    /// `getpeerinfo` / `getinfo` answers (`None` = that call fails)
-    pub fn metadata(&self, peers: Option<Vec<PeerInfo>>, release: Option<NodeRelease>) {
-        let mut node = self.node();
-        (node.peers, node.release) = (peers, release);
+    /// Telemetry its metadata calls answer (a `None` field = that call fails)
+    pub fn telemetry(&self, telemetry: Telemetry) {
+        self.node().telemetry = telemetry;
     }
 
     /// Before every request carrying one of `methods` (`tokio::time`: a paused clock skips it)

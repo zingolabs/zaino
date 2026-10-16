@@ -10,10 +10,11 @@
 
 use bytes::Bytes;
 use prost::Message as _;
-use zaino_primitives::types::{TreeSize, TreeSizes};
+use zaino_primitives::types::TreeSizes;
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
 
+use crate::build::decode_chain_metadata;
 use crate::HASH;
 
 /// `CompactBlock.vtx`, the only block-level field rewritten
@@ -109,11 +110,7 @@ pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
 pub(crate) fn record_sizes(record: &[u8]) -> Option<TreeSizes> {
     let metadata =
         compact_formats::ChainMetadata::decode(block_field(record, BLOCK_CHAIN_METADATA)?).ok()?;
-    Some(TreeSizes {
-        sapling: TreeSize::from(metadata.sapling_commitment_tree_size),
-        orchard: TreeSize::from(metadata.orchard_commitment_tree_size),
-        ironwood: TreeSize::from(metadata.ironwood_commitment_tree_size),
-    })
+    Some(decode_chain_metadata(&metadata))
 }
 
 /// Value of the first `field` of one framed record's `CompactBlock` (stops there)
@@ -244,6 +241,7 @@ fn put_varint(mut value: u64, out: &mut Vec<u8>) {
 mod tests {
     use std::slice;
 
+    use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
     use zaino_source::testing::{p2pkh, MockChain};
     use zcash_protocol::value::Zatoshis;

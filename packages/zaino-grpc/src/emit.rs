@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use metrics::Unit;
 use tonic::Code;
+use zaino_primitives::metric::Metric;
 
 use crate::admission::Class;
 use crate::report;
@@ -95,67 +97,66 @@ fn series(slot: usize) -> &'static MethodSeries {
     })
 }
 
-/// `(metric, bucket edges)` for the exporter
+/// Every metric this crate emits
 ///
-/// - Per metric (defaults span one decade: RAM hit = µs, cold mmap = 10s of ms, stream = minutes)
+/// - Buckets per histogram (defaults span one decade: RAM hit = µs, cold mmap = 10s of ms, stream =
+///   minutes)
 /// - `1.0` / `10.0` first-message edges: a load test's second-scale SLO judged on zaino's clock
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
-    (
+pub const METRICS: &[Metric] = &[
+    Metric::counter(REQUESTS_TOTAL, "Finished streams, by method and gRPC status code"),
+    Metric::histogram(
         FIRST_MESSAGE_SECONDS,
         &[50e-6, 100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 100e-3, 1.0, 10.0],
+        "Admission to first DATA frame, by method",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
+        DURATION_SECONDS,
+        &[1e-3, 10e-3, 100e-3, 1.0, 10.0, 60.0, 300.0, 1800.0],
+        "Admission through trailers, by method",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
+        STREAM_MESSAGES,
+        &[1.0, 10.0, 100.0, 1e3, 10e3, 100e3, 1e6],
+        "Messages sent per stream, by method",
     ),
-    (DURATION_SECONDS, &[1e-3, 10e-3, 100e-3, 1.0, 10.0, 60.0, 300.0, 1800.0]),
-    (STREAM_MESSAGES, &[1.0, 10.0, 100.0, 1e3, 10e3, 100e3, 1e6]),
-    (DISK_READ_WAIT_SECONDS, &[1e-6, 100e-6, 1e-3, 10e-3, 100e-3, 1.0, 5.0]),
-];
-
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
-
-    describe_counter!(REQUESTS_TOTAL, "Finished streams, by method and gRPC status code");
-    describe_histogram!(
-        FIRST_MESSAGE_SECONDS,
-        Unit::Seconds,
-        "Admission to first DATA frame, by method"
-    );
-    describe_histogram!(DURATION_SECONDS, Unit::Seconds, "Admission through trailers, by method");
-    describe_histogram!(STREAM_MESSAGES, "Messages sent per stream, by method");
-    describe_counter!(SENT_BYTES_TOTAL, Unit::Bytes, "Response body bytes, by method");
-    describe_gauge!(ACTIVE_STREAMS, "Work streams holding an admission slot");
-    describe_counter!(
+    Metric::counter(SENT_BYTES_TOTAL, "Response body bytes, by method").unit(Unit::Bytes),
+    Metric::gauge(ACTIVE_STREAMS, "Work streams holding an admission slot"),
+    Metric::counter(
         ADMISSION_REJECTED_TOTAL,
-        "Work streams refused UNAVAILABLE at the adaptive work-stream limit"
-    );
-    describe_gauge!(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a slot");
-    describe_counter!(
+        "Work streams refused UNAVAILABLE at the adaptive work-stream limit",
+    ),
+    Metric::gauge(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a slot"),
+    Metric::counter(
         SUBSCRIPTIONS_REJECTED_TOTAL,
-        "Subscriptions refused UNAVAILABLE at max_subscriptions"
-    );
-    describe_counter!(
+        "Subscriptions refused UNAVAILABLE at max_subscriptions",
+    ),
+    Metric::counter(
         ACCEPT_ERRORS_TOTAL,
-        "accept() failures the listener backed off from (EMFILE, ENFILE, ENOBUFS, ...)"
-    );
-    describe_histogram!(
+        "accept() failures the listener backed off from (EMFILE, ENFILE, ENOBUFS, ...)",
+    ),
+    Metric::histogram(
         DISK_READ_WAIT_SECONDS,
-        Unit::Seconds,
-        "Wait for an index-read permit, by lane (point, range, scan)"
-    );
-    describe_gauge!(CONNECTIONS_ACTIVE, "Open client connections");
-    describe_counter!(
+        &[1e-6, 100e-6, 1e-3, 10e-3, 100e-3, 1.0, 5.0],
+        "Wait for an index-read permit, by lane (point, range, scan)",
+    )
+    .unit(Unit::Seconds),
+    Metric::gauge(CONNECTIONS_ACTIVE, "Open client connections"),
+    Metric::counter(
         STALLED_CONNECTIONS_TOTAL,
-        "Connections closed for holding data their client did not read within unread_timeout"
-    );
-    describe_counter!(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps");
-    describe_counter!(
+        "Connections closed for holding data their client did not read within unread_timeout",
+    ),
+    Metric::counter(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps"),
+    Metric::counter(
         RETIRED_CONNECTIONS_TOTAL,
-        "Connections sent GOAWAY, by reason: age, idle (gRPC A9) or retired (an operator hold)"
-    );
-    describe_gauge!(
+        "Connections sent GOAWAY, by reason: age, idle (gRPC A9) or retired (an operator hold)",
+    ),
+    Metric::gauge(
         ADAPTIVE_STREAM_LIMIT,
-        "Work streams admitted at once now (latency-adaptive; max_work_streams when off)"
-    );
-}
+        "Work streams admitted at once now (latency-adaptive; max_work_streams when off)",
+    ),
+];
 
 /// A connection sent GOAWAY (`reason` = `age` | `idle` | `retired`)
 pub(crate) fn connection_retired(reason: &'static str) {

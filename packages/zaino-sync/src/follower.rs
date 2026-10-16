@@ -193,8 +193,7 @@ fn link(
 
 #[cfg(test)]
 mod tests {
-    use zaino_header_chain::testing::HeaderViews;
-    use zaino_source::testing::{h, within, Lie, MockChain, ValidatorViews};
+    use zaino_source::testing::{h, within, Lie, MockChain};
     use zaino_traffic::{Limits, TrustedValidator};
 
     use super::*;
@@ -227,7 +226,7 @@ mod tests {
         let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
-        let finalized_at_five = Arc::new(chain.verified_finalized(a11, h(5)));
+        let finalized_at_five = Arc::new(VerifiedChain::finalized(&chain, a11, h(5)));
         let (verified, verified_rx) = watch::channel(Some(finalized_at_five));
 
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
@@ -261,7 +260,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         assert_eq!(progress.handed(), Some(h(5)), "nothing above the finalized tip");
 
-        verified.send_replace(Some(Arc::new(chain.verified_finalized(a11, h(8)))));
+        verified.send_replace(Some(Arc::new(VerifiedChain::finalized(&chain, a11, h(8)))));
         let next = steps(6..=8, 8);
         assert_eq!(
             sent(&mut durable_at_a2, 3).await,
@@ -300,7 +299,7 @@ mod tests {
         let stop_balancing = CancellationToken::new();
         tokio::spawn(balancing.run(stop_balancing.clone()));
 
-        let finalized_at_five = Some(Arc::new(chain.verified_finalized(a7, h(5))));
+        let finalized_at_five = Some(Arc::new(VerifiedChain::finalized(&chain, a7, h(5))));
         let (_verified, verified_rx) = watch::channel(finalized_at_five);
         let mut follower = FinalizedFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
         let durable_tip_a4 = Some(chain.blocks(a7)[4].block_ref());
@@ -320,7 +319,7 @@ mod tests {
         }
 
         let (verified, verified_rx) =
-            watch::channel(Some(Arc::new(chain.verified_finalized(a7, h(5)))));
+            watch::channel(Some(Arc::new(VerifiedChain::finalized(&chain, a7, h(5)))));
         let mut follower = FinalizedFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
         let running = tokio::spawn(follower.run(CancellationToken::new()));
@@ -336,7 +335,7 @@ mod tests {
             chain.blocks(a7)[..=5].iter().map(|block| block.block_ref()).collect();
         assert_eq!(sent, trunk, "A0..=A5");
         validator.follow(&chain, b11);
-        verified.send_replace(Some(Arc::new(chain.verified_finalized(b11, h(8)))));
+        verified.send_replace(Some(Arc::new(VerifiedChain::finalized(&chain, b11, h(8)))));
         let stopped = within("the follower stopped", running).await.expect("follower task");
         let stopped = stopped.expect_err("B6 does not extend A5");
         assert!(matches!(stopped, FollowError::Unlinked { height } if height == h(6)), "{stopped}");
@@ -350,8 +349,7 @@ mod tests {
 mod peers {
     use std::time::Duration;
 
-    use zaino_header_chain::testing::HeaderViews;
-    use zaino_source::testing::{h, MockChain, ValidatorViews};
+    use zaino_source::testing::{h, MockChain};
     use zaino_traffic::testing::MockPeerSet;
     use zaino_traffic::{Limits, Peers, TrustedValidator};
 
@@ -376,7 +374,7 @@ mod peers {
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
         tokio::spawn(balancing.run(cancel.clone()));
-        let finalized_at_eight = Some(Arc::new(chain.verified_finalized(a11, h(8))));
+        let finalized_at_eight = Some(Arc::new(VerifiedChain::finalized(&chain, a11, h(8))));
         let (_verified, verified_rx) = watch::channel(finalized_at_eight);
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);

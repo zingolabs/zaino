@@ -211,7 +211,7 @@ newer manifest. `zainod verify` wraps this.
 
 - `zaino.store.commit_seconds` / `commit_bytes_total` per index (label `index`); `zaino.lsm.*` per
   map (labels `index` + `table`: segments per tier, merges, stalls, cancelled tombstone pairs).
-  Register with `describe_metrics` and the `METRIC_BUCKETS` constants.
+  Each one's help, unit and buckets: `METRICS`.
 - `DiskView::footprint()`: per table, durable bytes and how many are in page cache (`mincore`).
 - Logs: `Compacting segments` / `Compacted segments` (debug), `Commit waited on compaction` (warn).
 

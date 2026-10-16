@@ -135,7 +135,7 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     let (fake, mut fake_peers, fake_book) = fake_node(inbound).await;
 
     let mut config = PeerConfig::new(NetworkType::Regtest);
-    config.initial_peers = Some(vec![fake.to_string()]);
+    config.initial_peers = vec![fake.to_string()];
     config.request_timeout = Duration::from_secs(10);
     let peers = PeerNetwork::start(config).await;
     let mut announcements = peers.announcements();
@@ -214,7 +214,7 @@ async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
     let (entry, _, _) = fake_node(inbound).await;
 
     let mut config = PeerConfig::new(NetworkType::Regtest);
-    config.initial_peers = Some(vec![entry.to_string()]);
+    config.initial_peers = vec![entry.to_string()];
     config.request_timeout = Duration::from_secs(10);
     let peers = PeerNetwork::start(config).await;
     until("handshaken (live)", || peers.live().contains(&entry)).await;
@@ -229,7 +229,6 @@ async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
     let malformed = peers.push(&raw[..raw.len() - 1]).await;
     assert!(matches!(malformed, Err(PushError::Wire(_))), "{malformed:?}");
     let mut alone = PeerConfig::new(NetworkType::Regtest);
-    alone.initial_peers = Some(Vec::new());
     alone.request_timeout = Duration::from_secs(1);
     let unpeered = PeerNetwork::start(alone).await.push(&raw).await;
     assert!(matches!(unpeered, Err(PushError::Peers(PeerError::Timeout(_)))), "{unpeered:?}");

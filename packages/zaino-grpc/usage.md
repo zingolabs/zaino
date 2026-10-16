@@ -40,19 +40,9 @@ tokio::spawn(server.bind().await?.run(cancel.child_token()));
 routing.route(routes);
 ```
 
-| Method | Answered by (one `GrpcSnapshot`) |
-|---|---|
-| `GetLatestBlock` | `served()?` tip itself (height + hash, no read) |
-| `GetBlock`, `GetBlockRange[Nullifiers]` | `served()?`'s `compact_block` (stored records, never re-encoded) |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | `indexed()`'s served `tree_state` (memos keyed on that publish) |
-| `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `served()?`'s `transparent_address` |
-| `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
-| `GetMempoolTx` | `mempool()?` (the servable mempool) |
-| `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
-| `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
-| `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.lookup(..get_transaction(txid))` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
-| `GetStandardFee` | `validators.lookup(..get_standard_fee())` |
+What answers each method: [`docs/rpc_api.md`](../../docs/rpc_api.md). Each handler reads off
+one `GrpcSnapshot` (`served()?`, `indexed()` for tree states, `mempool()?`, `lightd()?`), except
+`SendTransaction` (`submit`) and the forwarded methods (`validators.lookup`).
 
 A forwarded call every member asked lacks (`QueryError::Unsupported`) = `UNIMPLEMENTED`, any
 other unanswered call = `UNAVAILABLE`: one mapping for every forwarding route.
@@ -106,8 +96,7 @@ other unanswered call = `UNAVAILABLE`: one mapping for every forwarding route.
   when they have all closed or `GrpcLimits::drain_timeout` has passed,
   whichever is first. `run` returns `()`: a bound server has no failure of its
   own (accept errors back off and retry). Connections still open then are
-  dropped with the runtime. The default `drain_timeout` is 10 s; zero returns
-  at once.
+  dropped with the runtime. A zero `drain_timeout` returns at once.
 
 ### Adding a method
 
@@ -170,25 +159,26 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
 
-Every cap refuses; none queues except the read lanes:
+Every cap refuses; none queues except the read lanes. Defaults:
+[`[grpc]` in the example config](../../docs/example_configs/zainod.toml).
 
-| `GrpcLimits` field | Default | Enforced at | Over it |
-|---|---|---|---|
-| `max_connections` | 4096 | accept | socket closed |
-| `max_connections_per_ip` | 32 | once the client is named | socket closed |
-| `max_streams_per_connection` | 8 | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
-| `max_work_streams` | 2048 | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
-| `adaptive_work_streams` | on | admission, same methods: the latency-adaptive limit (below) | same |
-| `max_subscriptions` | 4096 | admission, `GetMempoolStream` | same |
-| `max_point_reads` | 64 | one block / tree state / root list off the files | bounded wait |
-| `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
-| `max_scan_reads` | 4 | one address-history scan | bounded wait |
-| `unread_timeout` | 300 s | per stream: data handed over, unread by the client | connection closed |
-| `silent_timeout` | 300 s | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
-| `drain_timeout` | 10 s | `run`, after `cancel` | still-open connections dropped |
-| `max_connection_age` | 30 min ±10% | per connection | GOAWAY, then the grace |
-| `max_connection_idle` | 30 min | per connection, no open stream | GOAWAY |
-| `max_connection_age_grace` | 600 s | a GOAWAY'd connection's in-flight streams | connection dropped |
+| `GrpcLimits` field | Enforced at | Over it |
+|---|---|---|
+| `max_connections` | accept | socket closed |
+| `max_connections_per_ip` | once the client is named | socket closed |
+| `max_streams_per_connection` | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
+| `max_work_streams` | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
+| `adaptive_work_streams` | admission, same methods: the latency-adaptive limit (below) | same |
+| `max_subscriptions` | admission, `GetMempoolStream` | same |
+| `max_point_reads` | one block / tree state / root list off the files | bounded wait |
+| `max_range_reads` | one `GetBlockRange` window off the files | bounded wait |
+| `max_scan_reads` | one address-history scan | bounded wait |
+| `unread_timeout` | per stream: data handed over, unread by the client | connection closed |
+| `silent_timeout` | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
+| `drain_timeout` | `run`, after `cancel` | still-open connections dropped |
+| `max_connection_age` | per connection (±10%) | GOAWAY, then the grace |
+| `max_connection_idle` | per connection, no open stream | GOAWAY |
+| `max_connection_age_grace` | a GOAWAY'd connection's in-flight streams | connection dropped |
 
 - **Connection age and idleness** (gRPC A9). Wallets hold one connection for
   hours, so without an age limit they never re-resolve DNS: neither a load
@@ -239,7 +229,7 @@ Every cap refuses; none queues except the read lanes:
   stuck behind a range already queued on the same connection.
 - An `accept()` error never ends `run`: a peer-side error is skipped, anything
   else (`EMFILE`, `ENOBUFS`, ...) backs off 10 ms doubling to 1 s.
-- Request bodies are capped before decode: 64 KiB, or 2 MB + 1 KiB for
+- Request bodies are capped before decode: 64 KiB, or `MAX_BLOCK_BYTES` + 1 KiB for
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
 - **No total cap.** A stream lives as long as it makes progress. Its bounds are

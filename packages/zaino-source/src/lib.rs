@@ -29,11 +29,11 @@ pub use peer_info::PeerInfo;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
+    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError, Telemetry,
     TransactionResponse,
 };
-pub use rpc::{describe_metrics, METRIC_BUCKETS};
-pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
+pub use rpc::METRICS;
+pub use rpc::{Auth, Endpoint, EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
 pub use standard_fee::StandardFee;
 pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};
 

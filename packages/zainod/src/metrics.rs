@@ -3,14 +3,13 @@
 //! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
 //!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
 //!   ([`DaemonStatus::emit_gauges`])
-//! - Events emitted where they happen (`zaino-nfs` / `zaino-sync` / `zaino-grpc` /
-//!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), registered here via their
-//!   `describe_metrics` / `METRIC_BUCKETS`
+//! - Events emitted where they happen, registered here from each crate's `METRICS` ([`TABLES`])
 
 use std::{net::SocketAddr, sync::Arc};
 
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 use tracing::info;
+use zaino_primitives::metric::Metric;
 
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
@@ -18,19 +17,32 @@ use crate::status::DaemonStatus;
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
 
+/// Every emitting crate's table (a new crate = one row)
+const TABLES: &[&[Metric]] = &[
+    zaino_grpc::METRICS,
+    zaino_grpc_snapshot::METRICS,
+    zaino_chainview::METRICS,
+    zaino_traffic::METRICS,
+    zaino_source::METRICS,
+    zaino_nfs::METRICS,
+    zaino_sync::METRICS,
+    zaino_persistence::METRICS,
+    crate::disk_monitor::METRICS,
+];
+
+fn every_metric() -> impl Iterator<Item = &'static Metric> {
+    TABLES.iter().copied().flatten()
+}
+
 /// Global recorder, served from [`crate::admin`] (own thread: answers however busy the workers)
 pub(crate) fn init(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
     // - Bind first (recorder before listener = undrained samples)
     // - Bind failure fails startup
     let listener = crate::admin::bind(endpoint)?;
-    let builder = zaino_grpc::METRIC_BUCKETS
-        .iter()
-        .chain(zaino_source::METRIC_BUCKETS)
-        .chain(zaino_chainview::METRIC_BUCKETS)
-        .chain(zaino_persistence::METRIC_BUCKETS)
-        .chain(zaino_sync::METRIC_BUCKETS)
-        .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
-            builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
+    let builder = every_metric()
+        .filter_map(|metric| Some((metric.name(), metric.buckets()?)))
+        .try_fold(PrometheusBuilder::new(), |builder, (name, edges)| {
+            builder.set_buckets_for_metric(Matcher::Full(name.to_owned()), edges)
         })
         .map_err(|e| IndexerError::Metrics(format!("setting histogram buckets: {e}")))?;
     let handle = builder
@@ -64,14 +76,7 @@ fn collect_process_metrics() {
 
 /// Every crate's `# HELP` + the build-info gauge (into the current recorder)
 pub(crate) fn describe_all() {
-    zaino_grpc::describe_metrics();
-    zaino_chainview::describe_metrics();
-    zaino_source::describe_metrics();
-    zaino_nfs::describe_metrics();
-    zaino_grpc_snapshot::describe_metrics();
-    zaino_sync::describe_metrics();
-    zaino_persistence::describe_metrics();
-    crate::disk_monitor::describe_metrics();
+    every_metric().for_each(Metric::describe);
     metrics::describe_gauge!(BUILD_INFO, "Always 1; the zainod version rides the `version` label");
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 }

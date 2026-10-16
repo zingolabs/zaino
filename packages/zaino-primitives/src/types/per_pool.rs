@@ -11,6 +11,11 @@ pub struct PerPool<T> {
 }
 
 impl<T> PerPool<T> {
+    pub fn from_fn(mut f: impl FnMut(ShieldedPool) -> T) -> Self {
+        let [sapling, orchard, ironwood] = ShieldedPool::ALL.map(&mut f);
+        Self { sapling, orchard, ironwood }
+    }
+
     pub fn get(&self, pool: ShieldedPool) -> &T {
         match pool {
             ShieldedPool::Sapling => &self.sapling,
@@ -19,8 +24,20 @@ impl<T> PerPool<T> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerPool<U> {
+    pub fn get_mut(&mut self, pool: ShieldedPool) -> &mut T {
+        match pool {
+            ShieldedPool::Sapling => &mut self.sapling,
+            ShieldedPool::Orchard => &mut self.orchard,
+            ShieldedPool::Ironwood => &mut self.ironwood,
+        }
+    }
+
+    /// [`ShieldedPool::ALL`] order
+    pub fn iter(&self) -> impl Iterator<Item = (ShieldedPool, &T)> {
+        ShieldedPool::ALL.into_iter().map(|pool| (pool, self.get(pool)))
+    }
+
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerPool<U> {
         PerPool { sapling: f(self.sapling), orchard: f(self.orchard), ironwood: f(self.ironwood) }
     }
 }
@@ -35,24 +52,14 @@ impl TreeSizes {
 
     /// Sizes after `block`, given these before it
     ///
-    /// - Orchard/Ironwood action = spend + output, exactly one note commitment → counts once
     /// - panics past 2^32 leaves: a depth-32 tree holds no more (consensus never builds it)
     pub fn advance(self, block: &Block) -> Self {
-        let mut added = PerPool::<u64>::default();
-        for tx in block.transactions() {
-            added.sapling += tx.sapling.outputs.len() as u64;
-            added.orchard += tx.orchard.actions.len() as u64;
-            added.ironwood += tx.ironwood.actions.len() as u64;
-        }
-        let add = |size: TreeSize, count: u64, pool: &'static str| {
-            let full = |_| panic!("{pool} commitment tree past 2^32 leaves: consensus caps it");
-            size.checked_add(count).unwrap_or_else(full)
-        };
-        Self {
-            sapling: add(self.sapling, added.sapling, "sapling"),
-            orchard: add(self.orchard, added.orchard, "orchard"),
-            ironwood: add(self.ironwood, added.ironwood, "ironwood"),
-        }
+        Self::from_fn(|pool| {
+            let txs = block.transactions().iter();
+            let added = txs.map(|tx| tx.note_commitments(pool).count() as u64).sum();
+            let full = |_| panic!("{pool:?} commitment tree past 2^32 leaves: consensus caps it");
+            self.get(pool).checked_add(added).unwrap_or_else(full)
+        })
     }
 }
 
@@ -116,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "sapling commitment tree past 2^32 leaves")]
+    #[should_panic(expected = "Sapling commitment tree past 2^32 leaves")]
     fn a_tree_past_2_32_leaves_panics() {
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
         full.advance(&block_of(&[(0, 0, 0), (1, 0, 0)]));

@@ -60,18 +60,7 @@ state, no deletes, and a reorg never touches disk.
 
 ## Wiring
 
-```rust,ignore
-use zaino_index_transparent_address::{schema, TransparentAddressIndexWriter, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
-
-let schema = schema(network);
-let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
-let writer = TransparentAddressIndexWriter::new(store);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::TransparentAddress, handle);
-tokio::spawn(writer.run(blocks)); // returns at Shutdown
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)).
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
   with `S::View: MapRead`. zainod picks `DiskEngine`.

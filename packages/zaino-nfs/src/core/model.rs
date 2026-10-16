@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::insert;
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::{encode_header, h, MockChain};
@@ -512,7 +512,7 @@ fn run(moves: &[Move], delays: &[u64], lookahead: usize, seed: u64) {
     let mut builder = MockChain::regtest().varied_work();
     let genesis = builder.genesis();
     let decoy = builder.branch(genesis).mine_empty(1).tip().hash;
-    let headers = builder.header_chain(DEPTH);
+    let headers = HeaderChain::anchored(&builder, DEPTH);
     let writers: Vec<Writer> =
         delays.iter().map(|&delay| Writer { durable: None, delay, committing: false }).collect();
     let mut sim = Sim {

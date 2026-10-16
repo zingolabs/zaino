@@ -318,8 +318,8 @@ impl ChainViewSnapshot {
                 info.estimated_height = info.tip.height + behind;
             }
         }
-        self.alarms =
-            crate::telemetry::alarms(&self.trusted_validators, self.alarms.finality_paused());
+        let paused = self.alarms.raised(telemetry::Alarm::FinalityPaused);
+        self.alarms = telemetry::alarms(&self.trusted_validators, paused);
         self
     }
 
@@ -381,10 +381,9 @@ impl ChainViewSnapshot {
         added.collect()
     }
 
-    /// Partition / eclipse / stale-tip conditions as of the last merge (telemetry only, never
-    /// gates)
-    pub fn alarms(&self) -> Alarms {
-        self.alarms
+    /// Raised alarms as of the last merge (telemetry only, never gates)
+    pub fn alarms(&self) -> &Alarms {
+        &self.alarms
     }
 
     /// Per-validator metadata, in configured order

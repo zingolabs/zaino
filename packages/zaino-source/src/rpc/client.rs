@@ -81,6 +81,7 @@ pub struct LinkLimits {
     pub response_size_cap: ResponseSizeCap,
 }
 
+/// 32 connections (zebrad admits 100 across every client), unlimited bytes, full reply cap
 impl Default for LinkLimits {
     fn default() -> Self {
         Self {

@@ -44,7 +44,8 @@ tip: a start, or a jump to a trusted validator far ahead.
 as int32, nBits valid, solution size, hash ≤ target, Equihash (200, 9); proof of work off on
 regtest) then against up to `CONTEXT` = 113 ancestors (median time past, + 90 min, nBits =
 zcashd's `CalculateNextWorkRequired` + ZIP 218's window by height, testnet's minimum-difficulty
-gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`).
+gap) and the clock (`FromTheFuture`: deferred, never blamed). `Rejected::fault` names whose
+refusal it is: `Sender` (blamed), `Deferred` or `Unplaced` (too little held to judge it).
 `insert_untrusted` runs it before `insert`; `zaino-chainview` feeds it peers' headers. On regtest
 nBits is fixed at the limit and the solution must be 36 bytes.
 
@@ -112,15 +113,15 @@ bookkeeping (cumulative work, child counts, leaf set), naming the invariant in i
 - Fire drills: each check in `check()` and each precondition, seen firing on a planted bug.
 - Builder agreement (`testing`): random `MockChain` shapes, `MockChain::tip()` =
   `HeaderChain::best()` after each.
-- For consumers' tests (`testing` feature), `testing::HeaderViews` on a `MockChain`:
+- For consumers' tests (`testing` feature), constructors over a `MockChain`:
 
   ```rust,ignore
-  use zaino_header_chain::testing::{insert, HeaderViews};
+  use zaino_header_chain::{testing::insert, HeaderChain, VerifiedChain};
 
-  let mut headers = chain.header_chain(depth);         // anchored at genesis
-  insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
-  let verified = chain.verified(tip);                  // finalized = genesis
-  let pinned = chain.verified_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
+  let mut headers = HeaderChain::anchored(&chain, depth);       // anchored at genesis
+  insert(&mut headers, &chain.blocks(tip))?;                    // a trusted run: its last vouched
+  let verified = VerifiedChain::of(&chain, tip);                // finalized = genesis
+  let pinned = VerifiedChain::finalized(&chain, tip, h(9));     // finalized through 9
   ```
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

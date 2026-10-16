@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use zaino_primitives::types::BlockRef;
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
-    MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
+    MetadataReading, NonDomainError, PollReading, QueryError, Telemetry,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
@@ -86,11 +86,10 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
             Err(cause) => return self.failed(cause, observation.health),
         };
         let PollReading { info, listing, held, metadata } = polled;
-        let (peers, release) = self.metadata(metadata.as_ref());
+        let telemetry = self.telemetry(metadata.as_ref());
         let held = self.held(observation.asked, held);
         let streaming = observation.streaming;
-        let reading =
-            Reading { block_at_best: held, info: info.clone(), peers, release, streaming };
+        let reading = Reading { block_at_best: held, info: info.clone(), telemetry, streaming };
         let health = observation.health;
         match listing {
             Ok(listing) => {
@@ -226,17 +225,14 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         }
     }
 
-    /// Telemetry halves of a metadata poll: a failed half keeps the last answer (`None`), warned
-    fn metadata(
-        &self,
-        metadata: Option<&MetadataReading>,
-    ) -> (Option<Vec<PeerInfo>>, Option<NodeRelease>) {
-        let Some(MetadataReading { peers, release }) = metadata else { return (None, None) };
-        let kept = |what: &str, cause: &NonDomainError| {
-            warn!(validator = self.address, %cause, "Validator {what} read failed, last kept");
+    /// A metadata poll's answered telemetry, each failed read warned (its last answer kept)
+    fn telemetry(&self, metadata: Option<&MetadataReading>) -> Telemetry {
+        let Some(MetadataReading { answered, failed }) = metadata else {
+            return Telemetry::default();
         };
-        let peers = peers.as_ref().inspect_err(|cause| kept("peer list", cause)).ok().cloned();
-        let release = release.as_ref().inspect_err(|cause| kept("release", cause)).ok().cloned();
-        (peers, release)
+        for (what, cause) in failed {
+            warn!(validator = self.address, %cause, "Validator {what} read failed, last kept");
+        }
+        answered.clone()
     }
 }

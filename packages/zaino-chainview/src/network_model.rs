@@ -16,9 +16,10 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::insert;
+use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
-use zaino_source::testing::{within, MockChain, MockValidator, ValidatorViews};
+use zaino_source::testing::{within, MockChain, MockValidator};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, TrustedValidator, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -139,7 +140,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let mut chain = MockChain::regtest();
     let shared = chain.mine_empty(3);
     let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
-    let mut headers = chain.header_chain(depth);
+    let mut headers = HeaderChain::anchored(&chain, depth);
     let nodes = (0..n).map(|_| Node { validator: chain.validator(shared), tip: shared });
     let mut sim = Sim { nodes: nodes.collect(), chain };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");

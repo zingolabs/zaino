@@ -64,7 +64,6 @@ zaino-source = { workspace = true, features = ["testing"] }
 zaino-chainview = { workspace = true, features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
-zaino-internal-block-hash-to-height.workspace = true
 zaino-grpc-snapshot = { workspace = true, features = ["testing"] }
 h2 = "0.4"
 

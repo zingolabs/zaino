@@ -15,7 +15,7 @@ use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{pool_activations, TreeStateReader};
 use zaino_index_utxo_set::UtxoSetReader;
 use zaino_internal_block_hash_to_height::BlockHashReader;
-use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, Schema, SequenceRead, View};
+use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
 use zaino_primitives::types::{Block, BlockRef, PerPool};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
@@ -164,17 +164,6 @@ fn at<V: View>(
     let layers = base.folded.as_deref().map_or(&empty, |folded| &folded.layers);
     let views = Views::at(durable, layers, Some(base.at.height));
     IndexesAtBlock { block: base.at, on_best: base.on_best, params, views }
-}
-
-/// `kind`'s store layout on `network` (its index crate's `schema`)
-pub fn schema(kind: IndexKind, network: NetworkType) -> Schema {
-    match kind {
-        IndexKind::CompactBlock => zaino_index_compact_block::schema(network),
-        IndexKind::UtxoSet => zaino_index_utxo_set::schema(network),
-        IndexKind::BlockHash => zaino_internal_block_hash_to_height::schema(network),
-        IndexKind::TreeState => zaino_index_tree_state::schema(network),
-        IndexKind::TransparentAddress => zaino_index_transparent_address::schema(network),
-    }
 }
 
 /// Every enabled index's durable view + a layer above it: [`IndexesAtBlock`]'s state, and a fold's

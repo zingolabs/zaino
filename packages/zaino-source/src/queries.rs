@@ -18,15 +18,15 @@ use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError, S
 /// Trusted validator's RPC, as every Zaino consumer asks it
 ///
 /// - production = `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` (`zainod`'s `validator_client`)
-/// - test fake = answers what its test asks (`unimplemented!()` the rest)
+/// - tests = `ZcashLegacyRpcClient` against `testing::MockValidator`
 pub trait ChainDataSource: Send + Sync + 'static {
-    /// Best-chain block `hash`, decoded from consensus bytes
+    /// `getblock <hash> 0`: best-chain block `hash`, decoded from consensus bytes
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 
-    /// Best-chain block per height, `heights` order, decoded from consensus bytes
+    /// `getblock "<h>" 0` per height, batched: best-chain blocks, `heights` order, decoded
     ///
     /// - any height absent = `HeightNotFound` for it (batch = all or nothing)
     fn get_blocks_by_height(
@@ -42,11 +42,10 @@ pub trait ChainDataSource: Send + Sync + 'static {
         heights: &[BlockHeight],
     ) -> impl Future<Output = Result<BlockLinks, NonDomainError>> + Send;
 
-    /// Poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
-    /// per `holds` height
+    /// Poll in one round trip (the poll composition's one home)
     ///
-    /// - With `metadata`: `getpeerinfo` + `getinfo` + `getdeprecationinfo` too
-    ///
+    /// - `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>` per `holds` height
+    /// - with `metadata`: `getpeerinfo` + `getinfo` + `getdeprecationinfo` too ([`Telemetry`])
     /// - `Err` = no tip read (transport, or the info unparseable)
     fn get_poll_reading(
         &self,
@@ -126,11 +125,27 @@ pub struct PollReading {
     pub metadata: Option<MetadataReading>,
 }
 
-/// Telemetry reads: each its own outcome (a failure keeps the last, never fails the poll)
+/// Metadata poll: what answered + each failed read, named (a failure never fails the poll)
 #[derive(Debug)]
 pub struct MetadataReading {
-    pub peers: Result<Vec<PeerInfo>, NonDomainError>,
-    pub release: Result<NodeRelease, NonDomainError>,
+    pub answered: Telemetry,
+    pub failed: Vec<(&'static str, NonDomainError)>,
+}
+
+/// One validator's telemetry (`None` = unread: never answered, or its read failed)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Telemetry {
+    pub peers: Option<Vec<PeerInfo>>,
+    pub release: Option<NodeRelease>,
+}
+
+impl Telemetry {
+    /// `newer`'s answered reads over these (an unread one keeps the last)
+    pub fn absorb(&mut self, newer: Telemetry) {
+        let Telemetry { peers, release } = newer;
+        self.peers = peers.or(self.peers.take());
+        self.release = release.or(self.release.take());
+    }
 }
 
 /// - `Unavailable` = no mempool on the node (no `getrawmempool`): stop asking

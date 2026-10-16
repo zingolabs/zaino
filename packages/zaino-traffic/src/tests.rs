@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use zaino_source::testing::{h, raw_transaction, within, MockChain, ValidatorViews};
+use zaino_source::testing::{h, raw_transaction, within, MockChain};
 use zaino_source::{
     BlockLink, ChainDataSource, FailureMode, GetAtHeightError, GetRawMempoolTransactionError,
     GetTransactionError, MempoolListed, QueryError, SendRawTransactionError,

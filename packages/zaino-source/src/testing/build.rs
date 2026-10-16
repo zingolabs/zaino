@@ -3,6 +3,7 @@
 //! - [`MockChain`](super::MockChain) mints the rest into real consensus bytes (`mint.rs`)
 //! - and checks it (`ledger.rs`)
 
+use zaino_primitives::types::PerPool;
 use zcash_protocol::ShieldedPool;
 use zcash_script::script::Code;
 use zcash_transparent::address::Script;
@@ -80,9 +81,7 @@ pub struct TxBuilder {
     pub(super) orchard_actions: Vec<(u32, u32)>,
     pub(super) ironwood_actions: Vec<(u32, u32)>,
     pub(super) sprout_balance: i64,
-    pub(super) sapling_balance: i64,
-    pub(super) orchard_balance: i64,
-    pub(super) ironwood_balance: i64,
+    pub(super) balances: PerPool<i64>,
     pub(super) fee: Option<u64>,
 }
 
@@ -96,9 +95,7 @@ impl TxBuilder {
             orchard_actions: Vec::new(),
             ironwood_actions: Vec::new(),
             sprout_balance: 0,
-            sapling_balance: 0,
-            orchard_balance: 0,
-            ironwood_balance: 0,
+            balances: PerPool::default(),
             fee: None,
         }
     }
@@ -141,12 +138,9 @@ impl TxBuilder {
     }
 
     /// + = out of `pool` into the transparent value pool (needs a description in that pool)
-    pub fn value_balance(self, pool: ShieldedPool, zats: i64) -> Self {
-        match pool {
-            ShieldedPool::Sapling => Self { sapling_balance: zats, ..self },
-            ShieldedPool::Orchard => Self { orchard_balance: zats, ..self },
-            ShieldedPool::Ironwood => Self { ironwood_balance: zats, ..self },
-        }
+    pub fn value_balance(mut self, pool: ShieldedPool, zats: i64) -> Self {
+        *self.balances.get_mut(pool) = zats;
+        self
     }
 
     /// + = out of Sprout into the transparent value pool (one JoinSplit: a v4 transaction)

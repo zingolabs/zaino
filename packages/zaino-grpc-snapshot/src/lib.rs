@@ -15,4 +15,4 @@ mod tests;
 pub use feed::{Logged, MempoolTail};
 pub use grpc_snapshot::{Down, GrpcSnapshot, Lightd, Standing, Tips, Unavailable};
 pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
-pub use report::{describe_metrics, emit_gauges, notes};
+pub use report::{emit_gauges, notes, METRICS};

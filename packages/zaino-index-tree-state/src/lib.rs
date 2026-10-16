@@ -41,11 +41,7 @@ const HEIGHTS: SequenceTable =
 /// Level sequences + subtrees, per pool
 const POOL_TABLES: usize = MERKLE_DEPTH as usize + 1;
 
-/// Activation order (= table order)
-pub(crate) const POOLS: [ShieldedPool; 3] =
-    [ShieldedPool::Sapling, ShieldedPool::Orchard, ShieldedPool::Ironwood];
-
-/// `heights`, then each pool's tables ([`POOLS`] order)
+/// `heights`, then each pool's tables ([`ShieldedPool::ALL`] order)
 const SEQUENCES: [SequenceTable; 1 + 3 * POOL_TABLES] = {
     let mut all = [HEIGHTS; 1 + 3 * POOL_TABLES];
     let mut at = 0;

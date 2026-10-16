@@ -16,6 +16,7 @@ tonic = { workspace = true }
 # Miscellaneous Crate
 prost = { workspace = true }
 tonic-prost = "0.14"
+serde = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14"
