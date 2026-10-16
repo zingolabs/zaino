@@ -226,17 +226,32 @@ where
     }
 
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
-        // Eager per-height stitch across the seam, mirroring
-        // `StoreSnapshot::stream_compact`: iterate the inclusive height span,
-        // route each height, and yield in height order. A gap height surfaces as
-        // an `Err` item (`NotServiceable`); a height above the tip is skipped
-        // (it is `Ok(None)`, a domain absence, not a failure).
+        // The range splits at the watermark: the finalised part `[start, w]` is
+        // one range read from the FS, the rest is read height by height, each
+        // routed as [`read_routed`](Self::read_routed) routes it (a gap height
+        // surfaces as an `Err` item, `NotServiceable`; a height above the tip is
+        // skipped, a domain absence). Both halves yield in height order and
+        // skip absent heights, so their concatenation is the range in order.
         let start = u32::from(range.start);
         let end = u32::from(range.end);
-        let heights: Vec<Height> = (start..=end)
+        let (finalised, above_start) = match self.watermark {
+            Some(watermark) if range.start <= watermark => (
+                Some(HeightRange {
+                    start: range.start,
+                    end: range.end.min(watermark),
+                }),
+                u32::from(watermark).saturating_add(1),
+            ),
+            Some(_) | None => (None, start),
+        };
+        let finalised = match finalised {
+            Some(span) if start <= end => self.fs.stream_compact(span),
+            Some(_) | None => stream::empty().boxed(),
+        };
+        let heights: Vec<Height> = (above_start..=end)
             .filter_map(|height| Height::try_from(height).ok())
             .collect();
-        stream::iter(heights)
+        let above = stream::iter(heights)
             .then(move |height| async move { self.read_routed(height).await })
             .filter_map(|routed| async move {
                 match routed {
@@ -244,8 +259,8 @@ where
                     Ok(None) => None,
                     Err(error) => Some(Err(error.into())),
                 }
-            })
-            .boxed()
+            });
+        finalised.chain(above).boxed()
     }
 }
 

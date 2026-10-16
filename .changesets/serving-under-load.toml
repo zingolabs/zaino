@@ -241,3 +241,12 @@ description = """
 a range scan visits only the keys in its range instead of filtering and \
 sorting the whole namespace, and readers no longer serialise on one mutex.
 """
+
+[[changes]]
+crate = "zaino-core"
+kind = "fix"
+description = """
+`ChainViewSnapshot::stream_compact` reads the part of a range at or below the \
+watermark with one range read from the finalised store, instead of one point \
+read per height; heights above the watermark are still routed one by one.
+"""
