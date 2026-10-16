@@ -40,19 +40,9 @@ tokio::spawn(server.bind().await?.run(cancel.child_token()));
 routing.route(routes);
 ```
 
-| Method | Answered by (one `GrpcSnapshot`) |
-|---|---|
-| `GetLatestBlock` | `served()?` tip itself (height + hash, no read) |
-| `GetBlock`, `GetBlockRange[Nullifiers]` | `served()?`'s `compact_block` (stored records, never re-encoded) |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | `indexed()`'s served `tree_state` (memos keyed on that publish) |
-| `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `served()?`'s `transparent_address` |
-| `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
-| `GetMempoolTx` | `mempool()?` (the servable mempool) |
-| `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
-| `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
-| `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.lookup(..get_transaction(txid))` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
-| `GetStandardFee` | `validators.lookup(..get_standard_fee())` |
+What answers each method: [`docs/rpc_api.md`](../../docs/rpc_api.md). Each handler reads off
+one `GrpcSnapshot` (`served()?`, `indexed()` for tree states, `mempool()?`, `lightd()?`), except
+`SendTransaction` (`submit`) and the forwarded methods (`validators.lookup`).
 
 A forwarded call every member asked lacks (`QueryError::Unsupported`) = `UNIMPLEMENTED`, any
 other unanswered call = `UNAVAILABLE`: one mapping for every forwarding route.
@@ -239,7 +229,7 @@ Every cap refuses; none queues except the read lanes. Defaults:
   stuck behind a range already queued on the same connection.
 - An `accept()` error never ends `run`: a peer-side error is skipped, anything
   else (`EMFILE`, `ENOBUFS`, ...) backs off 10 ms doubling to 1 s.
-- Request bodies are capped before decode: 64 KiB, or 2 MB + 1 KiB for
+- Request bodies are capped before decode: 64 KiB, or `MAX_BLOCK_BYTES` + 1 KiB for
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
 - **No total cap.** A stream lives as long as it makes progress. Its bounds are

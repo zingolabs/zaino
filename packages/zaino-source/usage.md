@@ -3,20 +3,11 @@
 `ChainDataSource`: every question Zaino asks one trusted validator, one trait,
 declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its
 own domain error, nothing about the transport. Blocks come back decoded once, from consensus bytes,
-into `zaino_primitives::types::Block`. Two implementations; a test fake answers
-what its test asks and `unimplemented!()`s the rest.
-
-| Method | `ZcashLegacyRpcClient` | `ZebraIndexerGrpcClient` | Answer |
-|---|---|---|---|
-| `get_block_by_hash(hash)` | `getblock <hash> 0` | indexer `GetBlock` | `Block`, or `GetBlockByHashError::NotFound` |
-| `get_blocks_by_height(heights)` | `getblock "<h>" 0`, batched | indexer `GetBlockRange`, one per consecutive run | `Block` per height, or `GetAtHeightError::HeightNotFound` |
-| `get_block_links(heights)` | `getblockheader <h> false`, batched | JSON-RPC, as legacy | `BlockLink` per height, or `HeightNotFound` |
-| `get_poll_reading(metadata, holds)` | one poll batch (below) | JSON-RPC, as legacy | `PollReading` |
-| `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | JSON-RPC, as legacy | bytes per entry |
-| `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
-| `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
-| `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, or the send's verdict (`SendRawTransactionError`) |
-| `get_standard_fee()` | `getstandardfee` | JSON-RPC, as legacy | `StandardFee` (ZIP 317 marginal fee + estimator version) |
+into `zaino_primitives::types::Block`. Each method, its JSON-RPC call and its answer: the
+`ChainDataSource` rustdoc (`queries.rs`). Two implementations: `ZcashLegacyRpcClient`, and
+`ZebraIndexerGrpcClient`, which fetches blocks over zebrad's indexer gRPC (`GetBlock`,
+`GetBlockRange` per consecutive run) and asks everything else of its inner legacy client. Tests
+drive the real legacy client against [`MockValidator`](#testing-mockvalidator).
 
 Every method answers `Err(QueryError::Unsupported)` when the validator has no such method
 (JSON-RPC `-32601`: zcashd and stock zebrad lack `checkadmission`, older ones
@@ -240,17 +231,11 @@ let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs,
 
 ### Views in other crates
 
-Each lives in the crate that owns its type, behind that crate's `testing` feature:
-
-| View | Crate | Gives |
-|---|---|---|
-| `HeaderChain::anchored(&chain, depth)`, `VerifiedChain::of(&chain, tip)`, `VerifiedChain::finalized(&chain, tip, finalized_at)` | `zaino-header-chain` | its header chain, anchored at genesis, verified as built |
-| `MockPeerSet::new(&chain, tip)` | `zaino-traffic` | a `PeerTransport` over one path, `hold(height)` to move its tip |
-| `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
-| `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
-| `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
-
-Finality is the header chain's, never the builder's: ask for it with `VerifiedChain::finalized`.
+Each lives in the crate that owns its type, behind that crate's `testing` feature, and is
+documented there: header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer
+sets ([`zaino-traffic`](../zaino-traffic/usage.md)), peers and the UTXO set
+([`zaino-chainview`](../zaino-chainview/usage.md#testing-feature-testing)), chain params
+([`zaino-nfs`](../zaino-nfs/usage.md)). Finality is the header chain's, never the builder's.
 
 ### Invariants
 

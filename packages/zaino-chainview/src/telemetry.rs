@@ -61,7 +61,7 @@ pub const METRICS: &[Metric] = &[
     .unit(Unit::Seconds),
 ];
 
-/// One alarm condition: raised in [`alarms`], noted + logged by `zaino-grpc-snapshot`'s report
+/// One alarm condition: raised in `telemetry::alarms`, noted + logged by `zaino-grpc-snapshot`'s report
 ///
 /// - new alarm = a variant, then the compiler names its arms (`alarms`, `note`, `edge`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::VariantArray)]

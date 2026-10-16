@@ -18,15 +18,15 @@ use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError, S
 /// Trusted validator's RPC, as every Zaino consumer asks it
 ///
 /// - production = `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` (`zainod`'s `validator_client`)
-/// - test fake = answers what its test asks (`unimplemented!()` the rest)
+/// - tests = `ZcashLegacyRpcClient` against `testing::MockValidator`
 pub trait ChainDataSource: Send + Sync + 'static {
-    /// Best-chain block `hash`, decoded from consensus bytes
+    /// `getblock <hash> 0`: best-chain block `hash`, decoded from consensus bytes
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 
-    /// Best-chain block per height, `heights` order, decoded from consensus bytes
+    /// `getblock "<h>" 0` per height, batched: best-chain blocks, `heights` order, decoded
     ///
     /// - any height absent = `HeightNotFound` for it (batch = all or nothing)
     fn get_blocks_by_height(
