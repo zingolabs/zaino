@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{ShieldedPool, SubtreeRoot};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetSubtreeRoots`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -19,12 +19,14 @@ pub enum GetSubtreeRootsError {
 /// Maps to `z_getsubtreesbyindex(pool, start_index, limit)` over
 /// JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetSubtreeRoots: Send + Sync {
+pub trait OneShotGetSubtreeRoots: ValidatorSource + Send + Sync {
     /// Fetch subtree roots.
     fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
         start_index: u16,
         limit: Option<u16>,
-    ) -> impl Future<Output = Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError, Self::NonDomain>>,
+    > + Send;
 }

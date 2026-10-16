@@ -19,7 +19,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// the way out, and `legacy_code_from_error_source` in
 /// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
 ///
-/// Distinct from [`FetchError`](zaino_source::FetchError), which carries a code
+/// Distinct from [`NonDomainError`](zaino_source::NonDomainError), which carries a code
 /// the *validator* produced. This one is Zaino's.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
@@ -745,14 +745,14 @@ mod tests {
     #[test]
     fn an_unreachable_validator_keeps_its_transport_error() {
         let error = ChainIndexError::from(zaino_chain::ChainViewError::SourceUnavailable(
-            zaino_source::FetchError::new(zaino_source::FailureMode::Connection, "refused"),
+            zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "refused"),
         ));
         assert_eq!(error.kind(), ChainIndexErrorKind::InternalServerError);
 
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
         let mut found = false;
         while let Some(error) = current {
-            found |= error.is::<zaino_source::FetchError>();
+            found |= error.is::<zaino_source::NonDomainError>();
             current = error.source();
         }
         assert!(found, "the transport error is lost from the chain");

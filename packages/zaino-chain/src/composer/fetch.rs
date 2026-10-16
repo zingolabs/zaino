@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use zaino_primitives::types::{
     rpc::BlockHeaderVerbose, Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots,
 };
-use zaino_source::QueryError;
+use zaino_source::{NonDomainError, QueryError};
 
 use crate::composer::config::ChainViewConfig;
 use crate::error::{ChainViewError, Result};
@@ -26,27 +26,29 @@ use crate::source::ChainViewSource;
 /// The validator saying "no such block" is an answer, not a failure; a
 /// transport failure carries its cause through unchanged. One helper rather
 /// than a mapping per read.
-pub(crate) fn miss<T, E>(result: core::result::Result<T, QueryError<E>>) -> Result<Option<T>>
+pub(crate) fn miss<T, E, N>(result: core::result::Result<T, QueryError<E, N>>) -> Result<Option<T>>
 where
     E: core::fmt::Debug + core::fmt::Display,
+    N: std::error::Error + Into<NonDomainError>,
 {
     match result {
         Ok(value) => Ok(Some(value)),
         Err(QueryError::Domain(_)) => Ok(None),
-        Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
+        Err(QueryError::NonDomain(error)) => Err(ChainViewError::SourceUnavailable(error.into())),
     }
 }
 
 /// A validator answer from a port whose domain errors all mean an invalid
 /// request, never an absent answer.
-pub(crate) fn answered<T, E>(result: core::result::Result<T, QueryError<E>>) -> Result<T>
+pub(crate) fn answered<T, E, N>(result: core::result::Result<T, QueryError<E, N>>) -> Result<T>
 where
     E: core::fmt::Debug + core::fmt::Display,
+    N: std::error::Error + Into<NonDomainError>,
 {
     match result {
         Ok(value) => Ok(value),
         Err(QueryError::Domain(error)) => Err(ChainViewError::Rejected(error.to_string())),
-        Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
+        Err(QueryError::NonDomain(error)) => Err(ChainViewError::SourceUnavailable(error.into())),
     }
 }
 

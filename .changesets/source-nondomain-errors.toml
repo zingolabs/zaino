@@ -1,0 +1,64 @@
+# Source-port non-domain error model: rename to NonDomain, adapters own their
+# non-domain error via the ValidatorSource contract. See ADR-0021 (draft).
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = "Rename the non-answer error `FetchError` to `NonDomainError`, and the `QueryError`/`SourceError` `Fetch` variant to `NonDomain` — it is the complement of a domain answer (unreachable, timed out, unauthorized, or an unusable/undecodable response), not specifically a transport."
+migration = "Replace `zaino_source::FetchError` with `NonDomainError`, `FetchError::new`/`from_cause` with `NonDomainError::new`/`from_cause`, and `QueryError::Fetch`/`SourceError::Fetch` with the `NonDomain` variant."
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = "Add the `ValidatorSource` port contract: each adapter declares `type NonDomain: Error + Send + Sync + Into<NonDomainError>`, every `OneShot*` port gains it as a supertrait and returns `QueryError<E, Self::NonDomain>`, and `QueryError` gains a second type parameter `N` (defaulting to `NonDomainError`). The resilience wrapper erases `N` to the seam, so the consumer-facing `SourceError<E>` is unchanged."
+migration = "External adapters implementing a `OneShot*` port must now `impl ValidatorSource` (set `type NonDomain = NonDomainError` if the adapter has no distinct non-domain type) and return `QueryError<E, Self::NonDomain>`."
+
+[[changes]]
+crate = "zaino-source"
+kind = "fix"
+description = "`NonDomainError` now preserves the concrete transport cause via `Error::source()` instead of flattening it into a message string, so an abort trail reaches the underlying error."
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = "`From<RpcError>` now converts into `zaino_source::NonDomainError` (renamed from `FetchError`); a coded JSON-RPC refusal carries the server's message directly rather than a `to_string()` of the whole error."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "feature"
+description = "The read-state adapter owns its non-domain faults as a new public `ReadStateError` (unreachable / invalid-data / off-contract), mapped to the seam by one deterministic `From<ReadStateError> for NonDomainError`; it implements `ValidatorSource` with `type NonDomain = ReadStateError`."
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "internal"
+description = "Implement `ValidatorSource` (`type NonDomain = NonDomainError`) and adapt to the renamed seam error; classification is unchanged."
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "internal"
+description = "The composite validator implements `ValidatorSource` and normalises its read-state fast-path faults to the seam; adapt to the renamed seam error."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "internal"
+description = "Adapt to the renamed non-domain seam error (`FetchError` -> `NonDomainError`, `Fetch` -> `NonDomain`)."
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = "Adapt to the renamed seam error; the legacy source delegators implement `ValidatorSource` (pass-through non-domain type)."
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = "Adapt to the renamed non-domain seam error."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = "Adapt to the renamed non-domain seam error."
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "internal"
+description = "Adapt to the renamed non-domain seam error."

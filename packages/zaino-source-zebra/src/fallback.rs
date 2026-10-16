@@ -25,7 +25,7 @@ where
 mod tests {
     use super::*;
     use zaino_primitives::types::Height;
-    use zaino_source::{FailureMode, FetchError, GetBlockError};
+    use zaino_source::{FailureMode, GetBlockError, NonDomainError};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid height")
@@ -42,8 +42,8 @@ mod tests {
     /// rather than quietly routing every query to the slow path forever.
     #[test]
     fn a_transport_failure_is_not_retried() {
-        let broken: Result<(), QueryError<GetBlockError>> = Err(QueryError::Fetch(
-            FetchError::new(FailureMode::Connection, "database unavailable"),
+        let broken: Result<(), QueryError<GetBlockError>> = Err(QueryError::NonDomain(
+            NonDomainError::new(FailureMode::Connection, "database unavailable"),
         ));
 
         assert!(!retry_on_slow_path(&broken));

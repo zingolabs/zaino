@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{rpc::BlockHeaderVerbose, BlockHash};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockHeader`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -25,10 +25,12 @@ pub enum GetBlockHeaderError {
 ///
 /// Maps to `getblockheader(hash, verbose = true)` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockHeader: Send + Sync {
+pub trait OneShotGetBlockHeader: ValidatorSource + Send + Sync {
     /// Fetch a verbose block header.
     fn get_block_header(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError>>> + Send;
+    ) -> impl Future<
+        Output = Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError, Self::NonDomain>>,
+    > + Send;
 }

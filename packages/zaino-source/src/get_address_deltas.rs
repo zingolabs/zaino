@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{AddressDelta, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetAddressDeltas`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -32,12 +32,14 @@ pub enum GetAddressDeltasError {
 ///
 /// Maps to `getaddressdeltas` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetAddressDeltas: Send + Sync {
+pub trait OneShotGetAddressDeltas: ValidatorSource + Send + Sync {
     /// Fetch address deltas.
     fn get_address_deltas(
         &self,
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> impl Future<Output = Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError, Self::NonDomain>>,
+    > + Send;
 }
