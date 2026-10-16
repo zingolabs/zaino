@@ -36,20 +36,8 @@ in `fees` and read back for a held height.
 
 ## Wiring
 
-```rust,ignore
-use zaino_index_utxo_set::{schema, UtxoSetIndexWriter, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
-use zaino_sync::FeeSink;
-
-let mut fee_sink = FeeSink::new();
-let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
-let schema = schema(network);
-let writer = UtxoSetIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, handle.durable_view().tip(), queue);
-nfs.add(IndexKind::UtxoSet, handle);
-tokio::spawn(writer.run(blocks, fee_sink));
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)): its
+`FeeSink` subscribed by compact-block before `run` takes it (`FeeWiring`).
 
 - Generic over the persistence port: `UtxoSetIndexWriter<S: Store>` with
   `S::View: SequenceRead + MapRead`. zainod enables it with

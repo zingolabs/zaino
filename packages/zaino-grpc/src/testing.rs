@@ -40,29 +40,10 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
     let mut index =
         engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {
-        let parent = index.applied();
+        let fees = chain.fees(block.header().hash);
         let mut out = index.changes(block.block_ref());
-        match kind {
-            IndexKind::CompactBlock => {
-                let parent = zaino_index_compact_block::CompactBlockReader::new(parent);
-                let fees = chain.fees(block.header().hash);
-                zaino_index_compact_block::fold(&parent, &block, &fees, &mut out);
-            }
-            IndexKind::TreeState => {
-                let parent = zaino_index_tree_state::TreeStateReader::new(parent);
-                zaino_index_tree_state::fold(&parent, &block, &mut out)
-                    .expect("canonical commitments");
-            }
-            IndexKind::TransparentAddress => {
-                let parent = zaino_index_transparent_address::TransparentAddressReader::new(parent);
-                zaino_index_transparent_address::fold(&parent, &block, &mut out);
-            }
-            IndexKind::BlockHash => {
-                let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
-                zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
-            }
-            IndexKind::UtxoSet => unreachable!("asserted above"),
-        }
+        let folded = zaino_nfs::fold(kind, index.applied(), &block, Some(&fees), &mut out);
+        folded.expect("canonical block");
         index.apply(out);
     }
     index.commit().expect("SimFs commit");

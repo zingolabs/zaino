@@ -445,7 +445,7 @@ fn public_status(
     configured: &[IndexKind],
 ) -> PublicStatus {
     let all = IndexKind::ALL;
-    let enabled = all.into_iter().filter(|kind| configured.contains(kind)).map(IndexKind::name);
+    let enabled = all.iter().copied().filter(|kind| configured.contains(kind)).map(IndexKind::name);
     let (tip, served, validators, egress, info) = match chain {
         Some(chain) => (chain.tip, chain.served, Some(chain.validators), chain.egress, chain.info),
         None => (None, None, None, None, None),
@@ -689,7 +689,9 @@ mod tests {
         let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
         let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
         let readiness = |stage| readiness(Hold::Off, true, stage);
-        let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 5 });
+        let total = IndexKind::ALL.len();
+        let indexes =
+            serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": total });
         let version = env!("CARGO_PKG_VERSION");
 
         let before = public_status(readiness(starting), NetworkType::Main, None, &configured);

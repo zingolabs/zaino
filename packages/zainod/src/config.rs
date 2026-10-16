@@ -424,14 +424,14 @@ impl DaemonConfig {
 
     fn validate_indexes(&self) -> Result<(), IndexerError> {
         self.compact_block()?;
-        if IndexKind::ALL.into_iter().all(|kind| self.enabled(kind).is_none()) {
+        if IndexKind::ALL.iter().all(|kind| self.enabled(*kind).is_none()) {
             return Err(IndexerError::Config(
                 "every [index.*] disabled: nothing to build or serve".to_string(),
             ));
         }
         let fanout = self.sync.lsm_store.fanout;
-        for kind in IndexKind::ALL.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
-            if !manifest_fits(&crate::stores::schema(kind, self.network).0, fanout) {
+        for &kind in IndexKind::ALL.iter().filter(|kind| self.enabled(**kind).is_some()) {
+            if !manifest_fits(&zaino_nfs::schema(kind, self.network), fanout) {
                 return Err(IndexerError::Config(format!(
                     "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
                      manifest (lower it)",

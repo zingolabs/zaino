@@ -48,7 +48,7 @@ possible, take everything else from as many peers as possible.**
   (zaino-sync)         tip overlay  │
        │ FinalizedStream     │ NfsPublication
        ▼                     ▼      ▼
-  5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
+  index writers   ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
   (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
 ```
 

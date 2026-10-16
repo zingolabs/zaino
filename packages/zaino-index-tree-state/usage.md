@@ -48,18 +48,7 @@ hash comes from its completing height's `heights` record.
 
 ## Wiring
 
-```rust,ignore
-use zaino_index_tree_state::{schema, TreeStateIndexWriter, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
-
-let schema = schema(network);
-let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
-let writer = TreeStateIndexWriter::new(store);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TreeState, handle.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::TreeState, handle);
-tokio::spawn(writer.run(blocks));
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)).
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine`.

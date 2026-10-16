@@ -16,19 +16,14 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockReader};
-use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressReader};
-use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
-use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
-use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_persistence::{
-    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine,
-    SequenceRead, Store, View,
+    fs::SimFs, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine, SequenceRead, Store,
+    View,
 };
-use zaino_primitives::types::{Block, BlockFees};
+use zaino_primitives::types::Block;
 use zaino_source::testing::{p2pkh, Lie, MockChain, ValidatorViews};
 use zaino_source::ZcashLegacyRpcClient;
-use zaino_sync::{FeeSink, FinalizedFollower, FollowError, SyncProgress};
+use zaino_sync::{FinalizedFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, TrustedValidator};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::{BlockHeight, H0};
@@ -41,38 +36,6 @@ const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonze
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
-
-/// `kind`'s own fold of `block` onto `parent` into `out` (`fees` = compact-block's)
-fn own_fold(
-    kind: IndexKind,
-    parent: impl SequenceRead + MapRead,
-    fees: &BlockFees,
-    block: &Block,
-    out: &mut BlockChanges,
-) {
-    match kind {
-        IndexKind::UtxoSet => {
-            let parent = UtxoSetReader::new(parent);
-            zaino_index_utxo_set::fold(&parent, block, out).expect("prevouts held");
-        }
-        IndexKind::CompactBlock => {
-            let parent = CompactBlockReader::new(parent);
-            zaino_index_compact_block::fold(&parent, block, fees, out);
-        }
-        IndexKind::BlockHash => {
-            let parent = BlockHashReader::new(parent);
-            zaino_internal_block_hash_to_height::fold(&parent, block, out);
-        }
-        IndexKind::TreeState => {
-            let parent = TreeStateReader::new(parent);
-            zaino_index_tree_state::fold(&parent, block, out).expect("canonical commitments");
-        }
-        IndexKind::TransparentAddress => {
-            let parent = TransparentAddressReader::new(parent);
-            zaino_index_transparent_address::fold(&parent, block, out);
-        }
-    }
-}
 
 /// Every record and row of `view`, table by table
 fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
@@ -98,16 +61,12 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     };
     let mut stores: Vec<(IndexKind, DiskStore)> =
         IndexKind::ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
-    let ((first, utxo_set), others) = stores.split_first_mut().expect("indexes");
-    assert_eq!(*first, IndexKind::UtxoSet, "utxo-set folds first: the rest read its fees");
     for block in path {
-        let mut out = utxo_set.changes(block.block_ref());
-        let parent = UtxoSetReader::new(utxo_set.applied());
-        let fees = zaino_index_utxo_set::fold(&parent, block, &mut out).expect("prevouts held");
-        utxo_set.apply(out);
-        for (kind, store) in others.iter_mut() {
+        let mut fees = None;
+        for (kind, store) in &mut stores {
             let mut out = store.changes(block.block_ref());
-            own_fold(*kind, store.applied(), &fees, block, &mut out);
+            let folded = fold(*kind, store.applied(), block, fees.as_ref(), &mut out);
+            fees = folded.expect("canonical block").or(fees);
             store.apply(out);
         }
     }
@@ -203,52 +162,16 @@ impl Pipeline {
         let queue = NonZeroUsize::new(1 << 24).expect("nz");
         let mut follower = FinalizedFollower::new(chain.clone(), balancer.clone(), lookahead);
         let mut nfs = Nfs::new(chain.clone(), balancer.clone(), params, DEPTH, lookahead);
-        let mut fee_sink = FeeSink::new();
-        let mut fees = kinds
-            .contains(&IndexKind::CompactBlock)
-            .then(|| fee_sink.subscribe(IndexKind::CompactBlock.name(), queue));
-        let mut fee_sink = Some(fee_sink);
+        let mut fees = FeeWiring::new(kinds.contains(&IndexKind::CompactBlock).then_some(queue));
         let (mut writers, mut handles) = (tokio::task::JoinSet::new(), Vec::new());
         for &kind in kinds {
             let store =
                 engine.open(Path::new(kind.name()), &schema(kind, NETWORK), NonZeroUsize::MIN);
-            let store = store.expect("store");
-            let mut add = |handle: IndexHandle<DiskView>| {
-                handles.push((kind, handle.clone()));
-                let blocks = follower.subscribe(kind, handle.durable_view().tip(), queue);
-                nfs.add(kind, handle);
-                blocks
-            };
-            match kind {
-                IndexKind::UtxoSet => {
-                    let writer = UtxoSetIndexWriter::new(store);
-                    let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks, fee_sink.take().expect("one utxo-set")));
-                }
-                IndexKind::CompactBlock => {
-                    let writer = CompactBlockIndexWriter::new(store);
-                    let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks, fees.take().expect("one compact-block")));
-                }
-                IndexKind::BlockHash => {
-                    let writer = BlockHashIndexWriter::new(store);
-                    let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks));
-                }
-                IndexKind::TreeState => {
-                    let writer = TreeStateIndexWriter::new(store);
-                    let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks));
-                }
-                IndexKind::TransparentAddress => {
-                    let writer = TransparentAddressIndexWriter::new(store);
-                    let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks));
-                }
-            }
-        }
-        if let Some(unused) = fee_sink {
-            unused.shutdown();
+            let (handle, run) = writer(kind, store.expect("store"), &mut fees);
+            handles.push((kind, handle.clone()));
+            let blocks = follower.subscribe(kind, handle.durable_view().tip(), queue);
+            nfs.add(kind, handle);
+            writers.spawn(run(blocks));
         }
         let (indexed, progress, cancel) =
             (nfs.indexed(), follower.progress(), CancellationToken::new());
@@ -412,7 +335,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
 
     for (run, moves) in runs.iter().enumerate() {
         let mut pipeline =
-            Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
+            Pipeline::start(&engine, IndexKind::ALL, &verified_rx, &balancer, params);
         let booted_at = pipeline.durable().into_iter().min().flatten();
         for (at, &(added, finalize)) in moves.iter().enumerate() {
             let context = format!("run {run} move {at}");
@@ -528,16 +451,17 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
         &schema(IndexKind::BlockHash, NETWORK),
         NonZeroUsize::MIN,
     );
-    let writer = BlockHashIndexWriter::new(store.expect("store"));
+    let fees = &mut FeeWiring::new(None);
+    let (handle, write) = writer(IndexKind::BlockHash, store.expect("store"), fees);
     let lookahead = NonZeroUsize::MIN;
     let params = ChainParams::of(&blocks);
     let mut nfs: Nfs<_, DiskView> = Nfs::new(verified_rx, balancer, params, DEPTH, lookahead);
-    nfs.add(IndexKind::BlockHash, writer.handle());
+    nfs.add(IndexKind::BlockHash, handle);
     let mut sink = zaino_sync::FinalizedStream::new();
     let blocks = sink.subscribe(IndexKind::BlockHash.name(), NonZeroUsize::MAX);
     let run = tokio::spawn(nfs.run(CancellationToken::new()));
     sink.shutdown();
-    writer.run(blocks).await;
+    write(blocks).await;
     let stopped = run.await.expect("nfs task").expect_err("writer gone");
     assert!(matches!(stopped, NfsError::IndexGone("block_hash")), "{stopped}");
 }

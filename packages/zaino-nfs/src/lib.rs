@@ -5,6 +5,7 @@ mod core;
 mod emit;
 mod fold;
 mod graph;
+mod indexes;
 mod per_index;
 mod publish;
 
@@ -33,8 +34,10 @@ use crate::fold::{fold_block, Folded};
 use crate::per_index::PerIndex;
 
 pub use crate::emit::describe_metrics;
-pub use crate::fold::FoldError;
-pub use crate::publish::{schema, ChainParams, IndexesAtBlock, NfsPublication, Published, Views};
+pub use crate::indexes::{
+    fold, schema, write_buffer, writer, FeeWiring, FoldError, RunFuture, WriterRun,
+};
+pub use crate::publish::{ChainParams, IndexesAtBlock, NfsPublication, Published, Views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {
