@@ -75,8 +75,7 @@ The merge is `O(change)`. Raw bytes are fetched once per txid, the lister prefer
   header is vouched.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
-  vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
-  other refusal → `report`.
+  vouched. A refusal ends the run, and only `Fault::Sender` → `report`.
 - **Vouches** after every poll merge: each answering validator's claim and its held `getblockhash`
   answer.
 - **Stall** (fetch failed, retreated, malformed, empty, refused, or a fully read branch still not

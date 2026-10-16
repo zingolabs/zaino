@@ -44,7 +44,8 @@ tip: a start, or a jump to a trusted validator far ahead.
 as int32, nBits valid, solution size, hash ≤ target, Equihash (200, 9); proof of work off on
 regtest) then against up to `CONTEXT` = 113 ancestors (median time past, + 90 min, nBits =
 zcashd's `CalculateNextWorkRequired` + ZIP 218's window by height, testnet's minimum-difficulty
-gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`).
+gap) and the clock (`FromTheFuture`: deferred, never blamed). `Rejected::fault` names whose
+refusal it is: `Sender` (blamed), `Deferred` or `Unplaced` (too little held to judge it).
 `insert_untrusted` runs it before `insert`; `zaino-chainview` feeds it peers' headers. On regtest
 nBits is fixed at the limit and the solution must be 36 bytes.
 

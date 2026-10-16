@@ -66,10 +66,30 @@ pub enum Rejected {
     ShortContext { held: usize, needed: usize },
 }
 
+/// Whose refusal: `Sender` = blamed, `Deferred` = valid once the clock passes it (H7, never cached),
+/// `Unplaced` = we hold too little to judge it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    Sender,
+    Deferred,
+    Unplaced,
+}
+
 impl Rejected {
-    /// Time-bound only: valid once the clock passes it (H7: deferred, never blamed or cached)
-    pub fn is_deferred(&self) -> bool {
-        matches!(self, Self::FromTheFuture { .. })
+    pub fn fault(&self) -> Fault {
+        match self {
+            Self::Version { .. }
+            | Self::Bits { .. }
+            | Self::Difficulty { .. }
+            | Self::TimeTooEarly { .. }
+            | Self::TimeTooLate { .. }
+            | Self::SolutionSize { .. }
+            | Self::AboveTarget { .. }
+            | Self::Solution
+            | Self::WorkOverflow => Fault::Sender,
+            Self::FromTheFuture { .. } => Fault::Deferred,
+            Self::Orphan | Self::BelowFinalized | Self::ShortContext { .. } => Fault::Unplaced,
+        }
     }
 }
 
