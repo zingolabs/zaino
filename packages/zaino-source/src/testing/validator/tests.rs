@@ -267,7 +267,7 @@ async fn poll_metadata_and_estimate_answer_as_scripted() {
         end_of_service: EndOfService::At { height: h(3_564_960) },
     };
 
-    validator.metadata(None, Some(release.clone()));
+    validator.telemetry(Telemetry { peers: None, release: Some(release.clone()) });
     validator.estimate(h(100));
     let polled = client.get_poll_reading(true, &[]).await.expect("reachable");
     validator.lacks(&["getdeprecationinfo"]);
@@ -275,9 +275,10 @@ async fn poll_metadata_and_estimate_answer_as_scripted() {
 
     let metadata = polled.metadata.expect("asked");
     assert_eq!(polled.info.estimated_height, h(100));
-    assert_eq!(metadata.peers.expect_err("scripted to fail").mode, FailureMode::RpcError(-1));
-    assert_eq!(metadata.release.expect("answered"), release);
-    let older = older.metadata.expect("asked").release.expect("answered");
+    assert_eq!(metadata.answered, Telemetry { peers: None, release: Some(release) });
+    let failed: Vec<_> = metadata.failed.iter().map(|(what, cause)| (*what, cause.mode)).collect();
+    assert_eq!(failed, [("peer list", FailureMode::RpcError(-1))]);
+    let older = older.metadata.expect("asked").answered.release.expect("answered");
     assert_eq!(older.end_of_service, EndOfService::Unknown);
 }
 

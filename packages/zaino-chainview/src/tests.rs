@@ -15,7 +15,7 @@ use zaino_source::testing::{
 };
 use zaino_source::{
     EndOfService, GetMempoolListingError, NodeRelease, PeerInfo, SendRawTransactionError,
-    ZcashLegacyRpcClient,
+    Telemetry, ZcashLegacyRpcClient,
 };
 use zaino_traffic::testing::MockPeerSet;
 use zaino_traffic::{
@@ -28,7 +28,9 @@ use zcash_transparent::bundle::OutPoint;
 
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
-use crate::{Agreement, ChainView, MempoolEntry, Projection, SubmitError, TrustedValidatorSet};
+use crate::{
+    Agreement, Alarm, ChainView, MempoolEntry, Projection, SubmitError, TrustedValidatorSet,
+};
 
 /// The view over `validators` (`addresses` in order) + `peer_set`, its balancer + poll merge
 /// spawned (they run once the test awaits)
@@ -243,7 +245,8 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
         (0..3).map(|_| Arc::new(chain.validator(agreed))).collect();
     let tx7 = chain.submit_raw(raw_transaction(7, 0).1);
     for validator in &validators {
-        validator.metadata(Some(vec![outbound("seed-a:8233")]), None);
+        validator
+            .telemetry(Telemetry { peers: Some(vec![outbound("seed-a:8233")]), release: None });
     }
     validators[0].hear(&chain, tx7);
     validators[1].down(true);
@@ -272,7 +275,8 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let claimed = chain.branch(at_90).mine_empty(30).tip();
     validators[2].follow(&chain, claimed);
     validators[2].hear(&chain, tx7);
-    validators[2].metadata(Some(vec![outbound("seed-z:8233")]), None);
+    validators[2]
+        .telemetry(Telemetry { peers: Some(vec![outbound("seed-z:8233")]), release: None });
     validators[2].down(false);
     polled(&balancer).await;
     let pinned = reader.current();
@@ -289,7 +293,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
         .trusted_validators()
         .iter()
-        .map(|meta| (meta.address.as_str(), meta.peers.iter().cloned().collect()))
+        .map(|meta| (meta.address.as_str(), meta.telemetry.peers.clone().unwrap_or_default()))
         .collect();
     let expected =
         [("a:8232", "seed-a:8233"), ("b:8232", "seed-a:8233"), ("c:8232", "seed-z:8233")]
@@ -805,17 +809,15 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
         end_of_service: EndOfService::At { height: h(halts) },
     };
     let inbound = PeerInfo { addr: "x:1".to_owned(), inbound: true };
-    validator.metadata(
-        Some(vec![outbound("seed-a:8233"), inbound]),
-        Some(release("v6.4.2", 10 + 4_960)),
-    );
+    validator.telemetry(Telemetry {
+        peers: Some(vec![outbound("seed-a:8233"), inbound]),
+        release: Some(release("v6.4.2", 10 + 4_960)),
+    });
     let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     let reader = view.subscriber();
-    let peers = || -> Vec<PeerInfo> {
-        reader.current().trusted_validators()[0].peers.iter().cloned().collect()
-    };
-    let build =
-        || reader.current().trusted_validators()[0].release.as_ref().map(|r| r.build.clone());
+    let telemetry = || reader.current().trusted_validators()[0].telemetry.clone();
+    let peers = || telemetry().peers.unwrap_or_default();
+    let build = || telemetry().release.map(|release| release.build);
     let streaming = || reader.current().trusted_validators()[0].streaming;
     let one = TrustedValidatorSet::at([0]);
 
@@ -825,21 +827,24 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     assert_eq!(build().as_deref(), Some("v6.4.2"));
     let pinned = reader.current();
     assert_eq!(pinned.trusted_validators()[0].blocks_to_end_of_service(), Some(4_960));
-    assert_eq!(pinned.alarms().ending(), one, "halts within a week of its tip");
+    assert_eq!(pinned.alarms().by(Alarm::Ending), one, "halts within a week of its tip");
 
-    validator.metadata(None, None);
+    validator.telemetry(Telemetry::default());
     tokio::time::sleep(Duration::from_secs(60)).await;
     let health = reader.current().trusted_validators()[0].health;
     assert_eq!(health, Health::Live, "a metadata failure is not a poll failure (else Degraded)");
     assert_eq!((peers(), build().as_deref()), (first, Some("v6.4.2")), "last answers kept");
 
-    validator.metadata(Some(Vec::new()), Some(release("v6.5.0", 3_700_000)));
+    validator.telemetry(Telemetry {
+        peers: Some(Vec::new()),
+        release: Some(release("v6.5.0", 3_700_000)),
+    });
     polled(&balancer).await;
     assert_eq!(build().as_deref(), Some("v6.4.2"), "read once per refresh, not per poll");
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(peers(), [], "a fresh answer replaces it (isolated = empty, not an error)");
     assert_eq!(build().as_deref(), Some("v6.5.0"));
-    assert_eq!(reader.current().alarms().ending(), TrustedValidatorSet::default(), "upgraded");
+    assert!(!reader.current().alarms().raised(Alarm::Ending), "upgraded");
 
     assert!(!streaming());
     balancer.pushed(v(0), Push::Link(true));
@@ -912,7 +917,7 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_finalized
     let validator = Arc::new(chain.validator(tip_45));
     let (view, _balancer, cancel) = running(&[validator], &["a:8232"], None);
     let reader = view.subscriber();
-    let stalled = || reader.current().alarms().finality_paused();
+    let stalled = || reader.current().alarms().raised(Alarm::FinalityPaused);
 
     view.set_verified(Some(chain.verified_finalized(tip_30, h(20))));
     tokio::time::sleep(Duration::from_secs(61)).await;
@@ -966,7 +971,7 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let fetched: Vec<usize> =
         validators.iter().map(|validator| validator.calls("getblockheader")).collect();
     assert_eq!(fetched, [114, 0], "the anchor + 113 headers from a, nothing from b");
-    assert!(!reader.current().alarms().finality_paused());
+    assert!(!reader.current().alarms().raised(Alarm::FinalityPaused));
 
     validators[1].follow(&chain, b);
     polled(&balancer).await;
@@ -1018,7 +1023,7 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
         let non_finalized = u32::from(best.height) - u32::from(finalized_tip.height);
         let bound = DEPTH + crate::headers::HEADER_BATCH;
         assert!(non_finalized <= bound, "{best:?}: H9, {non_finalized} non-finalized > {bound}");
-        assert!(!reader.current().alarms().finality_paused(), "{best:?}: alarm");
+        assert!(!reader.current().alarms().raised(Alarm::FinalityPaused), "{best:?}: alarm");
         followed.push((best, finalized_tip));
         balancer.pushed(v(0), Push::Changed);
         if (best, finalized_tip) == (at_20, at_10) {

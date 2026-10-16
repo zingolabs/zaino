@@ -3,7 +3,9 @@
 //! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
 //! - State gauges + alarm edge logs = `zaino-grpc-snapshot`'s (at scrape, per publish)
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+
+use strum::VariantArray as _;
 
 use metrics::Unit;
 use zaino_primitives::metric::Metric;
@@ -59,41 +61,45 @@ pub const METRICS: &[Metric] = &[
     .unit(Unit::Seconds),
 ];
 
-/// Raised conditions as of one merge (`zaino-grpc-snapshot` logs each edge)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Alarms {
-    stale: TrustedValidatorSet,
-    ending: TrustedValidatorSet,
-    partitioned: bool,
-    eclipsed: bool,
-    finality_paused: bool,
+/// One alarm condition: raised in [`alarms`], noted + logged by `zaino-grpc-snapshot`'s report
+///
+/// - new alarm = a variant, then the compiler names its arms (`alarms`, `note`, `edge`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::VariantArray)]
+pub enum Alarm {
+    Partitioned,
+    Eclipsed,
+    FinalityPaused,
+    Stale,
+    Ending,
 }
 
+/// Raised alarms as of one merge: `(alarm, by)`, `by` = the trusted validator raising it
+/// (`None` = view-wide)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Alarms(BTreeSet<(Alarm, Option<TrustedValidatorId>)>);
+
 impl Alarms {
-    /// Live trusted validators whose tip trails their own clock estimate by >= `STALE_TIP_BLOCKS`
-    pub fn stale(&self) -> TrustedValidatorSet {
-        self.stale
+    pub fn raised(&self, alarm: Alarm) -> bool {
+        self.0.iter().any(|(raised, _)| *raised == alarm)
     }
 
-    /// Trusted validators whose release halts within `END_OF_SERVICE_WARN_BLOCKS` of their tip
-    pub fn ending(&self) -> TrustedValidatorSet {
-        self.ending
+    /// Trusted validators raising `alarm` (empty for a view-wide one)
+    pub fn by(&self, alarm: Alarm) -> TrustedValidatorSet {
+        self.0.iter().filter(|(raised, _)| *raised == alarm).filter_map(|(_, by)| *by).collect()
     }
 
-    /// Two live trusted validators share no outbound peer
-    pub fn partitioned(&self) -> bool {
-        self.partitioned
+    /// Raised here, not in `earlier` (`earlier.since(self)` = cleared)
+    pub fn since<'a>(
+        &'a self,
+        earlier: &'a Alarms,
+    ) -> impl Iterator<Item = (Alarm, Option<TrustedValidatorId>)> + 'a {
+        self.0.difference(&earlier.0).copied()
     }
 
-    /// Live trusted validators together reach at most `ECLIPSE_OUTBOUND_MAX` outbound peers
-    pub fn eclipsed(&self) -> bool {
-        self.eclipsed
-    }
-
-    /// Finality stalled: finalized tip unmoved ≥ 60 s, a block `depth` deep no trusted validator
-    /// vouched for (H6)
-    pub fn finality_paused(&self) -> bool {
-        self.finality_paused
+    /// Raised instances per alarm, `Alarm` order (0 = clear)
+    pub fn counts(&self) -> impl Iterator<Item = (Alarm, usize)> + '_ {
+        let count = |alarm: Alarm| self.0.iter().filter(|(raised, _)| *raised == alarm).count();
+        Alarm::VARIANTS.iter().map(move |alarm| (*alarm, count(*alarm)))
     }
 }
 
@@ -105,7 +111,8 @@ pub(crate) fn outbound(
         .iter()
         .filter(|meta| meta.health == Health::Live)
         .map(|meta| {
-            meta.peers.iter().filter(|peer| !peer.inbound).map(|peer| peer.addr.as_str()).collect()
+            let peers = meta.telemetry.peers.iter().flatten();
+            peers.filter(|peer| !peer.inbound).map(|peer| peer.addr.as_str()).collect()
         })
         .filter(|peers: &HashSet<&str>| !peers.is_empty())
         .collect()
@@ -119,34 +126,38 @@ pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
     pairs.min()
 }
 
+/// `finality_paused` = finalized tip unmoved ≥ 60 s, a block `depth` deep no trusted validator
+/// vouched for (H6)
 pub(crate) fn alarms(
     trusted_validators: &imbl::Vector<TrustedValidatorMeta>,
     finality_paused: bool,
 ) -> Alarms {
-    let stale = trusted_validators
-        .iter()
-        .enumerate()
-        .filter(|(_, meta)| meta.health == Health::Live)
-        .filter(|(_, meta)| meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS))
-        .filter_map(|(index, _)| TrustedValidatorId::new(index))
-        .collect();
-    let ending = trusted_validators
-        .iter()
-        .enumerate()
-        .filter(|(_, meta)| {
-            meta.blocks_to_end_of_service().is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS)
-        })
-        .filter_map(|(index, _)| TrustedValidatorId::new(index))
-        .collect();
     let outbound = outbound(trusted_validators);
     let union: HashSet<&str> = outbound.iter().flatten().copied().collect();
-    Alarms {
-        stale,
-        ending,
-        partitioned: shared_outbound_min(&outbound) == Some(0),
-        eclipsed: (1..=ECLIPSE_OUTBOUND_MAX).contains(&union.len()),
-        finality_paused,
-    }
+    let view_wide = |raised: bool| if raised { vec![None] } else { Vec::new() };
+    let raising = |raises: &dyn Fn(&TrustedValidatorMeta) -> bool| {
+        let validators = trusted_validators.iter().enumerate().filter(|(_, meta)| raises(meta));
+        validators.filter_map(|(index, _)| TrustedValidatorId::new(index)).map(Some).collect()
+    };
+    let raised_by = |alarm: Alarm| -> Vec<Option<TrustedValidatorId>> {
+        match alarm {
+            Alarm::Partitioned => view_wide(shared_outbound_min(&outbound) == Some(0)),
+            Alarm::Eclipsed => view_wide((1..=ECLIPSE_OUTBOUND_MAX).contains(&union.len())),
+            Alarm::FinalityPaused => view_wide(finality_paused),
+            Alarm::Stale => raising(&|meta| {
+                let stale = meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS);
+                meta.health == Health::Live && stale
+            }),
+            Alarm::Ending => raising(&|meta| {
+                let left = meta.blocks_to_end_of_service();
+                left.is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS)
+            }),
+        }
+    };
+    let raised = Alarm::VARIANTS
+        .iter()
+        .flat_map(|alarm| raised_by(*alarm).into_iter().map(move |by| (*alarm, by)));
+    Alarms(raised.collect())
 }
 
 fn origin(sighting: &Sighting) -> &'static str {
@@ -237,18 +248,24 @@ mod tests {
                         estimated_height: h(*estimated),
                         activations: Vec::new(),
                     });
-                    meta.peers = outbound
-                        .iter()
-                        .map(peer(false))
-                        .chain(inbound.iter().map(peer(true)))
-                        .collect();
+                    let peers =
+                        outbound.iter().map(peer(false)).chain(inbound.iter().map(peer(true)));
+                    meta.telemetry.peers = Some(peers.collect());
                     meta
                 })
                 .collect();
-            let stale = TrustedValidatorSet::at(stale.iter().copied());
-            let ending = TrustedValidatorSet::default();
-            let expected = Alarms { stale, ending, partitioned, eclipsed, finality_paused: false };
-            assert_eq!(alarms(&trusted_validators, false), expected, "{case}");
+            let raised = alarms(&trusted_validators, false);
+            let expected = (TrustedValidatorSet::at(stale.iter().copied()), partitioned, eclipsed);
+            let answered = (
+                raised.by(Alarm::Stale),
+                raised.raised(Alarm::Partitioned),
+                raised.raised(Alarm::Eclipsed),
+            );
+            assert_eq!(answered, expected, "{case}");
+            assert!(
+                !raised.raised(Alarm::Ending) && !raised.raised(Alarm::FinalityPaused),
+                "{case}"
+            );
         }
     }
 }

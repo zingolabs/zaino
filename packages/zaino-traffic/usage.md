@@ -115,8 +115,8 @@ let checked = loop {
 - Each trusted member is polled every 1 s (every 15 s while both its push streams are up), never
   closer than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
   failures) is probed at 30 s and nothing else is sent to it. The poll has a permit of its own,
-  outside every lane: no ask ever delays it. Metadata (`getpeerinfo`, `getinfo`,
-  `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
+  outside every lane: no ask ever delays it (its calls: `ChainDataSource::get_poll_reading`).
+  Metadata rides one poll a minute; a failed poll leaves it due.
 - `poll_best(f)`: every poll asks `getblockhash` at `f()` (the caller's best height, `None` =
   not asked), read as the poll starts; it never wakes a poll (an answer at a moved best is one
   stale fact, re-asked next poll). `observe(member)` is a `watch` of the latest

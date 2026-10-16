@@ -187,8 +187,7 @@ impl Run {
         Reading {
             block_at_best: Some(self.tip),
             info,
-            peers: None,
-            release: None,
+            telemetry: zaino_source::Telemetry::default(),
             streaming: false,
         }
     }

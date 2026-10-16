@@ -131,16 +131,15 @@ The balancer's poll asks one validator `get_poll_reading`; the chain view then
 asks `get_raw_mempool_transactions` for the bytes of what it newly lists, and its
 header sync `get_block_links`:
 
-- `get_poll_reading(metadata, holds)`: `getblockchaininfo` +
-  `getrawmempool true` + `getblockhash <h>` per height in `holds`, in one batch,
-  so the listing and the answers are tagged with the tip read beside them.
+- `get_poll_reading(metadata, holds)`: one batch (its calls: the method's rustdoc), so the
+  listing and the answers are tagged with the tip read beside them.
   `PollReading::held` has one answer per height, in order: the hash on the
   validator's best chain, `GetAtHeightError::HeightNotFound` above its tip (zebrad's
   `-32602`, zcashd's `-8`), or that item's own failure (the rest of the poll
   stands). The chain view asks this to learn which validators hold a verified
-  block. With `metadata`, also `getpeerinfo` + `getinfo` +
-  `getdeprecationinfo`, each its own outcome (`MetadataReading`): telemetry, so
-  a failed half never fails the poll. The listing carries each entry's txid,
+  block. With `metadata`, `MetadataReading` = the answered `Telemetry` + each failed read,
+  named: a failed read never fails the poll, and `Telemetry::absorb` keeps the last answer
+  in its place. The listing carries each entry's txid,
   fee and `encoded_len`; the fee is the validator's (it resolved the prevouts),
   sent by zebra as an `f64` and parsed back to exact zatoshis. `Unavailable`
   means the validator has no mempool. `Inactive` means zebrad's mempool is off
@@ -296,7 +295,7 @@ validator.evict(txid);                               // evicted: unlisted from t
 validator.listing(Err(GetMempoolListingError::Inactive));
 validator.relay(Err(fee_too_low));                   // sendrawtransaction + checkadmission verdict
 validator.lacks(&["checkadmission"]);                // an older node: -32601 (zcashd, stock zebrad)
-validator.metadata(None, Some(release));             // getpeerinfo answers -1
+validator.telemetry(Telemetry { peers: None, release: Some(release) }); // getpeerinfo: -1
 validator.latency(&["getblock"], Duration::from_secs(2)); // before each request carrying it
 validator.reachable(&["sendrawtransaction"], false); // requests carrying it: HTTP 503
 validator.down(true);                                // every request: HTTP 503

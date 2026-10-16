@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
-use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
+use zaino_source::{BlockchainInfo, Telemetry};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
@@ -49,13 +49,12 @@ pub(crate) struct Sighted {
 /// What every answered poll read, mempool on or off
 ///
 /// - `block_at_best` = its `getblockhash` answer at the best the poll started under
-/// - `peers`, `release`: `Some` only on a metadata poll whose half answered (else the last kept)
+/// - `telemetry` = this poll's answered reads (absorbed over the last)
 #[derive(Debug, Clone)]
 pub(crate) struct Reading {
     pub(crate) block_at_best: Option<BlockRef>,
     pub(crate) info: BlockchainInfo,
-    pub(crate) peers: Option<Vec<PeerInfo>>,
-    pub(crate) release: Option<NodeRelease>,
+    pub(crate) telemetry: Telemetry,
     pub(crate) streaming: bool,
 }
 
@@ -181,7 +180,7 @@ impl ChainViewCore {
                     meta.health = health;
                     if health == Health::Down {
                         (meta.info, meta.block_at_best) = (None, None);
-                        meta.peers = Vector::new();
+                        meta.telemetry.peers = None;
                         touched.extend(retract(&mut state.mempool, validator));
                     }
                 }
@@ -371,18 +370,12 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
-/// An answering poll: claim + block at best, clock estimate, peers (a failed peer read keeps the
-/// last)
+/// An answering poll: claim + block at best, clock estimate, telemetry
 fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.block_at_best = reading.block_at_best;
     meta.info = Some(reading.info);
     meta.streaming = reading.streaming;
-    if let Some(peers) = reading.peers {
-        meta.peers = peers.into_iter().collect();
-    }
-    if let Some(release) = reading.release {
-        meta.release = Some(release);
-    }
+    meta.telemetry.absorb(reading.telemetry);
 }
 
 /// `validator`'s bit cleared from every sighting → the txids it held

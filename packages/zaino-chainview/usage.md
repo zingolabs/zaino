@@ -207,9 +207,11 @@ zainod registers each from `METRICS` (help, unit, buckets). The `zaino.chainview
 | `submission_attempts` | histogram | `outcome` |
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
-`alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
-(definitions and thresholds: [architecture §11](../../docs/architecture.md#11-telemetry); in
-`config.rs`).
+`alarms()` → `Alarms`: each raised `Alarm` (`Partitioned`, `Eclipsed`, `FinalityPaused`, and
+per validator `Stale`, `Ending`), derived per merge (definitions and thresholds:
+[architecture §11](../../docs/architecture.md#11-telemetry); in `config.rs`). A new alarm = an
+`Alarm` variant: the compiler then names its arms (raised in `telemetry::alarms`, noted and
+logged in `zaino-grpc-snapshot`'s report).
 
 ## Testing (feature `testing`)
 

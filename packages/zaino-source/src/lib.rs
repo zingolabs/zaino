@@ -29,7 +29,7 @@ pub use peer_info::PeerInfo;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
+    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError, Telemetry,
     TransactionResponse,
 };
 pub use rpc::METRICS;

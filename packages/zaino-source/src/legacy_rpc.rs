@@ -17,7 +17,7 @@ use crate::{
     decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    SendRawTransactionError, Telemetry, TransactionResponse,
 };
 
 /// Validator's link
@@ -264,13 +264,17 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                 Err(QueryError::NonDomain(error)) => Err(error),
                 Err(QueryError::Domain(never)) => match never {},
             };
-            MetadataReading {
-                peers: peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse)),
-                release: info.and_then(|info| {
-                    let deprecation = deprecation?;
-                    parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
-                }),
-            }
+            let mut failed = Vec::new();
+            let peers = peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse));
+            let release = info.and_then(|info| {
+                let deprecation = deprecation?;
+                parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
+            });
+            let answered = Telemetry {
+                peers: answered(&mut failed, "peer list", peers),
+                release: answered(&mut failed, "release", release),
+            };
+            MetadataReading { answered, failed }
         });
         Ok(PollReading { info, listing, held, metadata })
     }
@@ -345,6 +349,15 @@ where
         }
         Err(QueryError::NonDomain(cause)) => Err(cause),
     }
+}
+
+/// A telemetry read's answer, its failure named into `failed`
+fn answered<T>(
+    failed: &mut Vec<(&'static str, NonDomainError)>,
+    what: &'static str,
+    read: Result<T, NonDomainError>,
+) -> Option<T> {
+    read.map_err(|cause| failed.push((what, cause))).ok()
 }
 
 /// Calls per batch (one batch holds one connection for its whole reply)
