@@ -844,9 +844,9 @@ enabled = false
 
     /// - `generate-config` = every key at its default, parsing back to the defaults (indexes
     ///   under `<cache dir>/zaino/indexes/<name>`)
-    /// - Shipped example parses too
+    /// - Shipped example parses, its values = the defaults (beside its network, validator, paths)
     #[test]
-    fn generated_config_prints_every_key_at_its_default_and_the_example_parses() {
+    fn generated_config_prints_every_key_at_its_default_and_the_example_shows_them() {
         let generated = generate_default_config().expect("generate");
         let body = generated.strip_prefix(GENERATED_CONFIG_HEADER).expect("header first");
         let defaults = DaemonConfig::default();
@@ -872,6 +872,13 @@ enabled = false
         let example = include_str!("../../../docs/example_configs/zainod.toml");
         let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
         assert!(example.validate().is_ok());
+        let shown = DaemonConfig {
+            network: defaults.network,
+            trusted_validators: defaults.trusted_validators.clone(),
+            index: defaults.index.clone(),
+            ..example
+        };
+        assert_eq!(shown, defaults, "example's values drifted from DaemonConfig::default()");
     }
 
     /// `generate-config` into a missing directory: created, file = the defaults
