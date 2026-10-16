@@ -654,6 +654,11 @@ where
     /// minutes on mainnet — the backend logs its per-namespace progress at
     /// `info`. Errors fail the component loudly, typed — a half-entered bulk
     /// must not serve.
+    ///
+    /// The decision itself (gap vs. threshold, and whether anything is already
+    /// pending from a prior run) logs at `info` before `begin_bulk` runs, and the
+    /// backend logs which namespaces it actually deferred — so a slow catch-up
+    /// can be diagnosed from logs alone rather than inferred from disk I/O.
     async fn catch_up(
         &self,
         engine: &mut SyncEngine<Ctx, B>,
@@ -667,6 +672,13 @@ where
             .bulk_pending()
             .map_err(IndexerError::BulkProbe)?;
         let bulk = enters_bulk(self.deferral, pending, gap, self.defer_threshold);
+        info!(
+            gap,
+            threshold = self.defer_threshold,
+            pending,
+            bulk,
+            "catch-up bulk-mode decision"
+        );
         if bulk {
             self.backend
                 .begin_bulk(BulkPolicy { enabled: true })
