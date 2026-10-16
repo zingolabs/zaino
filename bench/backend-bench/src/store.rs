@@ -55,13 +55,13 @@ where
 
 /// [`store_compose`] from `threads` threads at once, each over its own
 /// snapshot, composing `per_thread` blocks. Returns the wall time of the run.
-pub fn store_compose_concurrent<T: BenchTarget>(
+pub fn store_compose_concurrent<T>(
     store: &Populated<T>,
     threads: usize,
     per_thread: usize,
 ) -> Result<Duration, BenchError>
 where
-    T: Sync,
+    T: BenchTarget + Sync,
     T::Backend: Clone + 'static,
 {
     let snapshots = (0..threads)

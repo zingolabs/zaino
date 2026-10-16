@@ -256,13 +256,13 @@ pub fn compose_block<R: BackendReader>(reader: &R, height_key: &[u8]) -> Result<
 /// read. Returns the wall time of the whole run: the number that moves when
 /// readers contend on something shared (a lock, a cache line), which a
 /// single-threaded loop cannot see.
-pub fn compose_concurrent<T: BenchTarget>(
+pub fn compose_concurrent<T>(
     store: &Populated<T>,
     threads: usize,
     per_thread: usize,
 ) -> Result<std::time::Duration, BenchError>
 where
-    T: Sync,
+    T: BenchTarget + Sync,
 {
     let started = std::time::Instant::now();
     std::thread::scope(|scope| -> Result<(), BenchError> {
