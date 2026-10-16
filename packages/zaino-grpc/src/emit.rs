@@ -7,7 +7,9 @@ use tonic::Code;
 
 use crate::admission::Class;
 use crate::report;
-use crate::service::{Method, ROUTES};
+use strum::VariantArray as _;
+
+use crate::service::Method;
 
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
@@ -33,17 +35,17 @@ const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 
-/// `method` label slots: one per [`ROUTES`] row, then `unknown` (any other path: the set stays
-/// fixed however clients misbehave)
-pub(crate) const LABELS: usize = ROUTES.len() + 1;
+/// `method` label slots: one per [`Method`], then `unknown` (any other path: the set stays fixed
+/// however clients misbehave)
+pub(crate) const LABELS: usize = Method::VARIANTS.len() + 1;
 
 /// `method`'s label slot (`None` = `unknown`)
 pub(crate) fn slot(method: Option<Method>) -> usize {
-    method.map_or(ROUTES.len(), |method| method as usize)
+    method.map_or(Method::VARIANTS.len(), |method| method as usize)
 }
 
 pub(crate) fn label(slot: usize) -> &'static str {
-    ROUTES.get(slot).map_or("unknown", |row| row.name)
+    Method::VARIANTS.get(slot).map_or("unknown", |method| method.name())
 }
 
 /// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)

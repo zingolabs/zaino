@@ -53,6 +53,7 @@ zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
 serde = { workspace = true, features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 
 [dev-dependencies]
 rcgen = { workspace = true }

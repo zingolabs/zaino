@@ -199,7 +199,7 @@ fn open_range<V: PinnedView>(
 // !!! TODO: REMOVE THIS MODULE. DEPRECATED `GetBlockRangeNullifiers`.
 // !!! - Served only for pepper-sync (still calls it)
 // !!! - not part of Zaino's supported surface
-// !!! - Delete with its `ROUTES` row + `Method` variant and its proto rpc once pepper-sync
+// !!! - Delete with its `Method` variant + arms and its proto rpc once pepper-sync
 // !!!   requests `GetBlockRange` with `poolTypes`
 // =================================================================================================
 mod deprecated_nullifiers {
