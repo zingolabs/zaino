@@ -95,16 +95,31 @@ impl Readiness {
     }
 }
 
-const RUNTIME_STALLED: &str = "Runtime stalled";
+/// Why `down`, `degraded` or `held` (`detail()` = `/readyz` + `/status` `detail`)
+///
+/// - `Overloaded` = `zaino_grpc::AdmissionReport::overloaded`
+/// - `GoawaySent` = held past `hold_goaway_delay_secs`, every connection GOAWAY'd (`zainod hold`
+///   waits for this)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonReason {
+    Validators(StatusReason),
+    RuntimeStalled,
+    Overloaded,
+    GoawayPending,
+    GoawaySent,
+}
 
-/// `zaino_grpc::AdmissionReport::overloaded`
-const OVERLOADED: &str = "Overloaded";
-
-/// Held, `hold_goaway_delay_secs` not yet passed
-const GOAWAY_PENDING: &str = "GOAWAY pending";
-
-/// Held past the delay: every connection, open or new, GOAWAY'd (`zainod hold` waits for this)
-pub(crate) const GOAWAY_SENT: &str = "GOAWAY sent";
+impl DaemonReason {
+    pub(crate) const fn detail(self) -> &'static str {
+        match self {
+            Self::Validators(reason) => reason.detail(),
+            Self::RuntimeStalled => "Runtime stalled",
+            Self::Overloaded => "Overloaded",
+            Self::GoawayPending => "GOAWAY pending",
+            Self::GoawaySent => "GOAWAY sent",
+        }
+    }
+}
 
 /// Where the process is: before boot (index-snapshot bootstrap, first validator answer) or booted
 enum Stage {
@@ -141,11 +156,16 @@ impl Booted {
 
 /// Pure: the state rules over the hold + heartbeat + stage (held > the rest)
 fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
-    let at = |state, progress, detail, notes| Readiness { state, progress, detail, notes };
+    let at = |state, progress, reason: Option<DaemonReason>, notes| Readiness {
+        state,
+        progress,
+        detail: reason.map(DaemonReason::detail),
+        notes,
+    };
     let goaway = match hold {
         Hold::Off => None,
-        Hold::Draining => Some(GOAWAY_PENDING),
-        Hold::Drained => Some(GOAWAY_SENT),
+        Hold::Draining => Some(DaemonReason::GoawayPending),
+        Hold::Drained => Some(DaemonReason::GoawaySent),
     };
     if let Some(goaway) = goaway {
         let notes = match stage {
@@ -154,28 +174,26 @@ fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
         };
         return at(DaemonState::Held, None, Some(goaway), notes);
     }
+    let validators = |reason| Some(DaemonReason::Validators(reason));
     match (live, stage) {
         (false, Stage::Booted(booted)) => {
-            at(DaemonState::Down, None, Some(RUNTIME_STALLED), booted.notes)
+            at(DaemonState::Down, None, Some(DaemonReason::RuntimeStalled), booted.notes)
         }
-        (_, Stage::Starting { awaiting_validator: true, .. }) => at(
-            DaemonState::Down,
-            None,
-            Some(StatusReason::NoValidatorReachable.detail()),
-            Vec::new(),
-        ),
+        (_, Stage::Starting { awaiting_validator: true, .. }) => {
+            at(DaemonState::Down, None, validators(StatusReason::NoValidatorReachable), Vec::new())
+        }
         (_, Stage::Starting { bootstrap, .. }) => {
             at(DaemonState::Provisioning, bootstrap, None, Vec::new())
         }
         (true, Stage::Booted(booted)) if booted.overloaded => {
-            at(DaemonState::Down, None, Some(OVERLOADED), booted.notes)
+            at(DaemonState::Down, None, Some(DaemonReason::Overloaded), booted.notes)
         }
         (true, Stage::Booted(booted)) => match booted.serving_status {
-            ServingStatus::Down(why) => {
-                at(DaemonState::Down, None, Some(why.detail()), booted.notes)
+            ServingStatus::Down(reason) => {
+                at(DaemonState::Down, None, validators(reason), booted.notes)
             }
-            ServingStatus::Degraded(why) => {
-                at(DaemonState::Degraded, None, Some(why.detail()), booted.notes)
+            ServingStatus::Degraded(reason) => {
+                at(DaemonState::Degraded, None, validators(reason), booted.notes)
             }
             ServingStatus::Serving => at(DaemonState::Serving, None, None, booted.notes),
             ServingStatus::Syncing => {

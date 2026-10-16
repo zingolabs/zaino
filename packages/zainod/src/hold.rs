@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::status::{DaemonStatus, GOAWAY_SENT};
+use crate::status::{DaemonReason, DaemonStatus};
 
 /// Marker check cadence (a `zainod hold` lands within this)
 const POLL: Duration = Duration::from_secs(1);
@@ -123,7 +123,8 @@ pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ho
             )
         }
         (Action::Hold, Some(admin)) => {
-            let sent = |running: &Readyz| running.detail.as_deref() == Some(GOAWAY_SENT);
+            let goaway_sent = Some(DaemonReason::GoawaySent.detail());
+            let sent = |running: &Readyz| running.detail.as_deref() == goaway_sent;
             match confirm(admin, goaway_by + CONFIRM_WITHIN, sent) {
                 Some(running) if sent(&running) => eprintln!(
                     "zainod at {admin} reports held, every gRPC connection sent GOAWAY: safe to stop"
@@ -274,7 +275,7 @@ mod tests {
         let pending = (String::from("held"), Some(String::from("GOAWAY pending")));
         assert_eq!(read(&status), pending, "held at the first poll");
         tokio::time::sleep(goaway_bound(delay) - POLL).await;
-        let sent = (String::from("held"), Some(GOAWAY_SENT.to_owned()));
+        let sent = (String::from("held"), Some(String::from("GOAWAY sent")));
         assert_eq!(read(&status), sent, "GOAWAY by the CLI's bound");
 
         apply(&state_dir, Action::Resume).expect("resumes");
