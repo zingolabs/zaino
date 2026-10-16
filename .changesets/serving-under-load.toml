@@ -232,3 +232,12 @@ range rather than once per lookup and decoding entries in place from the \
 backend's borrowed bytes. A 100-height step through the LMDB store takes about \
 30% less time.
 """
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "fix"
+description = """
+`InMemoryBackend` keeps each namespace in key order behind a read-write lock: \
+a range scan visits only the keys in its range instead of filtering and \
+sorting the whole namespace, and readers no longer serialise on one mutex.
+"""

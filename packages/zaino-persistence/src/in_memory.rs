@@ -2,8 +2,9 @@
 //!
 //! Useful for tests, benchmarks, and ephemeral demo runs.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
+use std::sync::{Arc, RwLock};
 
 use crate::backend::{
     Backend, BackendReader, BackendWriter, BulkPolicy, Namespace, RangeVisitor, RawKey, RawValue,
@@ -13,30 +14,37 @@ use crate::error::{CommitError, FlushError, OpenError, ReadError};
 
 /// In-memory backend. Stores key-value pairs per namespace.
 ///
-/// Thread-safe via `Arc<Mutex<...>>` — readers and writers share the
-/// same underlying map.
+/// Thread-safe via `Arc<RwLock<...>>` — readers and writers share the
+/// same underlying map, readers concurrently. Each namespace is kept in key
+/// order, so a range read visits only the keys in its range.
 #[derive(Clone)]
 pub struct InMemoryBackend {
-    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
+    data: Arc<RwLock<Namespaces>>,
 }
+
+/// Every namespace's entries, each in ascending key order.
+type Namespaces = HashMap<Namespace, BTreeMap<RawKey, RawValue>>;
 
 impl InMemoryBackend {
     /// Create an empty backend.
     pub fn new() -> Self {
         Self {
-            data: Arc::new(Mutex::new(HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Read all entries for a given namespace. For assertions.
     pub fn entries(&self, namespace: Namespace) -> HashMap<RawKey, RawValue> {
-        let guard = self.data.lock().expect("mutex poisoned");
-        guard.get(&namespace).cloned().unwrap_or_default()
+        let guard = self.data.read().expect("lock poisoned");
+        guard
+            .get(&namespace)
+            .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
     }
 
     /// Read a single value. For assertions.
     pub fn get_value(&self, namespace: Namespace, key: &[u8]) -> Option<RawValue> {
-        let guard = self.data.lock().expect("mutex poisoned");
+        let guard = self.data.read().expect("lock poisoned");
         guard.get(&namespace).and_then(|m| m.get(key).cloned())
     }
 }
@@ -70,25 +78,21 @@ impl Backend for InMemoryBackend {
 
 /// Read handle for the in-memory backend.
 pub struct InMemoryReader {
-    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
+    data: Arc<RwLock<Namespaces>>,
 }
 
 impl BackendReader for InMemoryReader {
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
-        let guard = self.data.lock().expect("mutex poisoned");
+        let guard = self.data.read().expect("lock poisoned");
         Ok(guard.get(&namespace).and_then(|m| m.get(key).cloned()))
     }
 
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
-        let guard = self.data.lock().expect("mutex poisoned");
-        // The map is unordered; sort by key to return the ascending bytewise
-        // order the contract guarantees (and that the LMDB cursor returns).
-        let mut entries: Vec<(RawKey, RawValue)> = guard
+        let guard = self.data.read().expect("lock poisoned");
+        Ok(guard
             .get(&namespace)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(entries)
+            .unwrap_or_default())
     }
 
     fn scan_range(
@@ -98,20 +102,19 @@ impl BackendReader for InMemoryReader {
         end_exclusive: &[u8],
         visit: &mut RangeVisitor<'_>,
     ) -> Result<(), ReadError> {
-        let guard = self.data.lock().expect("mutex poisoned");
+        // An empty or inverted range visits nothing (`BTreeMap::range` would
+        // panic on the inverted one).
+        if start >= end_exclusive {
+            return Ok(());
+        }
+        let guard = self.data.read().expect("lock poisoned");
         let Some(map) = guard.get(&namespace) else {
             return Ok(());
         };
-        // The map is unordered, so select the in-range keys and sort them to
-        // present the ascending key order the contract (and the LMDB backend)
-        // guarantee. Bounds mirror LMDB's cursor: `start` inclusive,
-        // `end_exclusive` exclusive.
-        let mut selected: Vec<(&RawKey, &RawValue)> = map
-            .iter()
-            .filter(|(key, _)| key.as_slice() >= start && key.as_slice() < end_exclusive)
-            .collect();
-        selected.sort_by(|a, b| a.0.cmp(b.0));
-        for (key, value) in selected {
+        // Bounds mirror LMDB's cursor: `start` inclusive, `end_exclusive`
+        // exclusive.
+        let range = (Bound::Included(start), Bound::Excluded(end_exclusive));
+        for (key, value) in map.range::<[u8], _>(range) {
             if visit(key, value).is_break() {
                 break;
             }
@@ -120,21 +123,21 @@ impl BackendReader for InMemoryReader {
     }
 
     fn first_key(&self, namespace: Namespace) -> Result<Option<RawKey>, ReadError> {
-        let guard = self.data.lock().expect("mutex poisoned");
+        let guard = self.data.read().expect("lock poisoned");
         Ok(guard
             .get(&namespace)
-            .and_then(|map| map.keys().min().cloned()))
+            .and_then(|map| map.keys().next().cloned()))
     }
 }
 
 /// Write handle for the in-memory backend.
 pub struct InMemoryWriter {
-    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
+    data: Arc<RwLock<Namespaces>>,
 }
 
 impl BackendWriter for InMemoryWriter {
     fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
-        let mut guard = self.data.lock().expect("mutex poisoned");
+        let mut guard = self.data.write().expect("lock poisoned");
         for op in ops {
             match op {
                 WriteOp::Put {
