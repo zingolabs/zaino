@@ -33,6 +33,9 @@ zaino-primitives = { workspace = true }
 # An on-disk backend needs a directory that is removed with the target.
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+zaino-store = { version = "0.1.0", path = "../../packages/zaino-store" }
+zaino-service = { version = "0.1.0", path = "../../packages/zaino-service" }
+futures.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }

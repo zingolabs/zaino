@@ -53,7 +53,8 @@ impl Batches {
     ) -> Result<Self, BenchError> {
         let mut generator = Generator::new(shape, seed);
         let mut batches = Vec::new();
-        let mut current = Vec::new();
+        // The first batch stamps every namespace's format, as the indexer does.
+        let mut current = data::format_stamps();
         let mut logical_bytes = 0u64;
         let mut height_keys = Vec::with_capacity(usize::try_from(blocks).unwrap_or_default());
         let mut hash_keys = Vec::with_capacity(usize::try_from(blocks).unwrap_or_default());
@@ -147,6 +148,11 @@ impl<T: BenchTarget> Populated<T> {
             header_entries,
             logical_bytes,
         })
+    }
+
+    /// The populated backend, for the workloads that take their own readers.
+    pub fn backend(&self) -> &T::Backend {
+        self.target.backend()
     }
 
     /// A reader over the populated store.
@@ -243,6 +249,43 @@ pub fn compose_block<R: BackendReader>(reader: &R, height_key: &[u8]) -> Result<
         );
     }
     Ok(bytes)
+}
+
+/// [`compose_block`] from `threads` threads at once, each composing `per_thread`
+/// blocks, every compose through a fresh reader as the store takes one per block
+/// read. Returns the wall time of the whole run: the number that moves when
+/// readers contend on something shared (a lock, a cache line), which a
+/// single-threaded loop cannot see.
+pub fn compose_concurrent<T: BenchTarget>(
+    store: &Populated<T>,
+    threads: usize,
+    per_thread: usize,
+) -> Result<std::time::Duration, BenchError>
+where
+    T: Sync,
+{
+    let started = std::time::Instant::now();
+    std::thread::scope(|scope| -> Result<(), BenchError> {
+        let workers: Vec<_> = (0..threads)
+            .map(|thread| {
+                scope.spawn(move || -> Result<(), BenchError> {
+                    for step in 0..per_thread {
+                        let reader = store.backend().reader()?;
+                        let index = thread.wrapping_mul(7919).wrapping_add(step);
+                        std::hint::black_box(compose_block(&reader, store.height_key(index))?);
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| BenchError::Generate("a compose thread panicked".to_owned()))??;
+        }
+        Ok(())
+    })?;
+    Ok(started.elapsed())
 }
 
 /// A whole-namespace walk — what pipeline state loading does today, and the

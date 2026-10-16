@@ -65,6 +65,9 @@ Two constraints on this, both of which invalidate a comparison if ignored:
 | `read_by_height` | a served read that already knows the height — the common case, against a height-ordered namespace. |
 | `read_by_hash` | the `hash → height` lookup a read by hash pays first, whose key is a 32-byte hash rather than a height, so it probes a different key distribution. |
 | `compose_block` | the store's compose-on-read: the seven-namespace fan-out one served compact block is assembled from, at one height. |
+| `compose_block_x{N}` | the same fan-out from N threads at once (`BACKEND_BENCH_THREADS`, default 16), a reader taken per block as the store does. The workload that shows contention between readers — a lock or a shared cache line — which every single-threaded body above is blind to. |
+| `store_compose` | one served compact block through the real `zaino-store` `StoreReader`: the reader, each lookup's format-freshness check, the decodes and the assembly. Above the backend fan-out by the codec and store layers' cost. |
+| `store_compose_x{N}` | `store_compose` from N threads, a snapshot per thread as each request has its own. |
 | `scan_namespace` | the whole-namespace walk pipeline state loading does today — and the shape a ranged read would replace, so this is the number a `range` addition has to beat. |
 | the `on-disk growth` lines | on-disk bytes beside logical bytes written, per backend, so write amplification is visible. Printed once at the start of a run, not timed. |
 

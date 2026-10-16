@@ -32,7 +32,7 @@ use zaino_indexes::indexes::{
     chain_metadata, hash_to_height, headers, ironwood, orchard, sapling, transparent_data, txids,
 };
 use zaino_persistence::{Namespace, WriteOp};
-use zaino_persistence_codec::{encode_key, put, watermark};
+use zaino_persistence_codec::{encode_key, put, version_stamp, watermark};
 use zaino_primitives::types::{
     BlockHash, ChainMetadata, CompactCiphertext, CompactDifficulty, EphemeralKey, Height,
     NoteCommitment, Nullifier, Script, TransactionId, TreeSize, Zatoshis,
@@ -126,6 +126,23 @@ pub fn block_namespaces() -> [Namespace; 7] {
 /// by hash pays before the fan-out.
 pub fn hash_namespace() -> Namespace {
     hash_to_height::ID.into()
+}
+
+/// The format stamp of every namespace the generator writes, as the indexer
+/// stamps a namespace it builds. Without them a reader that checks freshness —
+/// the store does, on every read — treats each namespace as stale and answers
+/// nothing.
+pub fn format_stamps() -> Vec<WriteOp> {
+    vec![
+        version_stamp::<HeadersIndex>(headers::ID.into()),
+        version_stamp::<ChainMetadataIndex>(chain_metadata::ID.into()),
+        version_stamp::<TxidsIndex>(txids::ID.into()),
+        version_stamp::<TransparentDataIndex>(transparent_data::ID.into()),
+        version_stamp::<SaplingIndex>(sapling::ID.into()),
+        version_stamp::<OrchardIndex>(orchard::ID.into()),
+        version_stamp::<IronwoodIndex>(ironwood::ID.into()),
+        version_stamp::<HashToHeightIndex>(hash_to_height::ID.into()),
+    ]
 }
 
 /// One block's worth of write operations, plus what the read workloads need to

@@ -1,4 +1,4 @@
-//! The criterion entry point: five workloads, each run against every backend.
+//! The criterion entry point: every workload, each run against every backend.
 //!
 //! The backends are inputs, not a compile-time choice. Each workload opens one
 //! `benchmark_group` and registers a benchmark per backend inside it, so a single
@@ -13,9 +13,11 @@ use criterion::{
 };
 
 use backend_bench::data::Shape;
+use backend_bench::store::{height, snapshot, store_compose, store_compose_concurrent};
 use backend_bench::target::{namespaces, BenchTarget, InMemory, Lmdb};
 use backend_bench::workloads::{
-    commit_batches, compose_block, read_by_hash, read_by_height, scan_namespace, Batches, Populated,
+    commit_batches, compose_block, compose_concurrent, read_by_hash, read_by_height,
+    scan_namespace, Batches, Populated,
 };
 use backend_bench::Scale;
 
@@ -98,6 +100,70 @@ fn compose<T: BenchTarget>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Sca
             index = index.wrapping_add(1);
             compose_block(&reader, store.height_key(index))
                 .unwrap_or_else(|e| panic!("compose: {e}"))
+        });
+    });
+}
+
+/// Threads for the concurrent workloads (`BACKEND_BENCH_THREADS`, default 16),
+/// and how many blocks each composes per measured run.
+fn concurrency() -> (usize, usize) {
+    let threads = std::env::var("BACKEND_BENCH_THREADS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(16);
+    (threads, 500)
+}
+
+/// The backend fan-out from many threads at once, a reader per block: shows
+/// contention a single-threaded loop cannot.
+fn compose_many<T: BenchTarget + Sync>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale) {
+    let store = populated::<T>(scale);
+    let (threads, per_thread) = concurrency();
+    group.bench_function(BenchmarkId::new(T::NAME, scale.label()), |b| {
+        b.iter_custom(|iters| {
+            (0..iters)
+                .map(|_| {
+                    compose_concurrent(&store, threads, per_thread)
+                        .unwrap_or_else(|e| panic!("compose: {e}"))
+                })
+                .sum()
+        });
+    });
+}
+
+/// One served compact block through the real store: freshness checks, decodes
+/// and assembly on top of the backend fan-out.
+fn store_one<T: BenchTarget>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale)
+where
+    T::Backend: Clone + 'static,
+{
+    let store = populated::<T>(scale);
+    let snapshot = snapshot(&store).unwrap_or_else(|e| panic!("snapshot: {e}"));
+    let mut index = 0usize;
+    group.bench_function(BenchmarkId::new(T::NAME, scale.label()), |b| {
+        b.iter(|| {
+            index = index.wrapping_add(1);
+            store_compose(&snapshot, height(&store, index))
+                .unwrap_or_else(|e| panic!("store read: {e}"))
+        });
+    });
+}
+
+/// The store read from many threads at once, a snapshot per thread.
+fn store_many<T: BenchTarget + Sync>(group: &mut BenchmarkGroup<'_, WallTime>, scale: &Scale)
+where
+    T::Backend: Clone + 'static,
+{
+    let store = populated::<T>(scale);
+    let (threads, per_thread) = concurrency();
+    group.bench_function(BenchmarkId::new(T::NAME, scale.label()), |b| {
+        b.iter_custom(|iters| {
+            (0..iters)
+                .map(|_| {
+                    store_compose_concurrent(&store, threads, per_thread)
+                        .unwrap_or_else(|e| panic!("store read: {e}"))
+                })
+                .sum()
         });
     });
 }
@@ -192,6 +258,39 @@ fn compose_group(c: &mut Criterion) {
     group.finish();
 }
 
+fn compose_concurrent_group(c: &mut Criterion) {
+    let scale = Scale::from_env();
+    let (threads, per_thread) = concurrency();
+    let mut group = c.benchmark_group(format!("compose_block_x{threads}"));
+    group.throughput(Throughput::Elements(
+        u64::try_from(threads * per_thread).unwrap_or(u64::MAX),
+    ));
+    compose_many::<Lmdb>(&mut group, &scale);
+    compose_many::<InMemory>(&mut group, &scale);
+    group.finish();
+}
+
+fn store_compose_group(c: &mut Criterion) {
+    let scale = Scale::from_env();
+    let mut group = c.benchmark_group("store_compose");
+    group.throughput(Throughput::Elements(1));
+    store_one::<Lmdb>(&mut group, &scale);
+    store_one::<InMemory>(&mut group, &scale);
+    group.finish();
+}
+
+fn store_compose_concurrent_group(c: &mut Criterion) {
+    let scale = Scale::from_env();
+    let (threads, per_thread) = concurrency();
+    let mut group = c.benchmark_group(format!("store_compose_x{threads}"));
+    group.throughput(Throughput::Elements(
+        u64::try_from(threads * per_thread).unwrap_or(u64::MAX),
+    ));
+    store_many::<Lmdb>(&mut group, &scale);
+    store_many::<InMemory>(&mut group, &scale);
+    group.finish();
+}
+
 fn scan_group(c: &mut Criterion) {
     let scale = Scale::from_env();
     let mut group = c.benchmark_group("scan_namespace");
@@ -215,6 +314,9 @@ mod harness_entry {
         read_by_height_group,
         read_by_hash_group,
         compose_group,
+        compose_concurrent_group,
+        store_compose_group,
+        store_compose_concurrent_group,
         scan_group,
     );
 }

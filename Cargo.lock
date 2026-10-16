@@ -270,6 +270,7 @@ name = "backend-bench"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "futures",
  "tempfile",
  "thiserror 2.0.18",
  "zaino-backend-lmdb",
@@ -277,6 +278,8 @@ dependencies = [
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",
+ "zaino-service",
+ "zaino-store",
  "zaino-sync",
 ]
 
