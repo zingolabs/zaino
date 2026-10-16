@@ -30,7 +30,7 @@ use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::compact_blocks::CompactBlocks;
 use zaino_persistence::in_memory::InMemoryBackend;
-use zaino_persistence::{Backend, Namespace};
+use zaino_persistence::{Backend, Namespace, NamespaceSpec};
 use zaino_persistence_codec::reserved_namespaces;
 
 use crate::error::BenchError;
@@ -47,12 +47,19 @@ pub const LMDB_MAP_SIZE_GB: usize = 8;
 /// Taken from the real index set rather than listed here, so a set that gains an
 /// index cannot leave the benchmark writing into a namespace the store would not
 /// have opened.
-pub fn namespaces() -> Vec<Namespace> {
+pub fn namespace_specs() -> Vec<NamespaceSpec> {
     CompactBlocks::pipelines()
-        .index_ids()
+        .namespace_specs()
         .into_iter()
-        .map(Namespace::from)
-        .chain(reserved_namespaces())
+        .chain(reserved_namespaces().map(NamespaceSpec::meta))
+        .collect()
+}
+
+/// [`namespace_specs`]' namespaces alone.
+pub fn namespaces() -> Vec<Namespace> {
+    namespace_specs()
+        .into_iter()
+        .map(|spec| spec.namespace)
         .collect()
 }
 
@@ -93,7 +100,7 @@ impl BenchTarget for Lmdb {
         let backend = LmdbBackend::open(LmdbConfig {
             path: directory.path().to_path_buf(),
             map_size_bytes: LMDB_MAP_SIZE_GB << 30,
-            namespaces: namespaces(),
+            namespaces: namespace_specs(),
         })?;
         Ok(Self { directory, backend })
     }
@@ -162,8 +169,8 @@ mod tests {
         for reserved in reserved_namespaces() {
             assert!(declared.contains(&reserved), "{reserved} not declared");
         }
-        for id in CompactBlocks::pipelines().index_ids() {
-            let namespace = Namespace::from(id);
+        for spec in CompactBlocks::pipelines().namespace_specs() {
+            let namespace = spec.namespace;
             assert!(declared.contains(&namespace), "{namespace} not declared");
         }
     }
