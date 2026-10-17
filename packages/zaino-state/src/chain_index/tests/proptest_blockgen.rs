@@ -539,45 +539,48 @@ fn synced_index_metadata_consistency_orchard_to_ironwood_transition() {
 /// Ironwood bundle. Injected because zebra's stock strategy generates V6 only
 /// probabilistically, so era content must be deterministic here
 /// (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
-fn fake_ironwood_transaction() -> zebra_chain::transaction::Transaction {
-    use zebra_chain::amount::Amount;
-    use zebra_chain::orchard::{Flags, ShieldedDataV6};
+fn fake_ironwood_transaction(seed: u64) -> zebra_chain::transaction::Transaction {
     use zebra_chain::parameters::NetworkUpgrade;
-    use zebra_chain::transaction::arbitrary::{fake_v6_orchard_shielded_data, fake_v6_transaction};
+    use zebra_chain::transaction::arbitrary::fake_v6_transaction;
 
-    let ironwood = zebra_chain::ironwood::ShieldedData::new(ShieldedDataV6::new(
-        fake_v6_orchard_shielded_data(
-            Flags::ENABLE_SPENDS,
-            Amount::try_from(0).expect("zero is a valid amount"),
-            2,
-        ),
-    ));
+    let ironwood = fake_two_action_bundle(
+        zcash_protocol::consensus::BranchId::Nu6_3,
+        orchard::ValuePool::Ironwood,
+        seed,
+    );
     fake_v6_transaction(NetworkUpgrade::Nu6_3, None, Some(ironwood))
 }
 
 /// A structurally-valid (cryptographically fake) V5 transaction carrying a two-action
 /// Orchard bundle, for deterministic orchard-era content (the stock strategy's orchard
 /// data is probabilistic).
-fn fake_orchard_transaction() -> zebra_chain::transaction::Transaction {
-    use zebra_chain::amount::Amount;
-    use zebra_chain::orchard::Flags;
+fn fake_orchard_transaction(seed: u64) -> zebra_chain::transaction::Transaction {
     use zebra_chain::parameters::NetworkUpgrade;
-    use zebra_chain::transaction::arbitrary::fake_v6_orchard_shielded_data;
     use zebra_chain::transaction::{LockTime, Transaction};
 
-    Transaction::V5 {
-        network_upgrade: NetworkUpgrade::Nu5,
-        lock_time: LockTime::unlocked(),
-        expiry_height: zebra_chain::block::Height(0),
-        inputs: Vec::new(),
-        outputs: Vec::new(),
-        sapling_shielded_data: None,
-        orchard_shielded_data: Some(fake_v6_orchard_shielded_data(
-            Flags::ENABLE_SPENDS,
-            Amount::try_from(0).expect("zero is a valid amount"),
-            2,
+    Transaction::test_v5_with_orchard(
+        NetworkUpgrade::Nu5,
+        Vec::new(),
+        Vec::new(),
+        LockTime::unlocked(),
+        zebra_chain::block::Height(0),
+        Some(fake_two_action_bundle(
+            zcash_protocol::consensus::BranchId::Nu5,
+            orchard::ValuePool::Orchard,
+            seed,
         )),
-    }
+    )
+}
+
+/// A zero-balance, two-action bundle for `pool`, versioned for `branch`. Each `seed`
+/// gives a distinct transaction, so injected transactions never repeat a txid.
+fn fake_two_action_bundle(
+    branch: zcash_protocol::consensus::BranchId,
+    pool: orchard::ValuePool,
+    seed: u64,
+) -> orchard::Bundle<orchard::bundle::Authorized, zcash_protocol::value::ZatBalance> {
+    zebra_chain::transaction::arbitrary::fake_bundle_for_branch(branch, pool, 2, seed)
+        .expect("the pool is defined for the branch")
 }
 
 /// Runs the metadata-consistency walk on a chain whose injected shielded content
@@ -603,9 +606,11 @@ fn metadata_consistency_for_era(
                 continue;
             }
             let fake_tx = match ironwood_boundary {
-                None => fake_orchard_transaction(),
-                Some(boundary) if height >= boundary => fake_ironwood_transaction(),
-                Some(_) if orchard_below_boundary => fake_orchard_transaction(),
+                None => fake_orchard_transaction(u64::from(height)),
+                Some(boundary) if height >= boundary => {
+                    fake_ironwood_transaction(u64::from(height))
+                }
+                Some(_) if orchard_below_boundary => fake_orchard_transaction(u64::from(height)),
                 Some(_) => continue,
             };
             let mut new_block = (**block).clone();
@@ -1433,7 +1438,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
                     }
                     for orc_commitment in transaction.orchard_note_commitments() {
                         let orc_commitment =
-                            zebra_chain::orchard::tree::Node::from(*orc_commitment);
+                            zebra_chain::orchard::tree::Node::try_from(orc_commitment.to_bytes())
+                                .expect("cmx is a canonical pallas base");
                         let mut tree = orchard.unwrap_or_else(|| {
                             incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
                         });
@@ -1443,7 +1449,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
                     // Ironwood reuses the Orchard tree/node types.
                     for irw_commitment in transaction.ironwood_note_commitments() {
                         let irw_commitment =
-                            zebra_chain::orchard::tree::Node::from(*irw_commitment);
+                            zebra_chain::orchard::tree::Node::try_from(irw_commitment.to_bytes())
+                                .expect("cmx is a canonical pallas base");
                         let mut tree = ironwood.unwrap_or_else(|| {
                             incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
                         });
@@ -1504,6 +1511,22 @@ fn relink_chain(genesis_segment: &mut ChainSegment, branching_segments: &mut [Ch
     }
 }
 
+/// Replaces an empty-but-present transparent bundle with an absent one.
+///
+/// Workaround for zebra-chain 13.0.1: `Transaction::with_transparent_inputs` keeps
+/// `Some(empty)` when the generator drops every input, and ZIP-244 hashes that
+/// differently from the `None` its bytes deserialize to. Remove once fixed upstream.
+fn without_empty_transparent_bundle(
+    transaction: &Arc<zebra_chain::transaction::Transaction>,
+) -> Arc<zebra_chain::transaction::Transaction> {
+    match transaction.transparent_bundle() {
+        Some(bundle) if bundle.vin.is_empty() && bundle.vout.is_empty() => {
+            Arc::new((**transaction).clone().with_transparent_outputs(Vec::new()))
+        }
+        _ => Arc::clone(transaction),
+    }
+}
+
 /// [`relink_chain`] over one segment, whose first block's parent becomes `parent` when given, yielding the relinked tip's hash.
 fn relink_segment(
     segment: &mut ChainSegment,
@@ -1512,6 +1535,11 @@ fn relink_segment(
     let mut parent = parent;
     for block in segment.0.iter_mut() {
         let mut relinked = (**block).clone();
+        relinked.transactions = relinked
+            .transactions
+            .iter()
+            .map(without_empty_transparent_bundle)
+            .collect();
         let mut header = *relinked.header;
         header.merkle_root = relinked
             .transactions

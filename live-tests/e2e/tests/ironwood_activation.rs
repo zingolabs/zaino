@@ -38,6 +38,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use zaino_testutils::ZEBRAD_VERSION;
 use ztest::prelude::*;
 
 use e2e::{assert_pool_absent, assert_pool_present, Pool};
@@ -81,7 +82,7 @@ mod zebrad {
                     .build(),
             );
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -145,7 +146,7 @@ mod zebrad {
                     .build(),
             );
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -302,7 +303,7 @@ mod zebrad {
                     .build(),
             );
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -422,7 +423,7 @@ mod zebrad {
                     .build(),
             );
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -492,7 +493,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -554,7 +555,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -703,7 +704,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -819,7 +820,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                Validator::zebrad(ZEBRAD_VERSION)
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
