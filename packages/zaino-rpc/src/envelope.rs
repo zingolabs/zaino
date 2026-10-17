@@ -18,8 +18,13 @@ pub(crate) fn build_request(method: &str, params: Vec<Value>, id: i64) -> Value 
 
 /// Parse a JSON-RPC 2.0 response body.
 ///
-/// Returns the `result` field on success. Returns an `RpcError` if
-/// the response contains an error object or a null result.
+/// Returns an `RpcError` if the response contains an error object. Otherwise
+/// returns the `result` field as the success value — including when it is a
+/// literal JSON `null`, which several methods (`ping` among them) use as
+/// their only successful answer. Serde's `Option<Value>` cannot tell a
+/// present-but-null `result` apart from an absent one, so this reads success
+/// purely from the absence of `error` rather than the presence of `result`;
+/// a response missing both is treated the same as one with an explicit null.
 pub(crate) fn parse_response(body: &[u8]) -> Result<ResponseOutcome, RpcError> {
     let envelope: RpcResponseEnvelope = serde_json::from_slice(body).map_err(RpcError::Json)?;
 
@@ -30,10 +35,9 @@ pub(crate) fn parse_response(body: &[u8]) -> Result<ResponseOutcome, RpcError> {
         });
     }
 
-    match envelope.result {
-        Some(value) => Ok(ResponseOutcome::Success(value)),
-        None => Err(RpcError::NullResult),
-    }
+    Ok(ResponseOutcome::Success(
+        envelope.result.unwrap_or(Value::Null),
+    ))
 }
 
 /// The outcome of parsing a JSON-RPC response envelope.
@@ -100,10 +104,28 @@ mod tests {
         }
     }
 
+    /// `ping`'s successful response is exactly this shape: a literal null
+    /// `result` and no `error`. It must read as success, not as a failure —
+    /// fails if `Option<Value>` is allowed to collapse this into "absent".
     #[test]
-    fn parse_null_result_without_error_is_err() {
+    fn parse_null_result_without_error_is_success() {
         let body = br#"{"id":1,"jsonrpc":"2.0","result":null}"#;
-        assert!(matches!(parse_response(body), Err(RpcError::NullResult)));
+        match parse_response(body).expect("valid") {
+            ResponseOutcome::Success(v) => assert_eq!(v, Value::Null),
+            ResponseOutcome::RpcError { .. } => panic!("expected success"),
+        }
+    }
+
+    /// A response with neither `result` nor `error` is malformed, but treating
+    /// it the same as an explicit null is strictly more lenient than rejecting
+    /// it, and this parser has no basis to prefer rejection.
+    #[test]
+    fn parse_missing_result_without_error_is_success() {
+        let body = br#"{"id":1,"jsonrpc":"2.0"}"#;
+        match parse_response(body).expect("valid") {
+            ResponseOutcome::Success(v) => assert_eq!(v, Value::Null),
+            ResponseOutcome::RpcError { .. } => panic!("expected success"),
+        }
     }
 
     #[test]
