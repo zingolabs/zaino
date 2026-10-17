@@ -34,10 +34,6 @@ pub enum RpcError {
         attempts: u32,
     },
 
-    /// Server returned null result without an error object.
-    #[error("null result without error")]
-    NullResult,
-
     /// The response body exceeded the size this client is willing to buffer,
     /// and was abandoned part-way rather than read into memory.
     #[error("response body exceeded {max} bytes")]
@@ -66,9 +62,7 @@ impl From<RpcError> for zaino_source::NonDomainError {
             // An abandoned body is `Parse` rather than a retryable mode on
             // purpose: the same request would produce the same oversized
             // response, so retrying only repeats the cost.
-            RpcError::Json(_) | RpcError::NullResult | RpcError::ResponseBodyTooLarge { .. } => {
-                FailureMode::Parse
-            }
+            RpcError::Json(_) | RpcError::ResponseBodyTooLarge { .. } => FailureMode::Parse,
         };
 
         match e {
