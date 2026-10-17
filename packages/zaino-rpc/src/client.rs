@@ -38,6 +38,16 @@ pub const HEAVY_METHOD_TIMEOUT: Duration = Duration::from_secs(120);
 /// cap has generous headroom before it can affect healthy operation.
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
+/// The HTTP version [`RpcClient`] speaks to the endpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HttpVersion {
+    /// HTTP/1.1, which opens one connection for each request in flight.
+    #[default]
+    Http1,
+    /// HTTP/2 without negotiation, which carries every request in flight on one connection and fails against an endpoint that speaks only HTTP/1.1.
+    Http2PriorKnowledge,
+}
+
 /// Configuration for [`RpcClient`].
 pub struct RpcClientConfig {
     /// RPC endpoint URL.
@@ -52,6 +62,8 @@ pub struct RpcClientConfig {
     pub max_retries: u32,
     /// Delay between retries.
     pub retry_delay: Duration,
+    /// The HTTP version to speak to the endpoint.
+    pub http_version: HttpVersion,
 }
 
 impl Default for RpcClientConfig {
@@ -63,6 +75,7 @@ impl Default for RpcClientConfig {
             request_timeout: Duration::from_secs(30),
             max_retries: 5,
             retry_delay: Duration::from_millis(500),
+            http_version: HttpVersion::default(),
         }
     }
 }
@@ -92,11 +105,17 @@ impl RpcClient {
         // installed its own provider keeps it (ADR-0006).
         zaino_common::crypto::ensure_default_crypto_provider();
 
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)
             .timeout(config.request_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        let client = match config.http_version {
+            HttpVersion::Http1 => builder,
+            HttpVersion::Http2PriorKnowledge => {
+                builder.http2_prior_knowledge().http2_adaptive_window(true)
+            }
+        }
+        .build()?;
 
         Ok(Self {
             url: config.url,
@@ -271,5 +290,59 @@ mod tests {
              request_timeout ({:?}), or overriding with it changes nothing",
             RpcClientConfig::default().request_timeout,
         );
+    }
+}
+
+#[cfg(test)]
+mod http_version {
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    const HTTP2_CONNECTION_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+    async fn first_bytes_sent(http_version: HttpVersion) -> Vec<u8> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback bind succeeds");
+        let address = listener
+            .local_addr()
+            .expect("bound listener has an address");
+        let client = RpcClient::new(RpcClientConfig {
+            url: format!("http://{address}"),
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            http_version,
+            ..Default::default()
+        })
+        .expect("client builds");
+
+        let call = tokio::spawn(async move { client.call("getblockcount", Vec::new()).await });
+        let (mut stream, _) = listener.accept().await.expect("client connects");
+        let mut sent = vec![0u8; HTTP2_CONNECTION_PREFACE.len()];
+        stream
+            .read_exact(&mut sent)
+            .await
+            .expect("client sends at least a preface worth of bytes");
+        drop(stream);
+        assert!(call.await.expect("call task joins").is_err());
+        sent
+    }
+
+    #[tokio::test]
+    async fn http1_opens_with_a_request_line() {
+        let sent = first_bytes_sent(HttpVersion::Http1).await;
+        assert!(sent.starts_with(b"POST / HTTP/1.1\r\n"), "sent {sent:?}");
+    }
+
+    #[tokio::test]
+    async fn http2_prior_knowledge_opens_with_the_connection_preface() {
+        let sent = first_bytes_sent(HttpVersion::Http2PriorKnowledge).await;
+        assert_eq!(sent, HTTP2_CONNECTION_PREFACE);
+    }
+
+    #[test]
+    fn the_default_is_http1() {
+        assert_eq!(RpcClientConfig::default().http_version, HttpVersion::Http1);
     }
 }
