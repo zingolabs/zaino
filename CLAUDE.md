@@ -34,6 +34,19 @@ Resort to macros only when `fn` cannot express the abstraction (e.g. the
 call site requires a string literal, or the pattern spans syntactic
 constructs that functions cannot capture).
 
+## Doc-comments: side effects only
+
+A doc-comment holds only a succinct bulleted list of the item's side effects.
+The rule covers every doc-comment form: `///`, `//!`, and file- or
+module-level blocks.
+
+- Each bullet names one side effect: a write to disk, a network call, a lock
+  taken, a mutation of shared state, a spawned task, a panic.
+- A doc-comment holds no summary sentence, no parameter or return
+  description, and no restatement of the signature.
+- A doc-comment references no ADR, issue, or other document.
+- An item with no side effect carries no doc-comment.
+
 ## Test attributes: minimum justified complexity
 
 Every test starts at `#[test]`. Escalate only when the test body demands
