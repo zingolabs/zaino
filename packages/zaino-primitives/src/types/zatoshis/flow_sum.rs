@@ -48,6 +48,18 @@ impl ZatoshisFlowSum {
         self.0.checked_add(u128::from(amount.as_u64())).map(Self)
     }
 
+    /// The flow total over the union of two disjoint runs of blocks — each
+    /// side's total, added. `None` on overflow, which two sums of real flows
+    /// do not reach; reported rather than saturated so a wrong total is never
+    /// served as a right one.
+    ///
+    /// Only meaningful for *disjoint* runs: joining a run with itself counts
+    /// every flow twice. A composer splitting one range at a seam satisfies
+    /// that by construction.
+    pub fn checked_join(self, other: Self) -> Option<Self> {
+        self.0.checked_add(other.0).map(Self)
+    }
+
     /// Returns the received flow minus the spent one as a signed value, or `None` outside the supply.
     pub fn net(self, spent: Self) -> Option<SignedZatoshis> {
         let magnitude = i64::try_from(self.0.abs_diff(spent.0)).ok()?;

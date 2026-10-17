@@ -1,0 +1,8 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a11c19-b648-7620-87b6-75b4525f5f9b"
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = """
+New types for naming a read and its result: a block selected by height or hash, an inclusive height range, a transaction as raw bytes, a decoded block and transaction detail, the two sides of transparent address history, and the getnetworkinfo response. Flow sums can now be joined over two disjoint runs of blocks."""
