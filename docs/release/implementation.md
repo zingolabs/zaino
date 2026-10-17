@@ -270,11 +270,12 @@ is `true`.
    `release-ready`) and that the pusher is not its own App; any other push
    to `stable` is carried back by the backport sentinel but never released. `stable` is protected; the release App bypasses the
    protection by design.
-2. **`rc-gate` nightly cron** advances the rc frontier when the gate condition
-   holds. Its `workflow_dispatch` input `force=true` bypasses the gate and is
-   available to any write-access user; until the nightly green precondition is
-   wired, `force` is the only advance path (flagged in the workflow header as
-   the draft escape hatch — do not activate the pipeline before closing it).
+2. **`rc-gate` nightly cron** advances the rc frontier to `dev` HEAD. The gate
+   condition is `dev`'s ruleset: the live suite is a required status check
+   there, so `dev` HEAD is green by construction and the workflow itself
+   checks nothing. Its `workflow_dispatch` is available to any write-access
+   user and advances exactly as the cron does; weakening the ruleset is the
+   only way to admit an untested commit, and that is an admin action.
 3. **Any `deployment_status: success` event** on a gated Deployment →
    `deployment-advance` moves `release-ready`. The event's authenticity is not
    verified beyond repo write access to post it.
