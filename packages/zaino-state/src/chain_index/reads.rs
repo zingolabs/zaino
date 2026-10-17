@@ -154,7 +154,11 @@ impl<
                     return Ok(Some((entry.wire_bytes().to_vec(), branch_id)));
                 }
             }
-            None if self.mempool.contains_txid(&txid) => {
+            // The core set can lag the chain view and still list a txid this
+            // snapshot has mined; the chain answers that case.
+            None if self.mempool.contains_txid(&txid)
+                && snapshot.transaction_locations(txid).await?.is_empty() =>
+            {
                 return Err(ChainIndexError::unavailable(
                     "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
                 ));
