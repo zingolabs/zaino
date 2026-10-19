@@ -10,21 +10,22 @@
 //! - Segment file the manifest does not list = not yet durable, removed at open
 //! - Integrity = the file's page checksums (`crate::pages`)
 //! - Merge = pure k-way merge on a background thread, one per size tier (Lucene
-//!   `TieredMergePolicy`), swapped in by the owner's next manifest (`SegmentLog`)
+//!   `TieredMergePolicy`, `policy.rs`), swapped in by the owner's next manifest (`SegmentSet`)
 //! - Merge = read-time cost only (segments = state, not a log: unmerged set never slows a reopen)
 //!
 //! [`DiskEngine`]: crate::DiskEngine
 
 mod dir;
-mod emit;
 mod file;
 mod filter;
 mod layout;
-mod log;
 mod meta;
+mod policy;
 mod reader;
+mod segment_set;
 mod slots;
 mod spill;
+mod telemetry;
 mod writer;
 
 #[cfg(test)]
@@ -33,11 +34,12 @@ mod tests;
 #[cfg(test)]
 pub(crate) use dir::file_name;
 pub(crate) use dir::files;
-pub(crate) use emit::{describe_metrics, metric_names};
-pub(crate) use log::{stall_at, SegmentLog};
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
+pub(crate) use policy::stall_at;
 pub(crate) use reader::SegmentsView;
+pub(crate) use segment_set::SegmentSet;
 pub(crate) use slots::Slots;
+pub(crate) use telemetry::{describe_metrics, metric_names};
 
 use std::num::{NonZeroU32, NonZeroUsize};
 

@@ -2,10 +2,7 @@ use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::BlockHash;
 
 use super::*;
-use crate::{
-    manifest::IndexKind,
-    port::{MapTable, SequenceTable, Tables, Width},
-};
+use crate::schema::{IndexKind, MapTable, SequenceTable, Tables, Width};
 
 const RECORDS: SequenceTable = SequenceTable::new(0, "records", Width::Variable);
 const IDS: MapTable = MapTable::point(0, "ids", 16, 4).deletes();

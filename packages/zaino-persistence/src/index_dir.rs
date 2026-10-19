@@ -1,4 +1,4 @@
-//! Index directory: lock, manifest, files under it
+//! [`IndexDir`]: `LOCK`, `MANIFEST` create / commit / fdatasync, durable manifest read
 
 use std::{
     io,
@@ -172,7 +172,7 @@ mod tests {
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{fs::SimFs, manifest::IndexKind};
+    use crate::{fs::SimFs, schema::IndexKind};
 
     const IDENTITY: Identity =
         Identity { kind: IndexKind::CompactBlock, format: 1, network: NetworkType::Regtest };

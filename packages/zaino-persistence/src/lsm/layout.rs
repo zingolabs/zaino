@@ -21,7 +21,7 @@ use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
     spill::Spill,
 };
-use crate::{pages::PagedFile, port::MapTable};
+use crate::{pages::PagedFile, schema::MapTable};
 
 const BLOCK_BYTES: usize = 4096;
 
@@ -53,7 +53,7 @@ pub(crate) enum Row<'a> {
 const VALUE: u8 = 0;
 const TOMBSTONE: u8 = 1;
 
-/// `key ‖ value` (+ flag on a `deletes()` table) into `out` (widths: `SegmentLog::batch` checks)
+/// `key ‖ value` (+ flag on a `deletes()` table) into `out` (widths: `SegmentSet::batch` checks)
 pub(crate) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<u8>) {
     out.extend_from_slice(key);
     match row {

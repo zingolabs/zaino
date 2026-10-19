@@ -11,7 +11,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 use zaino_primitives::display::{ByteSize, Human};
 
-use super::{log::Landed, writer::Merged, SegmentMeta};
+use super::{segment_set::Landed, writer::Merged, SegmentMeta};
 
 pub(crate) mod metric_names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";

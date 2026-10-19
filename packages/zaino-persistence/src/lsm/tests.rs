@@ -14,13 +14,12 @@ use super::{
     file_name,
     layout::Shape,
     writer::SegmentWriter,
-    Fanout, SegmentError, SegmentLog, SegmentsView, Slots,
+    Fanout, SegmentError, SegmentSet, SegmentsView, Slots,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
-    manifest::IndexKind,
     pages::{sums_path, PageError},
-    port::MapTable,
+    schema::{IndexKind, MapTable},
 };
 
 /// Two same-tier segments merge (a merge in a handful of writes)
@@ -82,7 +81,7 @@ fn a_batch_row_off_its_key_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(
+    let mut set = SegmentSet::open(
         fs,
         Path::new("/m"),
         IndexKind::CompactBlock,
@@ -92,7 +91,7 @@ fn a_batch_row_off_its_key_width_panics() {
         slots,
     )
     .expect("open");
-    let _ = log.batch(vec![(&[0; 11], Some(&[0; 8]))]);
+    let _ = set.batch(vec![(&[0; 11], Some(&[0; 8]))]);
 }
 
 #[test]
@@ -101,7 +100,7 @@ fn a_batch_row_off_its_value_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(
+    let mut set = SegmentSet::open(
         fs,
         Path::new("/m"),
         IndexKind::CompactBlock,
@@ -111,7 +110,7 @@ fn a_batch_row_off_its_value_width_panics() {
         slots,
     )
     .expect("open");
-    let _ = log.batch(vec![(&[0; 12], Some(&[0; 7]))]);
+    let _ = set.batch(vec![(&[0; 12], Some(&[0; 7]))]);
 }
 
 #[test]
@@ -120,7 +119,7 @@ fn a_tombstone_in_a_map_without_deletes_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(
+    let mut set = SegmentSet::open(
         fs,
         Path::new("/m"),
         IndexKind::CompactBlock,
@@ -130,7 +129,7 @@ fn a_tombstone_in_a_map_without_deletes_panics() {
         slots,
     )
     .expect("open");
-    let _ = log.batch(vec![(&[0; 12], None)]);
+    let _ = set.batch(vec![(&[0; 12], None)]);
 }
 
 /// - open publishes every `zaino_lsm_*` series of the map at zero (absent ≠ nothing happened yet)
@@ -142,7 +141,7 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
 
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    SegmentLog::open(
+    SegmentSet::open(
         fs,
         Path::new("/m"),
         IndexKind::TransparentAddress,
@@ -248,12 +247,12 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
     let slots = Arc::new(Slots::new(4, u64::MAX));
     let index = IndexKind::CompactBlock;
-    let mut log =
-        SegmentLog::open(fs.clone(), dir, index, &scanned(), &[kept, second], FANOUT, slots)
+    let mut set =
+        SegmentSet::open(fs.clone(), dir, index, &scanned(), &[kept, second], FANOUT, slots)
             .expect("open");
-    log.settle();
+    set.settle();
 
-    let _ = log.batch(Vec::new());
+    let _ = set.batch(Vec::new());
 }
 
 /// - last byte = filter fingerprint

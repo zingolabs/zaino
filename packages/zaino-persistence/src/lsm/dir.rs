@@ -10,7 +10,7 @@ use super::SegmentMeta;
 use crate::{
     fs::Fs,
     pages::{sums_of, sums_path, Sealed},
-    port::MapTable,
+    schema::MapTable,
 };
 
 /// Directory holding one map's segments, their checksums and merges' scratch files

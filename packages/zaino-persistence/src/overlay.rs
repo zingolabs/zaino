@@ -15,8 +15,10 @@ use imbl::{OrdMap, Vector};
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::port::{
-    table_slot, BlockChanges, MapId, MapRead, PinnedView, Schema, SequenceId, SequenceRead, View,
+use crate::{
+    changes::BlockChanges,
+    port::{MapRead, PinnedView, SequenceRead, View},
+    schema::{table_slot, MapId, Schema, SequenceId},
 };
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)

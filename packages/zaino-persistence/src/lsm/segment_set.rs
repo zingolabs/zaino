@@ -17,19 +17,18 @@ use std::{
 
 use super::{
     dir::SegmentDir,
-    emit::{self, Series},
     layout::Shape,
-    meta::{merge_candidates, tier_of, tier_shape},
+    policy::{behind, merge_candidates, stall_at, tier_of, tier_shape},
     reader::SegmentsView,
     slots::Slots,
+    telemetry::{self, Series},
     writer::{Merged, SegmentWriter},
     Fanout, Result, SegmentMeta,
 };
-use crate::{fs::Fs, manifest::IndexKind, port::MapTable};
-
-/// Idle windows a merging tier may queue before [`SegmentLog::batch`] waits on its merge
-/// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
-const STALL_WINDOWS: usize = 2;
+use crate::{
+    fs::Fs,
+    schema::{IndexKind, MapTable},
+};
 
 /// Map's durable list + merges running under it + list staged for the next manifest
 ///
@@ -37,7 +36,7 @@ const STALL_WINDOWS: usize = 2;
 ///   small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `on_manifest_durable` maps the new list, unlinks,
 ///   launches
-pub(crate) struct SegmentLog {
+pub(crate) struct SegmentSet {
     series: Series,
     segments_view: Arc<SegmentsView>,
     writer: SegmentWriter,
@@ -57,7 +56,7 @@ struct Staged {
     landed: Vec<Landed>,
 }
 
-/// Merge the log swaps in: `tier` → `merged`, `took` = its thread's wall time
+/// Merge the set swaps in: `tier` → `merged`, `took` = its thread's wall time
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Landed {
     pub(super) tier: u32,
@@ -73,7 +72,7 @@ struct Merge {
     thread: JoinHandle<Result<Option<(Merged, Duration)>>>,
 }
 
-impl SegmentLog {
+impl SegmentSet {
     /// `index`'s `table` segments in `dir`, at the durable `listed`
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
@@ -98,7 +97,7 @@ impl SegmentLog {
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
             .max()
             .unwrap_or(0);
-        let mut log = Self {
+        let mut set = Self {
             writer: SegmentWriter::new(dir, shape),
             series: Series { index: index.name(), table: table.name },
             segments_view,
@@ -110,9 +109,9 @@ impl SegmentLog {
             merges: Vec::new(),
             shape_tiers: 0,
         };
-        emit::opened(log.series, stall_at(fanout));
-        log.launch_merges()?;
-        Ok(log)
+        telemetry::opened(set.series, stall_at(fanout));
+        set.launch_merges()?;
+        Ok(set)
     }
 
     /// Durable segments, mapped
@@ -144,7 +143,7 @@ impl SegmentLog {
         let id = self.allocate();
         if let Some(segment) = self.writer.write(id, rows)? {
             self.writer.dir().sync()?;
-            emit::batched(self.series, &segment);
+            telemetry::batched(self.series, &segment);
             staged.segments.push(segment);
         }
 
@@ -152,14 +151,14 @@ impl SegmentLog {
         let mut stalled = Vec::new();
         loop {
             let tiers =
-                self.land(&mut staged, |merge, segments| behind(merge, segments, fanout))?;
+                self.land(&mut staged, |merge, segments| behind(merge.tier, segments, fanout))?;
             if tiers.is_empty() {
                 break;
             }
             stalled.extend(tiers);
         }
         if !stalled.is_empty() {
-            emit::stalled(self.series, &stalled, waited.elapsed());
+            telemetry::stalled(self.series, &stalled, waited.elapsed());
         }
 
         let segments = staged.segments.clone();
@@ -177,7 +176,7 @@ impl SegmentLog {
         assert_eq!(self.segments_view.segments(), self.segments, "{name}: readers see the list");
         self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
-            emit::swapped(self.series, landed);
+            telemetry::swapped(self.series, landed);
         }
         self.launch_merges()
     }
@@ -200,7 +199,7 @@ impl SegmentLog {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
         self.shape_tiers = shape.len();
-        emit::shape(self.series, &shape);
+        telemetry::shape(self.series, &shape);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
@@ -211,7 +210,7 @@ impl SegmentLog {
         }
         let (id, writer) = (self.allocate(), self.writer.clone());
         let cancel = Arc::new(AtomicBool::new(false));
-        emit::launched(series, tier, &inputs);
+        telemetry::launched(series, tier, &inputs);
         let thread = thread::Builder::new().name(format!("merge {name} t{tier}")).spawn({
             let (inputs, cancel) = (inputs.clone(), Arc::clone(&cancel));
             let slots = Arc::clone(&self.slots);
@@ -228,7 +227,7 @@ impl SegmentLog {
                 };
                 writer.dir().sync()?;
                 let took = started.elapsed();
-                emit::merged(series, tier, &merged, took);
+                telemetry::merged(series, tier, &merged, took);
                 Ok(Some((merged, took)))
             }
         })?;
@@ -265,17 +264,6 @@ impl SegmentLog {
     }
 }
 
-/// `segments` lists [`stall_at`] of `merge`'s tier
-fn behind(merge: &Merge, segments: &[SegmentMeta], fanout: Fanout) -> bool {
-    let listed = segments.iter().filter(|segment| tier_of(segment, fanout) == merge.tier).count();
-    listed >= stall_at(fanout)
-}
-
-/// Merging tier's segment count a commit waits at: `fanout` inputs + `STALL_WINDOWS` idle windows
-pub(crate) fn stall_at(fanout: Fanout) -> usize {
-    (1 + STALL_WINDOWS) * fanout.get()
-}
-
 impl Staged {
     /// `merged`'s output listed where the oldest input was (none: nothing in their place), every
     /// input retired
@@ -299,10 +287,10 @@ impl Staged {
 /// Cancels + joins every merge (detached one could race the next open's id allocation)
 ///
 /// - outcomes dropped: outputs unlisted, merge panic already reported by the panic hook
-impl Drop for SegmentLog {
+impl Drop for SegmentSet {
     fn drop(&mut self) {
         if !self.merges.is_empty() {
-            emit::cancelled(self.series, self.merges.len());
+            telemetry::cancelled(self.series, self.merges.len());
         }
         for merge in &self.merges {
             merge.cancel.store(true, Ordering::Relaxed);
@@ -313,9 +301,9 @@ impl Drop for SegmentLog {
     }
 }
 
-impl fmt::Debug for SegmentLog {
+impl fmt::Debug for SegmentSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SegmentLog")
+        f.debug_struct("SegmentSet")
             .field("series", &self.series)
             .field("segments", &self.segments.len())
             .field("merging", &self.merges.iter().map(|merge| merge.tier).collect::<Vec<_>>())
@@ -327,7 +315,7 @@ impl fmt::Debug for SegmentLog {
 mod tests {
     use super::*;
 
-    impl SegmentLog {
+    impl SegmentSet {
         /// Durable list, ≈ data age (readers probe newest first, answers never depend on order)
         pub(crate) fn segments(&self) -> &[SegmentMeta] {
             &self.segments

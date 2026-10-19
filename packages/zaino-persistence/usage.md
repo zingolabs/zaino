@@ -1,7 +1,8 @@
 # zaino-persistence
 
-Storage for every Zaino index. It has two halves: the **port** (`port.rs`), the small set of
-traits an index is allowed to use, and **`DiskEngine`**, the one engine behind it. Read this if you
+Storage for every Zaino index. It has two halves: the **port** (`port.rs`, over the tables
+declared in `schema.rs` and the per-block delta in `changes.rs`), the small set of traits an index
+is allowed to use, and **`DiskEngine`**, the one engine behind it. Read this if you
 are writing or reviewing an index, or debugging what is on disk.
 
 ## What an index may ask

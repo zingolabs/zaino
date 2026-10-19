@@ -12,11 +12,14 @@
 //! - durable state = valid slot with the highest `seq` ([`latest`])
 //! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
 //!   waits on the filesystem journal or every other file's writeback)
+//! - slot codec only (create / commit / fdatasync I/O: `index_dir.rs`)
 
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::BlockHash;
+
+use crate::schema::IndexKind;
 
 const MAGIC: [u8; 8] = *b"ZAINOMS\0";
 const HEADER: usize = 24;
@@ -27,38 +30,6 @@ pub(crate) const SLOT: usize = 64 << 10;
 
 /// Both slots
 pub(crate) const FILE_LEN: u64 = 2 * SLOT as u64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum IndexKind {
-    CompactBlock = 1,
-    TreeState = 2,
-    TransparentAddress = 3,
-    BlockHash = 4,
-    UtxoSet = 5,
-}
-
-impl IndexKind {
-    /// One spelling everywhere (metric label, `/status`, task, default dir, index-snapshot entry)
-    /// Fold order (utxo-set before compact-block: its fees)
-    pub const ALL: [Self; 5] = [
-        Self::UtxoSet,
-        Self::CompactBlock,
-        Self::BlockHash,
-        Self::TreeState,
-        Self::TransparentAddress,
-    ];
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::CompactBlock => "compact_block",
-            Self::TreeState => "tree_state",
-            Self::TransparentAddress => "transparent_address",
-            Self::BlockHash => "block_hash",
-            Self::UtxoSet => "utxo_set",
-        }
-    }
-}
 
 /// What a directory must have been written as (any mismatch refused = chain-identity check)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,20 +268,6 @@ impl<'a> BodyReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_index_kind_has_its_disk_tag_and_one_snake_case_name() {
-        let table = [
-            (IndexKind::CompactBlock, 1, "compact_block"),
-            (IndexKind::TreeState, 2, "tree_state"),
-            (IndexKind::TransparentAddress, 3, "transparent_address"),
-            (IndexKind::BlockHash, 4, "block_hash"),
-            (IndexKind::UtxoSet, 5, "utxo_set"),
-        ];
-        for (kind, tag, name) in table {
-            assert_eq!((kind as u8, kind.name()), (tag, name), "{kind:?}");
-        }
-    }
 
     /// - slot pinned byte for byte, alternating by `seq`
     /// - durable state read off every slot pair a crash, foreign directory or older layout leaves

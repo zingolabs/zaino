@@ -1,4 +1,4 @@
-//! Store metrics, labelled `index` = the store's index kind (LSM sets: `lsm/emit.rs`)
+//! Store metrics, labelled `index` = the store's index kind (LSM sets: `lsm/telemetry.rs`)
 
 use std::time::Duration;
 

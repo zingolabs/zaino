@@ -13,11 +13,9 @@ use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
+    changes::{BlockChanges, Items, MapItems},
     overlay::{AppliedLayer, Entry, OverlayView},
-    port::{
-        table_slot, BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId,
-        SequenceTable,
-    },
+    schema::{table_slot, MapId, MapTable, Schema, SequenceId, SequenceTable},
 };
 
 /// Durable view + its store's buffer, borrowed ([`Store::applied`](crate::Store::applied))

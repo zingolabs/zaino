@@ -26,22 +26,21 @@ use rayon::prelude::*;
 use zaino_primitives::types::BlockRef;
 
 use crate::{
-    dir::{self, Depth, IndexDir},
+    changes::BlockChanges,
+    error::{CommitFailed, StoreError},
     fs::{Durability, Fs},
+    index_dir::{self, Depth, IndexDir},
     lsm::{
-        self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, SegmentsView,
+        self, decode_list, encode_list, Fanout, LsmConfig, SegmentMeta, SegmentSet, SegmentsView,
         Slots,
     },
     manifest::{self, BodyReader, DurableTip, Identity, ManifestError},
     overlay::{AppliedLayer, OverlayView},
     pages::{footprint, scrub, PageError, Sealed},
-    port::{
-        table_slot, BlockChanges, MapId, MapRead, PersistenceEngine, PinnedView, Schema,
-        SequenceId, SequenceRead, Store, Verification, View,
-    },
+    port::{MapRead, PersistenceEngine, PinnedView, SequenceRead, Store, Verification, View},
+    schema::{table_slot, MapId, Schema, SequenceId},
     sequence::{self, Seals, SequenceFile, SequencePages},
     write_buffer::{AppliedView, WriteBuffer},
-    CommitFailed, StoreError,
 };
 
 /// Files for sequences, LSM for maps, on one filesystem (clones share the merge slots)
@@ -68,7 +67,7 @@ pub struct DiskStore {
     dir: IndexDir,
     schema: Schema,
     sequences: Vec<SequenceFile>,
-    maps: Vec<SegmentLog>,
+    maps: Vec<SegmentSet>,
     view: DiskView,
     buffer: WriteBuffer,
     write_buffer: NonZeroUsize,
@@ -221,14 +220,14 @@ impl PersistenceEngine for DiskEngine {
         for ((table, list), map_dir) in schema.maps().iter().zip(&body.maps).zip(&map_dirs) {
             let fs = Arc::clone(&self.fs);
             let slots = Arc::clone(&self.slots);
-            let log = SegmentLog::open(fs, map_dir, schema.kind, table, list, self.fanout, slots)?;
-            maps.push(log);
+            let set = SegmentSet::open(fs, map_dir, schema.kind, table, list, self.fanout, slots)?;
+            maps.push(set);
         }
         let state = State {
             schema: *schema,
             tip: body.durable.tip,
             sequences: sequences.iter().map(|file| file.pages(None)).collect::<io::Result<_>>()?,
-            maps: maps.iter().map(|log| Arc::clone(log.segments_view())).collect(),
+            maps: maps.iter().map(|set| Arc::clone(set.segments_view())).collect(),
         };
         Ok(DiskStore {
             dir,
@@ -246,7 +245,7 @@ impl PersistenceEngine for DiskEngine {
     /// Read only, no lock: safe beside a live writer
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError> {
         let fs = self.fs.as_ref();
-        verify_durable(fs, path, schema, || dir::read_durable(fs, path, identity(schema)))
+        verify_durable(fs, path, schema, || index_dir::read_durable(fs, path, identity(schema)))
     }
 }
 
@@ -313,8 +312,8 @@ impl DiskStore {
 
         let body = Body { durable: DurableTip { tip: Some(tip) }, sequences, maps };
         self.dir.commit(&body.encode())?;
-        for log in &mut self.maps {
-            log.on_manifest_durable()?;
+        for set in &mut self.maps {
+            set.on_manifest_durable()?;
         }
 
         let previous = &self.view.state;
@@ -327,7 +326,7 @@ impl DiskStore {
                 .zip(&previous.sequences)
                 .map(|(file, old)| file.pages(Some(old)))
                 .collect::<io::Result<_>>()?,
-            maps: self.maps.iter().map(|log| Arc::clone(log.segments_view())).collect(),
+            maps: self.maps.iter().map(|set| Arc::clone(set.segments_view())).collect(),
         };
         self.view = DiskView { state: Arc::new(state) };
         Ok(())
@@ -354,12 +353,12 @@ fn write_sequences(
 
 /// Each map's buffered rows as one segment (one table per thread)
 fn write_maps(
-    logs: &mut [SegmentLog],
+    sets: &mut [SegmentSet],
     schema: &Schema,
     buffer: &WriteBuffer,
 ) -> Result<Vec<Vec<SegmentMeta>>, StoreError> {
-    let tables = logs.par_iter_mut().zip(schema.maps());
-    tables.map(|(log, &table)| Ok(log.batch(buffer.map_rows(table))?)).collect()
+    let tables = sets.par_iter_mut().zip(schema.maps());
+    tables.map(|(set, &table)| Ok(set.batch(buffer.map_rows(table))?)).collect()
 }
 
 impl Store for DiskStore {
@@ -388,7 +387,7 @@ impl Store for DiskStore {
             self.failed = true;
             return Err(CommitFailed::new(self.schema.kind.name(), self.dir.path(), cause));
         }
-        crate::emit::committed(self.schema.kind.name(), bytes, started.elapsed());
+        crate::metrics::committed(self.schema.kind.name(), bytes, started.elapsed());
         self.buffer = WriteBuffer::empty(&self.schema);
         Ok(())
     }

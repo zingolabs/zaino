@@ -15,7 +15,7 @@ use crate::{
     fs::{Durability, Fs},
     manifest::{BodyReader, ManifestError},
     pages::{sums_name, FileKind, PageError, PagedFile, Pages, Sealed},
-    port::{SequenceTable, Width},
+    schema::{SequenceTable, Width},
 };
 
 const END: usize = 8;

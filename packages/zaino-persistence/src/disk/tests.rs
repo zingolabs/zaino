@@ -18,9 +18,8 @@ use super::*;
 use crate::{
     fs::{RealFs, SimFs},
     lsm::file_name,
-    manifest::IndexKind,
     overlay::Overlay,
-    port::{MapTable, SequenceTable, Tables, Width},
+    schema::{IndexKind, MapTable, SequenceTable, Tables, Width},
     sequence::Records,
 };
 
@@ -1067,7 +1066,7 @@ fn verify_names_bad_pages_and_lost_files_rescrubs_after_a_merge_and_refuses_anot
     store.commit().expect("commit");
     store.apply(model.advance(1, &[2], 1, &[]));
     store.commit().expect("commit");
-    let read = || dir::read_durable(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
+    let read = || index_dir::read_durable(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
     let before = read();
     store.settle();
     store.apply(model.advance(0, &[], 0, &[]));
