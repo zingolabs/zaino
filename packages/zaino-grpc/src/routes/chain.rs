@@ -17,10 +17,8 @@ use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::{
-    BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
+    BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
 };
-use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
@@ -48,23 +46,19 @@ where
 
     let mut framed = Vec::new();
     for (slot, entry) in mempool.excluding(&request.exclude_txid_suffixes).into_iter().enumerate() {
-        let rendered = entry.projection.get_or_render(|| project(&entry.raw, entry.fee))?;
+        let rendered = entry.projection.get_or_render(|| {
+            let parsed = zaino_source::decode_transaction(&entry.raw)
+                .map_err(|failed| Status::internal(format!("mempool transaction: {failed}")))?;
+            let tx = zaino_index_compact_block::compact_tx(0, &parsed, entry.fee);
+            Ok::<_, Status>(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
+        })?;
         framed.extend(project_tx_at(&rendered, slot as u64, pools));
     }
     Ok(streamed_response(framed))
 }
 
-/// One mempool transaction as a `CompactTx` (slot 0, every pool), encoded: the cached form
-fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
-    let parsed = zaino_source::decode_transaction(raw)
-        .map_err(|failed| Status::internal(format!("mempool transaction: {failed}")))?;
-    let tx = zaino_index_compact_block::compact_tx(0, &parsed, fee);
-    Ok(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
-}
-
-/// Submitted
-///
-/// - rejection = domain answer, only unreachable = a status (wallet tells "no" from "unreachable")
+/// `SendTransaction`: rejection = domain answer, only unreachable = a status (wallet tells "no"
+/// from "unreachable")
 pub(crate) async fn send<S: ChainDataSource, B>(
     view: &ChainView<S>,
     body: B,
@@ -203,7 +197,11 @@ pub(crate) fn lightd_info<V>(
 
 fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
     let schedule = lightd.schedule;
-    let next = next_after(&schedule, lightd.served);
+    let next = UPGRADES_IN_ORDER
+        .iter()
+        .filter_map(|&upgrade| schedule.activation_height(upgrade).map(|from| (upgrade, from)))
+        .filter(|(_, from)| *from > lightd.served)
+        .min_by_key(|(_, from)| *from);
     let sapling = schedule.activation_height(NetworkUpgrade::Sapling);
     LightdInfo {
         version: version.to_string(),
@@ -224,20 +222,13 @@ fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdI
     }
 }
 
-/// First upgrade scheduled above `at`
-fn next_after(schedule: &LocalNetwork, at: BlockHeight) -> Option<(NetworkUpgrade, BlockHeight)> {
-    let scheduled = UPGRADES_IN_ORDER
-        .iter()
-        .filter_map(|&upgrade| schedule.activation_height(upgrade).map(|from| (upgrade, from)));
-    scheduled.filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
     use zaino_primitives::protocol::compiled_schedule;
+    use zcash_protocol::consensus::BlockHeight;
 
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
