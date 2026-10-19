@@ -46,7 +46,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `IndexesAtBlock`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `chain_view()`          | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `serving_status(now_unix)` | first match: best more than one block past the last vouched (`HeaderChainSnapshot::vouched`) → `Degraded` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down`; `Syncing` (not synced, or a validator `CatchingUp` and none `Live`: zebrad's mempool off after a catch-up); `Serving` |
+| `serving_status(now_unix)` | first match: best more than one block past the last vouched (`HeaderChainSnapshot::vouched`), or every trusted validator `Down` under a stale best (`[p2p]` off: a frozen tip) → `Degraded` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down`; `Syncing` (not synced, or a validator `CatchingUp` and none `Live`: zebrad's mempool off after a catch-up); `Serving` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,

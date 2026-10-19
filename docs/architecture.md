@@ -258,7 +258,8 @@ one and reads only it, so no answer mixes two moments.
 - `GrpcSnapshot::serving_status` judges serving from the same load, from the header chain's
   witnesses alone: `Down` when the best block runs more than one past the last vouched block,
   `Degraded` for that cause while synced to a fresh best (peers carry the tip). One block past is
-  the race a validator's next poll closes. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
+  the race a validator's next poll closes. Every trusted validator down under a stale best (no
+  peers to move it) is `Down` too. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
   what each method answers meanwhile: [rpc_api.md](./rpc_api.md).
 
 ### `GetMempoolStream`

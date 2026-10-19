@@ -129,22 +129,26 @@ impl<V> GrpcSnapshot<V> {
 
     /// First match (`now_unix` = the clock):
     ///
-    /// - best more than [`UNVOUCHED_BLOCKS`] past the last vouched block → `Degraded` while
+    /// - best more than [`UNVOUCHED_BLOCKS`] past the last vouched block, or every trusted
+    ///   validator down under a stale best (`[p2p]` off: nothing moves the tip) → `Degraded` while
     ///   synced to a fresh best, else `Down`
     /// - not synced, or a validator's mempool off and none on (zebrad's, for minutes after a
     ///   catch-up) → `Syncing`
     /// - else `Serving`
     pub fn serving_status(&self, now_unix: i64) -> ServingStatus {
+        let trusted_validators = self.view.trusted_validators();
+        let health = |wanted| trusted_validators.iter().any(|m| m.health == wanted);
+        let all_down = !trusted_validators.is_empty()
+            && trusted_validators.iter().all(|m| m.health == Health::Down);
         let vouched = self.chain().is_none_or(|chain| {
             chain.vouched(chain.best().height.saturating_sub(UNVOUCHED_BLOCKS))
         });
-        if !vouched {
+        if !vouched || (all_down && !self.fresh(now_unix)) {
             return match self.tips.synced && self.fresh(now_unix) {
                 true => ServingStatus::Degraded,
                 false => ServingStatus::Down,
             };
         }
-        let health = |wanted| self.view.trusted_validators().iter().any(|m| m.health == wanted);
         let mempool_off = health(Health::CatchingUp) && !health(Health::Live);
         match self.tips.synced && !mempool_off {
             true => ServingStatus::Serving,

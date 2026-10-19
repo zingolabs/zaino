@@ -38,7 +38,7 @@ moments.
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                      |
 | `provisioning` | not booted yet: an index-snapshot bootstrap, or plain startup                            |
-| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or the best block more than one past the last a trusted validator vouched for while not `degraded` |
+| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), the best block more than one past the last a trusted validator vouched for while not `degraded`, or every trusted validator down under a stale best (`[p2p]` off: the tip frozen) |
 | `degraded`     | the best block more than one past the last vouched, but synced to it while fresh (its block time within 24 target spacings of the clock: p2p peers carried the tip) |
 | `syncing`      | booted, but the served tip is not the best yet, or a validator's mempool is off and none is on (zebrad's, for minutes after a catch-up) |
 | `serving`      | otherwise                                                                                |

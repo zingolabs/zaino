@@ -253,6 +253,8 @@ fn each_holder_health_gives_its_standing_and_notes() {
 /// - one block past the last vouch = the race a poll closes: serving
 /// - two = no trusted validator vouches for the tip: degraded while fresh, down once stale
 /// - not synced (served A4) under an unvouched tip: down
+/// - vouched but the one validator down (`[p2p]` off: the tip frozen): serving while fresh, down
+///   once stale
 #[test]
 fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_stale() {
     let mut builder = MockChain::regtest();
@@ -265,13 +267,14 @@ fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_st
         (ServingStatus::Serving, ServingStatus::Degraded, ServingStatus::Down);
     #[rustfmt::skip]
     let cases = [
-        // (vouched through, served, (now, stale − 1, stale))
-        (12, 12, (serving, serving, serving)),
-        (11, 12, (serving, serving, serving)),
-        (10, 12, (degraded, degraded, down)),
-        (10, 4,  (down, down, down)),
+        // (vouched through, served, validator, (now, stale − 1, stale))
+        (12, 12, Health::Live, (serving, serving, serving)),
+        (11, 12, Health::Live, (serving, serving, serving)),
+        (10, 12, Health::Live, (degraded, degraded, down)),
+        (10, 4,  Health::Live, (down, down, down)),
+        (12, 12, Health::Down, (serving, serving, down)),
     ];
-    for (vouched, served, expected) in cases {
+    for (vouched, served, health, expected) in cases {
         let mut headers = builder.header_chain(DEPTH);
         insert(&mut headers, &a[1..=vouched]).expect("trusted run links");
         insert_unwitnessed(&mut headers, &a[vouched + 1..]).expect("peers' headers link");
@@ -281,13 +284,15 @@ fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_st
             NfsPublication::fixed(Arc::clone(&chain), a[served].block_ref(), params, none.clone());
         let holder = TrustedValidatorSet::at([0]);
         let view = ChainViewSnapshot::fixed(Some(chain), holder, &["10.0.0.1:8232"], &[]);
+        let view = view.trusted_validator(0, health, 0);
         let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
         let serving_status = (
             grpc_snapshot.serving_status(now),
             grpc_snapshot.serving_status(stale - 1),
             grpc_snapshot.serving_status(stale),
         );
-        assert_eq!(serving_status, expected, "vouched through {vouched}, served {served}");
+        let case = format!("vouched through {vouched}, served {served}, {health:?}");
+        assert_eq!(serving_status, expected, "{case}");
     }
 }
 
