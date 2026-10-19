@@ -15,182 +15,206 @@ use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{self, trailers, unary_response};
 use zaino_proto::proto::service;
 
-/// One `GrpcSnapshot`'s compact-block records
-type Blocks<V> = CompactBlockReader<OverlayView<V>>;
+/// One request's compact blocks: the served indexes + the compact-block reader over them
+pub(crate) struct CompactBlocks<'a, V> {
+    pub(crate) served: &'a IndexesAtBlock<V>,
+    pub(crate) reader: CompactBlockReader<OverlayView<V>>,
+}
 
-/// Served `GrpcSnapshot` + its compact-block records
-pub(crate) type Compact<'a, V> = (&'a IndexesAtBlock<V>, Blocks<V>);
+/// `GetLatestBlock` answers a `BlockID`, not a block: the served tip (no read at all)
+pub(crate) fn get_latest_block<V>(served: &IndexesAtBlock<V>) -> Response<Body> {
+    let tip = served.tip();
+    let block_id = service::BlockId { height: tip.height.into(), hash: tip.hash.0.to_vec() };
+    unary_response(wire::frame(&block_id))
+}
+
+/// `GetBlock`: one whole block, every pool
+///
+/// - hash wins when given (names one block across a reorg, a height doesn't)
+/// - one block != range of one (`GetBlockRange` defaults shielded-only, `BlockID` has no
+///   `poolTypes`)
+/// - TODO: deprecate pending light-client ZIP updates (kept = lightwalletd parity)
+pub(crate) async fn get_block<V, B>(
+    compact_blocks: CompactBlocks<'_, V>,
+    body: B,
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    V: PinnedView,
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let block_id: service::BlockId = wire::decode_request(body).await?;
+
+    let block = if block_id.hash.is_empty() {
+        let height = args::height(block_id.height, "height")?;
+        compact_blocks.read_by_height(height, reads).await?
+    } else {
+        let (height, hash) = compact_blocks.locate(&block_id.hash, "GetBlock")?;
+        compact_blocks.read_by_hash(height, hash, reads).await?
+    };
+    Ok(unary_response(block))
+}
+
+/// `GetBlockRange` (wallet-sync path: must stay cheap)
+pub(crate) async fn get_block_range<V, B>(
+    compact_blocks: CompactBlocks<'_, V>,
+    body: B,
+    reads: ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    V: PinnedView,
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let range: service::BlockRange = wire::decode_request(body).await?;
+
+    let pools = args::pools(&range.pool_types)?;
+    let blocks = compact_blocks.open_range(&range, pools)?;
+    Ok(blocks.into_response(reads, Ok))
+}
+
+impl<V: PinnedView> CompactBlocks<'_, V> {
+    /// Highest height this request answers (the compact-block index's, capped at the served tip)
+    fn served_through(&self) -> BlockHeight {
+        self.served.answers_through(IndexKind::CompactBlock)
+    }
+
+    /// `BlockID.hash` → its height via the block-hash index, at or below [`Self::served_through`]
+    fn locate(&self, hash: &[u8], method: &str) -> Result<(BlockHeight, [u8; 32]), Status> {
+        args::locate(self.served, self.served_through(), hash, method)
+    }
+
+    /// NFS layer (pepper-sync's reorg check at the tip) = RAM, answered inline; else the point lane
+    async fn read_by_height(self, height: BlockHeight, reads: &ReadLanes) -> Result<Bytes, Status> {
+        let missing = move || serve_error_status(ServeError::NotFound { height });
+        if height > self.served_through() {
+            return Err(missing());
+        }
+        if let Some(block) = self.reader.resident_block(height) {
+            return Ok(block);
+        }
+        let reader = self.reader;
+        reads.read(Lane::Point, move || reader.block(height).ok_or_else(missing)).await?
+    }
+
+    /// Only where this index holds that same block (a located height can lag a reorg)
+    async fn read_by_hash(
+        self,
+        height: BlockHeight,
+        hash: [u8; 32],
+        reads: &ReadLanes,
+    ) -> Result<Bytes, Status> {
+        let reader = self.reader;
+        let read = move || reader.block_at(height, &hash).map_err(serve_error_status);
+        reads.read(Lane::Point, read).await?
+    }
+
+    /// Walk order up to the first height past [`Self::served_through`]
+    ///
+    /// - first height past it = refused before any block (lightwalletd: the first `getblock` fails)
+    /// - start > end = descending (the cursor walks it top down)
+    pub(super) fn open_range(
+        self,
+        range: &service::BlockRange,
+        pools: Pools,
+    ) -> Result<BlockStream<V>, Status> {
+        let bound = |id: &Option<service::BlockId>, field: &str| {
+            let id = id
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument(format!("range has no {field}")))?;
+            args::height(id.height, &format!("range {field}"))
+        };
+        let (start, end) = (bound(&range.start, "start")?, bound(&range.end, "end")?);
+
+        let through = self.served_through();
+        let above_tip = |height| {
+            Status::out_of_range(format!("block {height} is above the compact-block tip {through}"))
+        };
+        if start > through {
+            return Err(above_tip(start));
+        }
+        let final_status = if end > through { above_tip(through + 1) } else { Status::ok("") };
+        let cursor = RangeCursor::new(self.reader, start, end, through, pools)
+            .map_err(serve_error_status)?;
+
+        Ok(BlockStream { cursor, final_status })
+    }
+}
+
+/// One range's cursor + the status its stream ends in once the cursor is spent
+///
+/// - `final_status` = `OUT_OF_RANGE` when the range reaches past the compact-block tip
+///   (lightwalletd: lazily to the tip, then the error)
+/// - early `OK` end hangs the iOS downloader for good
+pub(super) struct BlockStream<V> {
+    cursor: RangeCursor<V>,
+    final_status: Status,
+}
+
+impl<V: PinnedView> BlockStream<V> {
+    /// Server-streaming response, cursor chunk by chunk
+    ///
+    /// - `grpc-status` in trailers only (headers precede the walk, a status there = response done)
+    /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
+    pub(super) fn into_response(
+        self,
+        reads: ReadLanes,
+        reproject: fn(Bytes) -> Result<Bytes, Status>,
+    ) -> Response<Body> {
+        let BlockStream { cursor, final_status } = self;
+        let state = Some((cursor, reads, final_status));
+        let frames = futures::stream::unfold(state, move |state| async move {
+            let (cursor, reads, final_status) = state?;
+
+            let (cursor, chunk) = match next_chunk(cursor, &reads).await {
+                Ok(stepped) => stepped,
+                Err(status) => return Some((Ok(Frame::trailers(trailers(&status))), None)),
+            };
+            let end = match chunk.map(|read| read.map_err(serve_error_status).and_then(reproject)) {
+                Some(Ok(chunk)) => {
+                    return Some((Ok(Frame::data(chunk)), Some((cursor, reads, final_status))))
+                }
+                Some(Err(status)) => status,
+                None => final_status,
+            };
+            Some((Ok::<_, Status>(Frame::trailers(trailers(&end))), None))
+        });
+
+        // layer steps = one record each, ready back to back: joined per DATA frame
+        wire::streaming(frames)
+    }
+}
+
+/// Cursor's next chunk (`None` = spent)
+///
+/// - disk step = blocking pool, range lane per step not per request (cold mmap refill ~11.7 ms
+///   would stall the worker; layer reads never queue)
+/// - in-memory step = inline (else a task per block on the highest-volume RPC)
+async fn next_chunk<V: PinnedView>(
+    mut cursor: RangeCursor<V>,
+    reads: &ReadLanes,
+) -> Result<(RangeCursor<V>, Option<Result<Bytes, ServeError>>), Status> {
+    if !cursor.next_touches_disk() {
+        let chunk = cursor.next_chunk();
+        return Ok((cursor, chunk));
+    }
+    reads
+        .read(Lane::Range, move || {
+            let chunk = cursor.next_chunk();
+            (cursor, chunk)
+        })
+        .await
+}
 
 /// Kinds kept distinct (miss != bad request != corruption)
-fn to_status(error: ServeError) -> Status {
+fn serve_error_status(error: ServeError) -> Status {
     match &error {
         ServeError::NotFound { .. } | ServeError::HashNotFound => {
             Status::not_found(error.to_string())
         }
         ServeError::Malformed { .. } => Status::internal(error.to_string()),
     }
-}
-
-/// One range's cursor + the status its stream ends in once the cursor is spent
-///
-/// - `ends` = `OUT_OF_RANGE` when the range reaches past the compact-block tip (lightwalletd: lazily
-///   to the tip, then the error)
-/// - early `OK` end hangs the iOS downloader for good
-pub(super) struct Walk<V> {
-    cursor: RangeCursor<V>,
-    ends: Status,
-}
-
-/// Server-streaming response, cursor chunk by chunk
-///
-/// - `grpc-status` in trailers only (headers precede the walk, a status there = response done)
-/// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
-pub(super) fn range_response<V: PinnedView>(
-    walk: Walk<V>,
-    reads: ReadLanes,
-    reproject: fn(Bytes) -> Result<Bytes, Status>,
-) -> Response<Body> {
-    let Walk { cursor, ends } = walk;
-    let frames = futures::stream::unfold(Some((cursor, reads, ends)), move |state| async move {
-        let (mut cursor, reads, ends) = state?;
-
-        // - Blocking pool for disk steps only (cold mmap refill ~11.7 ms would stall the worker)
-        // - In-memory steps inline (else a task per block on the highest-volume RPC)
-        let (cursor, chunk) = if cursor.next_touches_disk() {
-            // Range lane per disk step, not per request (layer reads never queue)
-            let stepped = reads.read(Lane::Range, move || {
-                let chunk = cursor.next_chunk();
-                (cursor, chunk)
-            });
-            match stepped.await {
-                Ok(stepped) => stepped,
-                Err(status) => return Some((Ok(Frame::trailers(trailers(&status))), None)),
-            }
-        } else {
-            let chunk = cursor.next_chunk();
-            (cursor, chunk)
-        };
-
-        let last = match chunk.map(|read| read.map_err(to_status).and_then(reproject)) {
-            Some(Ok(chunk)) => return Some((Ok(Frame::data(chunk)), Some((cursor, reads, ends)))),
-            Some(Err(status)) => trailers(&status),
-            None => trailers(&ends),
-        };
-
-        Some((Ok::<_, Status>(Frame::trailers(last)), None))
-    });
-
-    // layer steps = one record each, ready back to back: joined per DATA frame
-    wire::streaming(frames)
-}
-
-/// `GetLatestBlock` answers a `BlockID`, not a block: the served tip (no read at all)
-pub(crate) fn latest<V>(at: &IndexesAtBlock<V>) -> Response<Body> {
-    let tip = at.tip();
-    let hash = tip.hash.0.to_vec();
-    unary_response(wire::frame(&service::BlockId { height: tip.height.into(), hash }))
-}
-
-/// `GetBlock`: one whole block, every pool
-///
-/// - TODO: deprecate pending light-client ZIP updates (kept = lightwalletd parity)
-/// - one block != range of one (`GetBlockRange` defaults shielded-only, `BlockID` has no
-///   `poolTypes`)
-pub(crate) async fn block<V, B>(
-    (at, blocks): Compact<'_, V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    stored_block(at, blocks, body, reads).await.map(unary_response)
-}
-
-async fn stored_block<V, B>(
-    at: &IndexesAtBlock<V>,
-    blocks: Blocks<V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Bytes, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let id: service::BlockId = wire::decode_request(body).await?;
-
-    // Hash wins when given (names one block across a reorg, a height doesn't)
-    if !id.hash.is_empty() {
-        let through = at.answers_through(IndexKind::CompactBlock);
-        let (height, hash) = args::locate(at, through, &id.hash, "GetBlock")?;
-        let read = move || blocks.block_at(height, &hash).map_err(to_status);
-        return reads.read(Lane::Point, read).await?;
-    }
-
-    let height = args::height(id.height, "height")?;
-    let missing = move || to_status(ServeError::NotFound { height });
-    if height > at.answers_through(IndexKind::CompactBlock) {
-        return Err(missing());
-    }
-    // NFS layer (pepper-sync's reorg check at the tip): RAM, answered inline
-    if let Some(record) = blocks.resident_block(height) {
-        return Ok(record);
-    }
-    reads.read(Lane::Point, move || blocks.block(height).ok_or_else(missing)).await?
-}
-
-/// `GetBlockRange` (wallet-sync path: must stay cheap)
-pub(crate) async fn range<V, B>(
-    (at, blocks): Compact<'_, V>,
-    body: B,
-    reads: ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::BlockRange = wire::decode_request(body).await?;
-
-    let through = at.answers_through(IndexKind::CompactBlock);
-    let walk = open_range(blocks, through, &request, args::pools(&request.pool_types)?)?;
-    Ok(range_response(walk, reads, Ok))
-}
-
-/// - walk order up to the first height past `through`: a first height past it = refused before
-///   any block (lightwalletd: the first `getblock` fails)
-pub(super) fn open_range<V: PinnedView>(
-    blocks: Blocks<V>,
-    through: BlockHeight,
-    request: &service::BlockRange,
-    pools: Pools,
-) -> Result<Walk<V>, Status> {
-    let start = request
-        .start
-        .as_ref()
-        .map(|id| id.height)
-        .ok_or_else(|| Status::invalid_argument("range has no start"))?;
-    let end = request
-        .end
-        .as_ref()
-        .map(|id| id.height)
-        .ok_or_else(|| Status::invalid_argument("range has no end"))?;
-    // start > end = descending (the cursor walks it top down)
-    let (start, end) = (args::height(start, "range start")?, args::height(end, "range end")?);
-
-    let past = |height| {
-        Status::out_of_range(format!("block {height} is above the compact-block tip {through}"))
-    };
-    if start > through {
-        return Err(past(start));
-    }
-    let ends = if end > through { past(through + 1) } else { Status::ok("") };
-    let cursor = RangeCursor::new(blocks, start, end, through, pools).map_err(to_status)?;
-
-    Ok(Walk { cursor, ends })
 }
 
 #[cfg(test)]

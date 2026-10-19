@@ -40,8 +40,9 @@ possible, take everything else from as many peers as possible.**
                                    │
        ┌───────────────────────────┼─────────────────────────────────────┐
        ▼                           ▼                                     ▼
-  HeaderSync (chainview)      ObservationMerge + PeerMempool       ChainView::submit
-  → HeaderChain               → mempool view                       (SendTransaction)
+  HeaderSync (chainview)      ObservationMerge + PeerMempool       ChainView::validate_transaction
+  → HeaderChain               → mempool view                       → broadcast_transaction
+                                                                   (SendTransaction)
        │ watch<HeaderChainSnapshot> │
        ├──────────────────┐         │
        ▼                  ▼         │

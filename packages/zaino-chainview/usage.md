@@ -27,7 +27,8 @@ let view = view.with_submit_policy(SubmitPolicy::default());
 let headers = view.header_sync(chain);
 let merge = view.observation_merge();
 // each: `tokio::spawn(x.run(cancel.child_token()))`
-// `view.submit(raw)` submits; `view.subscriber()` = the read handle
+// `view.validate_transaction(raw)` → `view.broadcast_transaction(validated)` sends;
+// `view.subscriber()` = the read handle
 let _ = (view, headers, merge);
 # Ok(())
 # }
@@ -38,7 +39,7 @@ let _ = (view, headers, merge);
 zainod spawns the balancer's driver first, builds the view once the upgrade schedule is known
 (regtest's = the first answered poll), then spawns header sync, the observation merge, each push
 stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and with `[p2p]` on
-`peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `RouteDeps.submit` holds the view for
+`peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `RouteDeps.chain_view` holds the view for
 `SendTransaction`; every read goes through `zaino-grpc-snapshot`.
 
 ## Membership
@@ -161,8 +162,13 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 ## Submission
 
-`ChainView::submit(raw)` → `Result<TxId, SubmitError>`; the protocol is
+Two steps, both `Result<_, SubmitError>`; the protocol is
 [architecture §6](../../docs/architecture.md#6-submission).
+
+- `ChainView::validate_transaction(raw)` → `ValidatedTransaction`: precheck + check below,
+  nothing relayed (a refusal never leaves Zaino)
+- `ChainView::broadcast_transaction(validated)` → `TxId`: the relay job; only a
+  `ValidatedTransaction` goes in, so no relay skips the checks
 
 - Precheck: undecodable → `Rejected` code −22; once a verified best exists, expired
   (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.

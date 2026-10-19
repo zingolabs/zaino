@@ -18,7 +18,7 @@ use crate::observation_merge::ObservationMerge;
 use crate::peer_mempool::PeerMempool;
 use crate::peers::PeerWatch;
 use crate::ports::{PeerSource, UnspentOutputs};
-use crate::submit::{self, SubmitPolicy};
+use crate::submit::{self, SubmitPolicy, ValidatedTransaction};
 use crate::trusted_validators::TrustedValidatorMeta;
 
 /// One view over N validators: owns submission and the runnables feeding it
@@ -110,12 +110,22 @@ impl<S: ChainDataSource> ChainView<S> {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
 
-    /// Submit one transaction (relay job outlives the answer)
+    /// Decode + precheck + one holder's `checkadmission`, nothing relayed
+    pub async fn validate_transaction(
+        &self,
+        raw: Vec<u8>,
+    ) -> Result<ValidatedTransaction, SubmitError> {
+        submit::validate(&self.core, &self.balancer, &self.schedule, raw).await
+    }
+
+    /// Relay to the validators (+ peers) → txid on the first acceptance (relay outlives the answer)
     /// - protocol: `docs/architecture.md` §6, API: `usage.md` "Submission"
-    pub async fn submit(&self, raw: Vec<u8>) -> Result<TxId, SubmitError> {
+    pub async fn broadcast_transaction(
+        &self,
+        validated: ValidatedTransaction,
+    ) -> Result<TxId, SubmitError> {
         let (core, balancer, peers) = (&self.core, &self.balancer, &self.peers);
-        submit::submit(core, balancer, peers, &self.schedule, self.policy, &self.shutdown, raw)
-            .await
+        submit::broadcast(core, balancer, peers, self.policy, &self.shutdown, validated).await
     }
 }
 

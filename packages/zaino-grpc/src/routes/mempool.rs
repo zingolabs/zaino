@@ -20,7 +20,7 @@ use crate::wire::{self, decode_request, frame, streamed_response, trailers};
 /// - per request: only the slot and the pool selection, over the cached bytes
 /// - transaction the selection leaves with no component dropped, as from a block
 ///   ([`project_tx_at`]), slots stay the listing's
-pub(crate) async fn mempool_tx<V, B>(
+pub(crate) async fn get_mempool_tx<V, B>(
     grpc_snapshot: &GrpcSnapshot<V>,
     body: B,
 ) -> Result<Response<Body>, Status>
@@ -32,18 +32,19 @@ where
     let pools = args::pools(&request.pool_types)?;
 
     let mempool = grpc_snapshot.mempool().map_err(wire::unavailable)?;
+    let unknown_to_client = mempool.excluding(&request.exclude_txid_suffixes);
 
-    let mut framed = Vec::new();
-    for (slot, entry) in mempool.excluding(&request.exclude_txid_suffixes).into_iter().enumerate() {
-        let rendered = entry.projection.get_or_render(|| {
+    let mut compact_txs = Vec::new();
+    for (slot, entry) in unknown_to_client.into_iter().enumerate() {
+        let every_pool = entry.projection.get_or_render(|| {
             let parsed = zaino_source::decode_transaction(&entry.raw)
                 .map_err(|failed| Status::internal(format!("mempool transaction: {failed}")))?;
-            let tx = zaino_index_compact_block::compact_tx(0, &parsed, entry.fee);
-            Ok::<_, Status>(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
+            let compact_tx = zaino_index_compact_block::compact_tx(0, &parsed, entry.fee);
+            Ok::<_, Status>(bytes::Bytes::from(prost::Message::encode_to_vec(&compact_tx)))
         })?;
-        framed.extend(project_tx_at(&rendered, slot as u64, pools));
+        compact_txs.extend(project_tx_at(&every_pool, slot as u64, pools));
     }
-    Ok(streamed_response(framed))
+    Ok(streamed_response(compact_txs))
 }
 
 /// `GetMempoolStream`: the servable mempool as one chunk, then each arrival, closed once the
@@ -52,25 +53,27 @@ where
 /// - end ⇒ the next load serves the new tip (`GetLatestBlock` ≥ it: G5)
 /// - each record encoded once (first subscriber to reach it)
 /// - the rest share it by refcount (a burst ready at once = joined per stream, `Coalesced`)
-pub(crate) fn mempool_stream<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Result<Response<Body>, Status> {
-    let tail = grpc_snapshot.mempool_stream().map_err(wire::unavailable)?;
-    let opening = tail.opening_rendered(|entries| {
+pub(crate) fn get_mempool_stream<V>(
+    grpc_snapshot: &GrpcSnapshot<V>,
+) -> Result<Response<Body>, Status> {
+    let feed = grpc_snapshot.mempool_stream().map_err(wire::unavailable)?;
+    let current_mempool = feed.opening_rendered(|entries| {
         wire::frame_all(&entries.iter().map(unmined).collect::<Vec<_>>())
     });
-    let opening = (!opening.is_empty()).then(|| Ok::<_, Status>(Frame::data(opening)));
+    let current_mempool =
+        (!current_mempool.is_empty()).then(|| Ok::<_, Status>(Frame::data(current_mempool)));
 
-    // Tail in the unfold state, not captured (borrowed mutably across an await: `FnMut` can't)
-    let arrivals = futures::stream::unfold(Some(tail), move |state| async move {
-        let mut tail = state?;
-
-        let Some(logged) = tail.next().await else {
+    // feed in the unfold state, not captured (borrowed mutably across an await: `FnMut` can't)
+    let arrivals = futures::stream::unfold(Some(feed), move |state| async move {
+        let mut feed = state?;
+        let Some(arrival) = feed.next().await else {
             return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
         };
 
-        let record = logged.rendered(|entry| frame(&unmined(entry)));
-        Some((Ok::<_, Status>(Frame::data(record)), Some(tail)))
+        let framed = arrival.rendered(|entry| frame(&unmined(entry)));
+        Some((Ok::<_, Status>(Frame::data(framed)), Some(feed)))
     });
-    let frames = futures::StreamExt::chain(futures::stream::iter(opening), arrivals);
+    let frames = futures::StreamExt::chain(futures::stream::iter(current_mempool), arrivals);
 
     Ok(wire::streaming(frames))
 }
@@ -130,7 +133,8 @@ mod tests {
         node.reachable(&Port::ALL, false);
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
-        let (view, grpc_snapshots) = (Arc::clone(&routes.submit), routes.grpc_snapshots.clone());
+        let (view, grpc_snapshots) =
+            (Arc::clone(&routes.chain_view), routes.grpc_snapshots.clone());
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(publisher.run(cancel.child_token()));
@@ -296,12 +300,13 @@ mod tests {
         }
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);
-        let (reader, grpc_snapshots) = (routes.submit.subscriber(), routes.grpc_snapshots.clone());
+        let (reader, grpc_snapshots) =
+            (routes.chain_view.subscriber(), routes.grpc_snapshots.clone());
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(merge.run(cancel.child_token()));
-        routes.submit.set_chain(Some(chain.snapshot(tip)));
+        routes.chain_view.set_chain(Some(chain.snapshot(tip)));
         let mut router = dispatch(routes);
         let three = || grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
         rounds("three servable", three).await;

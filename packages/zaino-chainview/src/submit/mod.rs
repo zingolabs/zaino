@@ -3,6 +3,7 @@
 mod driver;
 mod policy;
 
-pub(crate) use driver::submit;
+pub use driver::ValidatedTransaction;
+pub(crate) use driver::{broadcast, validate};
 pub(crate) use policy::Ended;
 pub use policy::SubmitPolicy;

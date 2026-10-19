@@ -28,8 +28,8 @@ use crate::wire::{self, streamed_response, unary_response};
 /// - keyed on the `NfsPublication` publish, not the `GrpcSnapshot` (that one moves per chain-view
 ///   fold)
 pub(crate) struct Memos<V> {
-    states: Memo<V, BlockHeight, Result<Bytes, Status>>,
-    roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
+    tree_states: Memo<V, BlockHeight, Result<Bytes, Status>>,
+    subtree_roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
 /// One answer kind, keyed by `K`, per NFS publish
@@ -37,29 +37,78 @@ type Memo<V, K, T> = PerView<NfsPublication<V>, K, T>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {
-        Self { states: PerView::default(), roots: PerView::default() }
+        Self { tree_states: PerView::default(), subtree_roots: PerView::default() }
     }
 }
 
-/// Everything one tree-state request is answered with (`trees` = `indexed`'s served tip's)
-pub(crate) struct Answering<V> {
+/// One request's tree-state reads: the NFS publish, its tree-state reader (as of its served tip),
+/// the disk lanes and the per-publish memos
+pub(crate) struct TreeStateReads<V> {
     pub(crate) indexed: Arc<NfsPublication<V>>,
-    pub(crate) trees: TreeStateReader<OverlayView<V>>,
+    pub(crate) reader: TreeStateReader<OverlayView<V>>,
     pub(crate) reads: ReadLanes,
     pub(crate) memos: Arc<Memos<V>>,
 }
 
-impl<V: PinnedView> Answering<V> {
+impl<V: PinnedView> TreeStateReads<V> {
     fn served(&self) -> &IndexesAtBlock<V> {
         self.indexed.served()
     }
 
-    fn through(&self) -> BlockHeight {
+    /// Highest height this request answers (the tree-state index's, capped at the served tip)
+    fn served_through(&self) -> BlockHeight {
         self.served().answers_through(IndexKind::TreeState)
     }
 
-    /// Framed on first ask per NFS publish, on the point lane (single flight), then inline
-    async fn once<K, T>(
+    /// Framed tree state at `height`, once per NFS publish (the synced wallets' tip asks)
+    async fn memoized_tree_state(&self, height: BlockHeight) -> Result<Bytes, Status> {
+        let (through, params) = (self.served_through(), self.served().params());
+        let frame = move |reader: &_| framed_tree_state(reader, height, through, params);
+        self.memoized(|memos| &memos.tree_states, height, frame).await?
+    }
+
+    /// Framed tree state at `height`, read on the point lane (not memoized)
+    async fn read_tree_state(&self, height: BlockHeight) -> Result<Bytes, Status> {
+        let (reader, through, params) =
+            (self.reader.clone(), self.served_through(), self.served().params());
+        let read = move || framed_tree_state(&reader, height, through, params);
+        self.reads.read(Lane::Point, read).await?
+    }
+
+    /// Framed tree state at `height` only if this index holds `hash` there (a located height can
+    /// lag a reorg)
+    async fn read_tree_state_of_block(
+        &self,
+        height: BlockHeight,
+        hash: BlockHash,
+    ) -> Result<Bytes, Status> {
+        let (reader, params) = (self.reader.clone(), self.served().params());
+        let read = move || {
+            let tree_state = reader.treestate(height).map_err(serve_error_status)?;
+            if tree_state.block_hash != hash {
+                return Err(Status::not_found(format!(
+                    "block {hash} is not the one this index holds at {height} (reorg)"
+                )));
+            }
+            Ok(tree_state_message(&tree_state, params))
+        };
+        self.reads.read(Lane::Point, read).await?
+    }
+
+    /// Every root of `pool` completed at or below the served tip, framed once per NFS publish
+    async fn memoized_subtree_roots(&self, pool: ShieldedPool) -> Result<Arc<FramedRoots>, Status> {
+        let tip = self.served().tip().height;
+        let frame = move |reader: &TreeStateReader<OverlayView<V>>| {
+            let mut roots = reader.subtree_roots(pool, 0, 0).map_err(serve_error_status)?;
+            roots.retain(|root| root.completing.height <= tip);
+            Ok(Arc::new(FramedRoots::of(&roots)))
+        };
+        self.memoized(|memos| &memos.subtree_roots, pool, frame).await?
+    }
+
+    /// `compute` on first ask per NFS publish, on the point lane (single flight), then the cached
+    /// answer inline
+    async fn memoized<K, T>(
         &self,
         memo: fn(&Memos<V>) -> &Memo<V, K, T>,
         key: K,
@@ -72,31 +121,29 @@ impl<V: PinnedView> Answering<V> {
         if let Some(hit) = memo(&self.memos).cached(&self.indexed, &key) {
             return Ok(hit);
         }
-        let (memos, indexed, trees) =
-            (Arc::clone(&self.memos), Arc::clone(&self.indexed), self.trees.clone());
-        let compute = move || memo(&memos).get_or_compute(&indexed, key, || compute(&trees));
+        let (memos, indexed, reader) =
+            (Arc::clone(&self.memos), Arc::clone(&self.indexed), self.reader.clone());
+        let compute = move || memo(&memos).get_or_compute(&indexed, key, || compute(&reader));
         self.reads.read(Lane::Point, compute).await
     }
+}
 
-    /// Tree state at exactly `at` framed for the wire
-    ///
-    /// - past the index's own tip = a miss
-    /// - below Sapling = every pool `""`, not lightwalletd's error (Android asks `batchStart - 1`,
-    ///   so Sapling activation − 1 too: ZA#1422)
-    fn state_at(
-        &self,
-        at: BlockHeight,
-    ) -> impl FnOnce(&TreeStateReader<OverlayView<V>>) -> Result<Bytes, Status> + Send + 'static
-    {
-        let (through, params) = (self.through(), self.served().params());
-        move |trees| {
-            if at > through {
-                return Err(to_status(ServeError::NotFound { height: at }));
-            }
-            let state = trees.treestate(at).map_err(to_status)?;
-            Ok(reply(&state, params))
-        }
+/// Tree state at exactly `height`, framed for the wire
+///
+/// - past the index's own tip = a miss
+/// - below Sapling = every pool `""`, not lightwalletd's error (Android asks `batchStart - 1`, so
+///   Sapling activation − 1 too: ZA#1422)
+fn framed_tree_state<V: PinnedView>(
+    reader: &TreeStateReader<OverlayView<V>>,
+    height: BlockHeight,
+    served_through: BlockHeight,
+    params: zaino_nfs::ChainParams,
+) -> Result<Bytes, Status> {
+    if height > served_through {
+        return Err(serve_error_status(ServeError::NotFound { height }));
     }
+    let tree_state = reader.treestate(height).map_err(serve_error_status)?;
+    Ok(tree_state_message(&tree_state, params))
 }
 
 /// One pool's completed roots, framed back to back
@@ -112,7 +159,7 @@ impl FramedRoots {
         let mut framed = Vec::new();
         let mut ends = Vec::with_capacity(roots.len());
         for one in roots {
-            framed.extend_from_slice(&root(one));
+            framed.extend_from_slice(&subtree_root_message(one));
             ends.push(framed.len());
         }
         Self { framed: Bytes::from(framed), ends }
@@ -135,27 +182,22 @@ impl FramedRoots {
     }
 }
 
-/// Miss != corruption
-fn to_status(error: ServeError) -> Status {
-    match &error {
-        ServeError::NotFound { .. } => Status::not_found(error.to_string()),
-        ServeError::Inconsistent { .. } => Status::internal(error.to_string()),
-    }
-}
-
-pub(crate) async fn latest<V: PinnedView>(
-    answering: &Answering<V>,
+/// `GetLatestTreeState`: the served tip's tree state (memoized per NFS publish)
+pub(crate) async fn get_latest_tree_state<V: PinnedView>(
+    tree_states: &TreeStateReads<V>,
 ) -> Result<Response<Body>, Status> {
-    let tip = answering.served().tip().height;
-    let state = answering.once(|memos| &memos.states, tip, answering.state_at(tip)).await?;
-    state.map(unary_response)
+    let tip = tree_states.served().tip().height;
+    let tree_state = tree_states.memoized_tree_state(tip).await?;
+    Ok(unary_response(tree_state))
 }
 
-/// - Hash wins when given (one block across a reorg): block-hash index locates, this index
-///   answers only if it holds that same block
-/// - by height, in the NFS layer (the synced wallets' tip asks): once per NFS publish
-pub(crate) async fn treestate<V, B>(
-    answering: &Answering<V>,
+/// `GetTreeState`
+///
+/// - hash wins when given (one block across a reorg): block-hash index locates, this index answers
+///   only if it holds that same block
+/// - by height in the NFS layer (the synced wallets' tip asks): memoized per NFS publish
+pub(crate) async fn get_tree_state<V, B>(
+    tree_states: &TreeStateReads<V>,
     body: B,
 ) -> Result<Response<Body>, Status>
 where
@@ -163,49 +205,71 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    framed_treestate(answering, body).await.map(unary_response)
+    let block_id: service::BlockId = wire::decode_request(body).await?;
+
+    let tree_state = if block_id.hash.is_empty() {
+        let height = args::height(block_id.height, "height")?;
+        if tree_states.reader.is_above_durable(height) {
+            tree_states.memoized_tree_state(height).await?
+        } else {
+            tree_states.read_tree_state(height).await?
+        }
+    } else {
+        let through = tree_states.served_through();
+        let (height, hash) =
+            args::locate(tree_states.served(), through, &block_id.hash, "GetTreeState")?;
+        tree_states.read_tree_state_of_block(height, BlockHash(hash)).await?
+    };
+    Ok(unary_response(tree_state))
 }
 
-async fn framed_treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
+/// `GetSubtreeRoots`: one slice of every root of the pool completed at or below the served tip
+///
+/// - whole or refused before the first byte (iOS keeps a partial prefix)
+/// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
+pub(crate) async fn get_subtree_roots<V, B>(
+    tree_states: &TreeStateReads<V>,
+    body: B,
+) -> Result<Response<Body>, Status>
 where
     V: PinnedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let id: service::BlockId = wire::decode_request(body).await?;
+    let request: service::GetSubtreeRootsArg = wire::decode_request(body).await?;
 
-    if id.hash.is_empty() {
-        let height = args::height(id.height, "height")?;
-        let state = answering.state_at(height);
-        if answering.trees.is_above_durable(height) {
-            return answering.once(|memos| &memos.states, height, state).await?;
-        }
-        let trees = answering.trees.clone();
-        return answering.reads.read(Lane::Point, move || state(&trees)).await?;
-    }
-
-    let (height, hash) =
-        args::locate(answering.served(), answering.through(), &id.hash, "GetTreeState")?;
-    let (trees, state) = (answering.trees.clone(), answering.state_at(height));
-    let framed = answering.reads.read(Lane::Point, move || {
-        let held = trees.treestate(height).map(|state| state.block_hash);
-        (held, state(&trees))
-    });
-    let (held, framed) = framed.await?;
-    if held.map_err(to_status)? != BlockHash(hash) {
-        return Err(Status::not_found(format!(
-            "block {} is not the one this index holds at {height} (reorg)",
-            BlockHash(hash)
-        )));
-    }
-    framed
+    let pool = shielded_pool(request.shielded_protocol)?;
+    let roots = tree_states.memoized_subtree_roots(pool).await?;
+    let slice = roots.slice(request.start_index, request.max_entries);
+    Ok(streamed_response((!slice.is_empty()).then_some(slice).into_iter().collect()))
 }
 
-/// Domain treestate → wire (trees hex, hash in display order)
+/// Client `shieldedProtocol` → pool; unknown = `UNIMPLEMENTED` (the one non-Sapling refusal the
+/// Android SDK survives with its fast sync intact)
+fn shielded_pool(protocol: i32) -> Result<ShieldedPool, Status> {
+    match service::ShieldedProtocol::try_from(protocol) {
+        Ok(service::ShieldedProtocol::Sapling) => Ok(ShieldedPool::Sapling),
+        Ok(service::ShieldedProtocol::Orchard) => Ok(ShieldedPool::Orchard),
+        Ok(service::ShieldedProtocol::Ironwood) => Ok(ShieldedPool::Ironwood),
+        Err(_) => Err(Status::unimplemented(format!(
+            "shieldedProtocol {protocol} is not served (sapling = 0, orchard = 1, ironwood = 2)"
+        ))),
+    }
+}
+
+/// Miss != corruption
+fn serve_error_status(error: ServeError) -> Status {
+    match &error {
+        ServeError::NotFound { .. } => Status::not_found(error.to_string()),
+        ServeError::Inconsistent { .. } => Status::internal(error.to_string()),
+    }
+}
+
+/// Domain tree state → wire `TreeState`, framed (trees hex, hash in display order)
 ///
 /// - pool below its upgrade = `""` (zebra's `z_gettreestate` omits it, lightwalletd copies that)
 /// - from its upgrade on = its tree, `000000` while empty (pepper-sync rejects `""` there)
-fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
+fn tree_state_message(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     let activations = params.activations();
     let active = |pool| activations.get(pool).is_some_and(|from| from <= state.height);
     let tree = |pool, tree: &CommitmentTreeBytes| match active(pool) {
@@ -223,49 +287,9 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     })
 }
 
-/// Every root of the pool completed at or below the tip, framed once per NFS publish
-///
-/// - request = one slice of it, whole or refused before the first byte (iOS keeps a partial prefix)
-/// - unknown pool = `UNIMPLEMENTED` (the one non-Sapling refusal the Android SDK survives with its
-///   fast sync intact)
-/// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
-pub(crate) async fn subtree_roots<V, B>(
-    answering: &Answering<V>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetSubtreeRootsArg = wire::decode_request(body).await?;
-
-    let pool = match service::ShieldedProtocol::try_from(request.shielded_protocol) {
-        Ok(service::ShieldedProtocol::Sapling) => ShieldedPool::Sapling,
-        Ok(service::ShieldedProtocol::Orchard) => ShieldedPool::Orchard,
-        Ok(service::ShieldedProtocol::Ironwood) => ShieldedPool::Ironwood,
-        Err(_) => {
-            return Err(Status::unimplemented(format!(
-                "shieldedProtocol {} is not served (sapling = 0, orchard = 1, ironwood = 2)",
-                request.shielded_protocol
-            )))
-        }
-    };
-    let (start, max) = (request.start_index, request.max_entries);
-
-    let tip = answering.served().tip().height;
-    let every = move |trees: &TreeStateReader<OverlayView<V>>| {
-        let mut roots = trees.subtree_roots(pool, 0, 0).map_err(to_status)?;
-        roots.retain(|root| root.completing.height <= tip);
-        Ok::<_, Status>(Arc::new(FramedRoots::of(&roots)))
-    };
-    let framed = answering.once(|memos| &memos.roots, pool, every).await?;
-    let chunk = framed?.slice(start, max);
-    Ok(streamed_response((!chunk.is_empty()).then_some(chunk).into_iter().collect()))
-}
-
-/// `completingBlockHash` in display order (lightwalletd reverses the internal-order hash)
-fn root(root: &SubtreeRoot) -> Bytes {
+/// Domain subtree root → wire `SubtreeRoot`, framed (`completingBlockHash` in display order:
+/// lightwalletd reverses the internal-order hash)
+fn subtree_root_message(root: &SubtreeRoot) -> Bytes {
     let mut hash = root.completing.hash.0;
     hash.reverse();
     wire::frame(&service::SubtreeRoot {

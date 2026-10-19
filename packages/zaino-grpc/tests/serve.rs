@@ -38,7 +38,7 @@ fn routes() -> RouteDeps<MockValidator, DiskView> {
             None,
             chain.subscriber().current(),
         ),
-        submit: Arc::new(chain),
+        chain_view: Arc::new(chain),
         validators,
         network,
         version: "0.11.0-test",

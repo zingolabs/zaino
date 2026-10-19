@@ -400,7 +400,7 @@ fn run_pipeline<S: ChainDataSource>(
     spawn(tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
     serving.routing.route(RouteDeps {
         grpc_snapshots: grpc_snapshots.clone(),
-        submit: Arc::clone(&inputs.view),
+        chain_view: Arc::clone(&inputs.view),
         validators: inputs.balancer,
         network,
         version: env!("CARGO_PKG_VERSION"),

@@ -5,7 +5,7 @@ use zaino_index_compact_block::Pools;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-/// Client height → [`BlockHeight`] (past the protocol ceiling = the client's error, never a service's)
+/// Client height → [`BlockHeight`] (past the protocol ceiling = the client's error, not ours)
 pub(super) fn height(raw: u64, field: &str) -> Result<BlockHeight, Status> {
     BlockHeight::try_from(raw).map_err(|_| {
         Status::invalid_argument(format!("{field} {raw} is above the protocol height ceiling"))

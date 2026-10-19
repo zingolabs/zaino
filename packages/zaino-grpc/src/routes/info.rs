@@ -4,28 +4,48 @@
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = verified best tip, no validator call ("how far behind")
 
-use tonic::Status;
+use http::Response;
+use tonic::{body::Body, Status};
 use zaino_grpc_snapshot::{GrpcSnapshot, Lightd, Unavailable};
 use zaino_proto::proto::service::{self, LightdInfo};
 use zcash_protocol::consensus::{
     BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
 };
 
-use crate::wire;
+use crate::wire::{self, frame, unary_response};
 
-/// `GetLightdInfo` from one `GrpcSnapshot` (fields: `docs/rpc_api.md`)
+/// `GetLightdInfo`
+pub(crate) fn get_lightd_info<V>(
+    grpc_snapshot: &GrpcSnapshot<V>,
+    network: NetworkType,
+    version: &str,
+) -> Result<Response<Body>, Status> {
+    let lightd_info = lightd_info(grpc_snapshot, network, version)?;
+    Ok(unary_response(frame(&lightd_info)))
+}
+
+/// `GetStandardFee`
+pub(crate) fn get_standard_fee<V>(
+    grpc_snapshot: &GrpcSnapshot<V>,
+    network: NetworkType,
+) -> Result<Response<Body>, Status> {
+    let standard_fee = standard_fee(grpc_snapshot, network)?;
+    Ok(unary_response(frame(&standard_fee)))
+}
+
+/// `GetLightdInfo`'s message from one `GrpcSnapshot` (fields: `docs/rpc_api.md`; also the
+/// crate's public `lightd_info`)
 pub(crate) fn lightd_info<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,
     version: &str,
 ) -> Result<LightdInfo, Status> {
-    grpc_snapshot
-        .lightd()
-        .map(|lightd| render_lightd(lightd, network, version))
-        .map_err(wire::unavailable)
+    let lightd = grpc_snapshot.lightd().map_err(wire::unavailable)?;
+    Ok(lightd_info_message(lightd, network, version))
 }
 
-fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
+/// Served tips + schedule → wire `LightdInfo`
+fn lightd_info_message(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
     let schedule = lightd.schedule;
     let next = UPGRADES_IN_ORDER
         .iter()
@@ -63,9 +83,9 @@ pub(super) fn chain_name(network: NetworkType) -> &'static str {
     }
 }
 
-/// `GetStandardFee`: the ZIP 317 marginal fee for the block after best (estimator version 0 =
-/// the static rule)
-pub(crate) fn standard_fee<V>(
+/// `GetStandardFee`'s message: the ZIP 317 marginal fee for the block after best, no validator read
+/// (estimator version 0 = the static rule)
+fn standard_fee<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,
 ) -> Result<service::StandardFee, Status> {
@@ -111,7 +131,7 @@ mod tests {
         let schedule = compiled_schedule(NetworkType::Main).expect("compiled");
         let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
         let rendered = |served: u32| {
-            let info = render_lightd(lightd(served), NetworkType::Main, "0.11.0-alpha.2");
+            let info = lightd_info_message(lightd(served), NetworkType::Main, "0.11.0-alpha.2");
             (
                 info.version,
                 info.chain_name,
@@ -169,7 +189,7 @@ mod tests {
 
         let unserved = "the indexes are syncing: nothing served yet";
         assert!(refused(unserved), "no chain yet");
-        routes.submit.set_chain(Some(chain.snapshot(tip_7)));
+        routes.chain_view.set_chain(Some(chain.snapshot(tip_7)));
         rounds("verified, nothing served", || refused(unserved)).await;
 
         nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));

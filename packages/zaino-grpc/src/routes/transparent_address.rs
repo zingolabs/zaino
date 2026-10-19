@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use zaino_grpc_snapshot::GrpcSnapshot;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{OverlayView, PinnedView};
@@ -25,23 +24,16 @@ use super::info::chain_name;
 use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
-/// One request's index: the `GrpcSnapshot`'s reader (as of its tip, row-capped) + the network its
-/// addresses parse in
-pub(crate) struct Addresses<V> {
+/// One request's transparent-address index: the reader (as of the served tip, row-capped) + the
+/// network its addresses parse in
+pub(crate) struct AddressIndex<V> {
     pub(crate) reader: TransparentAddressReader<OverlayView<V>>,
     pub(crate) network: NetworkType,
 }
 
-fn to_status(error: ServeError) -> Status {
-    match &error {
-        ServeError::SupplyExceeded => Status::internal(error.to_string()),
-        ServeError::TooManyRows { .. } => Status::resource_exhausted(error.to_string()),
-    }
-}
-
-/// `GetAddressUtxos`: one list message
-pub(crate) async fn utxos<V: PinnedView, B>(
-    index: Addresses<V>,
+/// `GetAddressUtxos`: every utxo in one list message
+pub(crate) async fn get_address_utxos<V: PinnedView, B>(
+    address_index: AddressIndex<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status>
@@ -49,13 +41,16 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let address_utxos = utxo_replies(index, body, reads).await?;
-    Ok(unary_response(wire::frame(&service::GetAddressUtxosReplyList { address_utxos })))
+    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
+
+    let address_utxos = address_utxos(address_index, &request, reads).await?;
+    let reply = service::GetAddressUtxosReplyList { address_utxos };
+    Ok(unary_response(wire::frame(&reply)))
 }
 
 /// `GetAddressUtxosStream`: one message per utxo
-pub(crate) async fn utxos_stream<V: PinnedView, B>(
-    index: Addresses<V>,
+pub(crate) async fn get_address_utxos_stream<V: PinnedView, B>(
+    address_index: AddressIndex<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status>
@@ -63,16 +58,49 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let replies = utxo_replies(index, body, reads).await?;
-    Ok(streamed_response(replies.iter().map(wire::frame).collect()))
+    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
+
+    let address_utxos = address_utxos(address_index, &request, reads).await?;
+    Ok(streamed_response(address_utxos.iter().map(wire::frame).collect()))
 }
 
-/// `GetTaddressTransactions`: index names them, a validator (else the peers' blocks) supplies them
-///
-/// - Fetched lazily, one per poll (busy address = thousands)
-/// - client that stops reading stops the round trips (HTTP/2 flow control paces)
-pub(crate) async fn transactions<S: ChainDataSource, V: PinnedView, B>(
-    index: Addresses<V>,
+/// `GetTaddressBalance`: one `AddressList`, one total
+pub(crate) async fn get_taddress_balance<V: PinnedView, B>(
+    address_index: AddressIndex<V>,
+    body: B,
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let address_list: service::AddressList = wire::decode_request(body).await?;
+
+    let balance = total_balance(address_index, &address_list.addresses, reads).await?;
+    Ok(unary_response(wire::frame(&balance)))
+}
+
+/// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), one total
+pub(crate) async fn get_taddress_balance_stream<V: PinnedView, B>(
+    address_index: AddressIndex<V>,
+    body: B,
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let streamed: Vec<service::Address> = wire::decode_request_stream(body).await?;
+    let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
+
+    let balance = total_balance(address_index, &addresses, reads).await?;
+    Ok(unary_response(wire::frame(&balance)))
+}
+
+/// `GetTaddressTransactions`: the index names the txids, a validator (else the peers' blocks)
+/// supplies each one's bytes
+pub(crate) async fn get_taddress_transactions<S: ChainDataSource, V: PinnedView, B>(
+    address_index: AddressIndex<V>,
     validators: TrafficBalancer<S>,
     grpc_snapshot: Arc<GrpcSnapshot<V>>,
     body: B,
@@ -82,60 +110,143 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let found = found_transactions(index, body, reads).await?;
+    let filter: service::TransparentAddressBlockFilter = decode_request(body).await?;
 
-    // `None` state ends the stream (trailer frame always last, always sent)
-    let frames = futures::stream::unfold(Some(found.into_iter()), move |state| {
+    let txids = address_txids(address_index, filter, reads).await?;
+    Ok(streamed_raw_transactions(txids, validators, grpc_snapshot))
+}
+
+/// Utxos of every requested address at or above `startHeight`, height order, capped at
+/// `maxEntries` (shared by `GetAddressUtxos` and its stream)
+async fn address_utxos<V: PinnedView>(
+    address_index: AddressIndex<V>,
+    request: &service::GetAddressUtxosArg,
+    reads: &ReadLanes,
+) -> Result<Vec<service::GetAddressUtxosReply>, Status> {
+    let from = args::height(request.start_height, "startHeight")?;
+    let addresses = request
+        .addresses
+        .iter()
+        .map(|encoded| parse_transparent_address(encoded, address_index.network))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let reader = address_index.reader;
+    let (addresses, utxos_per_address) = reads
+        .read(Lane::Scan, move || {
+            let utxos = reader.utxos_of(&addresses, from);
+            (addresses, utxos)
+        })
+        .await?;
+    let utxos_per_address = utxos_per_address.map_err(serve_error_status)?;
+
+    let mut address_utxos = Vec::new();
+    for ((encoded, address), utxos) in
+        request.addresses.iter().zip(&addresses).zip(utxos_per_address)
+    {
+        for utxo in &utxos {
+            address_utxos.push(address_utxo_message(encoded, address, utxo)?);
+        }
+    }
+
+    // `GetAddressUtxosArg` = height-ordered results (a per-address walk is, per address only)
+    address_utxos.sort_by(|left, right| {
+        (left.height, &left.txid, left.index).cmp(&(right.height, &right.txid, right.index))
+    });
+    if request.max_entries > 0 {
+        address_utxos.truncate(request.max_entries as usize);
+    }
+    Ok(address_utxos)
+}
+
+/// Sum over the distinct parsed addresses (a repeated address counts once)
+///
+/// - distinct addresses' balances sum within the supply: overflow = index corruption
+async fn total_balance<V: PinnedView>(
+    address_index: AddressIndex<V>,
+    addresses: &[String],
+    reads: &ReadLanes,
+) -> Result<service::Balance, Status> {
+    let distinct: Vec<TransparentAddress> = addresses
+        .iter()
+        .map(|encoded| parse_transparent_address(encoded, address_index.network))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+        .into_iter()
+        .collect();
+
+    let reader = address_index.reader;
+    let balances = reads.read(Lane::Scan, move || reader.balances(&distinct)).await?;
+    let total = balances.map_err(serve_error_status)?.into_iter().sum::<Option<Zatoshis>>();
+    let total = total.ok_or_else(|| {
+        Status::internal("distinct addresses' balances exceed the money supply: index corrupt")
+    })?;
+    Ok(service::Balance { value_zat: i64::from(ZatBalance::from(total)) })
+}
+
+/// Txids touching the filter's address within its range, height order
+async fn address_txids<V: PinnedView>(
+    address_index: AddressIndex<V>,
+    filter: service::TransparentAddressBlockFilter,
+    reads: &ReadLanes,
+) -> Result<Vec<zcash_protocol::TxId>, Status> {
+    let address = parse_transparent_address(&filter.address, address_index.network)?;
+    let range = filter.range.ok_or_else(|| Status::invalid_argument("range is required"))?;
+    let bound = |id: Option<service::BlockId>, field: &str| {
+        let id =
+            id.ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))?;
+        args::height(id.height, field)
+    };
+    let (start, end) = args::ordered(bound(range.start, "start")?, bound(range.end, "end")?)?;
+
+    let reader = address_index.reader;
+    let touching = reads.read(Lane::Scan, move || reader.transactions(&address, start, end));
+    let touching = touching.await?.map_err(serve_error_status)?;
+    Ok(touching.into_iter().map(|transaction| transaction.txid).collect())
+}
+
+/// One `RawTransaction` per txid, fetched lazily
+///
+/// - one fetch per poll (busy address = thousands)
+/// - client that stops reading stops the round trips (HTTP/2 flow control paces)
+/// - trailer frame always last, always sent (`None` state = stream ended)
+fn streamed_raw_transactions<S: ChainDataSource, V: PinnedView>(
+    txids: Vec<zcash_protocol::TxId>,
+    validators: TrafficBalancer<S>,
+    grpc_snapshot: Arc<GrpcSnapshot<V>>,
+) -> Response<Body> {
+    let frames = futures::stream::unfold(Some(txids.into_iter()), move |state| {
         let (validators, grpc_snapshot) = (validators.clone(), Arc::clone(&grpc_snapshot));
         async move {
-            let mut rest = state?;
-
-            let Some(txid) = rest.next() else {
+            let mut remaining = state?;
+            let Some(txid) = remaining.next() else {
                 return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
             };
 
             let fetched =
-                super::transactions::raw_transaction(&validators, &grpc_snapshot, txid).await;
-            match fetched.map(|tx| frame(&tx)) {
-                Ok(record) => Some((Ok::<_, Status>(Frame::data(record)), Some(rest))),
+                super::transactions::fetch_raw_transaction(&validators, &grpc_snapshot, txid).await;
+            match fetched {
+                Ok(transaction) => {
+                    Some((Ok::<_, Status>(Frame::data(frame(&transaction))), Some(remaining)))
+                }
                 Err(status) => Some((Ok(Frame::trailers(trailers(&status))), None)),
             }
         }
     });
-
-    Ok(wire::streaming(frames))
+    wire::streaming(frames)
 }
 
-/// Txids touching the address, height order
-async fn found_transactions<V: PinnedView, B>(
-    index: Addresses<V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Vec<zcash_protocol::TxId>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::TransparentAddressBlockFilter = decode_request(body).await?;
-    let address = transparent_address(&request.address, index.network)?;
-    let range = request.range.ok_or_else(|| Status::invalid_argument("range is required"))?;
-
-    let height = |bound: Option<service::BlockId>, field: &str| {
-        bound
-            .ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))
-            .and_then(|at| args::height(at.height, field))
-    };
-    let (start, end) = args::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
-
-    let found =
-        reads.read(Lane::Scan, move || index.reader.transactions(&address, start, end)).await?;
-
-    Ok(found.map_err(to_status)?.into_iter().map(|found| found.txid).collect())
+fn serve_error_status(error: ServeError) -> Status {
+    match &error {
+        ServeError::SupplyExceeded => Status::internal(error.to_string()),
+        ServeError::TooManyRows { .. } => Status::resource_exhausted(error.to_string()),
+    }
 }
 
 /// Only `network`'s encodings (index keys = `[kind][hash160]`: a foreign encoding would
 /// answer from this network's rows)
-fn transparent_address(encoded: &str, network: NetworkType) -> Result<TransparentAddress, Status> {
+fn parse_transparent_address(
+    encoded: &str,
+    network: NetworkType,
+) -> Result<TransparentAddress, Status> {
     let invalid = |reason: String| Status::invalid_argument(format!("address {encoded}: {reason}"));
 
     encoded
@@ -152,51 +263,8 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
         })
 }
 
-/// `GetAddressUtxos` / `GetAddressUtxosStream`: one walk, two response shapes
-async fn utxo_replies<V: PinnedView, B>(
-    index: Addresses<V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Vec<service::GetAddressUtxosReply>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
-    let from = args::height(request.start_height, "startHeight")?;
-    let addresses = request
-        .addresses
-        .iter()
-        .map(|encoded| transparent_address(encoded, index.network))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let (addresses, utxos) = reads
-        .read(Lane::Scan, move || {
-            let utxos = index.reader.utxos_of(&addresses, from);
-            (addresses, utxos)
-        })
-        .await?;
-    let mut found = Vec::new();
-    for ((encoded, address), utxos) in
-        request.addresses.iter().zip(&addresses).zip(utxos.map_err(to_status)?)
-    {
-        for utxo in &utxos {
-            found.push(reply(encoded, address, utxo)?);
-        }
-    }
-
-    // `GetAddressUtxosArg` = height-ordered results (a per-address walk is, per address only)
-    found.sort_by(|left, right| {
-        (left.height, &left.txid, left.index).cmp(&(right.height, &right.txid, right.index))
-    });
-    if request.max_entries > 0 {
-        found.truncate(request.max_entries as usize);
-    }
-
-    Ok(found)
-}
-
-fn reply(
+/// Domain utxo → wire `GetAddressUtxosReply` (address as the client spelled it)
+fn address_utxo_message(
     encoded: &str,
     address: &TransparentAddress,
     utxo: &AddressUtxo,
@@ -210,57 +278,6 @@ fn reply(
         value_zat: i64::from(ZatBalance::from(utxo.value)),
         height: u64::from(utxo.height),
     })
-}
-
-/// `GetTaddressBalance`: one `AddressList`, one total
-pub(crate) async fn balance<V: PinnedView, B>(
-    index: Addresses<V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let list: service::AddressList = wire::decode_request(body).await?;
-    total(index, &list.addresses, reads).await.map(unary_response)
-}
-
-/// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), reply = one total
-pub(crate) async fn balance_stream<V: PinnedView, B>(
-    index: Addresses<V>,
-    body: B,
-    reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let streamed: Vec<service::Address> = wire::decode_request_stream(body).await?;
-    let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
-
-    total(index, &addresses, reads).await.map(unary_response)
-}
-
-/// Deduped on the parsed address (a repeated address counts once)
-/// - distinct addresses' balances sum within the supply, so overflow = index corruption
-async fn total<V: PinnedView>(
-    index: Addresses<V>,
-    addresses: &[String],
-    reads: &ReadLanes,
-) -> Result<Bytes, Status> {
-    let distinct: Vec<TransparentAddress> = addresses
-        .iter()
-        .map(|encoded| transparent_address(encoded, index.network))
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
-        .into_iter()
-        .collect();
-    let balances = reads.read(Lane::Scan, move || index.reader.balances(&distinct)).await?;
-
-    let total = (balances.map_err(to_status)?.into_iter().sum::<Option<Zatoshis>>())
-        .expect("distinct addresses' balances exceed the money supply: index corrupt");
-
-    Ok(wire::frame(&service::Balance { value_zat: i64::from(ZatBalance::from(total)) }))
 }
 
 #[cfg(test)]

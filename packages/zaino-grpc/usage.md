@@ -50,7 +50,7 @@ routing.route(routes);
 | `GetMempoolTx` | `mempool()?` (the servable mempool) |
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
-| `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
+| `SendTransaction` | `chain_view.validate_transaction(raw)?` → `broadcast_transaction(validated)` (no `GrpcSnapshot`) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent); none answering → the served mempool's bytes, else `views().txid_location()?.mined(&txid)` → `validators.peer_block_bytes(hash)` → `zaino_source::mined_transaction` |
 
 - **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or

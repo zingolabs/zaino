@@ -32,7 +32,7 @@ use crate::read_lanes::ReadLanes;
 use crate::routes::{
     blocks, deprecated_nullifiers, info, mempool, transactions, transparent_address, tree_state,
 };
-use crate::wire::{self, frame, unary_response};
+use crate::wire;
 use crate::GrpcLimits;
 
 /// Every row's path prefix (`/{service}/{method}`)
@@ -159,7 +159,7 @@ impl Route {
 /// What one `GrpcService` answers from
 ///
 /// - `grpc_snapshots` = every read (chain, indexes, mempool, validator facts)
-/// - `submit` = `SendTransaction` only
+/// - `chain_view` = `SendTransaction` only (validate, then broadcast)
 /// - `validators` = `GetTransaction` + address tx bytes
 /// - `network` = declared (zainod's `network` key), never read off a validator
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
@@ -167,7 +167,7 @@ impl Route {
 /// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`
 pub struct RouteDeps<S: ChainDataSource, V> {
     pub grpc_snapshots: GrpcSnapshots<V>,
-    pub submit: Arc<ChainView<S>>,
+    pub chain_view: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
     pub network: NetworkType,
     pub version: &'static str,
@@ -273,65 +273,71 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
         let (routes, reads) = (&self.routes, wired.reads.clone());
         let grpc_snapshot = routes.grpc_snapshots.load();
         let served = || grpc_snapshot.served().map_err(wire::unavailable);
-        let compact = || {
-            let at = served()?;
-            let blocks = view(at.views().compact_block(), method, IndexKind::CompactBlock)?;
-            Ok::<_, Status>((at, blocks))
+        let compact_blocks = || {
+            let served = served()?;
+            let reader = view(served.views().compact_block(), method, IndexKind::CompactBlock)?;
+            Ok::<_, Status>(blocks::CompactBlocks { served, reader })
         };
-        let trees = || {
+        let tree_states = || {
             // the NFS publish itself: memo identity (`served()` = its served tip)
             let nothing = || wire::unavailable(Unavailable::NothingServed);
             let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
-            let trees = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
+            let reader = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
             let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
-            Ok::<_, Status>(tree_state::Answering { indexed, trees, reads: reads.clone(), memos })
+            let reads = reads.clone();
+            Ok::<_, Status>(tree_state::TreeStateReads { indexed, reader, reads, memos })
         };
-        let addresses = || {
-            let at = served()?;
-            let index = at.views().transparent_address();
+        let address_index = || {
+            let served = served()?;
+            let index = served.views().transparent_address();
             let reader = view(index, method, IndexKind::TransparentAddress)?;
-            let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
-            Ok::<_, Status>(transparent_address::Addresses { reader, network: at.params().network })
+            let reader = reader.as_of(served.tip().height).with_max_rows(routes.max_address_rows);
+            let network = served.params().network;
+            Ok::<_, Status>(transparent_address::AddressIndex { reader, network })
         };
 
         match method {
-            GetLatestBlock => Ok(blocks::latest(served()?)),
-            GetBlock => blocks::block(compact()?, body, &reads).await,
-            GetBlockRange => blocks::range(compact()?, body, reads).await,
+            GetLatestBlock => Ok(blocks::get_latest_block(served()?)),
+            GetBlock => blocks::get_block(compact_blocks()?, body, &reads).await,
+            GetBlockRange => blocks::get_block_range(compact_blocks()?, body, reads).await,
             GetBlockRangeNullifiers => {
-                deprecated_nullifiers::range_nullifiers(compact()?, body, reads).await
-            }
-            GetTreeState => tree_state::treestate(&trees()?, body).await,
-            GetLatestTreeState => tree_state::latest(&trees()?).await,
-            GetSubtreeRoots => tree_state::subtree_roots(&trees()?, body).await,
-            GetAddressUtxos => transparent_address::utxos(addresses()?, body, &reads).await,
-            GetAddressUtxosStream => {
-                transparent_address::utxos_stream(addresses()?, body, &reads).await
-            }
-            GetTaddressBalance => transparent_address::balance(addresses()?, body, &reads).await,
-            GetTaddressBalanceStream => {
-                transparent_address::balance_stream(addresses()?, body, &reads).await
-            }
-            GetTaddressTransactions | GetTaddressTxids => {
-                let (validators, snapshot) =
-                    (routes.validators.clone(), Arc::clone(&grpc_snapshot));
-                transparent_address::transactions(addresses()?, validators, snapshot, body, &reads)
+                deprecated_nullifiers::get_block_range_nullifiers(compact_blocks()?, body, reads)
                     .await
             }
-            SendTransaction => transactions::send(&routes.submit, body).await,
-            GetMempoolTx => mempool::mempool_tx(&grpc_snapshot, body).await,
-            GetMempoolStream => mempool::mempool_stream(&grpc_snapshot),
+            GetTreeState => tree_state::get_tree_state(&tree_states()?, body).await,
+            GetLatestTreeState => tree_state::get_latest_tree_state(&tree_states()?).await,
+            GetSubtreeRoots => tree_state::get_subtree_roots(&tree_states()?, body).await,
+            GetAddressUtxos => {
+                transparent_address::get_address_utxos(address_index()?, body, &reads).await
+            }
+            GetAddressUtxosStream => {
+                transparent_address::get_address_utxos_stream(address_index()?, body, &reads).await
+            }
+            GetTaddressBalance => {
+                transparent_address::get_taddress_balance(address_index()?, body, &reads).await
+            }
+            GetTaddressBalanceStream => {
+                transparent_address::get_taddress_balance_stream(address_index()?, body, &reads)
+                    .await
+            }
+            GetTaddressTransactions | GetTaddressTxids => {
+                transparent_address::get_taddress_transactions(
+                    address_index()?,
+                    routes.validators.clone(),
+                    Arc::clone(&grpc_snapshot),
+                    body,
+                    &reads,
+                )
+                .await
+            }
+            SendTransaction => transactions::send_transaction(&routes.chain_view, body).await,
+            GetMempoolTx => mempool::get_mempool_tx(&grpc_snapshot, body).await,
+            GetMempoolStream => mempool::get_mempool_stream(&grpc_snapshot),
             GetTransaction => {
-                transactions::transaction(&routes.validators, &grpc_snapshot, body).await
+                transactions::get_transaction(&routes.validators, &grpc_snapshot, body).await
             }
-            GetLightdInfo => {
-                let info = info::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
-                Ok(unary_response(frame(&info)))
-            }
-            GetStandardFee => {
-                let fee = info::standard_fee(&grpc_snapshot, routes.network)?;
-                Ok(unary_response(frame(&fee)))
-            }
+            GetLightdInfo => info::get_lightd_info(&grpc_snapshot, routes.network, routes.version),
+            GetStandardFee => info::get_standard_fee(&grpc_snapshot, routes.network),
         }
     }
 }

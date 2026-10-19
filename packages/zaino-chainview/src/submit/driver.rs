@@ -1,4 +1,5 @@
-//! [`submit`]: prechecks, `checkadmission`, then a spawned `Submission` executing `Job`'s steps
+//! [`validate`] (precheck + `checkadmission`, nothing relayed), then [`broadcast`] (a spawned
+//! `Submission` executing `Job`'s steps)
 
 use std::sync::Arc;
 
@@ -23,36 +24,58 @@ use crate::error::SubmitError;
 use crate::ports::PeerSource;
 use crate::telemetry;
 
-/// Submit one transaction (relay job outlives the answer, `shutdown` cancels it)
-/// - protocol: `docs/architecture.md` §6, API: `usage.md` "Submission"
-pub(crate) async fn submit<S: ChainDataSource>(
-    core: &Arc<ChainViewCore>,
-    balancer: &TrafficBalancer<S>,
-    peers: &Option<Arc<dyn PeerSource>>,
-    schedule: &LocalNetwork,
-    policy: SubmitPolicy,
-    shutdown: &CancellationToken,
+/// Bytes [`validate`] passed: the only input [`broadcast`] takes (no relay without the checks)
+///
+/// - `admitted` = a holder's `checkadmission` said yes (`false` = none could judge it)
+#[derive(Debug)]
+pub struct ValidatedTransaction {
     raw: Vec<u8>,
-) -> Result<TxId, SubmitError> {
+    txid: TxId,
+    admitted: bool,
+}
+
+/// Decoded, prechecked against the block above best, then one holder's `checkadmission`
+/// (nothing relayed: a refusal never leaves Zaino)
+pub(crate) async fn validate<S: ChainDataSource>(
+    core: &ChainViewCore,
+    balancer: &TrafficBalancer<S>,
+    schedule: &LocalNetwork,
+    raw: Vec<u8>,
+) -> Result<ValidatedTransaction, SubmitError> {
     let prepared = prepare_transaction(&raw).map_err(|malformed| {
         SubmitError::Rejected(SendRawTransactionError::Malformed(malformed.to_string()))
     })?;
     precheck(&core.current(), schedule, &prepared).map_err(SubmitError::Rejected)?;
-    let checked = check(core, balancer, &raw).await.map_err(|refused| {
+    let admitted = check(core, balancer, &raw).await.map_err(|refused| {
         telemetry::submitted(&Ended::Rejected(refused.clone()), 0);
         SubmitError::Rejected(refused)
     })?;
+    Ok(ValidatedTransaction { raw, txid: prepared.txid, admitted })
+}
 
+/// Relay job for `validated` → its txid on the first acceptance, else the verdict
+///
+/// - job outlives the answer (`shutdown` cancels it)
+/// - protocol: `docs/architecture.md` §6, API: `usage.md` "Submission"
+pub(crate) async fn broadcast<S: ChainDataSource>(
+    core: &Arc<ChainViewCore>,
+    balancer: &TrafficBalancer<S>,
+    peers: &Option<Arc<dyn PeerSource>>,
+    policy: SubmitPolicy,
+    shutdown: &CancellationToken,
+    validated: ValidatedTransaction,
+) -> Result<TxId, SubmitError> {
+    let ValidatedTransaction { raw, txid, admitted } = validated;
     let (answer, answered) = oneshot::channel();
     let job = Submission {
         core: Arc::clone(core),
         balancer: balancer.clone(),
         peers: peers.clone(),
         raw: Bytes::from(raw),
-        txid: prepared.txid,
+        txid,
     };
     // cancelled = answer dropped: the caller reads "submission ended"
-    tokio::spawn(shutdown.clone().run_until_cancelled_owned(job.run(policy, checked, answer)));
+    tokio::spawn(shutdown.clone().run_until_cancelled_owned(job.run(policy, admitted, answer)));
     answered.await.unwrap_or_else(|_| {
         let gone = NonDomainError::new(FailureMode::Connection, "submission ended");
         Err(SubmitError::Unreachable { attempted: 0, cause: gone })
@@ -119,12 +142,17 @@ struct Submission<S> {
 }
 
 impl<S: ChainDataSource> Submission<S> {
-    async fn run(self, policy: SubmitPolicy, checked: bool, answer: oneshot::Sender<SubmitAnswer>) {
+    async fn run(
+        self,
+        policy: SubmitPolicy,
+        admitted: bool,
+        answer: oneshot::Sender<SubmitAnswer>,
+    ) {
         let mut answer = Some(answer);
         let mut published = self.core.subscribe_published();
         let peers = self.peers.as_ref().is_some_and(|peers| !peers.live().is_empty());
         let trusted = self.balancer.entries();
-        let mut job = Job::new(peers, trusted, checked, policy, fastrand::Rng::new());
+        let mut job = Job::new(peers, trusted, admitted, policy, fastrand::Rng::new());
         loop {
             let step = job.step(Instant::now(), self.seen(job.tried()));
             // after `step`: one observation can both accept and end the job

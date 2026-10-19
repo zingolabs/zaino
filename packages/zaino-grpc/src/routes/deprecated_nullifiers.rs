@@ -12,20 +12,21 @@ use bytes::Bytes;
 use http::Response;
 use prost::Message as _;
 use tonic::{body::Body, Status};
-use zaino_persistence::IndexKind;
 use zaino_proto::frame::frame_into;
 use zaino_proto::proto::compact_formats;
 use zaino_proto::proto::service;
 
-use super::args::pools;
-use super::blocks::{open_range, range_response, Compact};
+use super::args;
+use super::blocks::CompactBlocks;
 use crate::read_lanes::ReadLanes;
 use crate::wire;
 
-/// Proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]`
-/// alone = empty = shielded default, not "no pools")
-pub(crate) async fn range_nullifiers<V, B>(
-    (at, blocks): Compact<'_, V>,
+/// `GetBlockRangeNullifiers`
+///
+/// - proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]` alone
+///   = empty = shielded default, not "no pools")
+pub(crate) async fn get_block_range_nullifiers<V, B>(
+    compact_blocks: CompactBlocks<'_, V>,
     body: B,
     reads: ReadLanes,
 ) -> Result<Response<Body>, Status>
@@ -34,16 +35,16 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let mut request: service::BlockRange = wire::decode_request(body).await?;
-    request.pool_types.retain(|pool| *pool != service::PoolType::Transparent as i32);
+    let mut range: service::BlockRange = wire::decode_request(body).await?;
+    range.pool_types.retain(|pool| *pool != service::PoolType::Transparent as i32);
 
-    let through = at.answers_through(IndexKind::CompactBlock);
-    let walk = open_range(blocks, through, &request, pools(&request.pool_types)?)?;
-    Ok(range_response(walk, reads, reproject))
+    let pools = args::pools(&range.pool_types)?;
+    let blocks = compact_blocks.open_range(&range, pools)?;
+    Ok(blocks.into_response(reads, nullifiers_only_chunk))
 }
 
 /// Framed records → framed nullifier-only records, one frame per block
-fn reproject(chunk: Bytes) -> Result<Bytes, Status> {
+fn nullifiers_only_chunk(chunk: Bytes) -> Result<Bytes, Status> {
     let mut out = Vec::with_capacity(chunk.len());
     let messages = wire::messages(&chunk)
         .ok_or_else(|| Status::internal("stored range chunk is not whole frames"))?;

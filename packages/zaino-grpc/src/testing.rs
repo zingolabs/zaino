@@ -125,7 +125,7 @@ pub(super) fn routes_over(
     let merge = view.observation_merge();
     let routes = RouteDeps {
         grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
-        submit: Arc::new(view),
+        chain_view: Arc::new(view),
         validators,
         network: MAINNET,
         version: "0.11.0-test",
@@ -149,7 +149,8 @@ pub(super) fn published(
     routes: &mut RouteDeps<MockValidator, DiskView>,
 ) -> (Publisher<DiskView>, NfsPublishes) {
     let (nfs, indexed) = watch::channel(None);
-    let publisher = Publisher::new(indexed, routes.submit.subscriber(), FinalityDepth::CONSENSUS);
+    let publisher =
+        Publisher::new(indexed, routes.chain_view.subscriber(), FinalityDepth::CONSENSUS);
     routes.grpc_snapshots = publisher.handle();
     (publisher, nfs)
 }
