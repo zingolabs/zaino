@@ -5,6 +5,7 @@ use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::TreeStateReader;
 use zaino_index_utxo_set::UtxoSetReader;
 use zaino_internal_block_hash_to_height::BlockHashReader;
+use zaino_internal_txid_location::TxidLocationReader;
 use zaino_persistence::{IndexKind, MapRead, OverlayView, Schema, SequenceRead};
 use zcash_protocol::consensus::NetworkType;
 
@@ -18,6 +19,7 @@ pub fn schema(kind: IndexKind, network: NetworkType) -> Schema {
         IndexKind::BlockHash => zaino_internal_block_hash_to_height::schema(network),
         IndexKind::TreeState => zaino_index_tree_state::schema(network),
         IndexKind::TransparentAddress => zaino_index_transparent_address::schema(network),
+        IndexKind::TxidLocation => zaino_internal_txid_location::schema(network),
     }
 }
 
@@ -35,6 +37,10 @@ impl<V: SequenceRead> Views<V> {
 impl<V: MapRead> Views<V> {
     pub fn block_hash(&self) -> Option<BlockHashReader<OverlayView<V>>> {
         Some(BlockHashReader::new(self.view(IndexKind::BlockHash)?))
+    }
+
+    pub fn txid_location(&self) -> Option<TxidLocationReader<OverlayView<V>>> {
+        Some(TxidLocationReader::new(self.view(IndexKind::TxidLocation)?))
     }
 
     pub fn transparent_address(&self) -> Option<TransparentAddressReader<OverlayView<V>>> {

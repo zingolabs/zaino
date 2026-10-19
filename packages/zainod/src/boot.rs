@@ -42,6 +42,7 @@ use zaino_index_transparent_address::TransparentAddressIndexWriter;
 use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_index_utxo_set::UtxoSetIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
+use zaino_internal_txid_location::TxidLocationIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
@@ -358,6 +359,15 @@ fn open_indexes<S: ChainDataSource>(
             TransparentAddressIndexWriter::new,
             TransparentAddressIndexWriter::handle,
             TransparentAddressIndexWriter::run,
+        )?;
+    }
+    if let Some(tl) = config.enabled(IndexKind::TxidLocation) {
+        indexes.open(
+            IndexKind::TxidLocation,
+            &tl,
+            TxidLocationIndexWriter::new,
+            TxidLocationIndexWriter::handle,
+            TxidLocationIndexWriter::run,
         )?;
     }
     Ok(indexes)

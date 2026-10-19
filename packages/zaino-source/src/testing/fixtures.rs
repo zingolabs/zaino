@@ -13,5 +13,6 @@ pub fn block(height: u32) -> Vec<u8> {
 /// The block at `height`'s transactions, each its own consensus bytes, in block order
 pub fn transactions(height: u32) -> Vec<Vec<u8>> {
     let raw = block(height);
-    crate::decode::tx_spans(&raw).into_iter().map(|span| raw[span].to_vec()).collect()
+    let spans = crate::decode::tx_spans(&raw).expect("fixture transactions decode");
+    spans.into_iter().map(|span| raw[span].to_vec()).collect()
 }

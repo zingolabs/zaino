@@ -19,8 +19,9 @@ use tracing::{info, warn};
 use zaino_primitives::types::Block;
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
-    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
-    QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    GetBlockByHashError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
+    NonDomainError, PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError,
+    TransactionResponse,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
@@ -88,6 +89,8 @@ pub trait PeerTransport: Send + Sync + 'static {
         locator: Vec<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>>;
     fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>>;
+    /// `hash`'s block as its consensus bytes (`block`'s, unparsed: `GetTransaction` slices them)
+    fn block_bytes(&self, hash: BlockHash) -> BoxFuture<'static, Result<Vec<u8>, NonDomainError>>;
 }
 
 /// The peer set's member: `in_flight` = requests it carries at once (≥ [`MIN_IN_FLIGHT`])
@@ -198,6 +201,20 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             )
         };
         self.block_by(urgency, Route::Any, send).await
+    }
+
+    /// `hash`'s block bytes from the peer set, pending until a peer serves them (`None` = no peer
+    /// set: `[p2p]` off)
+    pub async fn peer_block_bytes(&self, hash: BlockHash) -> Option<Answered<Vec<u8>>> {
+        self.shared.peers.as_ref()?;
+        let shared = Arc::clone(&self.shared);
+        let send = move |member| {
+            let trusted = |_| async { unreachable!("Route::Peers asks no trusted member") };
+            shared.send::<_, GetBlockByHashError, _>(member, trusted, move |peers| {
+                peers.block_bytes(hash)
+            })
+        };
+        Some(self.block_by(Urgency::Tip, Route::Peers, send).await)
     }
 
     /// Best-chain blocks at `heights`, one batched request to a trusted member (peers answer by

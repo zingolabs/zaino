@@ -23,8 +23,8 @@ consensus objects are forwarded to the validator.
 | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                                                                                                                               |
 | `GetAddressUtxos`, `GetAddressUtxosStream`              | transparent-address index                                                                                                                      |
 | `GetTaddressBalance`, `GetTaddressBalanceStream`        | transparent-address index                                                                                                                      |
-| `GetTaddressTransactions`                               | transparent-address index for the `{height, txid}` set, the validator for the bytes                                                            |
-| `GetTransaction`                                        | validator                                                                                                                                      |
+| `GetTaddressTransactions`                               | transparent-address index for the `{height, txid}` set, the bytes as `GetTransaction`'s                                                        |
+| `GetTransaction`                                        | validator; none answering: the served mempool's bytes, else the block the txid-location index names, from p2p peers, checked and the transaction cut out |
 | `GetStandardFee`                                        | computed (no validator call): the ZIP 317 marginal fee for the block after best, zatoshis per logical action (`zaino_primitives::protocol::standard_fee`: zebrad's rule), estimator version 0 |
 | `SendTransaction`                                       | chain view [submission](./architecture.md#6-submission): a trusted `checkadmission` answers, then relayed through the peers                    |
 | `GetMempoolTx`, `GetMempoolStream`                      | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |

@@ -6,6 +6,7 @@ members = [
     "packages/zaino-index-tree-state",
     "packages/zaino-index-transparent-address",
     "packages/zaino-internal-block-hash-to-height",
+    "packages/zaino-internal-txid-location",
     "packages/zaino-index-utxo-set",
     "packages/zaino-chainview",
     "packages/zaino-nfs",
@@ -125,6 +126,8 @@ zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0a
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.11.0-alpha.2" }
 # Block hash <-> height: the locator every by-hash request resolves through.
 zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.2" }
+# Txid -> mined location: where GetTransaction finds a mined transaction's block
+zaino-internal-txid-location = { path = "packages/zaino-internal-txid-location", version = "0.11.0-alpha.2" }
 # Outpoint -> value: each transaction's fee for compact blocks
 zaino-index-utxo-set = { path = "packages/zaino-index-utxo-set", version = "0.11.0-alpha.2" }
 # Height → commitment-tree state, subtree roots (any historical frontier, no hashing)

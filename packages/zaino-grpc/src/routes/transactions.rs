@@ -1,15 +1,19 @@
 //! Transaction methods: `SendTransaction` (submitted through the chain view), `GetTransaction`
-//! (consensus bytes forwarded from a validator, usage.md "Why `GetTransaction` forwards")
+//! (consensus bytes forwarded from a validator, usage.md "Why `GetTransaction` forwards"; no
+//! validator answering = the served mempool, else the peers' block)
 
 use http::Response;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, SubmitError};
+use zaino_grpc_snapshot::GrpcSnapshot;
+use zaino_persistence::MapRead;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, RawTransaction};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::TxId;
 
+use super::mempool::unmined;
 use crate::wire::{self, decode_request, frame, unary_response};
 
 /// `SendTransaction`: rejection = domain answer, only unreachable = a status (wallet tells "no"
@@ -48,8 +52,9 @@ fn send_reply(outcome: Result<TxId, SubmitError>) -> Result<service::SendRespons
 }
 
 /// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
-pub(crate) async fn transaction<S: ChainDataSource, B>(
+pub(crate) async fn transaction<S: ChainDataSource, V: MapRead, B>(
     validators: &TrafficBalancer<S>,
+    grpc_snapshot: &GrpcSnapshot<V>,
     body: B,
 ) -> Result<Response<Body>, Status>
 where
@@ -62,27 +67,32 @@ where
         .as_slice()
         .try_into()
         .map_err(|_| Status::invalid_argument("txid must be 32 bytes, in protocol order"))?;
-    let found = raw_transaction(validators, TxId::from_bytes(txid)).await?;
+    let found = raw_transaction(validators, grpc_snapshot, TxId::from_bytes(txid)).await?;
     Ok(unary_response(frame(&found)))
 }
 
-/// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
-/// bytes)
+/// Consensus bytes from whichever validator holds it, else (none answering) [`from_peers`]
+/// (`GetTransaction`, `GetTaddressTransactions` bytes)
 ///
 /// - `height` = mined height, or `0` = the wire's "in the mempool" (= no-height location)
 /// - `NOT_FOUND` only when every validator asked said absent (a failure = maybe held)
-pub(super) async fn raw_transaction<S: ChainDataSource>(
+pub(super) async fn raw_transaction<S: ChainDataSource, V: MapRead>(
     validators: &TrafficBalancer<S>,
+    grpc_snapshot: &GrpcSnapshot<V>,
     txid: TxId,
 ) -> Result<RawTransaction, Status> {
-    let found =
-        validators.transaction(txid).await.map_err(|unanswered| match &unanswered.last {
+    let found = match validators.transaction(txid).await {
+        Ok(found) => found.value,
+        Err(unanswered) => match &unanswered.last {
             Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
-                Status::not_found(format!("transaction not found: {txid}"))
+                return Err(Status::not_found(format!("transaction not found: {txid}")))
             }
-            _ => Status::unavailable(unanswered.to_string()),
-        })?;
-    let found = found.value;
+            _ => {
+                let unavailable = || Status::unavailable(unanswered.to_string());
+                return from_peers(validators, grpc_snapshot, txid).await.ok_or_else(unavailable);
+            }
+        },
+    };
 
     // Orphaned → unmined (one wire "no height", an abandoned branch must not read as confirmed)
     let height = match found.location {
@@ -93,9 +103,34 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
+/// No validator answering: the served mempool's bytes (unmined), else the block `txid_location`
+/// names from the peers, checked and the transaction cut out (`None` = neither: no `[p2p]`, the
+/// index off, or a misanswer)
+async fn from_peers<S: ChainDataSource, V: MapRead>(
+    validators: &TrafficBalancer<S>,
+    grpc_snapshot: &GrpcSnapshot<V>,
+    txid: TxId,
+) -> Option<RawTransaction> {
+    let mempool = grpc_snapshot.mempool().ok();
+    if let Some(entry) = mempool.and_then(|mempool| mempool.entries().find(|e| e.txid == txid)) {
+        return Some(unmined(&entry));
+    }
+    let mined = grpc_snapshot.served().ok()?.views().txid_location()?.mined(&txid)?;
+    let raw = validators.peer_block_bytes(mined.block.hash).await?.value;
+    let bytes = zaino_source::mined_transaction(&raw, mined.block, mined.index, txid)?;
+    Some(RawTransaction { data: bytes.into(), height: u32::from(mined.block.height).into() })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use zaino_chainview::TrustedValidatorSet;
+    use zaino_primitives::testing::MockChain;
+    use zaino_source::testing::{Port, ValidatorViews};
+
+    use crate::testing::{grpc_snapshots_held, routes_over};
 
     /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
     /// - Rejected = gRPC OK + the validator's code + message verbatim (zingolib's
@@ -131,5 +166,29 @@ mod tests {
         let unreachable = send_reply(Err(SubmitError::Unreachable { attempted: 2, cause: down }));
         let status = unreachable.expect_err("a status, never a reply");
         assert_eq!(status.code(), tonic::Code::Unavailable);
+    }
+
+    /// No validator answering, `[p2p]` off: a transaction the served mempool holds = its bytes at
+    /// height 0, any other = `UNAVAILABLE` (the peers' block path:
+    /// `zaino_source::mined_transaction`'s fixture test)
+    #[tokio::test(start_paused = true)]
+    async fn with_no_validator_answering_the_served_mempool_answers_and_the_rest_is_unavailable() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(3);
+        let (txid, raw) = zaino_source::testing::raw_transaction(7, 0);
+        let node = Arc::new(chain.validator(tip));
+        node.reachable(&Port::ALL, false);
+        let (routes, balancing, _merge) = routes_over(&node);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(balancing.run(cancel.child_token()));
+        let ours = [(txid, bytes::Bytes::from(raw.clone()))];
+        let held = TrustedValidatorSet::at([0]);
+        let held = grpc_snapshots_held(&chain, tip, Vec::new(), held, &ours).load();
+        let ask = |txid| raw_transaction(&routes.validators, &held, txid);
+        let served = ask(txid).await.map(|tx| (tx.data.to_vec(), tx.height));
+        let other = ask(TxId::from_bytes([9; 32])).await.map(|_| ());
+        let codes = (served.map_err(|s| s.code()), other.map_err(|s| s.code()));
+        assert_eq!(codes, (Ok((raw, 0)), Err(tonic::Code::Unavailable)));
+        cancel.cancel();
     }
 }

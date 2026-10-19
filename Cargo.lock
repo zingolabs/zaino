@@ -5070,6 +5070,7 @@ dependencies = [
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
  "zaino-internal-block-hash-to-height",
+ "zaino-internal-txid-location",
  "zaino-nfs",
  "zaino-persistence",
  "zaino-primitives",
@@ -5198,6 +5199,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-internal-txid-location"
+version = "0.11.0-alpha.2"
+dependencies = [
+ "tokio",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-sync",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "zaino-nfs"
 version = "0.11.0-alpha.2"
 dependencies = [
@@ -5214,6 +5226,7 @@ dependencies = [
  "zaino-index-tree-state",
  "zaino-index-utxo-set",
  "zaino-internal-block-hash-to-height",
+ "zaino-internal-txid-location",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
@@ -5399,6 +5412,7 @@ dependencies = [
  "zaino-index-tree-state",
  "zaino-index-utxo-set",
  "zaino-internal-block-hash-to-height",
+ "zaino-internal-txid-location",
  "zaino-nfs",
  "zaino-peers",
  "zaino-persistence",

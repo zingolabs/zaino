@@ -28,6 +28,7 @@ zaino-source.workspace = true
 zaino-sync.workspace = true
 zaino-traffic.workspace = true
 zcash_protocol.workspace = true
+zaino-internal-txid-location.workspace = true
 
 [features]
 # `Indexed::fixed` (no driver) + `ChainParams::of(MockChain)`

@@ -101,7 +101,7 @@ struct Body {
 /// (+ the segment landing) in every tier a `u64` record count reaches
 pub fn manifest_fits(schema: &Schema, fanout: Fanout) -> bool {
     let tiers = u64::MAX.ilog(fanout.get() as u64) as usize + 1;
-    let segment = SegmentMeta { id: 0, records: 1, sealed: Sealed::EMPTY };
+    let segment = SegmentMeta { id: 0, records: 1, tombstones: 0, sealed: Sealed::EMPTY };
     let mut worst = Body::empty(schema);
     worst.maps.fill(vec![segment; tiers * (lsm::stall_at(fanout) + 1)]);
     manifest::fits(worst.encode().len())

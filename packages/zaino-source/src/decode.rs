@@ -7,7 +7,7 @@
 use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
-    Block, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
+    Block, BlockRef, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
     EphemeralKey, HeaderBytes, HeaderError, NoteCommitment, Nullifier, OrchardAction, OrchardData,
     SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData,
     TransparentOutput,
@@ -270,19 +270,34 @@ fn orchard_shaped(bundle: Option<&OrchardBytes>) -> Result<OrchardData, DecodeEr
 }
 
 /// Byte span of each tx inside a block (header + count skipped by the same readers)
-#[cfg(any(test, feature = "testing"))]
-pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let (header, body) = HeaderBytes::split(raw).expect("header");
+pub(crate) fn tx_spans(raw: &[u8]) -> Result<Vec<std::ops::Range<usize>>, DecodeError> {
+    let (header, body) = HeaderBytes::split(raw)?;
     let at = header.as_bytes().len();
     let mut cursor = Cursor::new(body);
-    let count = CompactSize::read(&mut cursor).expect("count");
+    let count = CompactSize::read(&mut cursor)?;
     (0..count)
         .map(|_| {
             let start = at + cursor.position() as usize;
-            read_transaction(&mut cursor).expect("tx");
-            start..at + cursor.position() as usize
+            read_transaction(&mut cursor)?;
+            Ok(start..at + cursor.position() as usize)
         })
         .collect()
+}
+
+/// Transaction `index`'s own bytes inside block `raw`, iff that block is `at` (hash, coinbase
+/// height) with the body its header commits to and that transaction is `txid` (`None` = any
+/// other bytes: a misanswer)
+///
+/// - v5 authorizing data (proofs, signatures) unchecked: committed only through
+///   `hashBlockCommitments`, never the merkle root
+pub fn mined_transaction(raw: &[u8], at: BlockRef, index: u32, txid: TxId) -> Option<Vec<u8>> {
+    let block = decode_block(raw).ok()?;
+    let header = block.header();
+    let ours = header.hash == at.hash && header.height == at.height && block.check_body().is_ok();
+    let index = usize::try_from(index).ok()?;
+    let mined = block.transactions().get(index).is_some_and(|tx| tx.txid == txid);
+    let span = tx_spans(raw).ok()?.into_iter().nth(index)?;
+    (ours && mined).then(|| raw[span].to_vec())
 }
 
 #[cfg(test)]
@@ -297,6 +312,7 @@ mod tests {
         let raw = fixtures::block(2_000_000);
         let block = decode_block(&raw).expect("block decodes");
         let standalone: Vec<Transaction> = tx_spans(&raw)
+            .expect("spans")
             .into_iter()
             .map(|span| decode_transaction(&raw[span]).expect("standalone decodes"))
             .collect();
@@ -306,12 +322,36 @@ mod tests {
     #[test]
     fn garbage_and_trailing_bytes_are_refused() {
         let raw = fixtures::block(2_000_000);
-        let first = tx_spans(&raw)[0].clone();
+        let first = tx_spans(&raw).expect("spans")[0].clone();
         let padded_tx = [&raw[first], &[0]].concat();
         let padded_block = [&raw[..], &[0]].concat();
         assert!(matches!(decode_transaction(&[0u8; 8]), Err(DecodeError::Malformed(_))));
         assert!(matches!(decode_transaction(&padded_tx), Err(DecodeError::Trailing(1))));
         assert!(matches!(decode_block(&padded_block), Err(DecodeError::Trailing(1))));
+    }
+
+    /// Mainnet 2,000,000: each transaction cut from its block by position = its own bytes, and
+    /// nothing for another block, another txid or a body its header does not commit to
+    #[test]
+    fn a_mined_transaction_comes_out_of_its_block_only_when_block_txid_and_body_match() {
+        let raw = fixtures::block(2_000_000);
+        let block = decode_block(&raw).expect("block decodes");
+        let at = block.block_ref();
+        let txs = block.transactions();
+        for (index, (tx, bytes)) in (0u32..).zip(txs.iter().zip(fixtures::transactions(2_000_000)))
+        {
+            assert_eq!(mined_transaction(&raw, at, index, tx.txid), Some(bytes), "tx {index}");
+        }
+        let mut tampered = raw.clone();
+        tampered[tx_spans(&raw).expect("spans")[1].start + 40] ^= 1;
+        let elsewhere = BlockRef { height: at.height + 1, ..at };
+        let refused = [
+            mined_transaction(&raw, elsewhere, 1, txs[1].txid),
+            mined_transaction(&raw, at, 1, txs[2].txid),
+            mined_transaction(&tampered, at, 1, txs[1].txid),
+            mined_transaction(&raw, at, txs.len() as u32, txs[1].txid),
+        ];
+        assert_eq!(refused, [None, None, None, None], "other block, txid, body, position");
     }
 
     /// - header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)

@@ -18,17 +18,19 @@ pub enum IndexKind {
     TransparentAddress = 3,
     BlockHash = 4,
     UtxoSet = 5,
+    TxidLocation = 6,
 }
 
 impl IndexKind {
     /// One spelling everywhere (metric label, `/status`, task, default dir, index-snapshot entry)
     /// Fold order (utxo-set before compact-block: its fees)
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::UtxoSet,
         Self::CompactBlock,
         Self::BlockHash,
         Self::TreeState,
         Self::TransparentAddress,
+        Self::TxidLocation,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -38,6 +40,7 @@ impl IndexKind {
             Self::TransparentAddress => "transparent_address",
             Self::BlockHash => "block_hash",
             Self::UtxoSet => "utxo_set",
+            Self::TxidLocation => "txid_location",
         }
     }
 }
@@ -256,6 +259,7 @@ mod tests {
             (IndexKind::TransparentAddress, 3, "transparent_address"),
             (IndexKind::BlockHash, 4, "block_hash"),
             (IndexKind::UtxoSet, 5, "utxo_set"),
+            (IndexKind::TxidLocation, 6, "txid_location"),
         ];
         for (kind, tag, name) in table {
             assert_eq!((kind as u8, kind.name()), (tag, name), "{kind:?}");

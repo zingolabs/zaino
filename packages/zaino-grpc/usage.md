@@ -51,7 +51,7 @@ routing.route(routes);
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
 | `SendTransaction` | `submit` (chain view submission; no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
+| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent); none answering → the served mempool's bytes, else `views().txid_location()?.mined(&txid)` → `validators.peer_block_bytes(hash)` → `zaino_source::mined_transaction` |
 
 - **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
   the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
@@ -135,6 +135,12 @@ trial-decrypted. `GetAddressUtxos` and the other address methods are the
 opposite case: they are *derived*, so forwarding them would mean a second
 implementation that can disagree, or a dependency on a validator index Zebra
 need not have.
+
+With no validator answering, the bytes come from the network instead: the
+[txid-location index](../zaino-internal-txid-location/usage.md) names the
+transaction's block (Zaino stores its location, never its bytes), a peer serves
+that block, and the transaction is cut out once the block's hash, height and
+merkle root check. v5 proofs and signatures are not covered by that check.
 
 What it answers, and when `NOT_FOUND`: [`docs/rpc_api.md`](../../docs/rpc_api.md).
 

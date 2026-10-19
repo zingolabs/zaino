@@ -667,7 +667,7 @@ mod tests {
         let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
         let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
         let readiness = |stage| readiness(Hold::Off, true, stage);
-        let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 5 });
+        let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 6 });
         let version = env!("CARGO_PKG_VERSION");
 
         let before = public_status(readiness(starting), NetworkType::Main, None, &configured);

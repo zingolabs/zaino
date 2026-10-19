@@ -12,6 +12,7 @@ pub(crate) fn schema(kind: IndexKind, network: NetworkType) -> (Schema, NonZeroU
         IndexKind::BlockHash => zaino_internal_block_hash_to_height::WRITE_BUFFER,
         IndexKind::TreeState => zaino_index_tree_state::WRITE_BUFFER,
         IndexKind::TransparentAddress => zaino_index_transparent_address::WRITE_BUFFER,
+        IndexKind::TxidLocation => zaino_internal_txid_location::WRITE_BUFFER,
     };
     (zaino_nfs::schema(kind, network), write_buffer)
 }

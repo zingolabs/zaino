@@ -62,6 +62,7 @@ it).
 | `headers(HeaderAsk::Peers { locator })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
+| `peer_block_bytes(hash)` | `TipBlock` (interactive) | the peer set only (`PeerTransport::block_bytes`) | `None` with no peer set, else never unanswered, as `block` |
 | `submit(member, raw)` / `check_admission(member, raw)` | `Submit` (control) | that trusted member only | one attempt (`sendrawtransaction` / `checkadmission`) |
 
 - Within the best tier with room: the route's preferred member, else the least in flight (ties:

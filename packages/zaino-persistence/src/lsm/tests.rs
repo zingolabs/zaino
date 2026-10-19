@@ -14,7 +14,7 @@ use super::{
     file_name,
     layout::Shape,
     writer::SegmentWriter,
-    Fanout, SegmentError, SegmentSet, SegmentsView, Slots,
+    Fanout, SegmentError, SegmentMeta, SegmentSet, SegmentsView, Slots,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
@@ -155,6 +155,7 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
     let scrape = rendered.render();
     let expected = [
         "zaino_lsm_stall_at{index=\"transparent_address\",table=\"scanned\"} 6",
+        "zaino_lsm_live_rows{index=\"transparent_address\",table=\"scanned\"} 0",
         "zaino_lsm_batch_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
         "zaino_lsm_merge_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
         "zaino_lsm_merge_bytes_total{index=\"transparent_address\",table=\"scanned\"} 0",
@@ -555,6 +556,8 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     for listed in lists {
         let ids: Vec<u32> = listed.iter().map(|meta| meta.id).collect();
         let segments_view = mapped.next(&SegmentDir::new(fs.clone(), dir), listed).expect("map");
+        let live_rows: i64 = listed.iter().map(SegmentMeta::live).sum();
+        assert_eq!(live_rows, 2, "{ids:?}: live rows = kept + other");
         assert_eq!(segments_view.get(&removed.0), None, "{ids:?}: get");
         let asked = [removed.0.as_slice(), kept.0.as_slice(), removed.0.as_slice()];
         let expected = vec![None, Some(Bytes::from(kept.1.clone())), None];

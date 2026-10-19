@@ -60,6 +60,10 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
                 let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
                 zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
             }
+            IndexKind::TxidLocation => {
+                let parent = zaino_internal_txid_location::TxidLocationReader::new(parent);
+                zaino_internal_txid_location::fold(&parent, &block, &mut out);
+            }
             IndexKind::UtxoSet => unreachable!("asserted above"),
         }
         index.apply(out);

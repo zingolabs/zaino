@@ -163,6 +163,7 @@ pub(crate) struct Indexes {
     block_hash: IndexTable,
     tree_state: IndexTable,
     transparent_address: IndexTable,
+    txid_location: IndexTable,
 }
 
 impl Default for Indexes {
@@ -174,6 +175,7 @@ impl Default for Indexes {
             block_hash: table(IndexKind::BlockHash),
             tree_state: table(IndexKind::TreeState),
             transparent_address: table(IndexKind::TransparentAddress),
+            txid_location: table(IndexKind::TxidLocation),
         }
     }
 }
@@ -393,6 +395,7 @@ impl DaemonConfig {
             IndexKind::BlockHash => table(&index.block_hash, kind),
             IndexKind::TreeState => table(&index.tree_state, kind),
             IndexKind::TransparentAddress => table(&index.transparent_address, kind),
+            IndexKind::TxidLocation => table(&index.txid_location, kind),
         };
         // past `usize` = no limit anyway
         let queue_bytes = NonZeroUsize::try_from(bytes(self.sync.queue_mib));
@@ -684,6 +687,7 @@ enabled = false
                     c.index.block_hash.enabled = false;
                     c.index.tree_state.enabled = false;
                     c.index.transparent_address.enabled = false;
+                    c.index.txid_location.enabled = false;
                 },
                 Some("every [index.*] disabled"),
             ),
@@ -836,7 +840,9 @@ enabled = false
         };
         printed("sync", &["finalised_depth", "concurrency", "queue_mib"]);
         printed("sync.lsm_store", &["fanout", "merge_slots", "merge_mib_per_sec"]);
-        for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
+        for table in
+            ["compact_block", "block_hash", "tree_state", "transparent_address", "txid_location"]
+        {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
         assert!(!body.contains("utxo_set"), "internal: no table of its own");

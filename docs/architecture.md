@@ -17,9 +17,10 @@ index and never falls back to a validator. So:
 - Block, tree-state and transparent-address methods come from an index or not at all. A disabled
   index answers `UNIMPLEMENTED` naming it.
 - `GetTransaction` goes to a validator: raw transaction bytes are consensus data it already stores
-  ([why](../packages/zaino-grpc/usage.md#why-gettransaction-forwards)).
-  `GetTaddressTransactions` works the same way: the index names the txids, a validator supplies the
-  bytes.
+  ([why](../packages/zaino-grpc/usage.md#why-gettransaction-forwards)). With no validator
+  answering, the txid-location index names the transaction's block, fetched from p2p peers and
+  checked against the hash our indexes hold. `GetTaddressTransactions` works the same way: the
+  index names the txids, `GetTransaction`'s path supplies the bytes.
 - Zaino does not validate transactions. That would be a second mempool verifier (proofs,
   nullifiers, scripts, conflicts) tracking every network upgrade. Validators decide; Zaino checks
   only what the bytes, the next block and its own UTXO set decide (§5).
@@ -308,7 +309,7 @@ bench times and the API are in [its guide](../packages/zaino-traffic/usage.md).
 | Down                         | Chain + indexes                               | Mempool, `SendTransaction`             | Finality              |
 | ---------------------------- | --------------------------------------------- | -------------------------------------- | --------------------- |
 | one trusted validator        | ✓                                             | ✓                                      | ✓                     |
-| every trusted, `[p2p]` on    | ✓ near the tip (peers); bulk sync below the headers stalls | ✓ quorum; `GetTransaction` fails | on peers' word, else paused |
+| every trusted, `[p2p]` on    | ✓ near the tip (peers); bulk sync below the headers stalls | ✓ quorum; `GetTransaction` from the peers' block | on peers' word, else paused |
 | every trusted, `[p2p]` off   | tip stops                                     | `UNAVAILABLE`                          | paused                |
 | every trusted, restart, `[p2p]` on | ✓ anchored on the indexes' own chain, then as above | as above                  | as above              |
 | every trusted, first sync    | nothing (only a trusted validator anchors)    | `UNAVAILABLE`                          | —                     |

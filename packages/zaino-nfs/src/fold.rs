@@ -77,6 +77,12 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
         zaino_index_transparent_address::fold(&reader, block, &mut out);
         push(IndexKind::TransparentAddress, out);
     }
+    if covered(IndexKind::TxidLocation) {
+        let reader = present(IndexKind::TxidLocation, parent.txid_location());
+        let mut out = open(IndexKind::TxidLocation);
+        zaino_internal_txid_location::fold(&reader, block, &mut out);
+        push(IndexKind::TxidLocation, out);
+    }
     Ok(Folded { layers })
 }
 

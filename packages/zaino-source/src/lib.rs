@@ -29,7 +29,9 @@ pub use chain_data_source::{
     GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
     SendRawTransactionError, TransactionResponse,
 };
-pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
+pub use decode::{
+    decode_block, decode_transaction, mined_transaction, prepare_transaction, DecodeError, Prepared,
+};
 pub use endpoint::{EndpointError, LinkLimits, Timeouts};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use indexer_client::ZebraIndexerGrpcClient;

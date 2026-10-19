@@ -60,24 +60,34 @@ impl PeerTransport for ZebraPeers {
         Box::pin(async move { network?.find_headers(&locator).await.map_err(failed) })
     }
 
-    /// Body vs its own header checked here: a mismatch blames its sender, never returned
     fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>> {
         let network = self.up_or_fail();
-        Box::pin(async move {
-            let network = network?;
-            let supplied = network.block_by_hash(hash).await.map_err(failed)?;
-            let supplied = supplied
-                .ok_or_else(|| NonDomainError::new(FailureMode::Connection, "no peer had it"))?;
-            let block = decode_block(&supplied.bytes)
-                .map_err(|cause| NonDomainError::from_cause(FailureMode::Parse, cause))?;
-            match block.check_body() {
-                Ok(()) => Ok(block),
-                Err(mismatch) => {
-                    supplied.peer.iter().for_each(|peer| network.blame(*peer, "a mutated body"));
-                    Err(NonDomainError::from_cause(FailureMode::Parse, mismatch))
-                }
-            }
-        })
+        Box::pin(async move { checked_block(&*network?, hash).await.map(|(block, _)| block) })
+    }
+
+    fn block_bytes(&self, hash: BlockHash) -> BoxFuture<'static, Result<Vec<u8>, NonDomainError>> {
+        let network = self.up_or_fail();
+        Box::pin(async move { checked_block(&*network?, hash).await.map(|(_, bytes)| bytes) })
+    }
+}
+
+/// `hash`'s block from a peer, decoded and its body checked against its own header (a mismatch
+/// blames its sender, never returned)
+async fn checked_block(
+    network: &PeerNetwork,
+    hash: BlockHash,
+) -> Result<(Block, Vec<u8>), NonDomainError> {
+    let supplied = network.block_by_hash(hash).await.map_err(failed)?;
+    let supplied =
+        supplied.ok_or_else(|| NonDomainError::new(FailureMode::Connection, "no peer had it"))?;
+    let block = decode_block(&supplied.bytes)
+        .map_err(|cause| NonDomainError::from_cause(FailureMode::Parse, cause))?;
+    match block.check_body() {
+        Ok(()) => Ok((block, supplied.bytes)),
+        Err(mismatch) => {
+            supplied.peer.iter().for_each(|peer| network.blame(*peer, "a mutated body"));
+            Err(NonDomainError::from_cause(FailureMode::Parse, mismatch))
+        }
     }
 }
 

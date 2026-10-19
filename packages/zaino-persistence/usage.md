@@ -211,7 +211,11 @@ newer manifest. `zainod verify` wraps this.
 ## Observability
 
 - `zaino.store.commit_seconds` / `commit_bytes_total` per index (label `index`); `zaino.lsm.*` per
-  map (labels `index` + `table`: segments per tier, merges, stalls, cancelled tombstone pairs).
+  map (labels `index` + `table`: segments per tier, merges, stalls, cancelled tombstone pairs,
+  `live_rows`). `live_rows` = the keys the committed segments hold: Σ records, minus twice each
+  segment's tombstones on a `deletes()` table (each tombstone and the older value it cancels). The
+  manifest lists each segment's tombstone count beside its record count, written by the commit or
+  merge that made it.
   Register with `describe_metrics` and the `METRIC_BUCKETS` constants.
 - `DiskView::footprint()`: per table, durable bytes and how many are in page cache (`mincore`).
 - Logs: `Compacting segments` / `Compacted segments` (debug), `Commit waited on compaction` (warn).

@@ -180,6 +180,12 @@ path = "<ZAINO_DATA>/tree_state"
 enabled = true
 path = "<ZAINO_DATA>/transparent_address"
 
+[index.txid_location]
+# GetTransaction / GetTaddressTransactions bytes with no validator answering: the block it names,
+# fetched from p2p peers
+enabled = true
+path = "<ZAINO_DATA>/txid_location"
+
 # Fill empty indexes from a published snapshot before boot (aria2c on PATH)
 # [snapshot]
 # manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.1.0/manifest.json"

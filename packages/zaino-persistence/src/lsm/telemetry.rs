@@ -15,6 +15,7 @@ use super::{segment_set::Landed, writer::Merged, SegmentMeta};
 
 pub(crate) mod metric_names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
+    pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
     pub(super) const MERGING: &str = "zaino.lsm.merging";
     pub(super) const STALL_AT: &str = "zaino.lsm.stall_at";
     pub(super) const BATCH_ROWS_TOTAL: &str = "zaino.lsm.batch_rows_total";
@@ -32,6 +33,11 @@ pub(crate) fn describe_metrics() {
     describe_gauge!(
         metric_names::SEGMENTS,
         "Committed segments a read searches, by index, table and size tier (⌊log_fanout rows⌋)"
+    );
+    describe_gauge!(
+        metric_names::LIVE_ROWS,
+        "Keys the committed segments hold, by index and table (a `deletes()` table: values minus \
+         tombstones, each cancelling one older value)"
     );
     describe_gauge!(
         metric_names::MERGING,
@@ -88,10 +94,11 @@ impl Series {
     }
 }
 
-/// Per tier `0..shape.len()`: `(segments listed, merge running)`
+/// Per tier `0..shape.len()`: `(segments listed, merge running)`, then the map's live keys
 ///
 /// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
-pub(super) fn shape(series: Series, shape: &[(usize, bool)]) {
+pub(super) fn shape(series: Series, shape: &[(usize, bool)], live_rows: i64) {
+    metrics::gauge!(metric_names::LIVE_ROWS, &series.labels()).set(live_rows as f64);
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
         let labels = series.tier_labels(tier);
         metrics::gauge!(metric_names::SEGMENTS, &labels).set(segments as f64);

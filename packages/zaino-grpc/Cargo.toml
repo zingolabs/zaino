@@ -67,6 +67,7 @@ zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-internal-block-hash-to-height.workspace = true
 zaino-grpc-snapshot = { workspace = true, features = ["testing"] }
 h2 = "0.4"
+zaino-internal-txid-location.workspace = true
 
 [lints.rust]
 unreachable_pub = "warn"

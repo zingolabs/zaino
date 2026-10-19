@@ -313,13 +313,17 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
                 transparent_address::balance_stream(addresses()?, body, &reads).await
             }
             GetTaddressTransactions | GetTaddressTxids => {
-                let validators = routes.validators.clone();
-                transparent_address::transactions(addresses()?, validators, body, &reads).await
+                let (validators, snapshot) =
+                    (routes.validators.clone(), Arc::clone(&grpc_snapshot));
+                transparent_address::transactions(addresses()?, validators, snapshot, body, &reads)
+                    .await
             }
             SendTransaction => transactions::send(&routes.submit, body).await,
             GetMempoolTx => mempool::mempool_tx(&grpc_snapshot, body).await,
             GetMempoolStream => mempool::mempool_stream(&grpc_snapshot),
-            GetTransaction => transactions::transaction(&routes.validators, body).await,
+            GetTransaction => {
+                transactions::transaction(&routes.validators, &grpc_snapshot, body).await
+            }
             GetLightdInfo => {
                 let info = info::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
                 Ok(unary_response(frame(&info)))

@@ -1,7 +1,10 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
 //! (index names the txids, a validator supplies the bytes), all as of the served tip
 
+use std::sync::Arc;
+
 use bytes::Bytes;
+use zaino_grpc_snapshot::GrpcSnapshot;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{OverlayView, PinnedView};
 use zaino_proto::proto::service;
@@ -64,13 +67,14 @@ where
     Ok(streamed_response(replies.iter().map(wire::frame).collect()))
 }
 
-/// `GetTaddressTransactions`: index names them, a validator supplies them
+/// `GetTaddressTransactions`: index names them, a validator (else the peers' blocks) supplies them
 ///
 /// - Fetched lazily, one per poll (busy address = thousands)
 /// - client that stops reading stops the round trips (HTTP/2 flow control paces)
 pub(crate) async fn transactions<S: ChainDataSource, V: PinnedView, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
+    grpc_snapshot: Arc<GrpcSnapshot<V>>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status>
@@ -82,7 +86,7 @@ where
 
     // `None` state ends the stream (trailer frame always last, always sent)
     let frames = futures::stream::unfold(Some(found.into_iter()), move |state| {
-        let validators = validators.clone();
+        let (validators, grpc_snapshot) = (validators.clone(), Arc::clone(&grpc_snapshot));
         async move {
             let mut rest = state?;
 
@@ -90,7 +94,8 @@ where
                 return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
             };
 
-            let fetched = super::transactions::raw_transaction(&validators, txid).await;
+            let fetched =
+                super::transactions::raw_transaction(&validators, &grpc_snapshot, txid).await;
             match fetched.map(|tx| frame(&tx)) {
                 Ok(record) => Some((Ok::<_, Status>(Frame::data(record)), Some(rest))),
                 Err(status) => Some((Ok(Frame::trailers(trailers(&status))), None)),

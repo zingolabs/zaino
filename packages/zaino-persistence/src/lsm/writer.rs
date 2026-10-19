@@ -59,11 +59,13 @@ struct SegmentOut {
     navigation: Navigation,
     chunk: Vec<u8>,
     digest: crc32fast::Hasher,
+    tombstones: u64,
 }
 
 impl SegmentOut {
-    fn push(&mut self, row: &[u8]) -> Result<()> {
+    fn push(&mut self, row: &[u8], tombstone: bool) -> Result<()> {
         let id = self.id;
+        self.tombstones += u64::from(tombstone);
         self.navigation.push(row).map_err(|error| navigation_error(id, error))?;
         self.digest.update(row);
         self.chunk.extend_from_slice(row);
@@ -81,7 +83,9 @@ impl SegmentOut {
         let (id, records) = (self.id, self.navigation.records());
         self.navigation.finish(&mut self.file).map_err(|error| navigation_error(id, error))?;
         // a new file: its blocks + length = metadata no other file's flush commits
-        let meta = SegmentMeta { id, records, sealed: self.file.seal(Durability::PerFile)? };
+        let tombstones = self.tombstones;
+        let sealed = self.file.seal(Durability::PerFile)?;
+        let meta = SegmentMeta { id, records, tombstones, sealed };
         Ok((meta, self.digest.finalize(), self.file))
     }
 }
@@ -145,7 +149,7 @@ impl SegmentWriter {
         for (key, value) in rows {
             row.clear();
             encode_row(&self.shape, key, value.map_or(Row::Tombstone, Row::Value), &mut row);
-            out.push(&row)?;
+            out.push(&row, value.is_none())?;
         }
         self.sealed(out).map(Some)
     }
@@ -206,7 +210,7 @@ impl SegmentWriter {
                         Some(out) => out,
                         None => out.insert(self.create(id, total)?),
                     };
-                    writing.push(first)?;
+                    writing.push(first, tombstones == 1)?;
                     uncharged += first.len();
                 }
                 (1, 1) => cancelled += 1,
@@ -241,13 +245,14 @@ impl SegmentWriter {
         Ok(meta)
     }
 
-    /// Sealed segment re-read from disk: record count, strictly ascending keys, no filter false
-    /// negative, same row digest as written (TigerBeetle pair assertion: checked writing + reading)
+    /// Sealed segment re-read from disk: record + tombstone count, strictly ascending keys, no
+    /// filter false negative, same row digest as written (TigerBeetle pair assertion: checked
+    /// writing + reading)
     fn verify(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
         let file = SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential)?;
         assert_eq!(file.records() as u64, meta.records, "segment {}: record count", meta.id);
         file.warm_filter();
-        let mut digest = crc32fast::Hasher::new();
+        let (mut digest, mut tombstones) = (crc32fast::Hasher::new(), 0);
         for slot in 0..file.records() {
             let key = file.key(slot);
             if slot > 0 {
@@ -255,9 +260,10 @@ impl SegmentWriter {
             }
             let filtered = &key[..file.filtered()];
             assert!(file.may_contain(filtered), "segment {} slot {slot}: filter finds it", meta.id);
-            file.content(slot);
+            tombstones += u64::from(matches!(file.content(slot), Row::Tombstone));
             digest.update(file.row(slot));
         }
+        assert_eq!(tombstones, meta.tombstones, "segment {}: tombstone count", meta.id);
         assert_eq!(digest.finalize(), written, "segment {}: rows read back as written", meta.id);
         Ok(())
     }
@@ -271,6 +277,7 @@ impl SegmentWriter {
             navigation: Navigation::new(self.shape, records, &self.dir, id),
             chunk: Vec::with_capacity(CHUNK + self.shape.stride),
             digest: crc32fast::Hasher::new(),
+            tombstones: 0,
         })
     }
 }

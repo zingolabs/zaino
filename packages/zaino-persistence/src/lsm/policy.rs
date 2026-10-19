@@ -86,6 +86,7 @@ mod tests {
         SegmentMeta {
             id,
             records,
+            tombstones: records / 4,
             sealed: Sealed { len: records * 3, tail: id * 7, sums: id * 11 },
         }
     }

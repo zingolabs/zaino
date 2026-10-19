@@ -21,6 +21,7 @@ use zaino_index_transparent_address::{TransparentAddressIndexWriter, Transparent
 use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
+use zaino_internal_txid_location::{TxidLocationIndexWriter, TxidLocationReader};
 use zaino_persistence::{
     fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine,
     SequenceRead, Store, View,
@@ -72,6 +73,10 @@ fn own_fold(
         IndexKind::TransparentAddress => {
             let parent = TransparentAddressReader::new(parent);
             zaino_index_transparent_address::fold(&parent, block, out);
+        }
+        IndexKind::TxidLocation => {
+            let parent = TxidLocationReader::new(parent);
+            zaino_internal_txid_location::fold(&parent, block, out);
         }
     }
 }
@@ -244,6 +249,11 @@ impl Pipeline {
                 }
                 IndexKind::TransparentAddress => {
                     let writer = TransparentAddressIndexWriter::new(store);
+                    let blocks = add(writer.handle());
+                    writers.spawn(writer.run(blocks));
+                }
+                IndexKind::TxidLocation => {
+                    let writer = TxidLocationIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks));
                 }

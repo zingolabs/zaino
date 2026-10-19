@@ -721,7 +721,8 @@ mod tests {
              [index.compact_block]\npath = \"{cb}\"\n\
              [index.block_hash]\npath = \"{bh}\"\n\
              [index.tree_state]\nenabled = false\n\
-             [index.transparent_address]\nenabled = false\n",
+             [index.transparent_address]\nenabled = false\n\
+             [index.txid_location]\nenabled = false\n",
             cb = indexes.join("compact_block").display(),
             bh = indexes.join("block_hash").display(),
         ))

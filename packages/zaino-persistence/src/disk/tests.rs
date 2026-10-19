@@ -1022,7 +1022,7 @@ fn a_manifest_body_is_its_golden_bytes() {
             Seals { data: sealed(4), records: Records::Fixed(NonZeroU32::new(4).expect("4")) },
             Seals { data: sealed(5), records: Records::Variable(sealed(8)) },
         ],
-        maps: vec![vec![SegmentMeta { id: 7, records: 2, sealed: sealed(9) }]],
+        maps: vec![vec![SegmentMeta { id: 7, records: 2, tombstones: 1, sealed: sealed(9) }]],
     };
     let seal = |n: u8| {
         [
@@ -1041,6 +1041,7 @@ fn a_manifest_body_is_its_golden_bytes() {
         &1u32.to_le_bytes(),
         &7u32.to_le_bytes(),
         &2u64.to_le_bytes(),
+        &1u64.to_le_bytes(),
         &seal(9),
     ]
     .concat();

@@ -62,4 +62,10 @@ impl PeerTransport for MockPeerSet {
         let absent = || NonDomainError::new(FailureMode::Connection, "MockPeerSet: no peer had it");
         futures::future::ready(block.map(|block| Block::clone(block)).ok_or_else(absent)).boxed()
     }
+
+    /// Never: `MockChain` blocks are built, not encoded (real bytes: `zaino-source`'s fixtures)
+    fn block_bytes(&self, _: BlockHash) -> BoxFuture<'static, Result<Vec<u8>, NonDomainError>> {
+        let synthetic = NonDomainError::new(FailureMode::Connection, "MockPeerSet: no block bytes");
+        futures::future::ready(Err(synthetic)).boxed()
+    }
 }

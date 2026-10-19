@@ -199,7 +199,8 @@ impl SegmentSet {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
         self.shape_tiers = shape.len();
-        telemetry::shape(self.series, &shape);
+        let live_rows = self.segments.iter().map(SegmentMeta::live).sum();
+        telemetry::shape(self.series, &shape, live_rows);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
