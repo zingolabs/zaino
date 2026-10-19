@@ -235,7 +235,9 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
     fn live(&mut self, listed: usize) {
         match std::mem::replace(&mut self.health, Health::Live) {
             Health::Live => {}
-            Health::CatchingUp => info!(validator = self.address, listed, "Validator caught up"),
+            Health::CatchingUp => {
+                info!(validator = self.address, listed, "Validator mempool active")
+            }
             Health::Pending => info!(validator = self.address, listed, "Polling validator"),
             Health::Degraded | Health::Down => info!(validator = self.address, "Validator back"),
         }
@@ -252,7 +254,7 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
             let behind = u32::from(network).saturating_sub(tip.into());
             let height = u32::from(tip);
             let hash = reading.info.tip.hash;
-            warn!(validator = self.address, height, behind, %hash, "Validator catching up");
+            warn!(validator = self.address, height, behind, %hash, "Validator mempool inactive");
             self.catching_up_warned = Some(Instant::now());
         }
     }

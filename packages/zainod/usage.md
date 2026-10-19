@@ -376,7 +376,7 @@ format.
 The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
-WARN  [09-28|17:29:15.175] ChainView:           Validator catching up          validator=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
+WARN  [09-28|17:29:15.175] ChainView:           Validator mempool inactive     validator=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
 INFO  [09-28|17:29:42.659] ZainoNFS:            Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
 INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        applied=3,501,900 durable=3,501,802 size=31.0GB
 INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        applied=3,501,900 durable=3,501,802  size=134MB
@@ -414,8 +414,8 @@ What an operator sees at `info`:
 | `ChainView` / `ZainoSync` / `ZainoNFS` | `Misanswer` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (block fetch): `ticket.member`, `class`, `why`. That member is benched ([zaino-traffic: Blame](../zaino-traffic/usage.md#blame-report)); the block is asked of another. |
 | `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll; the member gone `Down` (its chain and sightings retracted; [polling](../zaino-traffic/usage.md#polling-and-observations)); its first answer after. |
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
-| `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`validator`, its `height`, `behind` its own network estimate, `hash`). |
-| `ChainView` | `Validator caught up` | info | The mempool answers again. |
+| `ChainView` | `Validator mempool inactive` | warn | Every 60 s while a validator's mempool is off (`validator`, its `height`, `behind` its own network estimate, `hash`). zebrad keeps it off until its last 3 sync rounds average under 20 blocks, so `behind` can read 0 for a few minutes after a catch-up. `/readyz` reports `syncing` meanwhile. |
+| `ChainView` | `Validator mempool active` | info | The mempool answers again. |
 | `GrpcSnapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | The stale alarm ([§11](../../docs/architecture.md#11-telemetry)) rises, then clears (`validator`, `tip`, `behind`). |
 | `GrpcSnapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | The partitioned alarm rises, then clears (over `getpeerinfo`). |
 | `GrpcSnapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | The eclipsed alarm rises, then clears (no outbound peer at all raises nothing). |
