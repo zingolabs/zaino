@@ -426,8 +426,12 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 Ok(listed) => listed.into_iter().collect(),
                 Err(e) => sync_fail!("zebra getrawmempool (mempool still off?): {e}"),
             };
-            let mut stream =
-                zaino.grpc_client().await?.raw().get_mempool_stream(Empty {}).await?.into_inner();
+            let opened = zaino.grpc_client().await?.raw().get_mempool_stream(Empty {}).await;
+            let mut stream = match opened {
+                Ok(response) => response.into_inner(),
+                // refused until a trusted validator holds the verified tip (end of a catch-up)
+                Err(status) => sync_fail!("zaino GetMempoolStream refused: {status}"),
+            };
             let until = tokio::time::Instant::now() + MEMPOOL_READ;
             let mut streamed = BTreeSet::new();
             let ended = loop {
