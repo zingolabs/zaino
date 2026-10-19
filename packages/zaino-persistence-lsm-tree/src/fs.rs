@@ -23,7 +23,7 @@ mod sys;
 pub use real::RealFs;
 #[cfg(any(test, feature = "testing"))]
 pub use sim::{CrashState, SimFs};
-pub(crate) use sys::resident_bytes;
+pub(crate) use sys::{background_priority, resident_bytes};
 
 /// Directory operations (Linux semantics; `docs/durability.md` §3)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {
@@ -44,6 +44,9 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
 
     /// `path` unlinked
     fn remove(&self, path: &Path) -> io::Result<()>;
+
+    /// `path` made read-only (`0o444`): a later read-write open of it fails
+    fn set_read_only(&self, path: &Path) -> io::Result<()>;
 
     /// Entry names directly under `dir`, sorted
     fn list(&self, dir: &Path) -> io::Result<Vec<String>>;

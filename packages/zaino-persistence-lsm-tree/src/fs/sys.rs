@@ -41,7 +41,11 @@ pub(crate) fn resident_bytes(_: &Mmap, _: usize) -> io::Result<u64> {
 }
 
 /// - sound: mapped bytes below a committed length are never rewritten or truncated after
-///   publication (`docs/persistence-engine.md`)
+///   publication (`docs/persistence-engine.md`); sealed segments are read-only files and the
+///   directory `LOCK` keeps other writers out
+/// - **SIGBUS** (the process dies; no error can be returned) if a mapped page cannot be read:
+///   the file truncated by something outside this crate, or a disk read error while faulting
+///   the page in. Keep the data directory on a healthy disk and never modify its files.
 #[allow(unsafe_code)]
 pub(super) fn map_read_only(file: &File) -> io::Result<Mmap> {
     unsafe { Mmap::map(file) }

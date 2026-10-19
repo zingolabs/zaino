@@ -251,10 +251,9 @@ pub trait BackendReader: Send {
     fn tip(&self) -> Result<Option<BlockRef>, ReadError>;
 
     /// Read a single key from the given namespace.
+    ///
+    /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
-
-    /// Return all entries for a namespace as raw key-value byte pairs.
-    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError>;
 
     /// Entries of `namespace` within `range`, mapped through `filter`, as
     /// lazily read chunks in `range.direction` order.
@@ -279,4 +278,14 @@ pub trait BackendReader: Send {
     where
         T: Send + 'static,
         F: FnMut(&[u8], &[u8]) -> Option<T> + Send + 'static;
+}
+
+/// Whole-namespace reads for maintenance, tests and tooling: **never** a client-serving path.
+///
+/// [`scan`](Self::scan) loads an entire namespace into memory at once, so its cost grows with
+/// the namespace, not the request; many callers at once can exhaust memory. Serve clients with
+/// [`BackendReader::scan_range`] (lazy, budget-bounded) instead.
+pub trait MaintenanceReader: BackendReader {
+    /// Every entry of `namespace`, in key order, from the reader's snapshot.
+    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError>;
 }

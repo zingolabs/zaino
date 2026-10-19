@@ -19,8 +19,9 @@ use proptest::{prelude::*, strategy::Union};
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 use crate::{
-    raw_entry, sequence_key, Backend, BackendReader, BackendWriter, CommitError, Namespace,
-    NamespaceSpec, Part, RawKey, RawValue, ScanDirection, ScanRange, Width, WriteOp,
+    raw_entry, sequence_key, Backend, BackendReader, BackendWriter, CommitError, MaintenanceReader,
+    Namespace, NamespaceSpec, Part, RawKey, RawValue, ReadError, ScanDirection, ScanRange, Width,
+    WriteOp,
 };
 
 /// Variable-width sequence (empty records included)
@@ -51,7 +52,7 @@ pub const SPECS: [NamespaceSpec; 5] = [
 /// Backend under test, over storage the suite can reopen (and, if it can, crash)
 pub trait Subject {
     /// The backend type.
-    type Backend: Backend;
+    type Backend: Backend<Reader: MaintenanceReader>;
 
     /// Backend over the storage as it stands now, declared with [`SPECS`] (reopen = fresh
     /// `open`; commits are written only by `flush`)
@@ -268,7 +269,7 @@ impl Model {
     /// - tip; every sequence record one at a time, whole, and as a forward + reverse chunked range
     /// - full + per-owner scans; sampled values + a miss; every removed key absent
     /// - values over every id issued + as many never issued
-    pub fn assert_view(&self, reader: &impl BackendReader, label: &str) {
+    pub fn assert_view(&self, reader: &impl MaintenanceReader, label: &str) {
         assert_eq!(reader.tip().expect("tip"), self.tip, "{label}: tip");
         for (namespace, model) in [
             (BLOCKS, &self.blocks),
@@ -696,6 +697,13 @@ pub fn contract<S: Subject>(subject: S) {
     let backend = subject.open();
     let reader = || backend.reader().expect("reader");
     model.assert_view(&reader(), "fresh");
+    for (namespace, key) in [(BLOCKS, vec![0; 4]), (PROBED, vec![0; 15])] {
+        assert!(
+            matches!(reader().get(namespace, &key), Err(ReadError::WidthMismatch { actual, .. }) if actual == key.len()),
+            "{namespace}: a {}-byte point read refused",
+            key.len()
+        );
+    }
     assert!(
         backend.verify().expect("verify").is_clean(),
         "fresh: verify clean"

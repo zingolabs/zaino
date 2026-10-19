@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use zaino_primitives::types::BlockRef;
 
-use crate::backend::{sequence_position, Namespace, NamespaceKind, NamespaceSpec, Width, WriteOp};
+use crate::backend::{
+    sequence_position, Namespace, NamespaceKind, NamespaceSpec, Width, WriteOp, SEQUENCE_KEY_LEN,
+};
 use crate::error::{CommitError, Part, ReadError};
 
 /// A map key's state before a commit.
@@ -125,6 +127,31 @@ pub fn check_commit(
         }
     }
     Ok(())
+}
+
+/// A point read's key: `namespace` declared in `specs`, `key` of its key width
+/// (a sequence key is [`SEQUENCE_KEY_LEN`] bytes).
+pub fn check_key(
+    specs: &[NamespaceSpec],
+    namespace: Namespace,
+    key: &[u8],
+) -> Result<(), ReadError> {
+    let spec = specs
+        .iter()
+        .find(|spec| spec.namespace == namespace)
+        .ok_or_else(|| ReadError::NamespaceNotFound(namespace.to_string()))?;
+    let expected = match spec.kind {
+        NamespaceKind::Sequence { .. } => SEQUENCE_KEY_LEN,
+        NamespaceKind::Map { key, .. } => usize::try_from(key.get()).unwrap_or(usize::MAX),
+    };
+    match key.len() == expected {
+        true => Ok(()),
+        false => Err(ReadError::WidthMismatch {
+            namespace: namespace.to_string(),
+            expected,
+            actual: key.len(),
+        }),
+    }
 }
 
 /// `bytes` of `width`, or `WidthMismatch`.

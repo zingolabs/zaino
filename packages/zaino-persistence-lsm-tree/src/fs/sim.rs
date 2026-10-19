@@ -13,7 +13,7 @@
 //! - `SimFs::power_loss` / [`SimFs::restarted`] = crash / process exit at any instant
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fmt, io,
     ops::Range,
     path::{Path, PathBuf},
@@ -150,6 +150,8 @@ struct Image {
     files: Vec<Content>,
     volatile: BTreeMap<PathBuf, Node>,
     durable: BTreeMap<PathBuf, Node>,
+    /// Files made read-only (inode metadata: kept through every crash state)
+    read_only: BTreeSet<FileId>,
 }
 
 fn is_root(path: &Path) -> bool {
@@ -207,6 +209,18 @@ impl Image {
             files,
             durable: namespace.clone(),
             volatile: namespace,
+            read_only: self.read_only.clone(),
+        }
+    }
+
+    /// `id` writable, or `PermissionDenied` (a read-write open of a read-only file)
+    fn writable(&self, id: FileId, path: &Path) -> io::Result<()> {
+        match self.read_only.contains(&id) {
+            true => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{} is read-only", path.display()),
+            )),
+            false => Ok(()),
         }
     }
 
@@ -536,6 +550,24 @@ impl SimFs {
     }
 }
 
+impl SimFs {
+    fn handle(&self, id: FileId, path: &Path) -> Arc<dyn FileHandle> {
+        Arc::new(SimFile {
+            inner: Arc::clone(&self.inner),
+            id,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Whether `path` was made read-only
+    #[cfg(test)]
+    pub(crate) fn is_read_only(&self, path: &Path) -> bool {
+        let inner = self.lock_inner();
+        let id = inner.image.file(path).ok().flatten();
+        id.is_some_and(|id| inner.image.read_only.contains(&id))
+    }
+}
+
 impl Fs for SimFs {
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
         let mut inner = self.lock_inner();
@@ -566,7 +598,10 @@ impl Fs for SimFs {
             return Err(not_found(parent(path)));
         }
         let id = match inner.image.file(path)? {
-            Some(id) => id,
+            Some(id) => {
+                inner.image.writable(id, path)?;
+                id
+            }
             None => {
                 inner.mutate(|| format!("create {}", path.display()))?;
                 let id = inner.image.files.len();
@@ -586,18 +621,25 @@ impl Fs for SimFs {
     }
 
     fn open_existing(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        let id = self.lock_inner().image.file(path)?;
-        Ok(id.map(|id| {
-            Arc::new(SimFile {
-                inner: Arc::clone(&self.inner),
-                id,
-                path: path.to_path_buf(),
-            }) as Arc<dyn FileHandle>
-        }))
+        let inner = self.lock_inner();
+        let id = inner.image.file(path)?;
+        if let Some(id) = id {
+            inner.image.writable(id, path)?;
+        }
+        Ok(id.map(|id| self.handle(id, path)))
     }
 
     fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        self.open_existing(path)
+        let id = self.lock_inner().image.file(path)?;
+        Ok(id.map(|id| self.handle(id, path)))
+    }
+
+    fn set_read_only(&self, path: &Path) -> io::Result<()> {
+        let mut inner = self.lock_inner();
+        let id = inner.image.file(path)?.ok_or_else(|| not_found(path))?;
+        inner.mutate(|| format!("set_read_only {}", path.display()))?;
+        inner.image.read_only.insert(id);
+        Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {

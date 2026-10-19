@@ -123,7 +123,7 @@ impl IndexDir {
         let unmanifested = || ManifestError::Unmanifested {
             path: path.display().to_string(),
         };
-        if let Some(file) = self.fs.open_existing(&path)? {
+        if let Some(file) = self.fs.open_read_only(&path)? {
             if !file.is_empty()? {
                 return Err(unmanifested());
             }

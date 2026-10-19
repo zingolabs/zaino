@@ -20,8 +20,12 @@ testing = ["zaino-persistence/testing"]
 bytes.workspace = true
 crc32fast.workspace = true
 memmap2.workspace = true
+metrics.workspace = true
+rayon.workspace = true
 rustix = { version = "1.1", features = ["fs"] }
 thiserror.workspace = true
+tracing.workspace = true
+xorf.workspace = true
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives = { version = "0.3.0", path = "../zaino-primitives" }
 

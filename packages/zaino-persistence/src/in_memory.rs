@@ -11,11 +11,11 @@ use imbl::{OrdMap, OrdSet};
 use zaino_primitives::types::BlockRef;
 
 use crate::backend::{
-    Backend, BackendReader, BackendWriter, Namespace, NamespaceSpec, RawKey, RawValue,
-    ScanDirection, ScanRange, WriteOp,
+    Backend, BackendReader, BackendWriter, MaintenanceReader, Namespace, NamespaceSpec, RawKey,
+    RawValue, ScanDirection, ScanRange, WriteOp,
 };
 use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError, VerifyError};
-use crate::rules::{check_commit, check_specs, CommitState, KeyState};
+use crate::rules::{check_commit, check_key, check_specs, CommitState, KeyState};
 use crate::verify::{NamespaceFootprint, Verification};
 
 /// The current state; a commit swaps in a new one, readers keep the one they took.
@@ -189,15 +189,8 @@ impl BackendReader for InMemoryReader {
     }
 
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
+        check_key(&self.state.specs, namespace, key)?;
         Ok(declared(&self.state, namespace)?.entries.get(key).cloned())
-    }
-
-    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
-        Ok(declared(&self.state, namespace)?
-            .entries
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
     }
 
     fn scan_range<T, F>(
@@ -218,6 +211,16 @@ impl BackendReader for InMemoryReader {
             done: false,
             _item: PhantomData,
         }
+    }
+}
+
+impl MaintenanceReader for InMemoryReader {
+    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
+        Ok(declared(&self.state, namespace)?
+            .entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect())
     }
 }
 

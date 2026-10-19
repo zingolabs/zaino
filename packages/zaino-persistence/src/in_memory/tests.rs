@@ -7,8 +7,8 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
 use super::InMemoryBackend;
 use crate::backend::{
-    raw_entry, sequence_key, Backend, BackendReader, BackendWriter, Namespace, NamespaceSpec,
-    RawKey, RawValue,
+    raw_entry, sequence_key, Backend, BackendReader, BackendWriter, MaintenanceReader, Namespace,
+    NamespaceSpec, RawKey, RawValue,
     ScanDirection::{self, Forward, Reverse},
     ScanRange, Width, WriteOp,
 };

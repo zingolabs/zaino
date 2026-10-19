@@ -456,10 +456,11 @@ impl Pages {
             have: 0,
             need: sealed.len,
         };
-        let data = fs.open_existing(path)?.ok_or_else(|| missing(path))?;
+        // read only: sealed segments are read-only files
+        let data = fs.open_read_only(path)?.ok_or_else(|| missing(path))?;
         let sums_at = sums_path(path);
         let sums = fs
-            .open_existing(&sums_at)?
+            .open_read_only(&sums_at)?
             .ok_or_else(|| missing(&sums_at))?;
         for (file, at, need) in [
             (&data, path, sealed.len),

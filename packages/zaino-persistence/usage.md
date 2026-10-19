@@ -13,10 +13,14 @@ atomic batch commit and the commit rules hold at runtime.
 - [`Backend`] — opens reader and writer handles, makes commits durable
   (`flush`), checks stored integrity (`verify`) and reports size per namespace
   (`footprint`).
-- [`BackendReader`] — a snapshot: its `tip`, `get` one key, `scan` a whole
-  namespace, or `scan_range` a key range in lazily read chunks.
+- [`BackendReader`] — a snapshot: its `tip`, `get` one key, or `scan_range` a
+  key range in lazily read chunks. Everything a client-serving path needs.
 - [`BackendWriter`] — `commit` a batch of [`WriteOp`]s atomically at a
   [`BlockRef`](zaino_primitives::types::BlockRef) tip.
+- [`MaintenanceReader`] — `scan` a whole namespace into memory, for
+  maintenance, tests and tooling only. Its cost grows with the namespace, not
+  the request: never use it to serve clients, where many concurrent callers
+  could exhaust memory.
 
 Keys and values are raw bytes ([`RawKey`], [`RawValue`]) that the backend stores
 and returns without interpreting; the index schema owns their encoding and their
@@ -133,7 +137,9 @@ backend's own failure as a boxed cause while naming no concrete backend type.
 [`CommitError`] distinguishes each broken rule, `OutOfSpace` and `ManifestFull`
 (no retry clears them on their own) and `Poisoned` (a write failed earlier:
 reopen). [`ReadError::Corrupted`] means stored bytes failed their integrity
-check: stop, verify, resync.
+check: stop, verify, resync. A `get` whose key is not of the namespace's key
+width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
+reading as absent; `scan_range` bounds may be any length.
 
 ## Backends
 

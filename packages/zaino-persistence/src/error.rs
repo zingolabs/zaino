@@ -127,6 +127,16 @@ pub enum ReadError {
     /// A referenced namespace does not exist.
     #[error("namespace not found: {0}")]
     NamespaceNotFound(String),
+    /// A point read's key is not of its namespace's key width.
+    #[error("{namespace}: a {actual}-byte key, declared {expected}")]
+    WidthMismatch {
+        /// The namespace.
+        namespace: String,
+        /// Declared key width (a sequence key is 8 bytes).
+        expected: usize,
+        /// Bytes given.
+        actual: usize,
+    },
     /// The read failed (IO, corruption, etc.). `operation` names the read step
     /// that failed.
     #[error("read failed during {operation}")]

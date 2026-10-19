@@ -18,11 +18,13 @@
     )
 )]
 // the engine that uses these lands in later commits of this series
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 mod dir;
 pub mod fs;
+mod lsm;
 mod manifest;
 mod pages;
 
 pub use dir::disk_bytes;
+pub use lsm::{describe_metrics, LsmConfig, Tuning, METRIC_BUCKETS};

@@ -67,6 +67,12 @@ impl Fs for RealFs {
         std::fs::remove_file(path)
     }
 
+    fn set_read_only(&self, path: &Path) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))
+    }
+
     fn list(&self, dir: &Path) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in std::fs::read_dir(dir)? {

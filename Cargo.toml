@@ -125,6 +125,8 @@ memmap2 = "0.9"
 # sync_file_range (write-behind; no safe wrapper in rustix/nix)
 libc = "0.2"
 crc32fast = "1.4"
+xorf = { version = "0.13", default-features = false, features = ["binary-fuse"] }
+rayon = "1.12"
 imbl = "7.0"
 strum ={ version = "0.28", features = ["derive"] }
 thiserror = "2.0"

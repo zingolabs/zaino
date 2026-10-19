@@ -30,8 +30,10 @@ description = """
 reader handle is a snapshot: every read through it, its tip included, sees the \
 state as of `Backend::reader`, and every `scan_range` chunk reads that \
 snapshot. A commit is visible to readers opened after it and durable after \
-`flush`. New errors: \
-`ReadError::Corrupted`, `FlushError::Write`, `VerifyError`, `FootprintError`.
+`flush`. A `get` with a key off its namespace's key width fails with \
+`ReadError::WidthMismatch` (shared `check_key`). New errors: \
+`ReadError::Corrupted`, `ReadError::WidthMismatch`, `FlushError::Write`, \
+`VerifyError`, `FootprintError`.
 """
 
 [[changes]]
@@ -41,4 +43,13 @@ description = """
 The `testing` feature ships `conformance`: the contract and proptest history \
 suite every backend runs through the port alone, run here against the \
 in-memory backend.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`scan` moves from `BackendReader` to the new `MaintenanceReader` trait: a \
+whole-namespace read for maintenance, tests and tooling, never for serving \
+clients (its memory grows with the namespace). Client paths use `scan_range`.
 """
