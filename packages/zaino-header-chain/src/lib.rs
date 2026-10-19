@@ -11,7 +11,7 @@ pub mod testing;
 mod witnesses;
 
 #[cfg(test)]
-mod model;
+mod model_tests;
 #[cfg(test)]
 mod tests;
 
