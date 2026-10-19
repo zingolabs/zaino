@@ -6,9 +6,10 @@ use zaino_persistence::{MapRead, View};
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
-    key::{
-        decode_receive, decode_spend, encode_receive_key, encode_spent_key, AddressKey, ReceiveKey,
-        ReceiveRow, Spend, SPENT_KEY,
+    address::AddressKey,
+    layout::{
+        decode_receive, decode_spend, encode_receive_key, encode_spent_key, ReceiveKey, ReceiveRow,
+        Spend, SPENT_KEY,
     },
     DEFAULT_MAX_ADDRESS_ROWS, RECEIVES, SPENT,
 };

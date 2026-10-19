@@ -139,6 +139,6 @@ from "cannot tell". `zaino-grpc` refuses an address encoded for another network
 
 - Layout, merges, filters, checksums and crash recovery belong to the engine.
   A foreign network or format is refused at open.
-- Rows encode and decode through named functions in `key.rs`, each pinned by
+- Rows encode and decode through named functions in `layout.rs`, each pinned by
   golden bytes. A stored row that fails to decode panics, naming the invariant.
 - `zainod verify` checks a directory with `DiskEngine::verify(path, &schema)`.

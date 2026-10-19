@@ -1,75 +1,19 @@
-//! Disk layouts of the two maps + the records they hold
+//! Disk layouts of the two maps (`receives`, `spent`) + the records they hold
 //!
 //! - big-endian throughout (keys compare as bytes: byte order = key order)
 //! - derived `Ord` = that encoding (pinned by a test below)
 
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
-use zcash_transparent::address::TransparentAddress;
 
-const HASH160: usize = 20;
+use crate::address::{AddressKey, AddressKind, HASH160};
+
 const TXID: usize = 32;
 
 pub(crate) const RECEIVE_KEY: usize = AddressKey::LEN + 4 + TXID + 4;
 pub(crate) const RECEIVE_VALUE: usize = 8;
 pub(crate) const SPENT_KEY: usize = TXID + 4;
 pub(crate) const SPEND: usize = 4 + TXID;
-
-/// Standard form an output's 20 bytes came from
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-enum AddressKind {
-    P2pkh = 0x00,
-    P2sh = 0x01,
-    Opaque = 0x02,
-}
-
-impl AddressKind {
-    fn decode(tag: u8) -> Option<Self> {
-        match tag {
-            0x00 => Some(Self::P2pkh),
-            0x01 => Some(Self::P2sh),
-            0x02 => Some(Self::Opaque),
-            _ => None,
-        }
-    }
-}
-
-/// Fixed-width address tag `[hash160][kind]` (the whole identity a row is keyed by)
-///
-/// - 21 B = the addr id, never interned (TEX / ephemeral receivers = single-use by construction)
-/// - hash first: `receives` scope filter shards on the key's first 8 bytes (must be uniform)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct AddressKey {
-    hash: [u8; HASH160],
-    kind: AddressKind,
-}
-
-impl AddressKey {
-    pub(crate) const LEN: usize = 1 + HASH160;
-
-    pub(crate) fn p2pkh(hash: [u8; HASH160]) -> Self {
-        Self { kind: AddressKind::P2pkh, hash }
-    }
-
-    pub(crate) fn p2sh(hash: [u8; HASH160]) -> Self {
-        Self { kind: AddressKind::P2sh, hash }
-    }
-
-    /// Every non-standard output, under one key (no address string parses to it)
-    pub(crate) fn opaque() -> Self {
-        Self { kind: AddressKind::Opaque, hash: [0u8; HASH160] }
-    }
-}
-
-impl From<&TransparentAddress> for AddressKey {
-    fn from(address: &TransparentAddress) -> Self {
-        match *address {
-            TransparentAddress::PublicKeyHash(hash) => Self::p2pkh(hash),
-            TransparentAddress::ScriptHash(hash) => Self::p2sh(hash),
-        }
-    }
-}
 
 /// `addr ‖ height ‖ txid ‖ vout` (range-scanned per address: height directly after it)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -9,8 +9,8 @@ use zaino_sync::{
 };
 
 use crate::{
-    address::address_key,
-    key::{encode_receive, encode_spend, encode_spent_key, ReceiveKey, ReceiveRow, Spend},
+    address::AddressKey,
+    layout::{encode_receive, encode_spend, encode_spent_key, ReceiveKey, ReceiveRow, Spend},
     TransparentAddressReader, RECEIVES, SPENT,
 };
 
@@ -86,7 +86,7 @@ pub fn fold<V: MapRead>(
         }
         let mut receives = out.map(RECEIVES);
         for (vout, output) in (0u32..).zip(&tx.transparent.outputs) {
-            let address = address_key(&output.script.0 .0);
+            let address = AddressKey::of_script(&output.script.0 .0);
             let key = ReceiveKey { address, height, txid: tx.txid, vout };
             let (key, value) = encode_receive(&ReceiveRow { key, value: output.value });
             receives.insert(&key, &value);
@@ -111,7 +111,7 @@ mod tests {
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
-    use crate::{key::AddressKey, AddressUtxo, TransactionRef};
+    use crate::{address::AddressKey, AddressUtxo, TransactionRef};
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 

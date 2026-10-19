@@ -1,7 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
 mod address;
-mod key;
+mod layout;
 mod reader;
 mod serve;
 mod writer;
@@ -13,7 +13,8 @@ pub use writer::{fold, TransparentAddressIndexWriter};
 use zaino_persistence::{IndexKind, MapTable, Schema, Tables};
 use zcash_protocol::consensus::NetworkType;
 
-use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND, SPENT_KEY};
+use address::AddressKey;
+use layout::{RECEIVE_KEY, RECEIVE_VALUE, SPEND, SPENT_KEY};
 
 /// On-disk layout version
 const FORMAT: u16 = 1;

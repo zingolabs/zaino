@@ -12,7 +12,7 @@ use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::{key::AddressKey, TransparentAddressReader};
+use crate::{address::AddressKey, TransparentAddressReader};
 
 /// - never an empty result (gap-limit walk must tell "no transactions" from "cannot tell")
 /// - transport maps these onto gRPC codes (no transport named in this crate)
