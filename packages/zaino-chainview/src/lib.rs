@@ -2,15 +2,15 @@
 #![forbid(unsafe_code)]
 
 mod admission;
+mod alarm_thresholds;
+mod chain_view_core;
 mod chain_view_snapshot;
-mod config;
 mod error;
-mod headers;
+mod header_sync;
 mod listings;
 #[cfg(test)]
-mod mempool_model;
-mod merge;
-mod observe;
+mod mempool_model_tests;
+mod observation_merge;
 mod peer_mempool;
 mod peers;
 mod ports;
@@ -22,17 +22,17 @@ mod trusted_validators;
 mod view;
 
 #[cfg(test)]
-mod network_model;
+mod network_model_tests;
 #[cfg(test)]
 mod tests;
 
+pub use alarm_thresholds::STALE_TIP_BLOCKS;
 pub use chain_view_snapshot::{
     ChainViewSnapshot, MempoolEntry, MempoolState, MempoolView, Projection,
 };
-pub use config::STALE_TIP_BLOCKS;
 pub use error::SubmitError;
-pub use headers::HeaderSync;
-pub use observe::ObservationMerge;
+pub use header_sync::HeaderSync;
+pub use observation_merge::ObservationMerge;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
 pub use ports::{PeerSource, UnspentOutputs};

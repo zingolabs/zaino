@@ -1,4 +1,4 @@
-//! The merge: per-validator deltas in, one published `ChainViewSnapshot` out
+//! [`ChainViewCore`]: published `ChainViewSnapshot` cell + merge lock (every input → one merge)
 //!
 //! - Store, then signal (a woken reader must find what woke it)
 
@@ -12,12 +12,12 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
-use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
 use crate::chain_view_snapshot::{ChainViewSnapshot, Sighting};
+use crate::observation_merge::{Reading, TrustedValidatorReport};
 use crate::telemetry;
 use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
 
@@ -35,51 +35,6 @@ impl Before {
 
 /// One id the peer quorum admits, not yet admitted here (`raw` = its bytes when held already)
 pub(crate) type Candidate = (PeerTxId, Option<Bytes>);
-
-/// One txid a member listed
-///
-/// - `raw` = `None` when the view already held it (bytes fetched once, never per member)
-#[derive(Debug, Clone)]
-pub(crate) struct Sighted {
-    pub(crate) txid: TxId,
-    pub(crate) raw: Option<Bytes>,
-    pub(crate) fee: Zatoshis,
-}
-
-/// What every answered poll read, mempool on or off
-///
-/// - `block_at_best` = its `getblockhash` answer at the best the poll started under
-/// - `peers`, `release`: `Some` only on a metadata poll whose half answered (else the last kept)
-#[derive(Debug, Clone)]
-pub(crate) struct Reading {
-    pub(crate) block_at_best: Option<BlockRef>,
-    pub(crate) info: BlockchainInfo,
-    pub(crate) peers: Option<Vec<PeerInfo>>,
-    pub(crate) release: Option<NodeRelease>,
-    pub(crate) streaming: bool,
-}
-
-/// One trusted validator's poll-to-poll mempool change
-#[derive(Debug, Clone)]
-pub(crate) struct Listing {
-    pub(crate) added: Vec<Sighted>,
-    pub(crate) removed: Vec<TxId>,
-}
-
-/// One member's poll, as the merge takes it: its reading first, then its listing (bytes fetched
-/// between: holder facts never wait on them)
-#[derive(Debug, Clone)]
-pub(crate) enum TrustedValidatorReport {
-    /// `listed` = mempool read (its listing follows), else sightings retracted
-    Read {
-        reading: Reading,
-        health: Health,
-        listed: bool,
-    },
-    Listed(Listing),
-    /// `Down` = neither chain nor sightings, else sightings kept + holds no tip
-    Failed(Health),
-}
 
 /// One merge's effect: `Settle(touched)` = settle (spreads re-judged for `touched`) + publish
 enum Change {

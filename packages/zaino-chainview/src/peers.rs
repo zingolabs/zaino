@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use zaino_primitives::types::Announced;
 
-use crate::merge::ChainViewCore;
+use crate::chain_view_core::ChainViewCore;
 use crate::ports::PeerSource;
 
 /// Announcements merged at most this often (one publish per batch, not per `inv`)

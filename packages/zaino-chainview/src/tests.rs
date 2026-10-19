@@ -26,7 +26,7 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::bundle::OutPoint;
 
-use crate::listings::PEER_MEMPOOL_POLL;
+use crate::peer_mempool::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
 use crate::{Agreement, ChainView, MempoolEntry, Projection, SubmitError, TrustedValidatorSet};
 
@@ -1001,7 +1001,7 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
             (published.best(), published.finalized_tip())
         };
         let non_finalized = u32::from(best.height) - u32::from(finalized_tip.height);
-        let bound = DEPTH + crate::headers::HEADER_BATCH;
+        let bound = DEPTH + crate::header_sync::HEADER_BATCH;
         assert!(non_finalized <= bound, "{best:?}: H9, {non_finalized} non-finalized > {bound}");
         assert!(!reader.current().alarms().finality_paused(), "{best:?}: alarm");
         followed.push((best, finalized_tip));

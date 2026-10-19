@@ -1,4 +1,4 @@
-//! Telemetry thresholds (poll cadence + retry ladder = `zaino-traffic`'s)
+//! Alarm + warning thresholds (poll cadence + retry ladder = `zaino-traffic`'s)
 
 use std::time::Duration;
 

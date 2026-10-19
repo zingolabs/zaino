@@ -7,7 +7,7 @@
 //! - fresh = listed within [`LISTING_FRESH`] of the last round (a busy peer keeps its last)
 //! - conflicting transactions never both held while every peer is honest (> 2/3 and > 1/3 overlap,
 //!   one mempool holds one)
-//! - peer listing both → both may be held (`mempool_model.rs`)
+//! - peer listing both → both may be held (`mempool_model_tests.rs`)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -18,10 +18,7 @@ use tokio::time::Instant;
 use zaino_primitives::types::{Netgroup, PeerTxId, ECLIPSE_NETGROUPS};
 use zcash_protocol::TxId;
 
-/// Every live outbound peer's mempool asked this often
-pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
-
-/// Listing counted this long after it was read (three rounds)
+/// Listing counted this long after it was read (three `PEER_MEMPOOL_POLL` rounds)
 pub(crate) const LISTING_FRESH: Duration = Duration::from_secs(15);
 
 /// Each live peer's latest listing, `imbl` (published with the `ChainViewSnapshot`)

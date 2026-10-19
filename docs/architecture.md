@@ -162,9 +162,9 @@ It stays while more than 1/3 still list it. No fee floor (zebrad's and zakura's 
 signatures or scripts: each lister is a full node that ran those. A consensus refusal is remembered
 (`REFUSED_TTL`); an unknown prevout is retried next round. With honest peers two conflicting
 transactions are never both admitted (one node's mempool holds at most one, and > 2/3 + > 1/3
-must overlap); a peer listing both can get both admitted and kept (`mempool_model.rs`). Cost to an
-attacker: > 2/3 of our outbound peers across 6 netgroups, for a served transaction that never
-mines.
+must overlap); a peer listing both can get both admitted and kept (`mempool_model_tests.rs`).
+Cost to an attacker: > 2/3 of our outbound peers across 6 netgroups, for a served transaction that
+never mines.
 
 Transaction `inv` announcements are not used: nodes announce each transaction to a third of their
 peers, once, so silence means nothing.

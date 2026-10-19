@@ -31,8 +31,9 @@ use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::NextBlock;
+use crate::chain_view_core::ChainViewCore;
 use crate::listings::LISTING_FRESH;
-use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
+use crate::observation_merge::{Listing, Reading, Sighted, TrustedValidatorReport};
 use crate::peer_mempool::judge;
 use crate::trusted_validators::TrustedValidatorMeta;
 

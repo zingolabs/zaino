@@ -38,8 +38,8 @@ use zaino_source::{BlockLink, BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
+use crate::chain_view_core::ChainViewCore;
 use crate::chain_view_snapshot::ChainViewSnapshot;
-use crate::merge::ChainViewCore;
 
 /// Heights per fetch step (tree ≤ `depth` + this above the finalized tip)
 pub(crate) const HEADER_BATCH: u32 = 2_000;

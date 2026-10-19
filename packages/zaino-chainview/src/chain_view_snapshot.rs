@@ -19,7 +19,7 @@ use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::config::FINALITY_STALL;
+use crate::alarm_thresholds::FINALITY_STALL;
 use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
 use crate::trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
@@ -263,95 +263,6 @@ impl ChainViewSnapshot {
     /// A block `depth` deep owed finality ≥ [`FINALITY_STALL`] (unvouched, peers short of it, H6)
     pub(crate) fn finality_stalled(&self, now: Instant) -> bool {
         self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_STALL)
-    }
-
-    /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best
-    ///
-    /// - one fresh trusted validator per address
-    /// - `ours` served (our relay)
-    /// - each holder `Live` + `Agreed`, its `getblockchaininfo` = the best block, no upgrade,
-    ///   branch id 0
-    #[cfg(any(test, feature = "testing"))]
-    pub fn fixed(
-        chain: Option<Arc<HeaderChainSnapshot>>,
-        held_by: TrustedValidatorSet,
-        addresses: &[&str],
-        ours: &[(TxId, Bytes)],
-    ) -> Self {
-        use zaino_source::BlockchainInfo;
-
-        let trusted_validators =
-            addresses.iter().map(|at| TrustedValidatorMeta::new((*at).to_owned()));
-        let mut view = Self::empty(trusted_validators.collect(), FinalityDepth::CONSENSUS);
-        view.chain = chain;
-        if let Some(best) = view.best() {
-            let info = BlockchainInfo {
-                tip: best,
-                estimated_height: best.height,
-                activations: Vec::new(),
-            };
-            for at in held_by.positions() {
-                if let Some(meta) = view.trusted_validators.get_mut(at) {
-                    meta.info = Some(info.clone());
-                    meta.health = Health::Live;
-                }
-            }
-        }
-        for (txid, raw) in ours {
-            view.mempool.insert(*txid, Sighting::new(raw.clone(), None, true));
-        }
-        view
-    }
-
-    /// Consumers' tests: trusted validator `at`'s health, and its clock estimate `behind` blocks
-    /// past its tip (a [`fixed`](Self::fixed) holder's tip = best)
-    /// - alarms re-derived as a merge would
-    #[cfg(any(test, feature = "testing"))]
-    pub fn trusted_validator(mut self, at: usize, health: Health, behind: u32) -> Self {
-        if let Some(meta) = self.trusted_validators.get_mut(at) {
-            meta.health = health;
-            if let Some(info) = meta.info.as_mut() {
-                info.estimated_height = info.tip.height + behind;
-            }
-        }
-        self.alarms =
-            crate::telemetry::alarms(&self.trusted_validators, self.alarms.finality_paused());
-        self
-    }
-
-    /// Consumers' tests: holder `at` claims `by` blocks past best (header sync short of its tip)
-    ///
-    /// - `read` = its hash at best polled → `Ahead`, still a holder
-    /// - `!read` = no poll since the chain moved → `Diverged`, not a holder (as a merge would)
-    #[cfg(any(test, feature = "testing"))]
-    pub fn ahead(mut self, at: usize, by: u32, read: bool) -> Self {
-        let best = self.best().expect("ahead of a header chain best");
-        let id = TrustedValidatorId::new(at).expect("a small position");
-        assert!(self.held_by().contains(id), "{at}: not a holder");
-        let meta =
-            self.trusted_validators.get_mut(at).expect("a holder = a configured trusted validator");
-        let info = meta.info.as_mut().expect("a holder answered");
-        info.tip = BlockRef { hash: BlockHash([0xA0; 32]), height: best.height + by };
-        info.estimated_height = info.tip.height;
-        meta.block_at_best = read.then_some(best);
-        self
-    }
-
-    /// Consumers' tests: holder `at` lags `by` blocks below best on our chain (`Behind`, not a
-    /// holder: header sync past it, e.g. peers ahead of a validator catching up)
-    #[cfg(any(test, feature = "testing"))]
-    pub fn behind(mut self, at: usize, by: u32) -> Self {
-        let chain = self.chain.clone().expect("behind a header chain best");
-        let height = chain.best().height - by;
-        let hash = chain.hash_at(height).expect("a height on the header chain");
-        let id = TrustedValidatorId::new(at).expect("a small position");
-        assert!(self.held_by().contains(id), "{at}: not a holder");
-        let meta =
-            self.trusted_validators.get_mut(at).expect("a holder = a configured trusted validator");
-        let info = meta.info.as_mut().expect("a holder answered");
-        info.tip = BlockRef { hash, height };
-        info.estimated_height = height;
-        self
     }
 
     /// An answering validator claims past best, not shown off our chain (best ≠ the network's

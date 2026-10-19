@@ -1,4 +1,5 @@
-//! Submission: relayed by attempts, watched until it spreads (`docs/architecture.md` §6)
+//! [`SubmitPolicy`] + `Job`: pure submission policy, relayed by attempts, watched until it spreads
+//! (`docs/architecture.md` §6)
 //!
 //! ```text
 //!   step ─▶ Push(Peers: zebra's relay to ~⅓ of the peers)  while budget left
@@ -8,7 +9,7 @@
 //!     └─▶ Done: spread │ accepted, nothing left to observe │ rejected │ unreachable │ exhausted
 //! ```
 //!
-//! - pure: time and observations come in, steps go out (the driver in `view.rs` executes them)
+//! - pure: time and observations come in, steps go out (`driver.rs` executes them)
 //! - `checked` = a trusted `checkadmission` accepted it first (the wallet's answer, already given)
 //! - peers first: a trusted validator relays it only past the budget, unspread (Dandelion++'s
 //!   fail-safe)

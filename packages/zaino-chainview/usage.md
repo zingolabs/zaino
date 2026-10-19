@@ -183,8 +183,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 ## Ports
 
 - Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view merges
-  their polls (`observe`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`; header sync
-  asks `headers(..)`.
+  their polls (`ObservationMerge`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`;
+  header sync asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
 - `PeerSource` (`dyn`, given by `with_peers`):
 
@@ -215,7 +215,7 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 
 `alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
 (definitions and thresholds: [architecture §11](../../docs/architecture.md#11-telemetry); in
-`config.rs`).
+`alarm_thresholds.rs`).
 
 ## Testing (feature `testing`)
 
@@ -239,5 +239,5 @@ peers.announce_block(peer, hash);                    // one block `inv` (after p
 let relays: usize = peers.pushes();                  // relays asked for so far
 ```
 
-- `mempool_model.rs`: the quorum against a naive oracle. Guarantee: rivals never both held with
-  every peer honest; newly both held only while a fresh peer lists both.
+- `mempool_model_tests.rs`: the quorum against a naive oracle. Guarantee: rivals never both held
+  with every peer honest; newly both held only while a fresh peer lists both.

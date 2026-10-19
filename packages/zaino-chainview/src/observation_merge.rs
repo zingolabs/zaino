@@ -1,4 +1,5 @@
-//! Each trusted validator's polls (the balancer's [`Observation`]s) merged into the view
+//! [`ObservationMerge`]: each trusted validator's polls (the balancer's [`Observation`]s) →
+//! `TrustedValidatorReport`s merged into the view
 //!
 //! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
 //! - Reading (claim, `getblockhash`) merged first, then the listing (holder facts never wait on
@@ -17,15 +18,16 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zaino_primitives::types::BlockRef;
 use zaino_source::{
-    ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
-    MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
+    BlockchainInfo, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
+    MempoolListed, MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::config::CATCHING_UP_WARN_INTERVAL;
-use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
+use crate::alarm_thresholds::CATCHING_UP_WARN_INTERVAL;
+use crate::chain_view_core::ChainViewCore;
 
 /// Merges every trusted validator's observations into the view (spawn [`run`](Self::run))
 pub struct ObservationMerge<S> {
@@ -53,6 +55,51 @@ impl<S: ChainDataSource> ObservationMerge<S> {
         });
         cancel.run_until_cancelled(join_all(followers)).await;
     }
+}
+
+/// One txid a member listed
+///
+/// - `raw` = `None` when the view already held it (bytes fetched once, never per member)
+#[derive(Debug, Clone)]
+pub(crate) struct Sighted {
+    pub(crate) txid: TxId,
+    pub(crate) raw: Option<Bytes>,
+    pub(crate) fee: Zatoshis,
+}
+
+/// What every answered poll read, mempool on or off
+///
+/// - `block_at_best` = its `getblockhash` answer at the best the poll started under
+/// - `peers`, `release`: `Some` only on a metadata poll whose half answered (else the last kept)
+#[derive(Debug, Clone)]
+pub(crate) struct Reading {
+    pub(crate) block_at_best: Option<BlockRef>,
+    pub(crate) info: BlockchainInfo,
+    pub(crate) peers: Option<Vec<PeerInfo>>,
+    pub(crate) release: Option<NodeRelease>,
+    pub(crate) streaming: bool,
+}
+
+/// One trusted validator's poll-to-poll mempool change
+#[derive(Debug, Clone)]
+pub(crate) struct Listing {
+    pub(crate) added: Vec<Sighted>,
+    pub(crate) removed: Vec<TxId>,
+}
+
+/// One member's poll, as the merge takes it: its reading first, then its listing (bytes fetched
+/// between: holder facts never wait on them)
+#[derive(Debug, Clone)]
+pub(crate) enum TrustedValidatorReport {
+    /// `listed` = mempool read (its listing follows), else sightings retracted
+    Read {
+        reading: Reading,
+        health: Health,
+        listed: bool,
+    },
+    Listed(Listing),
+    /// `Down` = neither chain nor sightings, else sightings kept + holds no tip
+    Failed(Health),
 }
 
 /// - `listed` = its last listing as admitted (the diff's left side)

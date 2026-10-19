@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
+use crate::alarm_thresholds::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
 use zaino_traffic::{Health, TrustedValidatorId};
 
 use crate::chain_view_snapshot::Sighting;
