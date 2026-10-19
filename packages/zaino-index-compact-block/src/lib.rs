@@ -3,13 +3,13 @@
 use zaino_persistence::{IndexKind, Schema, SequenceTable, Tables, Width};
 use zcash_protocol::consensus::NetworkType;
 
-mod build;
+mod encode;
 mod project;
 mod reader;
 mod serve;
 mod writer;
 
-pub use build::{compact_tx, encode_compact_block};
+pub use encode::{compact_tx, encode_compact_block};
 pub use project::{project_tx_at, Pools};
 pub use reader::CompactBlockReader;
 pub use serve::{RangeCursor, ServeError};

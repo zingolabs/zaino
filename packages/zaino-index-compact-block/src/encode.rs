@@ -1,6 +1,7 @@
-//! Domain [`Block`] + derived [`TreeSizes`] + [`BlockFees`] → the wire bytes the store holds
+//! Domain → protobuf encoders: [`encode_compact_block`] (stored record), [`compact_tx`]
 //!
 //! - encoded once at index time (serving never decodes a record)
+//! - [`compact_tx`] = also the mempool encoder (`zaino-grpc` `routes/mempool.rs`)
 //! - lives here, not on the domain types (`zaino-primitives` !→ `zaino-proto`)
 
 use bytes::Bytes;
