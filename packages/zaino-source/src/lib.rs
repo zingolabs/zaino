@@ -7,33 +7,38 @@
 //! - Which validator answers = `zaino-traffic`'s
 
 mod blockchain_info;
+mod chain_data_source;
 mod decode;
+mod endpoint;
 mod error;
-mod grpc_client;
+mod indexer_client;
+mod indexer_endpoint;
+mod indexer_watch;
+mod json;
 mod legacy_rpc;
+mod metrics;
 mod node_release;
-mod parse;
 mod peer_info;
-mod queries;
 mod rpc;
-mod zebra_indexer;
 
+pub use self::metrics::{describe_metrics, METRIC_BUCKETS};
 pub use blockchain_info::{BlockchainInfo, ScheduleError};
-pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
-pub use error::{FailureMode, NonDomainError, QueryError};
-pub use grpc_client::ZebraIndexerGrpcClient;
-pub use legacy_rpc::ZcashLegacyRpcClient;
-pub use node_release::{EndOfService, NodeRelease};
-pub use peer_info::PeerInfo;
-pub use queries::{
+pub use chain_data_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
     GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
     SendRawTransactionError, TransactionResponse,
 };
-pub use rpc::{describe_metrics, METRIC_BUCKETS};
-pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
-pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};
+pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
+pub use endpoint::{EndpointError, LinkLimits, Timeouts};
+pub use error::{FailureMode, NonDomainError, QueryError};
+pub use indexer_client::ZebraIndexerGrpcClient;
+pub use indexer_endpoint::ZebraIndexerTls;
+pub use indexer_watch::ZebraIndexerWatch;
+pub use legacy_rpc::ZcashLegacyRpcClient;
+pub use node_release::{EndOfService, NodeRelease};
+pub use peer_info::PeerInfo;
+pub use rpc::{ResponseSizeCap, RpcError};
 
 // `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

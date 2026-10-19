@@ -5,16 +5,17 @@
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use zaino_primitives::protocol::MAX_BLOCK_BYTES;
 
-use super::emit;
 use super::envelope;
 use super::error::RpcError;
+use crate::metrics;
+use crate::{LinkLimits, Timeouts};
 
 /// JSON-RPC framing around one result (id, version, keys)
 pub(crate) const REPLY_ENVELOPE_BYTES: usize = 1024;
@@ -52,43 +53,11 @@ impl ResponseSizeCap {
     }
 }
 
-/// - `read` = silence, never total duration (multi-MB block over a slow link must finish)
-/// - Total deadline below a block's transfer time = retry livelock
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Timeouts {
-    pub connect: Duration,
-    pub read: Duration,
-}
-
-impl Default for Timeouts {
-    fn default() -> Self {
-        Self { connect: Duration::from_secs(2), read: Duration::from_secs(30) }
-    }
-}
-
 /// One JSON-RPC call (a batch item)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Call {
     pub(crate) method: &'static str,
     pub(crate) params: Vec<Value>,
-}
-
-/// One validator's link: idle connections kept, response bytes per second (`None` = unlimited)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LinkLimits {
-    pub max_connections: NonZeroU32,
-    pub max_bytes_per_sec: Option<NonZeroU32>,
-    pub response_size_cap: ResponseSizeCap,
-}
-
-impl Default for LinkLimits {
-    fn default() -> Self {
-        Self {
-            max_connections: const { NonZeroU32::new(32).expect("32 is non-zero") },
-            max_bytes_per_sec: None,
-            response_size_cap: ResponseSizeCap::MAX,
-        }
-    }
 }
 
 /// - `name` = metric label (the validator's configured address)
@@ -148,7 +117,7 @@ impl RpcClient {
     ///
     /// - waiting = reading stops, the transport's flow control slows the sender
     pub(crate) async fn received(&self, n: usize) {
-        emit::received(&self.name, n);
+        metrics::received(&self.name, n);
         if let Some(bytes) = &self.bytes {
             charge(bytes, n).await;
         }
@@ -161,14 +130,14 @@ impl RpcClient {
         method: &str,
         params: Vec<Value>,
     ) -> Result<T, RpcError> {
-        let _in_flight = emit::InFlight::start(&self.name);
+        let _in_flight = metrics::InFlight::start(&self.name);
         let started = Instant::now();
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let body = envelope::build_request(method, &params, id);
         let settled =
             self.send_http(&body).await.and_then(|reply| envelope::parse_response(&reply));
         let failure = settled.as_ref().err().map(RpcError::failure_mode);
-        emit::call_settled(&self.name, method, started.elapsed(), failure);
+        metrics::call_settled(&self.name, method, started.elapsed(), failure);
         settled
     }
 
@@ -180,7 +149,7 @@ impl RpcClient {
         &self,
         calls: Vec<Call>,
     ) -> Result<Vec<Result<T, RpcError>>, RpcError> {
-        let _in_flight = emit::InFlight::start(&self.name);
+        let _in_flight = metrics::InFlight::start(&self.name);
         let label = match calls.split_first() {
             Some((first, rest)) if rest.iter().all(|call| call.method == first.method) => {
                 first.method
@@ -193,7 +162,7 @@ impl RpcClient {
         let settled = self.send_http(&body).await;
         let settled = settled.and_then(|reply| envelope::parse_batch(&reply, first, calls.len()));
         let failure = settled.as_ref().err().map(RpcError::failure_mode);
-        emit::call_settled(&self.name, label, started.elapsed(), failure);
+        metrics::call_settled(&self.name, label, started.elapsed(), failure);
         settled
     }
 
@@ -257,6 +226,8 @@ async fn charge(limiter: &DefaultDirectRateLimiter, n: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     /// Chunk > one-second burst → charged in burst-sized pieces (else `InsufficientCapacity`,

@@ -6,7 +6,7 @@ consensus bytes, over JSON-RPC (`getblock <hash> 0`) or, with
 `zaino_primitives::types::HeaderBytes` and decodes the transactions with
 librustzcash (`zcash_primitives`'s `CompressedTransaction`), and it parses every
 other JSON-RPC result into `zaino-primitives` types in
-`packages/zaino-source/src/parse.rs`. The one Zebra link is `zaino-peers`, which
+`packages/zaino-source/src/json.rs`. The one Zebra link is `zaino-peers`, which
 embeds `zebra-network` (and `zebra-chain`) as Zaino's p2p layer, pinned by git rev
 in the root `Cargo.toml` (`cargo tree -i zebra-chain` shows only it). Zaino's
 coupling to the node is therefore the JSON-RPC surface of the zebrad release it runs

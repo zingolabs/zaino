@@ -20,12 +20,12 @@ use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
-use crate::zebra_indexer::{zebra_indexer_endpoint, ZebraIndexerTls};
+use crate::indexer_endpoint::{zebra_indexer_endpoint, ZebraIndexerTls};
 use crate::{
-    decode, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
-    MempoolListed, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse, ZcashLegacyRpcClient,
+    decode, metrics, BlockLinks, ChainDataSource, EndpointError, FailureMode, GetAtHeightError,
+    GetBlockByHashError, LinkLimits, MempoolListed, NonDomainError, PollReading, QueryError,
+    RawMempoolTransactions, SendRawTransactionError, Timeouts, TransactionResponse,
+    ZcashLegacyRpcClient,
 };
 
 /// zebrad's `MAX_CONCURRENT_STREAMS` per indexer connection (`zebra-rpc/src/indexer/server.rs`)
@@ -145,14 +145,14 @@ impl ZebraIndexerGrpcClient {
         E: std::fmt::Debug + std::fmt::Display,
     {
         let name = self.rpc.rpc.name();
-        let _in_flight = emit::InFlight::start(name);
+        let _in_flight = metrics::InFlight::start(name);
         let started = Instant::now();
         let settled = call.await;
         let failure = match &settled {
             Err(QueryError::NonDomain(error)) => Some(error.mode),
             _ => None,
         };
-        emit::call_settled(name, method, started.elapsed(), failure);
+        metrics::call_settled(name, method, started.elapsed(), failure);
         settled
     }
 }

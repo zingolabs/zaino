@@ -21,7 +21,7 @@ for its whole-second `*_secs` keys (`any`, `nonzero`, `zero_is_never` = 0 means
 
 | Direction | Owner |
 |---|---|
-| validator JSON-RPC reply → domain | `zaino-source` (`parse.rs` for JSON, `decode.rs` for consensus bytes) |
+| validator JSON-RPC reply → domain | `zaino-source` (`json.rs` for JSON, `decode.rs` for consensus bytes) |
 | consensus header bytes → fields | `HeaderBytes` here (shared by `zaino-source` and `zaino-header-chain`) |
 | domain → disk | each index crate's own `encode` / `decode` (`zaino-persistence` sees bytes only) |
 | domain → gRPC | `zaino-grpc` and the index crates, onto `zaino-proto` types |

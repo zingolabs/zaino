@@ -8,15 +8,16 @@ use zaino_primitives::types::Block;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
+use crate::endpoint::validator_url;
 use crate::rpc::{
-    auth_from_parts, validator_url, Call, EndpointError, LinkLimits, ResponseSizeCap, RpcClient,
-    RpcClientConfig, RpcError, Timeouts, REPLY_ENVELOPE_BYTES,
+    auth_from_parts, Call, RpcClient, RpcClientConfig, RpcError, REPLY_ENVELOPE_BYTES,
 };
 use crate::{
-    decode, parse, BlockLink, BlockLinks, CheckAdmissionError, FailureMode, GetAtHeightError,
-    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
-    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    decode, json, BlockLink, BlockLinks, CheckAdmissionError, EndpointError, FailureMode,
+    GetAtHeightError, GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
+    GetTransactionError, LinkLimits, MempoolListed, MetadataReading, NonDomainError, PollReading,
+    QueryError, RawMempoolTransactions, ResponseSizeCap, SendRawTransactionError, Timeouts,
+    TransactionResponse,
 };
 
 /// Validator's link
@@ -55,7 +56,7 @@ impl ZcashLegacyRpcClient {
         &self,
         method: &str,
         params: Vec<serde_json::Value>,
-        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, json::ParseError>,
         classify: impl FnOnce(RpcError) -> QueryError<E>,
     ) -> Result<T, QueryError<E>>
     where
@@ -66,7 +67,7 @@ impl ZcashLegacyRpcClient {
     }
 }
 
-fn from_parse(e: parse::ParseError) -> NonDomainError {
+fn from_parse(e: json::ParseError) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)
 }
 
@@ -176,7 +177,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
         let params = vec![hash.to_string().into(), 0.into()];
-        let parse::HexBytes(raw) = self
+        let json::HexBytes(raw) = self
             .rpc
             .call("getblock", params)
             .await
@@ -194,11 +195,11 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         };
         let mut blocks = Vec::with_capacity(heights.len());
         for batch in heights.chunks(self.rpc.response_size_cap().blocks_per_batch().get()) {
-            let replies = self.rpc.call_batch::<parse::HexBytes>(batch.iter().map(call).collect());
+            let replies = self.rpc.call_batch::<json::HexBytes>(batch.iter().map(call).collect());
             let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
-                let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
+                let json::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
                 blocks.push(decode::served_block(&raw)?);
             }
         }
@@ -216,10 +217,10 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                     params: vec![u32::from(*height).to_string().into(), false.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch::<parse::HexBytes>(calls).await?;
+            let replies = self.rpc.call_batch::<json::HexBytes>(calls).await?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
-                let link = reply.map(|parse::HexBytes(header)| BlockLink { header });
+                let link = reply.map(|json::HexBytes(header)| BlockLink { header });
                 links.push(split(link.map_err(|error| absent_or_fetch(error, absent)))?);
             }
         }
@@ -241,9 +242,9 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         let mut replies = self.rpc.call_batch::<serde_json::Value>(calls).await?.into_iter();
         let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
-        let info = parse::parse_blockchain_info(&next()?).map_err(from_parse)?;
+        let info = json::parse_blockchain_info(&next()?).map_err(from_parse)?;
         let listing = next().map_err(mempool_unavailable_or_fetch).and_then(|listing| {
-            parse::parse_mempool_listing(&listing).map_err(|e| QueryError::NonDomain(from_parse(e)))
+            json::parse_mempool_listing(&listing).map_err(|e| QueryError::NonDomain(from_parse(e)))
         });
         let listing = split(listing)?;
         let held = holds
@@ -251,7 +252,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             .map(|height| {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
                 let hash = next().map_err(|error| absent_on(&ABOVE_TIP_CODES, error, absent))?;
-                parse::as_block_hash(&hash).map_err(|e| QueryError::NonDomain(from_parse(e)))
+                json::as_block_hash(&hash).map_err(|e| QueryError::NonDomain(from_parse(e)))
             })
             .collect();
         let metadata = metadata.then(|| {
@@ -263,10 +264,10 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                 Err(other) => Err(NonDomainError::from(other)),
             };
             MetadataReading {
-                peers: peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse)),
+                peers: peers.and_then(|peers| json::parse_peer_info(&peers).map_err(from_parse)),
                 release: info.and_then(|info| {
                     let deprecation = deprecation?;
-                    parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
+                    json::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
                 }),
             }
         });
@@ -287,10 +288,10 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                     params: vec![entry.txid.to_string().into(), 0.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch::<parse::HexBytes>(calls).await?;
+            let replies = self.rpc.call_batch::<json::HexBytes>(calls).await?;
             for (entry, reply) in batch.iter().zip(replies) {
                 let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
-                let raw = reply.map(|parse::HexBytes(raw)| raw);
+                let raw = reply.map(|json::HexBytes(raw)| raw);
                 fetched.push(split(raw.map_err(|error| absent_or_fetch(error, absent)))?);
             }
         }
@@ -302,7 +303,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         transaction: Vec<u8>,
     ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         let params = vec![const_hex::encode(transaction).into()];
-        self.call_parsed("sendrawtransaction", params, parse::as_txid, |error| {
+        self.call_parsed("sendrawtransaction", params, json::as_txid, |error| {
             let error: NonDomainError = error.into();
             match submission_rejection(&error) {
                 Some(rejection) => QueryError::Domain(rejection),
@@ -317,7 +318,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         transaction: Vec<u8>,
     ) -> Result<TxId, QueryError<CheckAdmissionError>> {
         let params = vec![const_hex::encode(transaction).into()];
-        self.call_parsed("checkadmission", params, parse::as_txid, |error| {
+        self.call_parsed("checkadmission", params, json::as_txid, |error| {
             admission_check_answer(error.into())
         })
         .await
@@ -329,7 +330,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         txid: TxId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         let params = vec![txid.to_string().into(), serde_json::Value::Number(1.into())];
-        self.call_parsed("getrawtransaction", params, parse::parse_transaction, |error| {
+        self.call_parsed("getrawtransaction", params, json::parse_transaction, |error| {
             absent_or_fetch(error, || GetTransactionError::NotFound(txid))
         })
         .await
