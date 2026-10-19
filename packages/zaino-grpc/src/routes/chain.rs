@@ -10,7 +10,7 @@ use http::Response;
 use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
-use zaino_grpc_snapshot::{GrpcSnapshot, Lightd};
+use zaino_grpc_snapshot::{GrpcSnapshot, Lightd, Unavailable};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
@@ -151,25 +151,15 @@ where
     Ok(unary_response(frame(&found)))
 }
 
-/// `GetStandardFee`: the ZIP 317 marginal fee from the fleet
-///
-/// - `UNIMPLEMENTED` when every validator asked predates the RPC
-/// - `UNAVAILABLE` when the fleet is unreachable
-pub(crate) async fn standard_fee<S: ChainDataSource>(
-    validators: &TrafficBalancer<S>,
-) -> Result<Response<Body>, Status> {
-    let fee = validators.standard_fee().await.map_err(|unanswered| match &unanswered.last {
-        Some(QueryError::Domain(zaino_source::GetStandardFeeError::Unsupported)) => {
-            Status::unimplemented("every connected validator predates getstandardfee")
-        }
-        _ => Status::unavailable(unanswered.to_string()),
-    })?;
-    let fee = fee.value;
-    let reply = service::StandardFee {
-        fee_zat: u64::from(fee.fee_zat),
-        estimator_version: fee.estimator_version,
-    };
-    Ok(unary_response(frame(&reply)))
+/// `GetStandardFee`: the ZIP 317 marginal fee for the block after best, no validator read
+/// (estimator version 0 = the static rule)
+pub(crate) fn standard_fee<V>(
+    grpc_snapshot: &GrpcSnapshot<V>,
+    network: NetworkType,
+) -> Result<service::StandardFee, Status> {
+    let best = grpc_snapshot.tips().best.ok_or(Unavailable::NoChain).map_err(wire::unavailable)?;
+    let fee = zaino_primitives::protocol::standard_fee(network, best.height + 1);
+    Ok(service::StandardFee { fee_zat: u64::from(fee), estimator_version: 0 })
 }
 
 /// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
@@ -256,8 +246,12 @@ mod tests {
     use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
 
     use crate::service::Method;
+    use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
+    use zaino_grpc_snapshot::GrpcSnapshots;
+    use zaino_persistence::DiskView;
+
     use crate::testing::{
-        decode_frames, dispatch, framed_request, indexed_at, published, routes_over,
+        decode_frames, dispatch, framed_request, grpc_snapshots, indexed_at, published, routes_over,
     };
 
     /// Up to 10 poll rounds (paused clock: instant) until `done`
@@ -668,29 +662,18 @@ mod tests {
         cancel.cancel();
     }
 
-    /// `GetStandardFee` through the whole stack: the fee is the validator's answer alone.
-    #[tokio::test(start_paused = true)]
-    async fn standard_fee_forwards_the_validators_policy() {
-        use http_body_util::BodyExt as _;
-        use tower::Service as _;
-
-        let chain = MockChain::regtest();
-        let node = Arc::new(chain.validator(chain.genesis()));
-        let (routes, balancing, _fold) = routes_over(&node);
-        let cancel = tokio_util::sync::CancellationToken::new();
-        tokio::spawn(balancing.run(cancel.child_token()));
-        let mut router = dispatch(routes);
-
-        let request = framed_request(Method::GetStandardFee, bytes::Bytes::new());
-        let response = router.call(request).await.expect("router answers");
-        assert_eq!(response.headers().get("grpc-status"), None, "a data reply");
-        let body = response.into_body().collect().await.expect("ok").to_bytes();
-        let fee = decode_frames::<service::StandardFee>(&body);
-        assert_eq!(
-            fee,
-            vec![service::StandardFee { fee_zat: 1000, estimator_version: 0 }],
-            "the mock validator's policy, as the validator reported it"
-        );
-        cancel.cancel();
+    /// `GetStandardFee` from the snapshot alone: the rule at best + 1 (mainnet's legacy 5,000 this
+    /// low, regtest's 1,000), `UNAVAILABLE` with no header chain
+    #[test]
+    fn standard_fee_is_the_rule_at_the_block_after_best_with_no_validator_read() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(5);
+        let held = grpc_snapshots(&chain, tip, Vec::new()).load();
+        let fee = |network| standard_fee(&held, network).map(|fee| fee.fee_zat).ok();
+        assert_eq!((fee(NetworkType::Main), fee(NetworkType::Regtest)), (Some(5_000), Some(1_000)));
+        let empty = ChainViewSnapshot::fixed(None, TrustedValidatorSet::default(), &[], &[]);
+        let unanchored = GrpcSnapshots::<DiskView>::fixed(None, Arc::new(empty)).load();
+        let refused = standard_fee(&unanchored, NetworkType::Main).map_err(|status| status.code());
+        assert_eq!(refused, Err(tonic::Code::Unavailable), "no header chain yet");
     }
 }

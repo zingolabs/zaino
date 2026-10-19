@@ -62,7 +62,6 @@ it).
 | `headers(HeaderAsk::Peers { locator })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
-| `standard_fee()` | `Lookup` (interactive) | trusted only, `Unsupported` → next | unanswered once every one is tried |
 | `submit(member, raw)` / `check_admission(member, raw)` | `Submit` (control) | that trusted member only | one attempt (`sendrawtransaction` / `checkadmission`) |
 
 - Within the best tier with room: the route's preferred member, else the least in flight (ties:

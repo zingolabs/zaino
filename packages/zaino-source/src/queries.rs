@@ -11,7 +11,7 @@ use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError, StandardFee};
+use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError};
 
 /// Trusted validator's RPC, as every Zaino consumer asks it
 ///
@@ -82,13 +82,6 @@ pub trait ChainDataSource: Send + Sync + 'static {
         &self,
         transaction: Vec<u8>,
     ) -> impl Future<Output = Result<TxId, QueryError<CheckAdmissionError>>> + Send;
-
-    /// `getstandardfee`: the ZIP 317 marginal fee, zatoshis per logical action
-    ///
-    /// - method-not-found = `Unsupported`, a domain answer
-    fn get_standard_fee(
-        &self,
-    ) -> impl Future<Output = Result<StandardFee, QueryError<GetStandardFeeError>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -178,13 +171,6 @@ pub enum CheckAdmissionError {
     #[error(transparent)]
     Refused(SendRawTransactionError),
     #[error("no checkadmission on this validator")]
-    Unsupported,
-}
-
-/// `getstandardfee`'s rejection: the validator predates the method
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetStandardFeeError {
-    #[error("the validator predates getstandardfee")]
     Unsupported,
 }
 

@@ -323,22 +323,6 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         .await
     }
 
-    async fn get_standard_fee(
-        &self,
-    ) -> Result<crate::StandardFee, QueryError<crate::GetStandardFeeError>> {
-        // `-32601` = `Unsupported` (validator predates the RPC), else a fetch failure
-        self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee, |error| {
-            let error: NonDomainError = error.into();
-            match error.mode {
-                FailureMode::RpcError(METHOD_NOT_FOUND) => {
-                    QueryError::Domain(crate::GetStandardFeeError::Unsupported)
-                }
-                _ => QueryError::NonDomain(error),
-            }
-        })
-        .await
-    }
-
     /// Verbosity 1: the height places it (mined vs mempool)
     async fn get_transaction(
         &self,

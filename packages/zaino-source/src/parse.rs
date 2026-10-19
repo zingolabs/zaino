@@ -246,57 +246,10 @@ pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>
         .collect()
 }
 
-/// `getstandardfee`: fee strict (zero refused), version lenient (absent = 0)
-pub(crate) fn parse_standard_fee(
-    value: &serde_json::Value,
-) -> Result<crate::StandardFee, ParseError> {
-    let fee_zat = as_u64(field(value, "standard_fee")?)?;
-    if fee_zat == 0 {
-        return Err(ParseError::unexpected("a non-zero standard fee", value));
-    }
-    let estimator_version = value
-        .get("version")
-        .filter(|v| !v.is_null())
-        .map(|v| as_u64(v).and_then(|v| u32::try_from(v).map_err(|_| ParseError::Overflow(v))))
-        .transpose()?
-        .unwrap_or(0);
-    Ok(crate::StandardFee {
-        fee_zat: Zatoshis::from_u64(fee_zat).map_err(|_| ParseError::Overflow(fee_zat))?,
-        estimator_version,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    /// `getstandardfee`: both ZIP 2009 regimes parse, absent version reads as 0, zero refused
-    #[test]
-    fn standard_fee_parses_both_regimes_and_refuses_zero() {
-        use crate::StandardFee;
-        let fee = |value: serde_json::Value| parse_standard_fee(&value).expect("parses");
-        let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
-
-        assert_eq!(
-            fee(json!({ "standard_fee": 1000, "version": 0 })),
-            StandardFee { fee_zat: zats(1000), estimator_version: 0 }
-        );
-        assert_eq!(
-            fee(json!({ "standard_fee": 5000, "version": 2 })),
-            StandardFee { fee_zat: zats(5000), estimator_version: 2 }
-        );
-        assert_eq!(
-            fee(json!({ "standard_fee": 5000 })),
-            StandardFee { fee_zat: zats(5000), estimator_version: 0 },
-            "version omitted = the static ZIP 317 fee"
-        );
-
-        let refused = |value: serde_json::Value| parse_standard_fee(&value).is_err();
-        assert!(refused(json!({ "standard_fee": 0, "version": 0 })), "zero refused");
-        assert!(refused(json!({ "standard_fee": "1000" })), "string refused");
-        assert!(refused(json!({ "version": 0 })), "missing fee refused");
-    }
 
     /// Reads differently forwards and backwards (a mirrored decode cannot pass by coincidence)
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";

@@ -248,11 +248,4 @@ impl ChainDataSource for ZebraIndexerGrpcClient {
     ) -> Result<TxId, QueryError<crate::CheckAdmissionError>> {
         self.rpc.check_admission(transaction).await
     }
-
-    async fn get_standard_fee(
-        &self,
-    ) -> Result<crate::StandardFee, QueryError<crate::GetStandardFeeError>> {
-        // JSON-RPC carries fee policy
-        self.rpc.get_standard_fee().await
-    }
 }

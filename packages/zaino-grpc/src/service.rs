@@ -105,7 +105,6 @@ pub(crate) const ROUTES: [Route; 19] = {
         row(GetMempoolStream, "GetMempoolStream", Subscription, None),
         row(GetTransaction, "GetTransaction", Work, None),
         row(GetLightdInfo, "GetLightdInfo", Work, None),
-        // the validator's relay policy, reached through the balancer
         row(GetStandardFee, "GetStandardFee", Work, None),
     ]
 };
@@ -321,7 +320,10 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
                 let info = chain::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
                 Ok(unary_response(frame(&info)))
             }
-            GetStandardFee => chain::standard_fee(&routes.validators).await,
+            GetStandardFee => {
+                let fee = chain::standard_fee(&grpc_snapshot, routes.network)?;
+                Ok(unary_response(frame(&fee)))
+            }
         }
     }
 }

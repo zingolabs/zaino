@@ -1,7 +1,25 @@
 //! Zcash protocol constants and rules (specification facts, restating them elsewhere = bug)
 
-use zcash_protocol::consensus::{NetworkType, Parameters, MAIN_NETWORK, TEST_NETWORK};
+use zcash_protocol::consensus::{BlockHeight, NetworkType, Parameters, MAIN_NETWORK, TEST_NETWORK};
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::value::Zatoshis;
+
+/// ZIP 317 marginal fee, zatoshis per logical action, before ZIP 2009 lowered it
+const LEGACY_MARGINAL_FEE: u64 = 5_000;
+
+/// ZIP 2009's marginal fee
+const MARGINAL_FEE: u64 = 1_000;
+
+/// Mainnet height wallets switch to [`MARGINAL_FEE`] at (draft ZIP, zcash/zips#1352: zebrad's
+/// `getstandardfee`, after the v6.3.0 end-of-support halt)
+const MAINNET_MARGINAL_FEE_HEIGHT: u32 = 3_590_000;
+
+/// Fee per logical action a transaction mined at `height` pays (`GetStandardFee`; test networks =
+/// [`MARGINAL_FEE`] at every height)
+pub fn standard_fee(network: NetworkType, height: BlockHeight) -> Zatoshis {
+    let legacy = network == NetworkType::Main && u32::from(height) < MAINNET_MARGINAL_FEE_HEIGHT;
+    Zatoshis::const_from_u64(if legacy { LEGACY_MARGINAL_FEE } else { MARGINAL_FEE })
+}
 
 /// Mainnet's or testnet's activation heights, as librustzcash compiles them (`None` = regtest:
 /// heights set per chain, read from its validator)
@@ -45,5 +63,20 @@ mod tests {
         assert_eq!(median_time_past(newest_first), Some(6));
         assert_eq!(median_time_past([4, 1, 3, 2]), Some(3));
         assert_eq!(median_time_past([]), None);
+    }
+
+    #[test]
+    fn the_standard_fee_drops_to_a_thousand_at_the_mainnet_switch_and_is_a_thousand_on_test_nets() {
+        let at = |network, height: u32| u64::from(standard_fee(network, BlockHeight::from(height)));
+        #[rustfmt::skip]
+        let cases = [
+            (NetworkType::Main,    3_589_999, 5_000),
+            (NetworkType::Main,    3_590_000, 1_000),
+            (NetworkType::Test,    1,         1_000),
+            (NetworkType::Regtest, 1,         1_000),
+        ];
+        for (network, height, fee) in cases {
+            assert_eq!(at(network, height), fee, "{network:?} at {height}");
+        }
     }
 }

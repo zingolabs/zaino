@@ -16,7 +16,6 @@ mod parse;
 mod peer_info;
 mod queries;
 mod rpc;
-mod standard_fee;
 mod zebra_indexer;
 
 pub use blockchain_info::{BlockchainInfo, ScheduleError};
@@ -29,12 +28,11 @@ pub use peer_info::PeerInfo;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetStandardFeeError, GetTransactionError, MempoolListed, MetadataReading, PollReading,
-    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
+    SendRawTransactionError, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, ResponseSizeCap, RpcError, Timeouts};
-pub use standard_fee::StandardFee;
 pub use zebra_indexer::{ZebraIndexerTls, ZebraIndexerWatch};
 
 // `cfg(test)` too (a crate's own features don't self-enable)
