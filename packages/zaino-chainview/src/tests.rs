@@ -124,7 +124,7 @@ async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_ne
     let reader = view.subscriber();
 
     assert!(reader.current().mempool().is_none(), "no verified tip yet");
-    view.set_verified(Some(chain.verified(tip_10)));
+    view.set_chain(Some(chain.snapshot(tip_10)));
     let unheld = reader.current();
     assert_eq!((unheld.best(), unheld.mempool().is_none()), (Some(tip_10), true), "not polled");
 
@@ -168,7 +168,7 @@ async fn a_single_trusted_validator_serves_its_listings_and_arrivals_are_each_ne
     let tip_11 = chain.mine_empty(1);
     validator.follow(&chain, tip_11);
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(tip_11)));
+    view.set_chain(Some(chain.snapshot(tip_11)));
     let mined = reader.current();
     let now: Vec<_> = mined.mempool().expect("held").entries().map(|entry| entry.txid).collect();
     let mut current = vec![two, three, ours];
@@ -196,13 +196,13 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
 
     polled(&balancer).await;
     assert_eq!(reader.current().trusted_validators()[0].health, Health::Live, "listed its mempool");
-    view.set_verified(Some(chain.verified(at(10))));
+    view.set_chain(Some(chain.snapshot(at(10))));
 
     validator.follow(&chain, at(11));
     validator.estimate(h(40));
     validator.listing(Err(GetMempoolListingError::Inactive));
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(at(11))));
+    view.set_chain(Some(chain.snapshot(at(11))));
     let catching_up = reader.current();
     let held = (catching_up.best(), catching_up.held_by());
     assert_eq!(held, (Some(at(11)), TrustedValidatorSet::at([0])), "catching up: still the holder");
@@ -219,7 +219,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     validator.evict(one);
     validator.hear(&chain, two);
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(at(12))));
+    view.set_chain(Some(chain.snapshot(at(12))));
     let caught_up = reader.current();
     assert_eq!(caught_up.trusted_validators()[0].health, Health::Live);
     assert_eq!(
@@ -250,7 +250,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let reader = view.subscriber();
-    view.set_verified(Some(chain.verified(agreed)));
+    view.set_chain(Some(chain.snapshot(agreed)));
 
     // one validator holding the verified block = a tip (one admission proves validity)
     polled(&balancer).await;
@@ -318,7 +318,7 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     let reader = view.subscriber();
 
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(agreed)));
+    view.set_chain(Some(chain.snapshot(agreed)));
     assert!(!reader.current().held_by().is_empty(), "every one holds the verified tip");
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.calls().sends).collect() };
     let checks = || -> usize { validators.iter().map(|v| v.calls().checks).sum() };
@@ -408,7 +408,7 @@ async fn an_unchecked_submission_tries_every_entry_before_its_verdict() {
     }
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(agreed)));
+    view.set_chain(Some(chain.snapshot(agreed)));
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.calls().sends).collect() };
 
     let rejected = view.submit(raw_transaction(7, 0).1).await;
@@ -515,7 +515,7 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
     assert_eq!((listers, trusted), (2, (1, 2)));
 
     // checked by a holder: answered at once, then relayed through the peers only
-    view.set_verified(Some(chain.verified(chain.genesis())));
+    view.set_chain(Some(chain.snapshot(chain.genesis())));
     polled(&balancer).await;
     let (txid, sent) = raw_transaction(2, 0);
     let answered = view.submit(sent.clone()).await;
@@ -622,7 +622,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let first_seen = |txid: &TxId| reader.current().sighting(txid).map(|s| s.timeline().first_seen);
 
     // listed by the validator and the quorum, then the validator gone: handed over, never dropped
-    view.set_verified(Some(chain.verified(tip)));
+    view.set_chain(Some(chain.snapshot(tip)));
     chain.submit(decoded(a_raw.clone()));
     validator.hear(&chain, a);
     listing(&[a], &seven);
@@ -685,7 +685,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     round().await;
     assert_eq!(served(), [(sent, Some(zats(500)))], "unlisted, ours: kept");
     let next = chain.mine_empty(1);
-    view.set_verified(Some(chain.verified(next)));
+    view.set_chain(Some(chain.snapshot(next)));
     assert_eq!((served(), first_seen(&sent)), (vec![], None), "a block later: mined or gone");
     cancel.cancel();
 }
@@ -717,7 +717,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
         pinned.best().filter(|_| !held.is_empty()).map(|best| (best, held))
     };
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(at_100)));
+    view.set_chain(Some(chain.snapshot(at_100)));
     assert_eq!(tip(), Some((at_100, held_by(&[0, 1, 2]))));
 
     // - a mines 101, a new transaction's bytes 20 s away
@@ -727,7 +727,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     let unmined = chain.submit(decoded(raw_transaction(1, 0).1));
     validators[0].hear(&chain, unmined);
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(at_101)));
+    view.set_chain(Some(chain.snapshot(at_101)));
     assert_eq!(tip(), Some((at_101, held_by(&[0]))), "one holder is enough, bytes or not");
     assert_eq!(agreements(), [Agreement::Agreed, Agreement::Behind, Agreement::Behind]);
     validators[0].latency(&[Port::MempoolBytes], Duration::ZERO);
@@ -755,7 +755,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     let fork = chain.fork(h(100)).outweigh().mine_empty(1).tip();
     validators[2].follow(&chain, fork);
     polled(&balancer).await;
-    view.set_verified(Some(chain.verified(fork)));
+    view.set_chain(Some(chain.snapshot(fork)));
     assert_eq!(tip(), Some((fork, held_by(&[2]))));
     assert_eq!(agreements(), [Agreement::Diverged, Agreement::Diverged, Agreement::Agreed]);
 
@@ -853,7 +853,7 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     let tx1 = chain.submit(decoded(raw_transaction(1, 0).1));
     validator.hear(&chain, tx1);
     let (view, _, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
-    view.set_verified(Some(chain.verified(genesis)));
+    view.set_chain(Some(chain.snapshot(genesis)));
     let reader = view.subscriber();
     let state = || reader.current().trusted_validators()[0].health;
     let serves_tx1 = || {
@@ -905,15 +905,15 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_finalized
     let reader = view.subscriber();
     let stalled = || reader.current().alarms().finality_paused();
 
-    view.set_verified(Some(chain.verified_finalized(tip_30, h(20))));
+    view.set_chain(Some(chain.snapshot_finalized(tip_30, h(20))));
     tokio::time::sleep(Duration::from_secs(61)).await;
     assert!(!stalled(), "finalized = best − depth: nothing owed");
-    view.set_verified(Some(chain.verified_finalized(tip_45, h(20))));
+    view.set_chain(Some(chain.snapshot_finalized(tip_45, h(20))));
     tokio::time::sleep(Duration::from_secs(59)).await;
     assert!(!stalled(), "unmoved 59 s: not yet");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(stalled(), "unmoved past 60 s, 25 non-finalized");
-    view.set_verified(Some(chain.verified_finalized(tip_45, h(35))));
+    view.set_chain(Some(chain.snapshot_finalized(tip_45, h(35))));
     assert!(!stalled(), "finalized moved: cleared at once");
     cancel.cancel();
 }
@@ -942,15 +942,15 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"], None);
     let reader = view.subscriber();
     let sync = view.header_sync(HeaderChain::new(depth()));
-    let verified = sync.subscribe();
+    let chains = sync.subscribe();
     let syncing = tokio::spawn(sync.run(cancel.clone()));
-    let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
+    let published = || chains.borrow().clone().map(|c| (c.best(), c.finalized_tip()));
 
     until("anchored below a's claim, a's tip followed", || published() == Some((a, at_4_990)))
         .await;
     let held = (reader.current().best(), reader.current().held_by());
     assert_eq!(held, (Some(a), TrustedValidatorSet::at([0])), "a holds the tip, b behind it");
-    let first = verified.borrow().clone().expect("a VerifiedChain");
+    let first = chains.borrow().clone().expect("a HeaderChainSnapshot");
     let anchored = (first.hash_at(at_4_887.height), first.hash_at(at_4_886.height));
     assert_eq!(anchored, (Some(at_4_887.hash), None), "no history below the anchor");
     assert!(first.on_best(at_3_000), "b's claim: below finalized, finalized by definition");

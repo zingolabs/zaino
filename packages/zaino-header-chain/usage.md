@@ -2,7 +2,7 @@
 
 The Validated Header tree ([architecture §4](../../docs/architecture.md#4-the-best-chain): the
 anchor, trusted vs peer headers, finality): the bounded tree of branches above the finalized
-boundary, the most-work tip, and the immutable `VerifiedChain` everything downstream reads. A
+boundary, the most-work tip, and the immutable `HeaderChainSnapshot` everything downstream reads. A
 trusted header enters by `insert`, a peer's by `insert_untrusted` (`validate` first).
 
 ```rust,ignore
@@ -26,7 +26,7 @@ if let Some(boundary) = chain.peer_finalizable() {    // best − depth, no diff
         chain.finalize_by_peers(boundary);
     }
 }
-let published = chain.verified();                     // Option<VerifiedChain> (None = no anchor)
+let published = chain.snapshot();                     // Option<HeaderChainSnapshot> (None = no anchor)
 let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds the tree)
 ```
 
@@ -80,9 +80,9 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   older finalized headers are finalized by definition (`on_best` = true) and a header whose parent is one of
   them = `Orphan`.
 
-## `VerifiedChain`
+## `HeaderChainSnapshot`
 
-`HeaderChain::verified()` is an immutable value (clone = refcounts: `imbl` throughout). A
+`HeaderChain::snapshot()` is an immutable value (clone = refcounts: `imbl` throughout). A
 holder's answers never change (H5).
 
 | Method | Answer |
@@ -119,8 +119,8 @@ bookkeeping (cumulative work, child counts, leaf set), naming the invariant in i
 
   let mut headers = chain.header_chain(depth);         // anchored at genesis
   insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
-  let verified = chain.verified(tip);                  // finalized = genesis
-  let pinned = chain.verified_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
+  let snapshot = chain.snapshot(tip);                  // finalized = genesis
+  let pinned = chain.snapshot_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
   ```
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

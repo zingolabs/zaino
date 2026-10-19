@@ -215,9 +215,9 @@ async fn run(n: usize, moves: Vec<Move>) {
                         let _side_or_known = insert(&mut headers, &sim.chain.blocks(tip));
                     }
                 }
-                view.set_verified(headers.verified());
+                view.set_chain(headers.snapshot());
 
-                let best = headers.verified().map(|verified| verified.best());
+                let best = headers.snapshot().map(|snapshot| snapshot.best());
                 let context = format!("step {step} poll {node} best {best:?}: {seen:?}");
                 let pinned = reader.current();
                 assert_eq!(pinned.best(), best, "{context}");

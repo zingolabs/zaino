@@ -24,7 +24,7 @@ let publisher = zaino_grpc_snapshot::Publisher::new(nfs.indexed(), view.subscrib
 tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone | IndexGone
 ```
 
-- `Nfs::new`: the `VerifiedChain` watch, the traffic balancer (`zaino_sync::fetch` per wanted
+- `Nfs::new`: the `HeaderChainSnapshot` watch, the traffic balancer (`zaino_sync::fetch` per wanted
   block, `Urgency::Tip`), the chain params, `depth` (sets the folding window:
   [architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)), `lookahead` (bodies fetched
   or folding ahead of the next fold).
@@ -76,7 +76,7 @@ from `zaino-grpc-snapshot`.
 ## Core and invariants
 
 ```text
- VerifiedChain ──────┐                    ┌─▶ Fetch ───▶ zaino_sync::fetch(.., Tip) ─▶ Checked
+ HeaderChainSnapshot ┐                    ┌─▶ Fetch ───▶ zaino_sync::fetch(.., Tip) ─▶ Checked
  checked bodies ─────┤                    │
  fold results ───────┼─▶ NfsCore::step ───┼─▶ Fold ────▶ fold_block on rayon ─▶ Node in graph
  IndexHandle commits ┘   (pure: no I/O)   │

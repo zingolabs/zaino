@@ -136,7 +136,7 @@ mod tests {
         let tip = chain.mine_empty(1);
         let side = chain.fork(h(1)).mine_empty(1).tip();
         let h2 = h(2);
-        let record = chain.verified(tip).header_at(h2).expect("on the best chain");
+        let record = chain.snapshot(tip).header_at(h2).expect("on the best chain");
         let block = |hash: BlockHash| Block::clone(chain.block(hash));
         let with_txs = |txs: Vec<Transaction>| Block::new(block(two.hash).header().clone(), txs);
         let mut header = block(two.hash).header().clone();
@@ -184,7 +184,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
         let two = chain.mine(|b| b.tx(|t| t.txid([0x21; 32])).tx(|t| t.txid([0x22; 32])));
-        let record = chain.verified(two).header_at(h(2)).expect("verified");
+        let record = chain.snapshot(two).header_at(h(2)).expect("verified");
         let validator = chain.validator(two);
         let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
         let passed = check_block(honest, h(2), &record).map(|checked| checked.block_ref());

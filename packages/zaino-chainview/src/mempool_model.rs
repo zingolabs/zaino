@@ -248,7 +248,7 @@ impl Run {
             Move::Round { ref answers, wait } => self.round(answers, wait),
             Move::Block => {
                 self.tip = self.chain.mine_empty(1);
-                self.core.apply_headers(Some(Arc::new(self.chain.verified(self.tip))));
+                self.core.apply_headers(Some(Arc::new(self.chain.snapshot(self.tip))));
                 self.oracle.polled_since_block.iter_mut().for_each(|polled| *polled = false);
                 self.oracle.settle(true);
             }
@@ -386,7 +386,7 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
     let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
     let core = ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS);
-    core.apply_headers(Some(Arc::new(chain.verified(tip))));
+    core.apply_headers(Some(Arc::new(chain.snapshot(tip))));
     let oracle = Oracle {
         health: vec![Health::Pending; validators],
         listed: vec![BTreeSet::new(); validators],

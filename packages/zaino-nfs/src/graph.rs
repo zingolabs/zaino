@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
@@ -89,7 +89,7 @@ impl<F> Graph<F> {
     /// Deepest best node of the run from the root (`None` = no best node)
     pub(crate) fn best_top(
         &self,
-        chain: &VerifiedChain,
+        chain: &HeaderChainSnapshot,
         root: Option<BlockRef>,
     ) -> Option<&Arc<Node<F>>> {
         let from = root.map_or(0, |root| u32::from(root.height) + 1);
@@ -99,7 +99,7 @@ impl<F> Graph<F> {
     }
 
     /// Kept iff above `root` (every index holds the rest) and held by `chain` (G8)
-    pub(crate) fn prune(&mut self, chain: &VerifiedChain, root: Option<BlockRef>) {
+    pub(crate) fn prune(&mut self, chain: &HeaderChainSnapshot, root: Option<BlockRef>) {
         let root_height = root.map(|root| root.height);
         self.nodes.retain(|_, node| Some(node.at.height) > root_height && chain.holds(node.at));
     }
@@ -108,7 +108,7 @@ impl<F> Graph<F> {
     /// unknown)
     pub(crate) fn at(
         &self,
-        chain: &VerifiedChain,
+        chain: &HeaderChainSnapshot,
         root: Option<BlockRef>,
         hash: &BlockHash,
     ) -> Option<Base<F>> {
@@ -122,7 +122,7 @@ impl<F> Graph<F> {
 
     /// N1, N2, G8 (panics naming the invariant broken)
     #[cfg(test)]
-    pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>) {
+    pub(crate) fn check(&self, chain: &HeaderChainSnapshot, root: Option<BlockRef>) {
         for node in self.nodes.values() {
             let header = node.block.header();
             let at = BlockRef { hash: header.hash, height: header.height };

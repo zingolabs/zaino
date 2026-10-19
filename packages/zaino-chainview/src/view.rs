@@ -96,10 +96,10 @@ impl<S: ChainDataSource> ChainView<S> {
         Some(PeerMempool::new(Arc::clone(&self.core), peers, utxos, self.schedule))
     }
 
-    /// Stands in for header sync in tests: `verified` as its word
+    /// Stands in for header sync in tests: `chain` as its word
     #[cfg(any(test, feature = "testing"))]
-    pub fn set_verified(&self, verified: Option<zaino_header_chain::VerifiedChain>) {
-        self.core.apply_headers(verified.map(Arc::new));
+    pub fn set_chain(&self, chain: Option<zaino_header_chain::HeaderChainSnapshot>) {
+        self.core.apply_headers(chain.map(Arc::new));
     }
 
     /// The runnable that feeds `chain` from the validators and publishes its best tip into this

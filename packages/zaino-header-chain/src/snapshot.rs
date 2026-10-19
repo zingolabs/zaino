@@ -1,4 +1,4 @@
-//! [`VerifiedChain`]: the one value everything downstream reads
+//! [`HeaderChainSnapshot`]: the one value everything downstream reads
 //!
 //! - clone = refcounts (`imbl`): a holder's answers never change
 //! - at or below the finalized tip = finalized by definition (a trusted validator held it)
@@ -14,7 +14,7 @@ use crate::chain::{BestTip, Node, Record};
 /// - `finalized_headers` = newest finalized headers, oldest first, the finalized tip last
 /// - `nodes` = the header tree above the finalized tip, every branch
 #[derive(Debug, Clone)]
-pub struct VerifiedChain {
+pub struct HeaderChainSnapshot {
     best: BestTip,
     above: imbl::Vector<Record>,
     finalized_headers: imbl::Vector<(BlockHeight, Record)>,
@@ -24,7 +24,7 @@ pub struct VerifiedChain {
 /// zcashd `CChain::GetLocator`: the step doubles once the locator holds more than this many
 const CONSECUTIVE: usize = 10;
 
-impl VerifiedChain {
+impl HeaderChainSnapshot {
     pub(crate) fn new(
         best: BestTip,
         above: imbl::Vector<Record>,

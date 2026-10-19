@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
+use zaino_header_chain::{decode_header, HeaderChain, HeaderChainSnapshot, Record, Rejected};
 use zaino_primitives::testing::{encode_header, h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_sync::{testing::check_block, Checked};
@@ -146,7 +146,7 @@ struct Sim {
     decoy: BlockHash,
     lookahead: usize,
     core: NfsCore<Toys>,
-    given: Option<Arc<VerifiedChain>>,
+    given: Option<Arc<HeaderChainSnapshot>>,
     pending: Vec<(Instant, Due)>,
     fetching: HashSet<BlockHash>,
     writers: Vec<Writer>,
@@ -251,7 +251,7 @@ impl Sim {
     }
 
     fn publish(&mut self, context: &str) {
-        let chain = Arc::new(self.headers.verified().expect("genesis verified"));
+        let chain = Arc::new(self.headers.snapshot().expect("genesis verified"));
         self.given = Some(Arc::clone(&chain));
         self.step(Input::Chain(chain), context);
     }

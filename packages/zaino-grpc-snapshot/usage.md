@@ -38,7 +38,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | ----------------------- | ----------------------------------------------------------------------------- |
 | `seq()`                 | +1 per publish                                                                |
 | `tips()`                | `Tips { best, finalized_tip, served, held_by, synced }`                           |
-| `chain()`               | the chain view's `VerifiedChain`                                              |
+| `chain()`               | the chain view's `HeaderChainSnapshot`                                        |
 | `served()`              | the NFS's served `IndexesAtBlock` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
 | `mempool()`             | the servable mempool while a `Live` validator holds best or `peers_quorate()`; else `NoChain` / `NotHeld` |
@@ -111,7 +111,7 @@ emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then rend
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
-| G8 | every NFS node on best or a side branch the chain holds (`VerifiedChain::holds`) | `Graph::check` |
+| G8 | every NFS node on best or a side branch the chain holds (`HeaderChainSnapshot::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
 | G10 | an epoch carries no txid of a block in `served_above_durable()` | `compose::check`; model |
 

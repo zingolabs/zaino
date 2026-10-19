@@ -5,9 +5,9 @@ mod chain;
 mod header;
 mod params;
 mod rules;
+mod snapshot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod verified;
 
 #[cfg(test)]
 mod model;
@@ -18,4 +18,4 @@ pub use chain::{BestTip, HeaderChain, Inserted, Record};
 pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
 pub use rules::Rejected;
-pub use verified::VerifiedChain;
+pub use snapshot::HeaderChainSnapshot;

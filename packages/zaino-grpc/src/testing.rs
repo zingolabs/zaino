@@ -75,7 +75,7 @@ pub(super) fn indexed_at(
     views: Vec<(IndexKind, DiskView)>,
 ) -> NfsPublication<DiskView> {
     let params = ChainParams::of(chain);
-    NfsPublication::fixed(Arc::new(chain.verified(tip)), tip, params, views)
+    NfsPublication::fixed(Arc::new(chain.snapshot(tip)), tip, params, views)
 }
 
 /// Fixed `GrpcSnapshot`: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
@@ -86,7 +86,7 @@ pub(super) fn grpc_snapshots_held(
     held_by: TrustedValidatorSet,
     ours: &[(TxId, bytes::Bytes)],
 ) -> GrpcSnapshots<DiskView> {
-    let verified = Some(Arc::new(chain.verified(tip)));
+    let verified = Some(Arc::new(chain.snapshot(tip)));
     let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);
     GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }

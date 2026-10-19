@@ -198,14 +198,14 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 
 | View | Crate | Gives |
 |---|---|---|
-| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_finalized(tip, finalized_at)` |
+| `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `snapshot(tip)`, `snapshot_finalized(tip, finalized_at)` |
 | `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
 | `MockPeerSet::new(&chain, tip)` | `zaino-traffic` | a `PeerTransport` over one path, `hold(height)` to move its tip |
 | `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
 | `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
 | `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
 
-Finality is the header chain's, never the builder's: ask for it with `verified_finalized`.
+Finality is the header chain's, never the builder's: ask for it with `snapshot_finalized`.
 
 ### Invariants
 

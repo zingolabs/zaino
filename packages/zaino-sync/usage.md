@@ -6,12 +6,12 @@ broadcast (`FinalizedStream<Block>`); each index writer runs its own loop over i
 [architecture §7](../../docs/architecture.md#finalized-path-zaino-sync).
 
 ```text
- VerifiedChain ─▶ FinalizedFollower ─▶ FinalizedStream<Block> ─┬─▶ [queue] ─▶ utxo-set ─▶ FeeSink ┐
- (finalized_tip)  fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
-                                                           ├─▶ [queue] ─▶ tree-state
-                                                           ├─▶ [queue] ─▶ block-hash
-                                                           └─▶ [queue] ─▶ transparent-address
-                                                       each writer: fold → Store::apply → commit
+ HeaderChainSnapshot ─▶ FinalizedFollower ─▶ FinalizedStream<Block> ─┬─▶ [queue] ─▶ utxo-set ─▶ FeeSink ┐
+ (finalized_tip)        fetch, in order      one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
+                                                                     ├─▶ [queue] ─▶ tree-state
+                                                                     ├─▶ [queue] ─▶ block-hash
+                                                                     └─▶ [queue] ─▶ transparent-address
+                                                                 each writer: fold → Store::apply → commit
 ```
 
 Which index holds the pipeline back: the one whose `zaino_index_applied_height` stops while

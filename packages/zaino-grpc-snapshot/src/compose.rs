@@ -3,7 +3,7 @@
 
 use crate::grpc_snapshot::Tips;
 use zaino_chainview::ChainViewSnapshot;
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::NfsPublication;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 
@@ -19,8 +19,8 @@ pub(crate) fn compose<V>(
     let chain = view.chain().map(|chain| &**chain);
     let served = indexed.map(|indexed| indexed.served().tip());
     Tips {
-        best: chain.map(VerifiedChain::best),
-        finalized_tip: chain.map(VerifiedChain::finalized_tip),
+        best: chain.map(HeaderChainSnapshot::best),
+        finalized_tip: chain.map(HeaderChainSnapshot::finalized_tip),
         served,
         held_by: view.held_by(),
         synced: chain.is_some_and(|chain| {
@@ -34,7 +34,7 @@ pub(crate) fn compose<V>(
 fn synced(
     was: bool,
     served: Option<BlockRef>,
-    chain: &VerifiedChain,
+    chain: &HeaderChainSnapshot,
     depth: FinalityDepth,
     ahead: bool,
 ) -> bool {

@@ -1,4 +1,4 @@
-//! [`NfsCore`]: the [`VerifiedChain`] + bodies + folds + each index's durable tip → the served tip
+//! [`NfsCore`]: the [`HeaderChainSnapshot`] + bodies + folds + each index's durable tip → the served tip
 //! and the fetches and folds feeding it (`usage.md`)
 //!
 //! - Pure: no I/O, no clock
@@ -14,7 +14,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use zaino_header_chain::{Record, VerifiedChain};
+use zaino_header_chain::{HeaderChainSnapshot, Record};
 use zaino_primitives::types::{Block, BlockRef};
 use zaino_sync::Checked;
 use zcash_protocol::consensus::{BlockHeight, H0};
@@ -27,7 +27,7 @@ use crate::graph::{Graph, Node};
 pub(crate) struct NfsCore<F> {
     lookahead: usize,
     window: u32,
-    chain: Option<Arc<VerifiedChain>>,
+    chain: Option<Arc<HeaderChainSnapshot>>,
     durable: Vec<Option<BlockRef>>,
     graph: Graph<F>,
     ready: BTreeMap<BlockHeight, Arc<Block>>,
@@ -67,7 +67,7 @@ impl Indexes {
 /// - `Durable` = every index's durable tip, after each commit
 #[derive(Debug, Clone)]
 pub(crate) enum Input<F> {
-    Chain(Arc<VerifiedChain>),
+    Chain(Arc<HeaderChainSnapshot>),
     Body(Checked),
     Folded { at: BlockRef, covers: Indexes, folded: Arc<F> },
     Durable(Vec<Option<BlockRef>>),
@@ -87,7 +87,7 @@ pub(crate) enum Output<F> {
 /// `tip` = a node of `graph`, or `root` (read from the durable stores alone)
 #[derive(Debug, Clone)]
 pub(crate) struct Publication<F> {
-    pub(crate) chain: Arc<VerifiedChain>,
+    pub(crate) chain: Arc<HeaderChainSnapshot>,
     pub(crate) tip: BlockRef,
     pub(crate) root: Option<BlockRef>,
     pub(crate) graph: Graph<F>,
@@ -159,7 +159,7 @@ impl<F> NfsCore<F> {
 
     /// Root within `window` of best + its next header held (else the finalized path alone: bulk
     /// sync, or a chain anchored above the root, its gap fetched by height)
-    fn active(&self, chain: &VerifiedChain) -> bool {
+    fn active(&self, chain: &HeaderChainSnapshot) -> bool {
         let (next, best) = (self.next_root(), chain.best().height);
         let headed = next > best || chain.header_at(next).is_some();
         headed && (u32::from(best) + 1).saturating_sub(u32::from(next)) <= self.window
@@ -190,7 +190,7 @@ impl<F> NfsCore<F> {
     }
 
     /// Bodies and wants no longer needed: inactive, at or below the root, off best, or folded
-    fn forget(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
+    fn forget(&mut self, chain: &HeaderChainSnapshot, out: &mut Vec<Output<F>>) {
         let (next, active, graph) = (self.next_root(), self.active(chain), &self.graph);
         let needed = |at: BlockRef| {
             active && at.height >= next && chain.on_best(at) && !graph.contains(&at.hash)
@@ -209,7 +209,7 @@ impl<F> NfsCore<F> {
     }
 
     /// Next best block above the folded run from the root, once its body is here (one at a time)
-    fn fold(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
+    fn fold(&mut self, chain: &HeaderChainSnapshot, out: &mut Vec<Output<F>>) {
         if !self.active(chain) || !self.folding.is_empty() {
             return;
         }
@@ -229,7 +229,7 @@ impl<F> NfsCore<F> {
     /// Deepest folded best block, else the root
     ///
     /// - `None` = nothing durable, or the root off the best chain (a lost header store)
-    fn served(&self, chain: &VerifiedChain) -> Option<Shown> {
+    fn served(&self, chain: &HeaderChainSnapshot) -> Option<Shown> {
         let root = self.root();
         let top = self.graph.best_top(chain, root).map(|top| top.at);
         let tip = top.or(root).filter(|tip| chain.on_best(*tip))?;
@@ -238,7 +238,7 @@ impl<F> NfsCore<F> {
 
     /// - served tip or a durable tip moved → published
     /// - nothing servable after a publish → withdrawn
-    fn publish(&mut self, chain: &Arc<VerifiedChain>, out: &mut Vec<Output<F>>) {
+    fn publish(&mut self, chain: &Arc<HeaderChainSnapshot>, out: &mut Vec<Output<F>>) {
         let Some(shown) = self.served(chain) else {
             if self.shown.take().is_some() {
                 out.push(Output::Publish(None));
@@ -256,7 +256,7 @@ impl<F> NfsCore<F> {
 
     /// First `lookahead` best heights above the root with no node: each held, folding or wanted
     /// (a new want = one `Fetch`)
-    fn want(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
+    fn want(&mut self, chain: &HeaderChainSnapshot, out: &mut Vec<Output<F>>) {
         if !self.active(chain) {
             return;
         }

@@ -196,7 +196,7 @@ impl Pipeline {
     fn start(
         engine: &DiskEngine,
         kinds: &[IndexKind],
-        chain: &watch::Receiver<Option<Arc<VerifiedChain>>>,
+        chain: &watch::Receiver<Option<Arc<HeaderChainSnapshot>>>,
         balancer: &TrafficBalancer<MockValidator>,
         params: ChainParams,
     ) -> Self {
@@ -405,7 +405,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
     let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
-    let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let (verified, verified_rx) = watch::channel(headers.snapshot().map(Arc::new));
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
@@ -426,7 +426,7 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
             if let Some(tip) = added.last() {
                 members.iter().for_each(|member| member.follow(&blocks, tip.block_ref()));
             }
-            verified.send_replace(headers.verified().map(Arc::new));
+            verified.send_replace(headers.snapshot().map(Arc::new));
             let best = headers.best().expect("verified").block;
             let finalized_height = headers.finalized_tip().map(|tip| tip.height);
             pipeline.settle(best, finalized_height, |_| {}, &mut check, &context).await;
@@ -464,7 +464,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
-    let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let (verified, verified_rx) = watch::channel(headers.snapshot().map(Arc::new));
     let params = ChainParams::of(&blocks);
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
@@ -485,7 +485,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
         if let Some(tip) = added.last() {
             member.follow(&blocks, tip.block_ref());
         }
-        verified.send_replace(headers.verified().map(Arc::new));
+        verified.send_replace(headers.snapshot().map(Arc::new));
         (headers.best().expect("verified").block, headers.finalized_tip().map(|tip| tip.height))
     };
 
@@ -520,7 +520,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let a5 = blocks.mine_empty(5);
     let mut headers = blocks.header_chain(DEPTH);
     insert(&mut headers, &blocks.blocks(a5)).expect("valid headers");
-    let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let (_verified, verified_rx) = watch::channel(headers.snapshot().map(Arc::new));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let source = Arc::new(blocks.validator(a5));
     let trusted = TrustedValidator { address: "unpolled".to_owned(), source, priority: 0, limits };

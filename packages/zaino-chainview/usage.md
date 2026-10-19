@@ -52,7 +52,7 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 ## Structure
 
 ```text
-HeaderSync             trusted headers(Pinned) + peer headers(Peers) → HeaderChain → VerifiedChain
+HeaderSync             trusted headers(Pinned) + peer headers(Peers) → HeaderChain → HeaderChainSnapshot
 ObservationMerge       each trusted validator's poll (TrafficBalancer::observe): claim + getblockhash first,
       │                then the listing diff (bytes(..) fetched between)
 PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer finality)
@@ -67,10 +67,10 @@ The merge is `O(change)`. Raw bytes are fetched once per txid, the lister prefer
 ## `HeaderSync`
 
 `HeaderSync::run(cancel)` owns the `HeaderChain` (no lock). `subscribe()` (take it before `run`) =
-`watch<Option<Arc<VerifiedChain>>>`, republished whenever best or finalized moves.
+`watch<Option<Arc<HeaderChainSnapshot>>>`, republished whenever best or finalized moves.
 
 - **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from the first answering
-  validator whose claim the verified chain does not hold. Anchors at claim − `anchor_below()`
+  validator whose claim the header chain does not hold. Anchors at claim − `anchor_below()`
   (max(depth, 113)) with no chain or that anchor past `ceiling`; otherwise extends. The run's last
   header is vouched.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
@@ -96,7 +96,7 @@ Cheap to clone; cannot drive polling or submit.
 
 | Method | Answer |
 |---|---|
-| `chain()` | the `VerifiedChain` every standing was judged under |
+| `chain()` | the `HeaderChainSnapshot` every standing was judged under |
 | `best()` | the verified best, held or not |
 | `held_by()` | `TrustedValidatorSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain |
 | `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
@@ -212,7 +212,7 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 
 ## Testing (feature `testing`)
 
-- `ChainView::set_verified(Some(chain.verified(tip)))` stands in for header sync
+- `ChainView::set_chain(Some(chain.snapshot(tip)))` stands in for header sync
   (`zaino_header_chain::testing::HeaderViews`).
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best

@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::Lie;
@@ -58,14 +58,14 @@ impl World {
     }
 
     /// Header chain over `blocks` (genesis first), finalized through `finalized_height`
-    fn verified(&self, blocks: &[BlockHash], finalized_height: u32) -> Arc<VerifiedChain> {
+    fn snapshot(&self, blocks: &[BlockHash], finalized_height: u32) -> Arc<HeaderChainSnapshot> {
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("nz"));
         let mut headers = self.builder.header_chain(depth);
         let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
         insert(&mut headers, &path).expect("valid");
         let through = self.at(blocks[finalized_height as usize]);
         headers.finalize(through);
-        Arc::new(headers.verified().expect("verified"))
+        Arc::new(headers.snapshot().expect("verified"))
     }
 
     /// Both indexes durable at `durable`
@@ -97,11 +97,11 @@ impl World {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
         let mut core = NfsCore::new(4, 2, 10);
-        self.drive(&mut core, Input::Chain(self.verified(&a[..=4], 1)), all);
+        self.drive(&mut core, Input::Chain(self.snapshot(&a[..=4], 1)), all);
         self.drive(&mut core, self.durable([a[1], a[1]]), all);
         let on_s = [&a[..=4], &self.s[..2]].concat();
-        self.drive(&mut core, Input::Chain(self.verified(&on_s, 1)), all);
-        let back_on_a = self.verified(&[&on_s[..], &a[5..]].concat(), 4);
+        self.drive(&mut core, Input::Chain(self.snapshot(&on_s, 1)), all);
+        let back_on_a = self.snapshot(&[&on_s[..], &a[5..]].concat(), 4);
         let hold = Hold { fetch: Some(a[9]), fold: Some(a[7]) };
         self.drive(&mut core, Input::Chain(back_on_a), hold);
         self.drive(&mut core, self.durable([a[3], a[2]]), all);

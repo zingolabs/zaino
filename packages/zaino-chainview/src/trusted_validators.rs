@@ -1,6 +1,6 @@
 //! Who the trusted validators are, and what the view needs to know about each
 
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
@@ -140,7 +140,7 @@ impl TrustedValidatorMeta {
 
     /// Answering (catching up included), its claim = `chain`'s best, or above it with its last
     /// `getblockhash` answer on `chain` (trusted: holding a block = holding every block below it)
-    pub(crate) fn holds(&self, chain: &VerifiedChain) -> bool {
+    pub(crate) fn holds(&self, chain: &HeaderChainSnapshot) -> bool {
         let best = chain.best();
         let ours = self.block_at_best.is_some_and(|held| chain.on_best(held));
         let above = |claim: BlockRef| claim == best || (claim.height > best.height && ours);
@@ -149,7 +149,7 @@ impl TrustedValidatorMeta {
 
     /// Answering, its claim above `chain`'s best, not shown off it (`block_at_best` unread yet =
     /// maybe ahead: no poll since the chain moved)
-    pub(crate) fn claims_past(&self, chain: &VerifiedChain) -> bool {
+    pub(crate) fn claims_past(&self, chain: &HeaderChainSnapshot) -> bool {
         let best = chain.best();
         let forked = self
             .block_at_best
@@ -163,7 +163,7 @@ impl TrustedValidatorMeta {
     /// - `Ahead` = claim higher + `block_at_best` verified
     /// - `Behind` = claim lower + verified
     /// - `Diverged` = else
-    pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
+    pub(crate) fn agreement_with(&self, chain: Option<&HeaderChainSnapshot>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;
         };

@@ -10,7 +10,7 @@ use bytes::Bytes;
 use imbl::{OrdSet, Vector};
 use tokio::sync::watch;
 use tokio::time::Instant;
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
 use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, TrustedValidatorId};
@@ -275,9 +275,9 @@ impl ChainViewCore {
     }
 
     /// Header sync's word: the verified chain (`None` = nothing verified yet)
-    pub(crate) fn apply_headers(&self, chain: Option<Arc<VerifiedChain>>) {
+    pub(crate) fn apply_headers(&self, chain: Option<Arc<HeaderChainSnapshot>>) {
         self.merge(|state| {
-            state.verified(chain, Instant::now());
+            state.set_chain(chain, Instant::now());
             (Change::Settle(Vec::new()), ())
         })
     }

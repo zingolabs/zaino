@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::per_index::PerIndex;
 use tokio::sync::watch;
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_index_compact_block::CompactBlockReader;
 use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{pool_activations, TreeStateReader};
@@ -90,7 +90,7 @@ impl<V> IndexesAtBlock<V> {
 /// - `served` = deepest folded best block, else `root` (lowest durable tip of every index)
 /// - `durable` = each enabled index's durable view as of this publish (republished per commit)
 pub struct NfsPublication<V> {
-    chain: Arc<VerifiedChain>,
+    chain: Arc<HeaderChainSnapshot>,
     root: Option<BlockRef>,
     served: IndexesAtBlock<V>,
     durable: PerIndex<V>,
@@ -100,7 +100,7 @@ pub struct NfsPublication<V> {
 impl<V: View> NfsPublication<V> {
     /// Panics: `tip` neither a node of `graph` nor `root`
     pub(crate) fn new(
-        chain: Arc<VerifiedChain>,
+        chain: Arc<HeaderChainSnapshot>,
         tip: BlockRef,
         root: Option<BlockRef>,
         params: ChainParams,
@@ -129,7 +129,7 @@ impl<V: View> NfsPublication<V> {
 
 impl<V> NfsPublication<V> {
     /// Chain `served` was judged under (`GrpcSnapshot` judges under the chain view's)
-    pub fn chain(&self) -> &Arc<VerifiedChain> {
+    pub fn chain(&self) -> &Arc<HeaderChainSnapshot> {
         &self.chain
     }
 
@@ -266,7 +266,7 @@ pub type Published<V> = watch::Receiver<Option<Arc<NfsPublication<V>>>>;
 impl<V: View> NfsPublication<V> {
     /// At `tip` on `chain`, `tip` = the root: each enabled index = its durable view
     pub fn fixed(
-        chain: Arc<VerifiedChain>,
+        chain: Arc<HeaderChainSnapshot>,
         tip: BlockRef,
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
@@ -277,7 +277,7 @@ impl<V: View> NfsPublication<V> {
     /// [`fixed`](Self::fixed) at `root`, then `above_root` (root's child first) folded with no
     /// layers: served = its last
     pub fn fixed_above(
-        chain: Arc<VerifiedChain>,
+        chain: Arc<HeaderChainSnapshot>,
         root: BlockRef,
         above_root: &[Arc<Block>],
         params: ChainParams,

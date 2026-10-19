@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
 use zaino_primitives::testing::{h, MockChain};
@@ -58,8 +58,8 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
 
     let cancel = CancellationToken::new();
     let running = tokio::spawn(publisher.run(cancel.clone()));
-    let chain = builder.verified(a3);
-    view.set_verified(Some(chain.clone()));
+    let chain = builder.snapshot(a3);
+    view.set_chain(Some(chain.clone()));
     within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
     let grpc_snapshot = grpc_snapshots.load();
     assert_eq!(
@@ -103,7 +103,7 @@ fn one_snapshot_renders_every_gauge() {
     let mut headers = builder.header_chain(DEPTH);
     insert(&mut headers, &a).expect("A verifies");
     headers.finalize(a[2].block_ref());
-    let chain = Arc::new(headers.verified().expect("verified"));
+    let chain = Arc::new(headers.snapshot().expect("verified"));
 
     let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let schema = zaino_internal_block_hash_to_height::schema(NetworkType::Regtest);
@@ -169,7 +169,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
     let served_at = |tip: &Block| {
-        let chain = Arc::new(builder.verified(tip.block_ref()));
+        let chain = Arc::new(builder.snapshot(tip.block_ref()));
         let params = ChainParams::of(&builder);
         let indexed =
             NfsPublication::fixed(Arc::clone(&chain), tip.block_ref(), params, none.clone());
@@ -214,7 +214,7 @@ fn a_validator_catching_up_behind_best_is_syncing_but_live_or_diverged_is_down()
     let now = i64::from(a[12].header().time);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.verified(a12));
+    let chain = Arc::new(builder.snapshot(a12));
     let params = ChainParams::of(&builder);
     let indexed =
         Arc::new(NfsPublication::fixed(Arc::clone(&chain), a[4].block_ref(), params, none));
@@ -248,7 +248,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
     let now = i64::from(builder.blocks(a12)[12].header().time);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.verified(a12));
+    let chain = Arc::new(builder.snapshot(a12));
     let indexed =
         Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let cases = [
@@ -298,7 +298,7 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let stale = now + 30 * 60;
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.verified(a12));
+    let chain = Arc::new(builder.snapshot(a12));
     let indexed =
         Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let held = ChainViewSnapshot::fixed(
@@ -330,7 +330,7 @@ struct Drill {
     a: Vec<Arc<Block>>,
     s5: BlockRef,
     mined: TxId,
-    chain: Arc<VerifiedChain>,
+    chain: Arc<HeaderChainSnapshot>,
     params: ChainParams,
     prev: Arc<GrpcSnapshot<DiskView>>,
     next: Arc<GrpcSnapshot<DiskView>>,
@@ -344,7 +344,7 @@ impl Drill {
         let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
         let a = builder.blocks(a6);
         let s5 = builder.fork(h(4)).mine_empty(1).tip();
-        let chain = Arc::new(builder.verified(a6));
+        let chain = Arc::new(builder.snapshot(a6));
         let params = ChainParams::of(&builder);
         let view = Arc::new(view(&chain, &[]));
         let core = Core::new(served(&chain, params, a[3].block_ref()), Arc::clone(&view), DEPTH);
@@ -368,7 +368,7 @@ impl Drill {
 }
 
 /// Both validators holding `chain`'s best, `mempool` listed
-fn view(chain: &Arc<VerifiedChain>, mempool: &[(TxId, Bytes)]) -> ChainViewSnapshot {
+fn view(chain: &Arc<HeaderChainSnapshot>, mempool: &[(TxId, Bytes)]) -> ChainViewSnapshot {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     ChainViewSnapshot::fixed(
         Some(Arc::clone(chain)),
@@ -380,7 +380,7 @@ fn view(chain: &Arc<VerifiedChain>, mempool: &[(TxId, Bytes)]) -> ChainViewSnaps
 
 /// Index views serving `block` (no tables)
 fn served(
-    chain: &Arc<VerifiedChain>,
+    chain: &Arc<HeaderChainSnapshot>,
     params: ChainParams,
     block: BlockRef,
 ) -> Option<Arc<NfsPublication<DiskView>>> {

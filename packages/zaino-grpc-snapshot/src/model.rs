@@ -19,7 +19,7 @@ use futures::FutureExt;
 use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::{HeaderChain, VerifiedChain};
+use zaino_header_chain::{HeaderChain, HeaderChainSnapshot};
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::testing::{h, MockChain};
@@ -116,8 +116,8 @@ struct Model {
 }
 
 impl Model {
-    fn chain(&self) -> Arc<VerifiedChain> {
-        Arc::new(self.headers.verified().expect("genesis verified"))
+    fn chain(&self) -> Arc<HeaderChainSnapshot> {
+        Arc::new(self.headers.snapshot().expect("genesis verified"))
     }
 
     fn set(mask: u8) -> TrustedValidatorSet {

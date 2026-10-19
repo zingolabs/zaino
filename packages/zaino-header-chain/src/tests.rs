@@ -95,7 +95,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     let depth = FinalityDepth::new(NonZeroU32::new(10).expect("nz"));
     let mut chain = HeaderChain::new(depth);
     assert_eq!(
-        (chain.best(), chain.verified().is_some()),
+        (chain.best(), chain.snapshot().is_some()),
         (None, false),
         "nothing before an anchor"
     );
@@ -126,7 +126,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     let work: u128 = headers[1..=200].iter().map(|h| header_work(h.bits()).expect("valid")).sum();
     assert_eq!((best.block, best.cumulative_work), (at(200), work), "work from the anchor");
 
-    let verified = chain.verified().expect("anchored");
+    let verified = chain.snapshot().expect("anchored");
     for index in [78, 189, 190, 191, 200] {
         let header = verified.header_at(at(index).height).expect("held");
         let real = &headers[index];

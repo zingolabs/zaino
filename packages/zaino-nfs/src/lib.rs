@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_persistence::{IndexKind, PinnedView};
 use zaino_primitives::display::Human;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
@@ -52,7 +52,7 @@ pub enum NfsError {
 /// - Outputs: fetches (tasks), folds (compute pool), [`NfsPublication`] publishes
 /// - `window` = `2 · depth`: the NFS folds while the lowest durable tip is that close to best
 pub struct Nfs<S, V> {
-    chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+    chain: watch::Receiver<Option<Arc<HeaderChainSnapshot>>>,
     balancer: TrafficBalancer<S>,
     params: ChainParams,
     window: u32,
@@ -67,7 +67,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
     /// - `balancer` = who serves each body (each answer checked, its driver runs elsewhere)
     /// - `lookahead` = bodies fetched or folding ahead of the next fold
     pub fn new(
-        chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+        chain: watch::Receiver<Option<Arc<HeaderChainSnapshot>>>,
         balancer: TrafficBalancer<S>,
         params: ChainParams,
         depth: FinalityDepth,
@@ -208,7 +208,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
     /// Served tip moved: a reorg (the last one off `chain`'s best), or a new best tip
     ///
     /// - same tip (a durable-only republish): silent
-    fn log_served(&mut self, chain: &VerifiedChain, tip: BlockRef) {
+    fn log_served(&mut self, chain: &HeaderChainSnapshot, tip: BlockRef) {
         let last = self.served.replace(tip);
         if last == Some(tip) {
             return;

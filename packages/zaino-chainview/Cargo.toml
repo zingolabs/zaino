@@ -8,7 +8,7 @@ repository.workspace = true
 description = "The best chain by proof of work, the mempool and submission, over trusted validators"
 
 [features]
-# `ChainView::set_verified` (standing in for header sync) + `testing::MockPeers` + a
+# `ChainView::set_chain` (standing in for header sync) + `testing::MockPeers` + a
 # `MockChain` ledger as `UnspentOutputs`
 testing = ["zaino-primitives/testing"]
 

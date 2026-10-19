@@ -41,7 +41,7 @@ possible, take everything else from as many peers as possible.**
        ▼                           ▼                                     ▼
   HeaderSync (chainview)      ObservationMerge + PeerMempool       ChainView::submit
   → HeaderChain               → mempool view                       (SendTransaction)
-       │ watch<VerifiedChain>       │
+       │ watch<HeaderChainSnapshot> │
        ├──────────────────┐         │
        ▼                  ▼         │
   FinalizedFollower        Nfs (RAM)    │
@@ -92,7 +92,7 @@ netgroups (/16 IPv4, /32 IPv6; one operator ≈ one netgroup).
 
 The **Validated Header tree** (`zaino-header-chain`, memory only) holds every valid branch above the
 finalized tip; the best tip is the leaf with the most cumulative work. `HeaderSync`
-(`zaino-chainview`) is its only writer and publishes an immutable `VerifiedChain` on a watch that
+(`zaino-chainview`) is its only writer and publishes an immutable `HeaderChainSnapshot` on a watch that
 the NFS, the finalized path and the `GrpcSnapshot` publisher read.
 
 ```text
@@ -214,7 +214,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 `FinalizedFollower` streams `lowest durable tip + 1 ..= finalized tip` into one `FinalizedStream<Block>`:
 
-- Heights the verified chain has a header for: fetched by hash from any member (peers included),
+- Heights the header chain has a header for: fetched by hash from any member (peers included),
   checked against the header (hash, merkle root, coinbase height).
 - Below the header chain (bulk sync, a restart from an old index): by height, trusted only,
   batched, checked by coinbase height only. A trusted validator's body is trusted.

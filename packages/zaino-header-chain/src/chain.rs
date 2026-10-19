@@ -30,7 +30,7 @@ use zcash_protocol::BlockHash;
 use crate::header::Header;
 use crate::params::Params;
 use crate::rules::{header_work, validate, Ancestor, Rejected, CONTEXT};
-use crate::verified::VerifiedChain;
+use crate::snapshot::HeaderChainSnapshot;
 
 /// Side-branch tips held beside the best (H4)
 const SIDE_TIPS: usize = 32;
@@ -94,7 +94,7 @@ impl Node {
 /// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
 /// - `last_vouched` = (height, own work) of the highest block a trusted validator vouched for,
 ///   else the anchor: peer finality's difficulty reference (never moved by peers)
-/// - every collection `imbl` (O(1) into each [`VerifiedChain`])
+/// - every collection `imbl` (O(1) into each [`HeaderChainSnapshot`])
 pub struct HeaderChain {
     depth: FinalityDepth,
     finalized_headers: imbl::Vector<(BlockHeight, Record)>,
@@ -159,10 +159,10 @@ impl HeaderChain {
     }
 
     /// Immutable view of the best chain (`None` = no anchor yet)
-    pub fn verified(&self) -> Option<VerifiedChain> {
+    pub fn snapshot(&self) -> Option<HeaderChainSnapshot> {
         let best = self.best()?;
         let (above, finalized_headers) = (self.best_path.clone(), self.finalized_headers.clone());
-        Some(VerifiedChain::new(best, above, finalized_headers, self.nodes.clone()))
+        Some(HeaderChainSnapshot::new(best, above, finalized_headers, self.nodes.clone()))
     }
 
     /// Headers held above the finalized tip, every branch

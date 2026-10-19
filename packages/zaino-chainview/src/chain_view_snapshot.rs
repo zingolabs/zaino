@@ -13,7 +13,7 @@ use bytes::Bytes;
 use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
@@ -213,7 +213,7 @@ impl Sighting {
 /// - `peers_carrying` = each live peer's latest announced block (peer finality's netgroup count)
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
-    pub(crate) chain: Option<Arc<VerifiedChain>>,
+    pub(crate) chain: Option<Arc<HeaderChainSnapshot>>,
     pub(crate) depth: FinalityDepth,
     pub(crate) owed_since: Option<Instant>,
     pub(crate) held_by: TrustedValidatorSet,
@@ -246,9 +246,9 @@ impl ChainViewSnapshot {
 
     /// Header sync's word: `owed_since` restarts when the finalized tip moves, ends when nothing is
     /// owed (≤ `depth` non-finalized on the best)
-    pub(crate) fn verified(&mut self, chain: Option<Arc<VerifiedChain>>, now: Instant) {
+    pub(crate) fn set_chain(&mut self, chain: Option<Arc<HeaderChainSnapshot>>, now: Instant) {
         let finalized_tip =
-            |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().map(|c| c.finalized_tip());
+            |chain: &Option<Arc<HeaderChainSnapshot>>| chain.as_ref().map(|c| c.finalized_tip());
         let moved = finalized_tip(&chain) != finalized_tip(&self.chain);
         let owed = chain.as_deref().is_some_and(|chain| {
             let base = u32::from(chain.finalized_tip().height) + 1;
@@ -275,7 +275,7 @@ impl ChainViewSnapshot {
     ///   branch id 0
     #[cfg(any(test, feature = "testing"))]
     pub fn fixed(
-        chain: Option<Arc<VerifiedChain>>,
+        chain: Option<Arc<HeaderChainSnapshot>>,
         held_by: TrustedValidatorSet,
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
@@ -383,7 +383,7 @@ impl ChainViewSnapshot {
     }
 
     /// Header sync's word every standing was judged against (`None` = nothing verified yet)
-    pub fn chain(&self) -> Option<&Arc<VerifiedChain>> {
+    pub fn chain(&self) -> Option<&Arc<HeaderChainSnapshot>> {
         self.chain.as_ref()
     }
 

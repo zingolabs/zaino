@@ -4,13 +4,13 @@
 //! - Only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ finalized stream ─┬─▶ utxo_set ─fees───────┐
-//!   validators ──▶ getblock <hash> (checked) ───┤                                          ├─▶ compact_block ◀──────┘
-//!                                               │                                          ├─▶ block_hash
-//!                                               │                                          ├─▶ tree_state
-//!                                               │                                          └─▶ transparent_address
-//!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──────────┘
-//!                                                    ▼
+//!   validators ──▶ HeaderSync ── HeaderChainSnapshot ─┬─▶ FinalizedFollower ─▶ finalized stream ─┬─▶ utxo_set ─fees───────┐
+//!   validators ──▶ getblock <hash> (checked) ─────────┤                                          ├─▶ compact_block ◀──────┘
+//!                                                     │                                          ├─▶ block_hash
+//!                                                     │                                          ├─▶ tree_state
+//!                                                     │                                          └─▶ transparent_address
+//!                                                     └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──────────┘
+//!                                                          ▼
 //!                            NfsPublication ─┐
 //!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ GrpcSnapshots ─▶ RouteDeps ─▶ GrpcService
 //!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────────┘       └▶ admin, logs
@@ -35,7 +35,7 @@ use crate::config::network_name;
 use zaino_chainview::ChainView;
 use zaino_grpc::{AdmissionState, GrpcService, RouteDeps, Routing, Tls};
 use zaino_grpc_snapshot::Publisher;
-use zaino_header_chain::{Params, VerifiedChain};
+use zaino_header_chain::{HeaderChainSnapshot, Params};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
 use zaino_index_tree_state::TreeStateIndexWriter;
@@ -260,7 +260,7 @@ async fn boot_over<S: ChainDataSource>(
 /// Pipeline inputs (production: header sync + trusted validators on disk, tests: mocks on `SimFs`)
 struct Inputs<S: ChainDataSource> {
     fs: Arc<dyn Fs>,
-    chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+    chain: watch::Receiver<Option<Arc<HeaderChainSnapshot>>>,
     view: Arc<ChainView<S>>,
     balancer: TrafficBalancer<S>,
     schedule: LocalNetwork,
@@ -784,8 +784,8 @@ mod tests {
             if let Some(boundary) = headers.finalizable() {
                 headers.finalize(boundary);
             }
-            verified.send_replace(headers.verified().map(Arc::new));
-            view.set_verified(headers.verified());
+            verified.send_replace(headers.snapshot().map(Arc::new));
+            view.set_chain(headers.snapshot());
         };
         // (latest, range's last, tree state at it): each the block's (height, hash)
         let mut agree_at = async |tip: &Block| {

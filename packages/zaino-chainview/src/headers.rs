@@ -1,4 +1,4 @@
-//! Trusted validators' and peers' headers into the header chain, its [`VerifiedChain`] into the
+//! Trusted validators' and peers' headers into the header chain, its [`HeaderChainSnapshot`] into the
 //! view and onto a watch (`docs/architecture.md` §4)
 //!
 //! ```text
@@ -7,7 +7,7 @@
 //!                  no chain, or its claim − below past our ceiling ─▶ anchor at claim − below
 //!                  (below = max(depth, CONTEXT): `HeaderChain::anchor_below`)
 //!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
-//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ VerifiedChain → view + watch
+//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ HeaderChainSnapshot → view + watch
 //! ```
 //!
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
@@ -33,7 +33,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zaino_header_chain::{
-    decode_header, Header, HeaderChain, Inserted, Params, Rejected, VerifiedChain,
+    decode_header, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected,
 };
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
@@ -58,7 +58,7 @@ pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
     chain: HeaderChain,
-    verified: watch::Sender<Option<Arc<VerifiedChain>>>,
+    verified: watch::Sender<Option<Arc<HeaderChainSnapshot>>>,
     fetch_states: Vec<FetchState>,
     peers: Option<Peers>,
 }
@@ -101,7 +101,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         balancer: TrafficBalancer<S>,
         chain: HeaderChain,
     ) -> Self {
-        let verified = watch::Sender::new(chain.verified().map(Arc::new));
+        let verified = watch::Sender::new(chain.snapshot().map(Arc::new));
         let fetch_states = vec![FetchState::default(); core.current().trusted_validators().len()];
         Self { core, balancer, chain, verified, fetch_states, peers: None }
     }
@@ -113,7 +113,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
 
     /// The verified chain, republished whenever its best or finalized tip moves (`None` = no anchor
     /// yet)
-    pub fn subscribe(&self) -> watch::Receiver<Option<Arc<VerifiedChain>>> {
+    pub fn subscribe(&self) -> watch::Receiver<Option<Arc<HeaderChainSnapshot>>> {
         self.verified.subscribe()
     }
 
@@ -420,11 +420,12 @@ impl<S: ChainDataSource> HeaderSync<S> {
         netgroup::count(carrying.map(|(peer, _)| *peer))
     }
 
-    /// `VerifiedChain` → watch + view when its best or finalized tip moved
+    /// `HeaderChainSnapshot` → watch + view when its best or finalized tip moved
     fn publish(&mut self) {
         let tips = (self.chain.best().map(|best| best.block), self.chain.finalized_tip());
-        let moved = |old: &VerifiedChain| (Some(old.best()), Some(old.finalized_tip())) != tips;
-        let verified = self.chain.verified().map(Arc::new);
+        let moved =
+            |old: &HeaderChainSnapshot| (Some(old.best()), Some(old.finalized_tip())) != tips;
+        let verified = self.chain.snapshot().map(Arc::new);
         let changed = self.verified.send_if_modified(|published| {
             let changed = published.as_deref().is_none_or(moved) && verified.is_some();
             if changed {

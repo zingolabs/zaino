@@ -35,7 +35,9 @@ use zcash_protocol::BlockHash;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{header_work, Rejected, CONTEXT};
-use crate::{decode_header, BestTip, Header, HeaderChain, Inserted, Params, Record, VerifiedChain};
+use crate::{
+    decode_header, BestTip, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Record,
+};
 
 const DEPTH: u32 = 3;
 /// Headers a fetch may reach past `depth` above the finalized tip (`HeaderSync`'s batch)
@@ -475,7 +477,7 @@ fn run(moves: Vec<Move>) {
     };
     // (published chain, the model's path then, the lowest height it answered by height, each
     // probe's `holds` then)
-    type Published = (VerifiedChain, Vec<Record>, usize, Vec<(BlockRef, bool)>);
+    type Published = (HeaderChainSnapshot, Vec<Record>, usize, Vec<(BlockRef, bool)>);
     let mut published: Option<Published> = None;
 
     // - driver's: nothing above the ceiling offered (H9)
@@ -616,8 +618,8 @@ fn run(moves: Vec<Move>) {
         );
         let path = model.best_path();
         let kept_from = model.kept_from();
-        let verified = chain.verified().expect("anchored");
-        let answers = |chain: &VerifiedChain, path: &[Record]| -> Vec<Option<Record>> {
+        let verified = chain.snapshot().expect("anchored");
+        let answers = |chain: &HeaderChainSnapshot, path: &[Record]| -> Vec<Option<Record>> {
             (0..path.len() as u32).map(|at| chain.header_at(height(at))).collect()
         };
         let expected = |path: &[Record], kept_from: usize| -> Vec<Option<Record>> {
@@ -653,7 +655,7 @@ fn run(moves: Vec<Move>) {
             let still: Vec<(BlockRef, bool)> =
                 old_holds.iter().map(|(at, _)| (*at, old.holds(*at))).collect();
             assert_eq!(still, *old_holds, "{context}: H5, nor its side blocks");
-            let finalized_height = |chain: &VerifiedChain| chain.finalized_tip().height;
+            let finalized_height = |chain: &HeaderChainSnapshot| chain.finalized_tip().height;
             assert!(
                 finalized_height(&verified) >= finalized_height(old),
                 "{context}: H2, finalized moves up"

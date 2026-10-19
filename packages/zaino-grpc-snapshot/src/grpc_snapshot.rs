@@ -6,7 +6,7 @@ use zaino_chainview::{
     Agreement, ChainViewSnapshot, MempoolView, TrustedValidatorMeta, TrustedValidatorSet,
     STALE_TIP_BLOCKS,
 };
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
@@ -97,7 +97,7 @@ impl<V> GrpcSnapshot<V> {
     }
 
     /// The chain view's: `tips` judged under it
-    pub fn chain(&self) -> Option<&Arc<VerifiedChain>> {
+    pub fn chain(&self) -> Option<&Arc<HeaderChainSnapshot>> {
         self.view.chain()
     }
 
