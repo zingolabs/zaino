@@ -33,11 +33,27 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+use zaino_primitives::types::{Block, BlockFees};
 
 /// Bytes an item holds in memory, heap included: the unit a subscriber's queue budget counts
 pub trait Weight {
     fn weight(&self) -> usize;
 }
+
+impl Weight for Block {
+    fn weight(&self) -> usize {
+        self.footprint()
+    }
+}
+
+impl Weight for BlockFees {
+    fn weight(&self) -> usize {
+        self.footprint()
+    }
+}
+
+/// Per-block transaction fees: utxo-set → compact-block, one per finalized step
+pub type FeeSink = FinalizedStream<BlockFees>;
 
 /// One step, the same for every subscriber
 ///

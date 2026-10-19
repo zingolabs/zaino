@@ -3,6 +3,8 @@
 //! - commits: the store's own on a full buffer, the writer's [`commit`] after a finalized run and at
 //!   `Shutdown`
 //! - [`IndexPublisher`] = the writer's end of its [`IndexHandle`]
+//! - public precondition checks (panic naming the index): [`assert_next`], [`assert_dense`],
+//!   [`assert_run`]
 
 use std::time::{Duration, Instant};
 

@@ -22,26 +22,9 @@ mod writer;
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use fetch::fetch_at;
 pub use fetch::{fetch, Checked};
-pub use finalized_stream::{FinalizedStream, Run, Step, Subscription, Weight};
+pub use finalized_stream::{FeeSink, FinalizedStream, Run, Step, Subscription, Weight};
 pub use follower::{FinalizedFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};
 pub use progress::SyncProgress;
 pub use writer::{apply, assert_dense, assert_next, assert_run, commit, held, ran, IndexPublisher};
-
-use zaino_primitives::types::{Block, BlockFees};
-
-impl Weight for Block {
-    fn weight(&self) -> usize {
-        self.footprint()
-    }
-}
-
-/// Per-block transaction fees: utxo-set → compact-block, one per finalized step
-pub type FeeSink = FinalizedStream<BlockFees>;
-
-impl Weight for BlockFees {
-    fn weight(&self) -> usize {
-        self.footprint()
-    }
-}
