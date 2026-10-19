@@ -1,27 +1,15 @@
-//! Methods no index backs: `SendTransaction` (chain view), mempool methods (the `GrpcSnapshot`'s
-//! chain view half), `GetLightdInfo` (its tips + schedule), `GetTransaction` (forwarded: consensus
-//! bytes, usage.md "Why `GetTransaction` forwards")
-//!
-//! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
-//! - `estimated_height` = verified best tip, no validator call ("how far behind")
+//! Mempool methods: `GetMempoolTx`, `GetMempoolStream`, both over the `GrpcSnapshot`'s mempool
+//! (the chain view's servable entries at the served tip)
 
-use crate::network::chain_name;
 use http::Response;
 use http_body::Frame;
 use tonic::{body::Body, Status};
-use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
-use zaino_grpc_snapshot::{GrpcSnapshot, Lightd, Unavailable};
+use zaino_chainview::MempoolEntry;
+use zaino_grpc_snapshot::GrpcSnapshot;
 use zaino_index_compact_block::project_tx_at;
-use zaino_primitives::types::TransactionLocation;
-use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
-use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
-use zaino_traffic::TrafficBalancer;
-use zcash_protocol::consensus::{
-    BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
-};
-use zcash_protocol::TxId;
+use zaino_proto::proto::service;
 
-use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
+use crate::wire::{self, decode_request, frame, streamed_response, trailers};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
@@ -57,46 +45,6 @@ where
     Ok(streamed_response(framed))
 }
 
-/// `SendTransaction`: rejection = domain answer, only unreachable = a status (wallet tells "no"
-/// from "unreachable")
-pub(crate) async fn send<S: ChainDataSource, B>(
-    view: &ChainView<S>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let raw: service::RawTransaction =
-        wire::decode_request_within(body, wire::request_limit::TRANSACTION).await?;
-    send_reply(view.submit(raw.data.to_vec()).await).map(|reply| unary_response(frame(&reply)))
-}
-
-/// Submission outcome as lightwalletd answers it
-///
-/// - accepted: `sendrawtransaction`'s raw JSON result = quoted display-order txid (lightwalletd
-///   relays it untouched)
-/// - rejected: gRPC OK, the validator's code + message verbatim (zingolib substring-matches it)
-fn send_reply(outcome: Result<TxId, SubmitError>) -> Result<service::SendResponse, Status> {
-    match outcome {
-        Ok(txid) => {
-            Ok(service::SendResponse { error_code: 0, error_message: format!("\"{txid}\"") })
-        }
-        Err(SubmitError::Rejected(rejection)) => Ok(service::SendResponse {
-            error_code: rejection.code(),
-            error_message: rejection.message().to_owned(),
-        }),
-        Err(unreachable @ SubmitError::Unreachable { .. }) => {
-            Err(Status::unavailable(unreachable.to_string()))
-        }
-    }
-}
-
-/// Unmined by construction (wire spells that `height: 0`)
-fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
-    service::RawTransaction { data: entry.raw.clone(), height: 0 }
-}
-
 /// `GetMempoolStream`: the servable mempool as one chunk, then each arrival, closed once the
 /// served tip moves (no holder of the verified best = `UNAVAILABLE`, never a silent stream)
 ///
@@ -126,261 +74,26 @@ pub(crate) fn mempool_stream<V>(grpc_snapshot: &GrpcSnapshot<V>) -> Result<Respo
     Ok(wire::streaming(frames))
 }
 
-/// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
-pub(crate) async fn transaction<S: ChainDataSource, B>(
-    validators: &TrafficBalancer<S>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let filter: service::TxFilter = decode_request(body).await?;
-    let txid: [u8; 32] = filter
-        .hash
-        .as_slice()
-        .try_into()
-        .map_err(|_| Status::invalid_argument("txid must be 32 bytes, in protocol order"))?;
-    let found = raw_transaction(validators, TxId::from_bytes(txid)).await?;
-    Ok(unary_response(frame(&found)))
-}
-
-/// `GetStandardFee`: the ZIP 317 marginal fee for the block after best, no validator read
-/// (estimator version 0 = the static rule)
-pub(crate) fn standard_fee<V>(
-    grpc_snapshot: &GrpcSnapshot<V>,
-    network: NetworkType,
-) -> Result<service::StandardFee, Status> {
-    let best = grpc_snapshot.tips().best.ok_or(Unavailable::NoChain).map_err(wire::unavailable)?;
-    let fee = zaino_primitives::protocol::standard_fee(network, best.height + 1);
-    Ok(service::StandardFee { fee_zat: u64::from(fee), estimator_version: 0 })
-}
-
-/// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
-/// bytes)
-///
-/// - `height` = mined height, or `0` = the wire's "in the mempool" (= no-height location)
-/// - `NOT_FOUND` only when every validator asked said absent (a failure = maybe held)
-pub(super) async fn raw_transaction<S: ChainDataSource>(
-    validators: &TrafficBalancer<S>,
-    txid: TxId,
-) -> Result<RawTransaction, Status> {
-    let found =
-        validators.transaction(txid).await.map_err(|unanswered| match &unanswered.last {
-            Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
-                Status::not_found(format!("transaction not found: {txid}"))
-            }
-            _ => Status::unavailable(unanswered.to_string()),
-        })?;
-    let found = found.value;
-
-    // Orphaned → unmined (one wire "no height", an abandoned branch must not read as confirmed)
-    let height = match found.location {
-        TransactionLocation::BestChain(at) => at.into(),
-        TransactionLocation::NonBestChain | TransactionLocation::Mempool => 0,
-    };
-
-    Ok(RawTransaction { data: found.bytes.into(), height })
-}
-
-/// `GetLightdInfo` from one `GrpcSnapshot`, no validator read (fields: `docs/rpc_api.md`)
-pub(crate) fn lightd_info<V>(
-    grpc_snapshot: &GrpcSnapshot<V>,
-    network: NetworkType,
-    version: &str,
-) -> Result<LightdInfo, Status> {
-    grpc_snapshot
-        .lightd()
-        .map(|lightd| render_lightd(lightd, network, version))
-        .map_err(wire::unavailable)
-}
-
-fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
-    let schedule = lightd.schedule;
-    let next = UPGRADES_IN_ORDER
-        .iter()
-        .filter_map(|&upgrade| schedule.activation_height(upgrade).map(|from| (upgrade, from)))
-        .filter(|(_, from)| *from > lightd.served)
-        .min_by_key(|(_, from)| *from);
-    let sapling = schedule.activation_height(NetworkUpgrade::Sapling);
-    LightdInfo {
-        version: version.to_string(),
-        vendor: "zaino".to_string(),
-        taddr_support: true,
-        chain_name: chain_name(network).to_string(),
-        sapling_activation_height: sapling.map_or(0, u64::from),
-        consensus_branch_id: format!(
-            "{:08x}",
-            u32::from(BranchId::for_height(&schedule, lightd.served))
-        ),
-        block_height: u64::from(lightd.served),
-        estimated_height: u64::from(lightd.best),
-        upgrade_name: next.map_or_else(String::new, |(upgrade, _)| upgrade.to_string()),
-        upgrade_height: next.map_or(0, |(_, at)| u64::from(at)),
-        lightwallet_protocol_version: zaino_proto::LIGHTWALLET_PROTOCOL_VERSION.to_string(),
-        ..Default::default()
-    }
+/// Unmined by construction (wire spells that `height: 0`)
+pub(super) fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
+    service::RawTransaction { data: entry.raw.clone(), height: 0 }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::*;
-    use zaino_primitives::protocol::compiled_schedule;
-    use zcash_protocol::consensus::BlockHeight;
-
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_primitives::testing::MockChain;
     use zaino_primitives::types::BlockRef;
     use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
+    use zcash_protocol::TxId;
 
     use crate::service::Method;
-    use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
-    use zaino_grpc_snapshot::GrpcSnapshots;
-    use zaino_persistence::DiskView;
-
     use crate::testing::{
-        decode_frames, dispatch, framed_request, grpc_snapshots, indexed_at, published, routes_over,
+        decode_frames, dispatch, framed_request, indexed_at, published, rounds, routes_over,
     };
-
-    /// Up to 10 poll rounds (paused clock: instant) until `done`
-    async fn rounds(what: &str, done: impl Fn() -> bool) {
-        for _ in 0..10 {
-            if done() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-        panic!("never {what}");
-    }
-
-    /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
-    /// - Rejected = gRPC OK + the validator's code + message verbatim (zingolib's
-    ///   `classify_rejection` texts intact, Android reconciles only on an OK reply)
-    /// - Unreachable = `UNAVAILABLE` (never a reply a wallet reads as the network's answer)
-    #[test]
-    fn a_submission_answers_like_lightwalletd() {
-        use zaino_source::SendRawTransactionError::{Malformed, Rejected};
-
-        let mut internal = [0u8; 32];
-        internal[0] = 0x01;
-        internal[31] = 0xff;
-        let accepted = send_reply(Ok(TxId::from_bytes(internal))).expect("a reply");
-        let quoted_display = format!("\"ff{}01\"", "00".repeat(30));
-        assert_eq!((accepted.error_code, accepted.error_message), (0, quoted_display));
-
-        let verdicts = [
-            (-1, "transaction already exists in mempool"),
-            (-27, "transaction already in block chain"),
-            (-1, "transaction dropped because it is already queued for download"),
-            (-25, "bad-txns-inputs-spent"),
-        ];
-        for (code, message) in verdicts {
-            let rejection = Rejected { code, message: message.to_owned() };
-            let reply = send_reply(Err(SubmitError::Rejected(rejection))).expect("a reply");
-            assert_eq!((reply.error_code, reply.error_message.as_str()), (code, message));
-        }
-        let malformed = SubmitError::Rejected(Malformed("tx unparseable".into()));
-        let reply = send_reply(Err(malformed)).expect("a reply");
-        assert_eq!((reply.error_code, reply.error_message.as_str()), (-22, "tx unparseable"));
-
-        let down = zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "gone");
-        let unreachable = send_reply(Err(SubmitError::Unreachable { attempted: 2, cause: down }));
-        let status = unreachable.expect_err("a status, never a reply");
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-    }
-
-    /// Mainnet's compiled schedule: branch at the served height (NU6.2 from 3,364,600 below
-    /// NU6.3, NU6.3 from it), the next upgrade above it (none once NU6.3 is in: NU7
-    /// unscheduled), the best as the estimate, the chain + version from the daemon
-    #[test]
-    fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
-        let at = BlockHeight::from;
-        let schedule = compiled_schedule(NetworkType::Main).expect("compiled");
-        let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
-        let rendered = |served: u32| {
-            let info = render_lightd(lightd(served), NetworkType::Main, "0.11.0-alpha.2");
-            (
-                info.version,
-                info.chain_name,
-                info.sapling_activation_height,
-                info.consensus_branch_id,
-                (info.block_height, info.estimated_height),
-                (info.upgrade_name, info.upgrade_height),
-            )
-        };
-        let (version, main) = (|| "0.11.0-alpha.2".to_owned(), || "main".to_owned());
-        assert_eq!(
-            rendered(3_400_000),
-            (
-                version(),
-                main(),
-                419_200,
-                "5437f330".to_owned(),
-                (3_400_000, 3_500_000),
-                ("Nu6.3".to_owned(), 3_428_143)
-            )
-        );
-        assert_eq!(
-            rendered(3_428_143),
-            (
-                version(),
-                main(),
-                419_200,
-                "37a5165b".to_owned(),
-                (3_428_143, 3_500_000),
-                (String::new(), 0)
-            ),
-            "NU6.3 in force, nothing scheduled after"
-        );
-    }
-
-    /// Over a live publisher, its validator never polled (no holder, ever):
-    /// - `UNAVAILABLE` until something is served (no chain yet, then verified but unserved)
-    /// - served at 5 under the chain's schedule (every upgrade through NU6.3 from 1): NU6.3's
-    ///   branch, the verified best 7 as the estimate, 5 served (one load, no validator)
-    #[tokio::test(start_paused = true)]
-    async fn lightd_info_answers_once_served_with_no_validator_holding_the_tip() {
-        let mut chain = MockChain::regtest();
-        let tip_7 = chain.mine_empty(7);
-        let node = Arc::new(chain.validator(tip_7));
-        let (mut routes, _balancing, _fold) = routes_over(&node);
-        let (publisher, nfs) = published(&mut routes);
-        let grpc_snapshots = routes.grpc_snapshots.clone();
-        let info = || lightd_info(&grpc_snapshots.load(), NetworkType::Main, routes.version);
-        let refused = |why: &str| {
-            let refused = info().map_err(|status| (status.code(), status.message().to_owned()));
-            refused.err() == Some((tonic::Code::Unavailable, why.to_owned()))
-        };
-        let cancel = tokio_util::sync::CancellationToken::new();
-        tokio::spawn(publisher.run(cancel.clone()));
-
-        let unserved = "the indexes are syncing: nothing served yet";
-        assert!(refused(unserved), "no chain yet");
-        routes.submit.set_chain(Some(chain.snapshot(tip_7)));
-        rounds("verified, nothing served", || refused(unserved)).await;
-
-        nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));
-        rounds("served", || info().is_ok()).await;
-        let expected = LightdInfo {
-            version: "0.11.0-test".to_owned(),
-            vendor: "zaino".to_owned(),
-            taddr_support: true,
-            chain_name: "main".to_owned(),
-            sapling_activation_height: 1,
-            consensus_branch_id: "37a5165b".to_owned(),
-            estimated_height: 7,
-            block_height: 5,
-            lightwallet_protocol_version: "v0.6.0".to_owned(),
-            ..Default::default()
-        };
-        assert_eq!(info().expect("served"), expected, "best 7, NU6.3's branch at 5, 5 served");
-        let held_by = grpc_snapshots.load().chain_view().held_by();
-        assert!(held_by.is_empty(), "no validator ever held the tip");
-        cancel.cancel();
-    }
 
     /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:
     ///
@@ -394,6 +107,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
         use http_body_util::BodyExt as _;
+        use tonic::Status;
         use tower::Service as _;
         use zaino_proto::proto::service;
 
@@ -651,20 +365,5 @@ mod tests {
         assert_eq!(ask(all).await, every_pool, "same answer from the cache");
         assert!(cached(&reader), "still the first render (never re-parsed)");
         cancel.cancel();
-    }
-
-    /// `GetStandardFee` from the snapshot alone: the rule at best + 1 (mainnet's legacy 5,000 this
-    /// low, regtest's 1,000), `UNAVAILABLE` with no header chain
-    #[test]
-    fn standard_fee_is_the_rule_at_the_block_after_best_with_no_validator_read() {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(5);
-        let held = grpc_snapshots(&chain, tip, Vec::new()).load();
-        let fee = |network| standard_fee(&held, network).map(|fee| fee.fee_zat).ok();
-        assert_eq!((fee(NetworkType::Main), fee(NetworkType::Regtest)), (Some(5_000), Some(1_000)));
-        let empty = ChainViewSnapshot::fixed(None, TrustedValidatorSet::default(), &[], &[]);
-        let unanchored = GrpcSnapshots::<DiskView>::fixed(None, Arc::new(empty)).load();
-        let refused = standard_fee(&unanchored, NetworkType::Main).map_err(|status| status.code());
-        assert_eq!(refused, Err(tonic::Code::Unavailable), "no header chain yet");
     }
 }

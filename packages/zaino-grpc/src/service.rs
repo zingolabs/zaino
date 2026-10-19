@@ -29,7 +29,7 @@ use zcash_protocol::consensus::NetworkType;
 use crate::admission::Class;
 use crate::deadline::Bounds;
 use crate::limits::ReadLanes;
-use crate::routes::{blocks, chain, transparent_address, tree_state};
+use crate::routes::{blocks, info, mempool, transactions, transparent_address, tree_state};
 use crate::wire::{self, frame, unary_response};
 use crate::GrpcLimits;
 
@@ -312,16 +312,16 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
                 let validators = routes.validators.clone();
                 transparent_address::transactions(addresses()?, validators, body, &reads).await
             }
-            SendTransaction => chain::send(&routes.submit, body).await,
-            GetMempoolTx => chain::mempool_tx(&grpc_snapshot, body).await,
-            GetMempoolStream => chain::mempool_stream(&grpc_snapshot),
-            GetTransaction => chain::transaction(&routes.validators, body).await,
+            SendTransaction => transactions::send(&routes.submit, body).await,
+            GetMempoolTx => mempool::mempool_tx(&grpc_snapshot, body).await,
+            GetMempoolStream => mempool::mempool_stream(&grpc_snapshot),
+            GetTransaction => transactions::transaction(&routes.validators, body).await,
             GetLightdInfo => {
-                let info = chain::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
+                let info = info::lightd_info(&grpc_snapshot, routes.network, routes.version)?;
                 Ok(unary_response(frame(&info)))
             }
             GetStandardFee => {
-                let fee = chain::standard_fee(&grpc_snapshot, routes.network)?;
+                let fee = info::standard_fee(&grpc_snapshot, routes.network)?;
                 Ok(unary_response(frame(&fee)))
             }
         }

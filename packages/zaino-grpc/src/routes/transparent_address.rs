@@ -90,7 +90,7 @@ where
                 return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
             };
 
-            let fetched = super::chain::raw_transaction(&validators, txid).await;
+            let fetched = super::transactions::raw_transaction(&validators, txid).await;
             match fetched.map(|tx| frame(&tx)) {
                 Ok(record) => Some((Ok::<_, Status>(Frame::data(record)), Some(rest))),
                 Err(status) => Some((Ok(Frame::trailers(trailers(&status))), None)),

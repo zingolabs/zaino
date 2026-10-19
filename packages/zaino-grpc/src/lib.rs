@@ -49,5 +49,5 @@ pub fn lightd_info<V>(
     network: zcash_protocol::consensus::NetworkType,
     version: &str,
 ) -> Option<LightdInfo> {
-    routes::chain::lightd_info(grpc_snapshot, network, version).ok()
+    routes::info::lightd_info(grpc_snapshot, network, version).ok()
 }

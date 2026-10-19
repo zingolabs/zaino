@@ -207,3 +207,14 @@ pub(super) fn decode_frames<M: prost::Message + Default>(framed: &[u8]) -> Vec<M
     let messages = crate::wire::messages(framed).expect("whole frames");
     messages.into_iter().map(|message| M::decode(message).expect("decodes")).collect()
 }
+
+/// Up to 10 poll rounds (paused clock: instant) until `done`
+pub(super) async fn rounds(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..10 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    panic!("never {what}");
+}
