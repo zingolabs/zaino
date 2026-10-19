@@ -1,4 +1,4 @@
-//! block_hash writer: the finalized stream → one [`fold`] per block → its store
+//! Block hash → height writer: the finalized stream → one [`fold`] per block → its store
 
 use std::time::{Duration, Instant};
 
