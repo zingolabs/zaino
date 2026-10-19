@@ -5,9 +5,8 @@ use zaino_primitives::types::{Block, BlockFees};
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::{
-    decode_fees, decode_value, encode_outpoint, FoldError, FEES, OUTPOINT, OUTPUTS, VALUE,
-};
+use crate::layout::{decode_fees, decode_value, encode_outpoint, OUTPOINT, VALUE};
+use crate::{FoldError, FEES, OUTPUTS};
 
 #[derive(Clone)]
 pub struct UtxoSetReader<V> {
