@@ -7,7 +7,7 @@ use zaino_primitives::types::TreeRoot;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::ShieldedPool;
 
-use crate::subtree_table;
+use crate::tables::subtree_table;
 
 pub(crate) const ENTRY: usize = 36;
 

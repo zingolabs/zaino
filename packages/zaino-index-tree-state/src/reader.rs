@@ -1,21 +1,20 @@
-//! [`TreeStateReader`]: typed reads over any view of the tables (serving's and a fold's parent)
+//! [`TreeStateReader`] + its primitive reads (tip, sizes, frontier, records) over any view of the
+//! tables (serving's and a fold's parent); RPC answers = `serve.rs`
 
 use incrementalmerkletree::{
-    frontier::{CommitmentTree, Frontier, NonEmptyFrontier},
+    frontier::{Frontier, NonEmptyFrontier},
     Address, Hashable, Position, Source,
 };
-use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{OverlayView, SequenceRead, SequenceTable, View};
-use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, SubtreeRoot, TreeSizes, Treestate};
-use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
+use zaino_primitives::types::TreeSizes;
+use zcash_primitives::merkle_tree::HashSer;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::ShieldedPool;
 
 use crate::{
     heights::{self, TreeStateHeight},
-    level_table,
     nodes::{self, slot, MERKLE_DEPTH},
-    subtree_table, subtrees, ServeError, HEIGHTS,
+    tables::{level_table, HEIGHTS},
 };
 
 /// One state of the tables, never moving while held (one pin per request, one parent per fold)
@@ -57,62 +56,6 @@ impl<V: View> TreeStateReader<OverlayView<V>> {
 }
 
 impl<V: SequenceRead> TreeStateReader<V> {
-    /// Tree state after `at`: all three pools, always, as the real tree's serialization
-    ///
-    /// - `000000` when empty (both clients map an empty *field* onto `CommitmentTree::empty()`:
-    ///   `zcash_client_backend/src/proto.rs:404,420-444`, so `""` post-activation = wrong)
-    /// - blank pools below their upgrade = the route's ([`pool_activations`])
-    /// - reads mmapped nodes: run off async workers
-    ///
-    /// [`pool_activations`]: crate::pool_activations
-    pub fn treestate(&self, at: BlockHeight) -> Result<Treestate, ServeError> {
-        let record = self.height_record(at).ok_or(ServeError::NotFound { height: at })?;
-        let inconsistent = ServeError::Inconsistent { height: at };
-        let tree = |pool| self.pool_tree(pool, record.sizes).ok_or(inconsistent.clone());
-
-        Ok(Treestate {
-            block_hash: record.hash,
-            height: at,
-            time: record.time,
-            sapling: tree(ShieldedPool::Sapling)?,
-            orchard: tree(ShieldedPool::Orchard)?,
-            ironwood: tree(ShieldedPool::Ironwood)?,
-        })
-    }
-
-    /// Completed subtree roots `start_index` inclusive to `start_index + max_entries` exclusive
-    ///
-    /// - `max_entries == 0` = to the last root
-    /// - `start_index == count` = an empty list, never an error (pepper-sync's probe pass)
-    /// - completing block's hash = its height's record (a subtree completes at a held height)
-    pub fn subtree_roots(
-        &self,
-        pool: ShieldedPool,
-        start_index: u16,
-        max_entries: u16,
-    ) -> Result<Vec<SubtreeRoot>, ServeError> {
-        let limit = match max_entries {
-            0 => u64::MAX,
-            entries => u64::from(entries),
-        };
-        let count = self.len(subtree_table(pool));
-        let start = u64::from(start_index);
-        let end = count.min(start.saturating_add(limit));
-
-        (start..end)
-            .map(|index| {
-                let entry = subtrees::entry(&self.view, pool, index).expect("below the count");
-                let height = entry.end_height;
-                let record =
-                    self.height_record(height).ok_or(ServeError::Inconsistent { height })?;
-                Ok(SubtreeRoot {
-                    root: entry.root,
-                    completing: BlockRef { hash: record.hash, height },
-                })
-            })
-            .collect()
-    }
-
     /// Tree sizes after the tip ([`TreeSizes::ZERO`] = nothing held)
     pub(crate) fn tip_sizes(&self) -> TreeSizes {
         let Some(tip) = self.tip() else {
@@ -157,31 +100,8 @@ impl<V: SequenceRead> TreeStateReader<V> {
     }
 
     /// `None` above the tip
-    fn height_record(&self, at: BlockHeight) -> Option<TreeStateHeight> {
+    pub(crate) fn height_record(&self, at: BlockHeight) -> Option<TreeStateHeight> {
         let bytes = self.view.sequence(HEIGHTS).record(u64::from(at))?;
         Some(heights::decode(bytes[..].try_into().expect("HEIGHTS width = RECORD bytes")))
     }
-
-    /// `pool`'s serialized tree at `sizes`, the form both clients parse (`None` = corrupt)
-    ///
-    /// - `read_commitment_tree` on the other end (`pepper-sync/src/witness.rs:313-372`), so
-    ///   `write_commitment_tree` here, not a frontier encoding
-    fn pool_tree(&self, pool: ShieldedPool, sizes: TreeSizes) -> Option<CommitmentTreeBytes> {
-        let size = u64::from(sizes.get(pool).get());
-        Some(match pool {
-            ShieldedPool::Sapling => serialize(&self.frontier::<sapling_crypto::Node>(pool, size)?),
-            ShieldedPool::Orchard | ShieldedPool::Ironwood => {
-                serialize(&self.frontier::<MerkleHashOrchard>(pool, size)?)
-            }
-        })
-    }
-}
-
-fn serialize<H: Hashable + HashSer + Clone>(
-    frontier: &Frontier<H, MERKLE_DEPTH>,
-) -> CommitmentTreeBytes {
-    let tree = CommitmentTree::<H, MERKLE_DEPTH>::from_frontier(frontier);
-    let mut serialized = Vec::with_capacity(1090);
-    write_commitment_tree(&tree, &mut serialized).expect("writing into a Vec cannot fail");
-    CommitmentTreeBytes::new(serialized)
 }

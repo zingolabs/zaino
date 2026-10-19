@@ -26,11 +26,10 @@ use zcash_protocol::ShieldedPool;
 
 use crate::{
     heights::{self, TreeStateHeight},
-    level_table,
     nodes::{self, slot, Slot, MERKLE_DEPTH, NODE},
-    subtree_table,
     subtrees::{self, SubtreeEntry},
-    TreeStateReader, HEIGHTS, POOLS,
+    tables::{level_table, subtree_table, HEIGHTS, POOLS},
+    TreeStateReader,
 };
 
 const NAME: &str = IndexKind::TreeState.name();
