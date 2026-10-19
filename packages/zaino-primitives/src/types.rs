@@ -1,4 +1,4 @@
-//! Chain vocabulary shared across the Zaino stack
+//! Domain types shared across the Zaino stack: chain vocabulary + peer grouping ([`Netgroup`])
 
 mod announced;
 mod block;
@@ -40,7 +40,7 @@ pub use netgroup::{Netgroup, ECLIPSE_NETGROUPS};
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use peer_txid::PeerTxId;
-pub use per_pool::{PerPool, TreeSizes};
+pub use per_pool::PerPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction,
@@ -48,5 +48,5 @@ pub use transaction::{
 };
 pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
-pub use tree_size::{TreeSize, TreeSizeOutOfRange};
+pub use tree_size::{TreeSize, TreeSizeOutOfRange, TreeSizes};
 pub use treestate::{CommitmentTreeBytes, Treestate};

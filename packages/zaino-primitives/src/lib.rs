@@ -1,6 +1,7 @@
-//! Zcash chain vocabulary (heights, hashes, blocks) every Zaino crate shares
+//! Vocabulary every Zaino crate shares (crates depend on this, never on each other)
 //!
-//! - Crates needing chain types depend on this, never on each other
+//! - `types`: chain domain types (blocks, hashes, trees) + peer grouping; `protocol`: spec rules
+//! - `display` (`ByteSize`, `Human`), `serde_secs`, [`sha256d`]; `testing`: regtest `MockChain`
 
 use sha2::{Digest, Sha256};
 
