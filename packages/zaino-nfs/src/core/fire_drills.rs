@@ -77,9 +77,9 @@ impl World {
     fn drive(&self, core: &mut NfsCore<BlockHeight>, input: Input<BlockHeight>, hold: Hold) {
         for output in core.step(input) {
             let input = match output {
-                Output::Fetch { at, record } if Some(at.hash) != hold.fetch => {
+                Output::Fetch(at) if Some(at.hash) != hold.fetch => {
                     let block = Block::clone(&self.block(at.hash));
-                    Input::Body(check_block(block, at.height, &record).expect("honest"))
+                    Input::Body(check_block(block, at).expect("honest"))
                 }
                 Output::Fold { at, covers, .. } if Some(at.hash) != hold.fold => {
                     Input::Folded { at, covers, folded: Arc::new(at.height) }

@@ -8,11 +8,10 @@ use proptest::{
     strategy::{Just, Strategy},
 };
 use tokio::task::{JoinError, JoinHandle};
-use zaino_header_chain::Record;
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskStore, LsmConfig, PersistenceEngine, Schema, View,
 };
-use zaino_primitives::types::Block;
+use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::{Checked, FinalizedStream, IndexHandle, Step, Subscription};
@@ -30,9 +29,9 @@ pub fn open(fs: &Arc<SimFs>, schema: &Schema, write_buffer: NonZeroUsize) -> Dis
         .unwrap_or_else(|error| panic!("open {}: {error}", dir.display()))
 }
 
-/// `block` checked against the verified `record` at `height` (`None` = a misanswer)
-pub fn check_block(block: Block, height: BlockHeight, record: &Record) -> Option<Checked> {
-    crate::fetch::check_block(block, height, record).ok()
+/// `block` checked as the one at `at` (`None` = a misanswer)
+pub fn check_block(block: Block, at: BlockRef) -> Option<Checked> {
+    crate::fetch::check_block(block, at).ok()
 }
 
 pub fn step(block: &Arc<Block>) -> Step<Block> {

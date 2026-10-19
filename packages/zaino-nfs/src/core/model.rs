@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::{decode_header, HeaderChain, HeaderChainSnapshot, Record, Rejected};
+use zaino_header_chain::{decode_header, HeaderChain, HeaderChainSnapshot, Rejected};
 use zaino_primitives::testing::{encode_header, h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_sync::{testing::check_block, Checked};
@@ -272,7 +272,7 @@ impl Sim {
         self.core.check();
         for output in outputs {
             match output {
-                Output::Fetch { at, record } => self.ask(at, record, context),
+                Output::Fetch(at) => self.ask(at, context),
                 Output::Abandon(at) => self.abandon(at, context),
                 Output::Fold { at, parent, block, covers } => {
                     self.fold(at, parent, &block, covers, context)
@@ -287,12 +287,11 @@ impl Sim {
     }
 
     /// The balancer's checked answer, served within [`SERVED_WITHIN`]
-    fn ask(&mut self, at: BlockRef, record: Record, context: &str) {
-        assert_eq!(record.hash, at.hash, "{context}: Fetch {at:?} with another's header");
+    fn ask(&mut self, at: BlockRef, context: &str) {
         let fresh = self.fetching.insert(at.hash);
         assert!(fresh, "{context}: Fetch {at:?} twice while in flight");
         let honest = Block::clone(self.builder.block(at.hash));
-        let checked = check_block(honest, at.height, &record).expect("the asked block passes");
+        let checked = check_block(honest, at).expect("the asked block passes");
         let due = self.later(SERVED_WITHIN);
         self.pending.push((due, Due::Body(checked)));
     }

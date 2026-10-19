@@ -78,8 +78,8 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   the batch asked again). The body is the trusted member's word, not re-hashed; regressions in
   decoding are the job of the live sync test (`live-tests/sync`), which holds blocks, tree states
   and a wallet's scan to zebra.
-- `fetch(balancer, at, record, urgency)`: by hash, held to a verified header (hash, coinbase
-  height, `check_body`). The NFS's and the follower's.
+- `fetch(balancer, at, urgency)`: by hash, held to `at` (hash = a header we hold, or a block our
+  indexes folded; coinbase height, `check_body`). The NFS's, the follower's and `GetTransaction`'s.
 - A failed check = a `Misanswer` (wrong block, wrong height, body mismatch or short batch),
   reported and asked again.
 - `testing::check_block`: the check alone, for tests (`None` = misanswer).

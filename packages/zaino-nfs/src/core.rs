@@ -14,7 +14,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use zaino_header_chain::{HeaderChainSnapshot, Record};
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{Block, BlockRef};
 use zaino_sync::Checked;
 use zcash_protocol::consensus::{BlockHeight, H0};
@@ -78,7 +78,7 @@ pub(crate) enum Input<F> {
 ///   publication withdrawn
 #[derive(Debug, Clone)]
 pub(crate) enum Output<F> {
-    Fetch { at: BlockRef, record: Record },
+    Fetch(BlockRef),
     Abandon(BlockRef),
     Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block>, covers: Indexes },
     Publish(Option<Publication<F>>),
@@ -273,8 +273,7 @@ impl<F> NfsCore<F> {
                 continue;
             }
             self.wanted.insert(at.height, at.hash);
-            let record = chain.header_at(at.height).expect("a wanted height is best");
-            out.push(Output::Fetch { at, record });
+            out.push(Output::Fetch(at));
         }
     }
 

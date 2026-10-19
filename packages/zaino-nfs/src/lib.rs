@@ -178,8 +178,8 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
         fetches: &mut Fetches,
     ) {
         match output {
-            Output::Fetch { at, record } => {
-                fetches.start(at.hash, fetch(self.balancer.clone(), at, record, Urgency::Tip));
+            Output::Fetch(at) => {
+                fetches.start(at.hash, fetch(self.balancer.clone(), at, Urgency::Tip))
             }
             Output::Abandon(at) => fetches.abandon(at.hash),
             Output::Fold { at, parent, block, covers } => {

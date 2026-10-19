@@ -1,6 +1,7 @@
 //! One body per wanted block, from whichever member the balancer picks
 //!
-//! - By hash (NFS, peers or trusted): hash + merkle root vs the verified header + coinbase height
+//! - By hash (NFS, `GetTransaction`, peers or trusted): hash + merkle root vs a header we hold
+//!   (or a block our indexes folded) + coinbase height
 //! - By height (FinalizedFollower, trusted members only, batched): coinbase height alone, body
 //!   trusted (linkage = the follower's, in delivery order)
 //! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again
@@ -8,7 +9,6 @@
 
 use std::sync::Arc;
 
-use zaino_header_chain::Record;
 use zaino_primitives::types::{Block, BlockRef, BodyMismatch};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
@@ -41,21 +41,17 @@ pub(crate) enum Misanswer {
     Count { asked: usize, got: usize },
 }
 
-/// `block` = the one asked for at `height` (hash = `record`'s: its header = the verified one)
+/// `block` = the one asked for at `at` (its hash = a header we hold, or one our indexes folded)
 ///
 /// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
-pub(crate) fn check_block(
-    block: Block,
-    height: BlockHeight,
-    record: &Record,
-) -> Result<Checked, Misanswer> {
+pub(crate) fn check_block(block: Block, at: BlockRef) -> Result<Checked, Misanswer> {
     let header = block.header();
-    if header.hash != record.hash {
+    if header.hash != at.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
     }
     block.check_body()?;
-    check_block_at(block, height)
+    check_block_at(block, at.height)
 }
 
 /// `block` = the one at `height` (a trusted member's by-height answer)
@@ -74,12 +70,11 @@ fn check_block_at(block: Block, height: BlockHeight) -> Result<Checked, Misanswe
 pub async fn fetch<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
     at: BlockRef,
-    record: Record,
     urgency: Urgency,
 ) -> Checked {
     loop {
         let answered = balancer.block(at.hash, urgency).await;
-        match check_block(answered.value, at.height, &record) {
+        match check_block(answered.value, at) {
             Ok(checked) => return checked,
             Err(why) => balancer.report(answered.ticket, &why),
         }
@@ -112,7 +107,6 @@ fn check_blocks_at(blocks: Vec<Block>, heights: &[BlockHeight]) -> Result<Vec<Ch
 
 #[cfg(test)]
 mod tests {
-    use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::Transaction;
     use zaino_source::testing::{Lie, ValidatorViews};
@@ -136,7 +130,7 @@ mod tests {
         let tip = chain.mine_empty(1);
         let side = chain.fork(h(1)).mine_empty(1).tip();
         let h2 = h(2);
-        let record = chain.snapshot(tip).header_at(h2).expect("on the best chain");
+        assert_eq!(chain.at(h2), two, "on the best chain to {tip:?}");
         let block = |hash: BlockHash| Block::clone(chain.block(hash));
         let with_txs = |txs: Vec<Transaction>| Block::new(block(two.hash).header().clone(), txs);
         let mut header = block(two.hash).header().clone();
@@ -146,7 +140,7 @@ mod tests {
         let added = [txs.clone(), vec![txs[0].clone()]].concat();
         let repeated = [txs.clone(), vec![txs[2].clone()]].concat();
 
-        let passed = check_block(block(two.hash), h2, &record).expect("the asked block");
+        let passed = check_block(block(two.hash), two).expect("the asked block");
         assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
         let passed = check_block_at(block(two.hash), h2).expect("its own header's body");
         assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
@@ -163,10 +157,8 @@ mod tests {
         ];
         for (block, by_hash, by_height) in served {
             let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.block_ref());
-            let got = (
-                checked(check_block(block.clone(), h2, &record)),
-                checked(check_block_at(block, h2)),
-            );
+            let got =
+                (checked(check_block(block.clone(), two)), checked(check_block_at(block, h2)));
             assert_eq!(got, (by_hash, by_height));
         }
 
@@ -184,10 +176,9 @@ mod tests {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
         let two = chain.mine(|b| b.tx(|t| t.txid([0x21; 32])).tx(|t| t.txid([0x22; 32])));
-        let record = chain.snapshot(two).header_at(h(2)).expect("verified");
         let validator = chain.validator(two);
         let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
-        let passed = check_block(honest, h(2), &record).map(|checked| checked.block_ref());
+        let passed = check_block(honest, two).map(|checked| checked.block_ref());
         assert_eq!(passed, Ok(two));
         let honest = validator.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
         assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.block_ref()), Ok(two));
@@ -208,7 +199,7 @@ mod tests {
             validator.lie(Some(lie));
             let served = validator.get_block_by_hash(two.hash).await.expect("answers");
             let expected = by_hash(&served);
-            let checked = check_block(served, h(2), &record).err();
+            let checked = check_block(served, two).err();
             assert_eq!(checked, expected, "{lie:?} by hash");
             let served = validator.get_blocks_by_height(&[h(2)]).await.expect("answers").remove(0);
             let expected = by_height(&served);

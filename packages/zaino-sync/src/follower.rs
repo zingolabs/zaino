@@ -121,7 +121,7 @@ async fn follow<S: ChainDataSource>(
                     let at = BlockRef { hash: record.hash, height: wanted };
                     wanted = wanted + 1;
                     in_flight += 1;
-                    let one = fetch(balancer.clone(), at, record, Urgency::Bulk);
+                    let one = fetch(balancer.clone(), at, Urgency::Bulk);
                     tokio::spawn(async move { vec![one.await] })
                 }
                 None => {
