@@ -1,4 +1,4 @@
-//! Header views on a [`MockChain`]: its header chain (anchored at genesis) and verified chains
+//! Header views on a [`MockChain`]: its header chain (anchored at genesis) and its snapshots
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use zaino_primitives::testing::{encode_header, MockChain, Work};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
-use crate::{decode_header, HeaderChain, HeaderChainSnapshot, Params, Rejected};
+use crate::{decode_header, HeaderChain, HeaderChainSnapshot, Params, Rejected, Witness};
 
 pub trait HeaderViews {
     /// Rules `validate` runs this chain's headers under (Blossom / NU7 at its schedule's heights)
@@ -59,12 +59,18 @@ impl HeaderViews for MockChain {
 /// - last one vouched
 /// - first refusal ends it
 pub fn insert(chain: &mut HeaderChain, blocks: &[Arc<Block>]) -> Result<(), Rejected> {
+    insert_unwitnessed(chain, blocks)?;
+    if let Some(last) = blocks.last() {
+        chain.witness(last.header().hash, Witness::Trusted);
+    }
+    Ok(())
+}
+
+/// [`insert`], nothing witnessed (peers' headers, no `inv` yet)
+pub fn insert_unwitnessed(chain: &mut HeaderChain, blocks: &[Arc<Block>]) -> Result<(), Rejected> {
     for block in blocks {
         let raw = encode_header(block.header());
         chain.insert(&decode_header(&raw).expect("MockChain headers decode"))?;
-    }
-    if let Some(last) = blocks.last() {
-        chain.vouch(BlockRef { hash: last.header().hash, height: last.header().height });
     }
     Ok(())
 }

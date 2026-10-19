@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 
-use zaino_chainview::{
-    Agreement, ChainViewSnapshot, MempoolView, TrustedValidatorMeta, TrustedValidatorSet,
-    STALE_TIP_BLOCKS,
-};
+use zaino_chainview::{ChainViewSnapshot, MempoolView, STALE_TIP_BLOCKS};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::View;
@@ -17,14 +14,16 @@ use zcash_protocol::BlockHash;
 
 use crate::feed::{Feed, MempoolTail};
 
-/// - `held_by` = trusted validators holding `best`
+/// Best blocks past the last vouched one before no trusted validator vouches for the tip (a peer's
+/// block one poll ahead of every validator = the race a poll closes)
+const UNVOUCHED_BLOCKS: u32 = 1;
+
 /// - `synced`: opens at served == best, closes off best or > depth behind
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tips {
     pub best: Option<BlockRef>,
     pub finalized_tip: Option<BlockRef>,
     pub served: Option<BlockRef>,
-    pub held_by: TrustedValidatorSet,
     pub synced: bool,
 }
 
@@ -49,33 +48,14 @@ pub enum Unavailable {
 
 /// Serving judged from one snapshot (zainod adds held, provisioning, a stalled runtime)
 ///
-/// - `Syncing` also while a validator catches up and none `Live` holds best
-/// - `Degraded` = serving a fresh proof-of-work-verified best no trusted validator vouches for
-///   (peers')
+/// - `Degraded` = serving a fresh best no trusted validator vouches for (peers carried it)
 /// - `Down` = that best stale or not yet served
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServingStatus {
     Serving,
-    Degraded(StatusReason),
+    Degraded,
     Syncing,
-    Down(StatusReason),
-}
-
-/// Why no trusted validator vouches for the best block
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusReason {
-    NoValidatorReachable,
-    TipNotHeld,
-}
-
-impl StatusReason {
-    /// `/readyz` + `/status` `detail`
-    pub const fn detail(self) -> &'static str {
-        match self {
-            Self::NoValidatorReachable => "No trusted validator reachable",
-            Self::TipNotHeld => "No trusted validator holds the verified tip",
-        }
-    }
+    Down,
 }
 
 /// One publish: tips, the NFS's latest, the chain view's latest, the mempool epoch at `served`
@@ -149,31 +129,24 @@ impl<V> GrpcSnapshot<V> {
 
     /// First match (`now_unix` = the clock):
     ///
-    /// - all validators down, or best unheld and none catching up to it → `Degraded` while synced
-    ///   to a fresh best, else `Down`
-    /// - not synced, or no `Live` holder and a validator catching up → `Syncing`
+    /// - best more than [`UNVOUCHED_BLOCKS`] past the last vouched block → `Degraded` while
+    ///   synced to a fresh best, else `Down`
+    /// - not synced, or a validator's mempool off and none on (zebrad's, for minutes after a
+    ///   catch-up) → `Syncing`
     /// - else `Serving`
     pub fn serving_status(&self, now_unix: i64) -> ServingStatus {
-        let trusted_validators = self.view.trusted_validators();
-        let health = |at: usize| trusted_validators.get(at).map(|meta| meta.health);
-        let live_holder = self.tips.held_by.positions().any(|at| health(at) == Some(Health::Live));
-        let catching_up = !live_holder && trusted_validators.iter().any(catching_up_to_best);
-        let reason = if !trusted_validators.is_empty()
-            && trusted_validators.iter().all(|meta| meta.health == Health::Down)
-        {
-            Some(StatusReason::NoValidatorReachable)
-        } else if self.tips.best.is_some() && self.tips.held_by.is_empty() && !catching_up {
-            Some(StatusReason::TipNotHeld)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
+        let vouched = self.chain().is_none_or(|chain| {
+            chain.vouched(chain.best().height.saturating_sub(UNVOUCHED_BLOCKS))
+        });
+        if !vouched {
             return match self.tips.synced && self.fresh(now_unix) {
-                true => ServingStatus::Degraded(reason),
-                false => ServingStatus::Down(reason),
+                true => ServingStatus::Degraded,
+                false => ServingStatus::Down,
             };
         }
-        match self.tips.synced && !catching_up {
+        let health = |wanted| self.view.trusted_validators().iter().any(|m| m.health == wanted);
+        let mempool_off = health(Health::CatchingUp) && !health(Health::Live);
+        match self.tips.synced && !mempool_off {
             true => ServingStatus::Serving,
             false => ServingStatus::Syncing,
         }
@@ -199,12 +172,6 @@ impl<V> GrpcSnapshot<V> {
             catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()
     }
-}
-
-/// `CatchingUp` on our chain (holding best, or `Behind` it): on its way to best, not lost
-fn catching_up_to_best(meta: &TrustedValidatorMeta) -> bool {
-    meta.health == Health::CatchingUp
-        && matches!(meta.agreement, Agreement::Agreed | Agreement::Ahead | Agreement::Behind)
 }
 
 impl<V: View> GrpcSnapshot<V> {

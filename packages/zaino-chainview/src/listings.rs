@@ -15,10 +15,8 @@ use std::time::Duration;
 
 use imbl::{OrdMap, OrdSet};
 use tokio::time::Instant;
-use zaino_primitives::types::PeerTxId;
+use zaino_primitives::types::{Netgroup, PeerTxId, ECLIPSE_NETGROUPS};
 use zcash_protocol::TxId;
-
-use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 
 /// Every live outbound peer's mempool asked this often
 pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
@@ -74,7 +72,7 @@ impl Listings {
 
     /// Admission possible at all: the fresh listings span > [`ECLIPSE_NETGROUPS`] netgroups
     pub(crate) fn quorate(&self) -> bool {
-        netgroup::count(self.fresh().map(|(peer, _)| *peer)) > ECLIPSE_NETGROUPS
+        Netgroup::count(self.fresh().map(|(peer, _)| *peer)) > ECLIPSE_NETGROUPS
     }
 
     /// Every id the quorum admits, in id order
@@ -104,14 +102,12 @@ impl Listings {
 
 /// `listers` > 2/3 of `polled`, in > [`ECLIPSE_NETGROUPS`] netgroups
 fn quorum(listers: &[SocketAddr], polled: usize) -> bool {
-    listers.len() * 3 > polled * 2 && netgroup::count(listers.iter().copied()) > ECLIPSE_NETGROUPS
+    listers.len() * 3 > polled * 2 && Netgroup::count(listers.iter().copied()) > ECLIPSE_NETGROUPS
 }
 
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-
-    use crate::netgroup::Netgroup;
 
     use super::*;
 

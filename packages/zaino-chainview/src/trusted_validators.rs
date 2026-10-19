@@ -75,10 +75,10 @@ impl FromIterator<TrustedValidatorId> for TrustedValidatorSet {
     }
 }
 
-/// Its chain vs the verified best block, as of its last answered poll
+/// Its chain vs the best block, as of its last answered poll
 ///
-/// - `Ahead` = claims higher, its `getblockhash` answer on the verified chain
-/// - `Behind` = its claim on the verified chain, below best
+/// - `Ahead` = claims higher, its `getblockhash` answer on the best chain
+/// - `Behind` = its claim on the best chain, below best
 /// - `Diverged` = neither (a losing branch: an alarm, never an error, zebra #11133)
 /// - `Unknown` = nothing verified yet, or its last poll failed (`Degraded`, `Down`)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -111,7 +111,6 @@ impl Agreement {
 pub struct TrustedValidatorMeta {
     pub address: String,
     pub health: Health,
-    pub agreement: Agreement,
     pub peers: imbl::Vector<PeerInfo>,
     pub release: Option<NodeRelease>,
     pub streaming: bool,
@@ -124,7 +123,6 @@ impl TrustedValidatorMeta {
         Self {
             address,
             health: Health::Pending,
-            agreement: Agreement::Unknown,
             peers: imbl::Vector::new(),
             release: None,
             streaming: false,
@@ -160,19 +158,19 @@ impl TrustedValidatorMeta {
     /// First match wins
     ///
     /// - `Agreed` = claim = best
-    /// - `Ahead` = claim higher + `block_at_best` verified
-    /// - `Behind` = claim lower + verified
+    /// - `Ahead` = claim higher + `block_at_best` on best
+    /// - `Behind` = claim lower + on best
     /// - `Diverged` = else
     pub(crate) fn agreement_with(&self, chain: Option<&HeaderChainSnapshot>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;
         };
-        let (best, verified) = (chain.best(), |at: BlockRef| chain.on_best(at));
+        let (best, on_best) = (chain.best(), |at: BlockRef| chain.on_best(at));
         if claim == best {
             Agreement::Agreed
-        } else if claim.height > best.height && self.block_at_best.is_some_and(verified) {
+        } else if claim.height > best.height && self.block_at_best.is_some_and(on_best) {
             Agreement::Ahead
-        } else if claim.height < best.height && verified(claim) {
+        } else if claim.height < best.height && on_best(claim) {
             Agreement::Behind
         } else {
             Agreement::Diverged

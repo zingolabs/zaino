@@ -1,7 +1,7 @@
 //! Peers grouped by the operator plausibly behind them: one attacker = many addresses, few groups
 //!
 //! - submission: one entry per netgroup
-//! - finality: peers carrying the chain counted per netgroup
+//! - finality: a block's peer witnesses counted per netgroup (`zaino-header-chain`)
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
@@ -10,24 +10,24 @@ use std::net::{IpAddr, SocketAddr};
 /// 6 of the default 8 outbound peers)
 ///
 /// - required by peer finality & mempool quorum
-pub(crate) const ECLIPSE_NETGROUPS: usize = 5;
-
-/// Distinct netgroups among `peers`
-pub(crate) fn count(peers: impl IntoIterator<Item = SocketAddr>) -> usize {
-    peers.into_iter().map(Netgroup::of).collect::<BTreeSet<_>>().len()
-}
+pub const ECLIPSE_NETGROUPS: usize = 5;
 
 /// Address prefix one operator plausibly controls: /16 IPv4, /32 IPv6 (Bitcoin Core's buckets)
 ///
 /// - IPv4-mapped IPv6 = IPv4 (one host, two spellings)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) enum Netgroup {
+pub enum Netgroup {
     V4([u8; 2]),
     V6([u8; 4]),
 }
 
 impl Netgroup {
-    pub(crate) fn of(addr: SocketAddr) -> Self {
+    /// Distinct netgroups among `peers`
+    pub fn count(peers: impl IntoIterator<Item = SocketAddr>) -> usize {
+        peers.into_iter().map(Self::of).collect::<BTreeSet<_>>().len()
+    }
+
+    pub fn of(addr: SocketAddr) -> Self {
         let v4 = |[a, b, ..]: [u8; 4]| Self::V4([a, b]);
         match addr.ip() {
             IpAddr::V4(ip) => v4(ip.octets()),

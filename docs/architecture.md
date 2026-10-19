@@ -119,15 +119,19 @@ the NFS, the finalized path and the `GrpcSnapshot` publisher read.
 A header proves work, not that its block's transactions are valid. A finalized block is never reorged
 (the indexes hold it on disk), so finality is where Zaino stops being able to change its mind.
 
-- **Vouched.** A trusted validator that had a block on its best chain vouches for it and every
-  ancestor, for good (zebra commits only valid blocks). Vouches come from the last header of each
-  trusted run, each validator's claimed tip, and its `getblockhash` answer at our best.
-  **finalized = min(highest vouched, best − depth).** Peer headers never vouch.
-- **On peers' word** (`[p2p]` on, nothing vouched that deep): best − depth is still finalized when
-  live outbound peers in > 5 netgroups last announced a block on our best chain at or above it,
-  **and** no non-finalized best-chain block has under half the work of the last vouched block. An
+Every header node records its **witnesses**: who once had that block on its best chain, and so
+every ancestor too, for good. Each block carries all of its own accounting; nothing about it is
+kept anywhere else.
+
+- **Vouched.** A trusted validator witnessed it (zebra commits only valid blocks). Vouches come
+  from the last header of each trusted run, each validator's claimed tip, and its `getblockhash`
+  answer at our best. Peer headers never vouch.
+- **Peer-quorate** (`[p2p]` on). Live outbound peers in > 5 netgroups witnessed it by announcing
+  it or a descendant.
+- **finalized = min(highest settled, best − depth)**, where settled = vouched, or peer-quorate
+  while no unvouched best-chain block has under half the work of the last vouched block. An
   attacker who eclipses us can feed a private chain, but its difficulty retargets to their
-  hashrate, which shows up as that collapse. Both checks fail safe: a thin peer set or a real
+  hashrate, which shows up as that collapse. Both peer checks fail safe: a thin peer set or a real
   hashrate drop only delays finality.
 - Neither holding: finality waits, the `finality paused` alarm rises (§11), serving continues
   from RAM. A trusted validator's return vouches and finality resumes.
@@ -251,9 +255,10 @@ one and reads only it, so no answer mixes two moments.
   does not count, one not polled since best moved does), and stays while it is on the best chain
   within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
-- `GrpcSnapshot::serving_status` judges serving from the same load: `Down` when no trusted validator
-  vouches for the best block, `Degraded` for that cause while synced to a fresh best (peers carry
-  the tip). A validator catching up on our chain is on its way to best, not missing: `Syncing`. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
+- `GrpcSnapshot::serving_status` judges serving from the same load, from the header chain's
+  witnesses alone: `Down` when the best block runs more than one past the last vouched block,
+  `Degraded` for that cause while synced to a fresh best (peers carry the tip). One block past is
+  the race a validator's next poll closes. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
   what each method answers meanwhile: [rpc_api.md](./rpc_api.md).
 
 ### `GetMempoolStream`

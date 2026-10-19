@@ -13,12 +13,11 @@
 //!   tip, work counted from it
 //! - pure core: no clock, no lock, no I/O, one owner (`HeaderSync`)
 //! - H1 best = max work, H2 descends from finalized, H4 bounded, H5 published never changes, H6
-//!   finalized = vouched or peer-confirmed: asserted by [`HeaderChain::check`] and on every
-//!   finalize
-//! - finalized = min(highest vouched on best, best − depth) (H6: [`HeaderChain::vouch`])
-//! - no vouch that deep: best − depth may still be finalized on peers' word
-//!   ([`HeaderChain::peer_finalizable`]): no difficulty collapse since the last vouch here, enough
-//!   netgroups carrying the chain in the driver
+//!   finalized = settled, H7 witnesses closed under parents: asserted by [`HeaderChain::check`]
+//!   and on every finalize
+//! - settled = vouched, or witnessed by peers in > 5 netgroups with no difficulty collapse since
+//!   the last vouch ([`HeaderChain::witness`])
+//! - finalized = min(highest settled on best, best − depth)
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -31,6 +30,7 @@ use crate::header::Header;
 use crate::params::Params;
 use crate::rules::{header_work, validate, Ancestor, Rejected, CONTEXT};
 use crate::snapshot::HeaderChainSnapshot;
+use crate::witnesses::{Witness, Witnesses};
 
 /// Side-branch tips held beside the best (H4)
 const SIDE_TIPS: usize = 32;
@@ -39,7 +39,7 @@ const SIDE_NODES_PER_DEPTH: usize = 4;
 /// Finalized headers kept, per block of reorg depth (the NFS reads up to `2 · depth` below best)
 const FINALIZED_PER_DEPTH: usize = 2;
 /// Peer finality refused once a non-finalized best-chain block holds under 1/this of the last
-/// vouched block's work (a minority miner's private chain retargets down to its own hashrate)
+/// vouched block's work
 const MAX_DIFFICULTY_DROP: u128 = 2;
 
 /// One header as the chain keeps it: identity, the fields block checks read, the work from the
@@ -72,7 +72,6 @@ pub enum Inserted {
 }
 
 /// - `received` = arrival order (H1 tie → first received wins, eviction tie → last received goes)
-/// - `vouched` closed under parents (H6)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node {
     pub(crate) record: Record,
@@ -80,13 +79,7 @@ pub(crate) struct Node {
     pub(crate) parent: BlockHash,
     pub(crate) received: u64,
     children: u32,
-    vouched: bool,
-}
-
-impl Node {
-    pub(crate) fn block_ref(&self) -> BlockRef {
-        BlockRef { hash: self.record.hash, height: self.height }
-    }
+    pub(crate) witnesses: Witnesses,
 }
 
 /// - `finalized_headers` = the newest finalized headers, oldest first, the finalized tip last
@@ -94,6 +87,7 @@ impl Node {
 /// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
 /// - `last_vouched` = (height, own work) of the highest block a trusted validator vouched for,
 ///   else the anchor: peer finality's difficulty reference (never moved by peers)
+/// - `revision` = +1 per change (a snapshot worth publishing)
 /// - every collection `imbl` (O(1) into each [`HeaderChainSnapshot`])
 pub struct HeaderChain {
     depth: FinalityDepth,
@@ -103,6 +97,7 @@ pub struct HeaderChain {
     best_path: imbl::Vector<Record>,
     received: u64,
     last_vouched: Option<(BlockHeight, u128)>,
+    revision: u64,
 }
 
 impl HeaderChain {
@@ -116,6 +111,7 @@ impl HeaderChain {
             best_path: imbl::Vector::new(),
             received: 0,
             last_vouched: None,
+            revision: 0,
         }
     }
 
@@ -134,6 +130,7 @@ impl HeaderChain {
         self.leaves = imbl::HashSet::new();
         self.best_path = imbl::Vector::new();
         self.last_vouched = header_work(header.bits()).ok().map(|work| (height, work));
+        self.revision += 1;
     }
 
     /// `None` = no anchor yet
@@ -156,6 +153,11 @@ impl HeaderChain {
     pub fn finalized_tip(&self) -> Option<BlockRef> {
         let (height, record) = self.finalized_headers.back()?;
         Some(BlockRef { hash: record.hash, height: *height })
+    }
+
+    /// Moves on every change: a held snapshot is stale iff taken at an older revision
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Immutable view of the best chain (`None` = no anchor yet)
@@ -222,8 +224,10 @@ impl HeaderChain {
 
         self.received += 1;
         let received = self.received;
-        let node = Node { record, height, parent: prev, received, children: 0, vouched: false };
+        let witnesses = Witnesses::default();
+        let node = Node { record, height, parent: prev, received, children: 0, witnesses };
         self.nodes.insert(hash, node);
+        self.revision += 1;
         self.leaves.insert(hash);
         if let Some(parent) = self.nodes.get_mut(&prev) {
             parent.children += 1;
@@ -243,21 +247,24 @@ impl HeaderChain {
         Ok(inserted)
     }
 
-    /// A trusted validator had `block` on its best chain: it + every ancestor vouched (H6)
+    /// `by` had `hash` on its best chain: it + every ancestor witnessed, for good (H7)
     ///
-    /// - permanent (zebra commits only valid blocks)
     /// - not held above the finalized tip = no-op
-    pub fn vouch(&mut self, block: BlockRef) {
-        let mut at = block.hash;
-        let Some(node) = self.nodes.get(&at).filter(|node| node.height == block.height) else {
-            return;
-        };
-        if self.last_vouched.is_none_or(|(height, _)| block.height > height) {
-            self.last_vouched = header_work(node.record.bits).ok().map(|work| (block.height, work));
+    pub fn witness(&mut self, hash: BlockHash, by: Witness) {
+        let Some(node) = self.nodes.get(&hash) else { return };
+        let higher = self.last_vouched.is_none_or(|(height, _)| node.height > height);
+        if by == Witness::Trusted && higher {
+            self.last_vouched = header_work(node.record.bits).ok().map(|work| (node.height, work));
         }
-        while let Some(node) = self.nodes.get_mut(&at).filter(|node| !node.vouched) {
-            node.vouched = true;
+        let mut at = hash;
+        while let Some(node) = self.nodes.get_mut(&at) {
+            if !node.witnesses.add(by) {
+                break;
+            }
             at = node.parent;
+        }
+        if at != hash {
+            self.revision += 1;
         }
     }
 
@@ -268,37 +275,14 @@ impl HeaderChain {
         self.base() + above
     }
 
-    /// Best-chain block finalized moves to next: min(highest vouched, best − depth), above the
+    /// Best-chain block finalized moves to next: min(highest settled, best − depth), above the
     /// finalized tip
     pub fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let below = u32::from(best.block.height).checked_sub(self.depth.get())?;
-        let boundary = BlockHeight::from(below).min(self.vouched()?);
+        let boundary = BlockHeight::from(below).min(self.settled()?);
         let hash = self.best_path.get(self.offset(boundary)?)?.hash;
         Some(BlockRef { hash, height: boundary })
-    }
-
-    /// Best-chain block finalized may move to on peers' word alone: best − depth, unless a
-    /// non-finalized best-chain block holds under half the last vouched block's work
-    /// (`MAX_DIFFICULTY_DROP`)
-    ///
-    /// - `None` = best − depth finalized already, or a difficulty collapse
-    /// - the driver's half: peers in enough netgroups carry a block at or above it
-    pub fn peer_finalizable(&self) -> Option<BlockRef> {
-        let best = self.best()?;
-        let boundary =
-            BlockHeight::from(u32::from(best.block.height).checked_sub(self.depth.get())?);
-        let hash = self.best_path.get(self.offset(boundary)?)?.hash;
-        let (_, reference) = self.last_vouched?;
-        let collapsed =
-            self.best_path_work().any(|own| own.saturating_mul(MAX_DIFFICULTY_DROP) < reference);
-        (!collapsed).then_some(BlockRef { hash, height: boundary })
-    }
-
-    /// Height of `hash` on the best branch above the finalized tip (`None` = not there)
-    pub fn best_height_of(&self, hash: BlockHash) -> Option<BlockHeight> {
-        let node = self.nodes.get(&hash)?;
-        self.on_best(node.block_ref()).then_some(node.height)
     }
 
     /// Every best-chain header up to `through` finalized
@@ -306,21 +290,8 @@ impl HeaderChain {
     /// - every branch not descending from it pruned
     /// - newest `finalized_headers_kept()` finalized headers kept
     pub fn finalize(&mut self, through: BlockRef) {
-        let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);
-        assert!(vouched, "H6: only a vouched block (or an ancestor of one) becomes finalized");
-        self.advance_finalized(through);
-    }
-
-    /// [`finalize`](Self::finalize) at [`peer_finalizable`](Self::peer_finalizable)'s block, no
-    /// vouch needed (the driver counted the netgroups)
-    pub fn finalize_by_peers(&mut self, through: BlockRef) {
-        let allowed = self.peer_finalizable() == Some(through);
-        assert!(allowed, "H6: unvouched, only peer_finalizable()'s block becomes finalized");
-        self.advance_finalized(through);
-    }
-
-    /// [`finalize`](Self::finalize)'s move, once H6 holds
-    fn advance_finalized(&mut self, through: BlockRef) {
+        let settled = self.settled().is_some_and(|settled| through.height <= settled);
+        assert!(settled, "H6: only a settled block (or an ancestor of one) becomes finalized");
         assert!(self.on_best(through), "H2: only a best-branch block becomes finalized");
         let best = self.best().expect("a best-branch block has a best tip");
         let deep = u32::from(best.block.height) - u32::from(through.height);
@@ -356,9 +327,10 @@ impl HeaderChain {
                 self.finalized_headers.skip(self.finalized_headers.len() - kept);
         }
         self.best_path = self.best_path.skip(count);
+        self.revision += 1;
     }
 
-    /// H1, H2, H4, H5, H6 + the tree's own bookkeeping (panics naming the invariant broken)
+    /// H1, H2, H4, H5, H7 + the tree's own bookkeeping (panics naming the invariant broken)
     ///
     /// - O(nodes): tests run it after every mutation
     pub fn check(&self) {
@@ -393,8 +365,9 @@ impl HeaderChain {
             };
             let own = header_work(node.record.bits).expect("nBits checked on insert");
             assert_eq!(parent_work + own, node.record.cumulative_work, "tree: cumulative work");
-            let parent_vouched = self.nodes.get(&node.parent).is_none_or(|parent| parent.vouched);
-            assert!(!node.vouched || parent_vouched, "H6: {hash:?} vouched, its parent not");
+            let parent = self.nodes.get(&node.parent);
+            let covered = parent.is_none_or(|parent| parent.witnesses.covers(&node.witnesses));
+            assert!(covered, "H7: {hash:?} witnessed, its parent not");
             *children.entry(node.parent).or_default() += 1;
         }
         for (hash, node) in &self.nodes {
@@ -444,22 +417,34 @@ impl HeaderChain {
             .is_some_and(|record| record.hash == block.hash)
     }
 
-    /// Highest vouched best-branch height, else the finalized tip (finalized ⇒ vouched: H6)
-    fn vouched(&self) -> Option<BlockHeight> {
-        let top = self.best_path.iter().rposition(|record| self.nodes[&record.hash].vouched);
-        match top {
+    /// Highest settled best-branch height, else the finalized tip (H6)
+    ///
+    /// - settled = vouched, or peer-quorate while no unvouched block's difficulty collapsed (an
+    ///   eclipse attacker's private chain retargets down to its own hashrate)
+    fn settled(&self) -> Option<BlockHeight> {
+        let witnesses = |record: &Record| self.nodes[&record.hash].witnesses;
+        let vouched = self.best_path.iter().rposition(|record| witnesses(record).vouched());
+        let unvouched_from = vouched.map_or(0, |at| at + 1);
+        let quorate = match self.collapsed(unvouched_from) {
+            true => None,
+            false => self.best_path.iter().rposition(|record| witnesses(record).peer_quorate()),
+        };
+        match vouched.max(quorate) {
             Some(at) => Some(self.base() + u32::try_from(at).expect("heights fit u32")),
             None => self.finalized_tip().map(|tip| tip.height),
         }
     }
 
-    /// Each non-finalized best-chain block's own work (its cumulative minus its parent's)
-    fn best_path_work(&self) -> impl Iterator<Item = u128> + '_ {
+    /// A best-chain block from `best_path[from]` up with its own work under
+    /// 1 / `MAX_DIFFICULTY_DROP` of the last vouched block's
+    fn collapsed(&self, from: usize) -> bool {
+        let Some((_, reference)) = self.last_vouched else { return true };
         let finalized_work =
             self.finalized_headers.back().map_or(0, |(_, record)| record.cumulative_work);
         let parents = self.best_path.iter().map(|record| record.cumulative_work);
         let parents = std::iter::once(finalized_work).chain(parents);
-        self.best_path.iter().zip(parents).map(|(record, parent)| record.cumulative_work - parent)
+        let own = self.best_path.iter().zip(parents).map(|(r, parent)| r.cumulative_work - parent);
+        own.skip(from).any(|own| own.saturating_mul(MAX_DIFFICULTY_DROP) < reference)
     }
 
     fn max_side_nodes(&self) -> usize {

@@ -8,6 +8,7 @@ mod rules;
 mod snapshot;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod witnesses;
 
 #[cfg(test)]
 mod model;
@@ -19,3 +20,4 @@ pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
 pub use rules::Rejected;
 pub use snapshot::HeaderChainSnapshot;
+pub use witnesses::Witness;

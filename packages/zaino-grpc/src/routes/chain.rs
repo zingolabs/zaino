@@ -392,7 +392,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(info().expect("served"), expected, "best 7, NU6.3's branch at 5, 5 served");
-        assert!(grpc_snapshots.load().tips().held_by.is_empty(), "no validator ever held the tip");
+        let held_by = grpc_snapshots.load().chain_view().held_by();
+        assert!(held_by.is_empty(), "no validator ever held the tip");
         cancel.cancel();
     }
 

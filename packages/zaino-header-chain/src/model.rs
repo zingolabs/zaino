@@ -10,26 +10,25 @@
 //!   received on a tie), both recomputed from scratch
 //! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`, trusted run = its
 //!   last header vouched, then finality
-//! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
-//!   parent)
-//! - finalized target = min(highest vouched on best, best − depth)
-//! - peer finality oracle: best − depth above the finalized tip, unless a non-finalized best-path
-//!   header's work (from its own nBits) is under half the highest vouched header's (the anchor's at
-//!   first)
+//! - witness oracle: a header's witnesses = those of it and every live descendant (an evicted one
+//!   passes its own to its parent)
+//! - settled = vouched, or peers in > 5 netgroups unless a non-finalized best-path header's work
+//!   (from its own nBits) is under half the highest vouched header's (the anchor's at first)
+//! - finalized target = min(highest settled on best, best − depth)
 //! - checked after every move: `check()`, best, finalized tip, boundary, tree size + its bound
 //!   (H9), every height of the published chain (kept finalized headers and above, older finalized
-//!   headers = on best by definition), its locator, its forks and their branches, `holds` for every
+//!   headers = on best by definition) and whether it is vouched, its locator, `holds` for every
 //!   header ever mined, and the chain published one move earlier still answering as it did (H5)
 //! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::{all_at, MockChain};
-use zaino_primitives::types::{BlockRef, FinalityDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth, Netgroup, ECLIPSE_NETGROUPS};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
@@ -37,6 +36,7 @@ use crate::params::AVERAGING_WINDOW;
 use crate::rules::{header_work, Rejected, CONTEXT};
 use crate::{
     decode_header, BestTip, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Record,
+    Witness,
 };
 
 const DEPTH: u32 = 3;
@@ -55,17 +55,16 @@ const NOW: i64 = i64::MAX / 2;
 ///   run (its last accepted header vouched, then finality)
 /// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
 /// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
-/// - `Vouch`: a poll's claim (any mined header, held or not)
-/// - `PeerFinalize`: the driver found enough netgroups carrying the chain
+/// - `Witness`: a poll's claim (`peers: None`), or `inv`s from each netgroup set in `peers` (any
+///   mined header, held or not)
 #[derive(Debug, Clone)]
 enum Move {
     Extend { parent: usize, gap: u32, bits: Vec<usize>, trusted: bool },
-    Vouch { mined: usize },
+    Witness { mined: usize, peers: Option<u8> },
     Orphan { parent: usize },
     Spray { from: usize, branches: usize },
     Reinsert { mined: usize, trusted: bool },
     Finalize,
-    PeerFinalize,
 }
 
 fn moves() -> impl Strategy<Value = Vec<Move>> {
@@ -79,13 +78,14 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
             10 => (any(), 1u32..=300, bits, prop::bool::ANY).prop_map(
                 |(parent, gap, bits, trusted)| Move::Extend { parent, gap, bits, trusted }
             ),
-            2 => any().prop_map(|mined| Move::Vouch { mined }),
+            2 => any().prop_map(|mined| Move::Witness { mined, peers: None }),
+            4 => (any(), prop::num::u8::ANY)
+                .prop_map(|(mined, peers)| Move::Witness { mined, peers: Some(peers) }),
             1 => any().prop_map(|parent| Move::Orphan { parent }),
             1 => (any(), 1usize..=40).prop_map(|(from, branches)| Move::Spray { from, branches }),
             1 => (any(), prop::bool::ANY)
                 .prop_map(|(mined, trusted)| Move::Reinsert { mined, trusted }),
-            3 => Just(Move::Finalize),
-            2 => Just(Move::PeerFinalize),
+            5 => Just(Move::Finalize),
         ],
         1..100,
     )
@@ -100,13 +100,15 @@ struct Alive {
 }
 
 /// - `finalized_headers[h]` = the finalized record at height `h`
-/// - `vouched` = live headers vouched (their live ancestors too, derived)
+/// - `vouched` / `carried` = live headers vouched / announced per netgroup (their live ancestors
+///   too, derived)
 /// - `last_vouched` = (height, work) of the highest header ever vouched, else the anchor
 struct Model {
     mined: Vec<Header>,
     by_hash: HashMap<BlockHash, Header>,
     alive: HashMap<BlockHash, Alive>,
     vouched: HashSet<BlockHash>,
+    carried: HashMap<BlockHash, BTreeSet<u8>>,
     finalized_headers: Vec<Record>,
     received: u64,
     last_vouched: (BlockHeight, u128),
@@ -276,52 +278,64 @@ impl Model {
                 })
                 .expect("a side leaf");
             let gone = self.alive.remove(&victim).expect("a live leaf");
-            if self.vouched.remove(&victim) && self.alive.contains_key(&gone.parent) {
+            let (vouched, carried) = (self.vouched.remove(&victim), self.carried.remove(&victim));
+            if !self.alive.contains_key(&gone.parent) {
+                continue;
+            }
+            if vouched {
                 self.vouched.insert(gone.parent);
             }
-        }
-    }
-
-    fn vouch(&mut self, block: BlockRef) {
-        let Some(alive) = self.alive.get(&block.hash).filter(|a| a.height == block.height) else {
-            return;
-        };
-        if block.height > self.last_vouched.0 {
-            let work = header_work(alive.record.bits).expect("palette bits");
-            self.last_vouched = (block.height, work);
-        }
-        self.vouched.insert(block.hash);
-    }
-
-    fn peer_finalizable(&self) -> Option<BlockRef> {
-        let best = self.best()?;
-        let boundary = u32::from(best.block.height).checked_sub(DEPTH)? as usize;
-        if boundary < self.finalized_headers.len() {
-            return None;
-        }
-        let path = self.best_path();
-        let reference = self.last_vouched.1;
-        let non_finalized = &path[self.finalized_headers.len()..];
-        let own = |record: &Record| header_work(record.bits).expect("palette bits");
-        let collapsed = non_finalized.iter().any(|record| own(record) * 2 < reference);
-        let hash = path[boundary].hash;
-        (!collapsed).then_some(BlockRef { hash, height: height(boundary as u32) })
-    }
-
-    /// Highest best-path height some vouched header descends from, else the finalized tip's
-    fn vouched_height(&self) -> Option<BlockHeight> {
-        let mut covered = HashSet::new();
-        for vouched in &self.vouched {
-            let mut at = *vouched;
-            while let Some(alive) = self.alive.get(&at) {
-                covered.insert(at);
-                at = alive.parent;
+            if let Some(netgroups) = carried {
+                self.carried.entry(gone.parent).or_default().extend(netgroups);
             }
         }
+    }
+
+    /// `peer: None` = a trusted validator
+    fn witness(&mut self, hash: BlockHash, peer: Option<u8>) {
+        let Some(alive) = self.alive.get(&hash) else { return };
+        match peer {
+            Some(netgroup) => drop(self.carried.entry(hash).or_default().insert(netgroup)),
+            None => {
+                if alive.height > self.last_vouched.0 {
+                    let work = header_work(alive.record.bits).expect("palette bits");
+                    self.last_vouched = (alive.height, work);
+                }
+                self.vouched.insert(hash);
+            }
+        }
+    }
+
+    /// Live headers some vouched header descends from, and each one's netgroups (its and every
+    /// live descendant's)
+    fn witnessed(&self) -> (HashSet<BlockHash>, HashMap<BlockHash, BTreeSet<u8>>) {
+        let ancestors = |from: BlockHash| {
+            std::iter::successors(Some(from), |at| self.alive.get(at).map(|alive| alive.parent))
+                .take_while(|at| self.alive.contains_key(at))
+        };
+        let vouched = self.vouched.iter().flat_map(|hash| ancestors(*hash)).collect();
+        let mut carried: HashMap<BlockHash, BTreeSet<u8>> = HashMap::new();
+        for (hash, netgroups) in &self.carried {
+            for at in ancestors(*hash) {
+                carried.entry(at).or_default().extend(netgroups);
+            }
+        }
+        (vouched, carried)
+    }
+
+    /// Highest best-path height settled, else the finalized tip's
+    fn settled_height(&self) -> Option<BlockHeight> {
+        let (vouched, carried) = self.witnessed();
         let path = self.best_path();
-        let top = (self.finalized_headers.len()..path.len())
-            .rev()
-            .find(|h| covered.contains(&path[*h].hash));
+        let own = |record: &Record| header_work(record.bits).expect("palette bits");
+        let unvouched =
+            path[self.finalized_headers.len()..].iter().filter(|r| !vouched.contains(&r.hash));
+        let collapsed = unvouched.into_iter().any(|record| own(record) * 2 < self.last_vouched.1);
+        let quorate = |hash| carried.get(hash).is_some_and(|n| n.len() > ECLIPSE_NETGROUPS);
+        let top = (self.finalized_headers.len()..path.len()).rev().find(|h| {
+            let hash = &path[*h].hash;
+            vouched.contains(hash) || (quorate(hash) && !collapsed)
+        });
         top.map(|h| height(h as u32)).or(self.finalized_tip().map(|tip| tip.height))
     }
 
@@ -333,7 +347,7 @@ impl Model {
     fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let below = BlockHeight::from(u32::from(best.block.height).checked_sub(DEPTH)?);
-        let boundary = below.min(self.vouched_height()?);
+        let boundary = below.min(self.settled_height()?);
         (u32::from(boundary) >= self.finalized_headers.len() as u32).then(|| BlockRef {
             hash: self.best_path()[u32::from(boundary) as usize].hash,
             height: boundary,
@@ -358,6 +372,7 @@ impl Model {
             .collect();
         self.alive.retain(|hash, _| keep.contains(hash));
         self.vouched.retain(|hash| keep.contains(hash));
+        self.carried.retain(|hash, _| keep.contains(hash));
     }
 
     /// `holds`: on the best path (older finalized headers than the chain keeps = on it by
@@ -471,6 +486,7 @@ fn run(moves: Vec<Move>) {
         by_hash: HashMap::from([(genesis.hash(), genesis.clone())]),
         alive: HashMap::new(),
         vouched: HashSet::new(),
+        carried: HashMap::new(),
         finalized_headers: vec![anchor],
         received: 0,
         last_vouched: (H0, header_work(genesis.bits()).expect("regtest limit")),
@@ -525,8 +541,8 @@ fn run(moves: Vec<Move>) {
                     last = Some(BlockRef { hash: prev, height: builder.templates[&prev].height });
                 }
                 if let (true, Some(last)) = (trusted, last) {
-                    chain.vouch(last);
-                    model.vouch(last);
+                    chain.witness(last.hash, Witness::Trusted);
+                    model.witness(last.hash, None);
                     let boundary = model.finalizable();
                     assert_eq!(chain.finalizable(), boundary, "{context}: run's boundary");
                     if let Some(boundary) = boundary {
@@ -545,14 +561,17 @@ fn run(moves: Vec<Move>) {
                     );
                 }
             }
-            Move::Vouch { mined } => {
-                let header = &model.mined[mined % model.mined.len()];
-                let at = BlockRef {
-                    hash: header.hash(),
-                    height: builder.templates[&header.hash()].height,
-                };
-                chain.vouch(at);
-                model.vouch(at);
+            Move::Witness { mined, peers } => {
+                let hash = model.mined[mined % model.mined.len()].hash();
+                let netgroups = peers.map(|mask| (0..8u8).filter(move |n| mask & (1 << n) != 0));
+                if netgroups.is_none() {
+                    chain.witness(hash, Witness::Trusted);
+                    model.witness(hash, None);
+                }
+                for n in netgroups.into_iter().flatten() {
+                    chain.witness(hash, Witness::Peer(Netgroup::V4([n, 0])));
+                    model.witness(hash, Some(n));
+                }
             }
             Move::Orphan { parent } => {
                 let parent = model.mined[parent % model.mined.len()].clone();
@@ -587,27 +606,12 @@ fn run(moves: Vec<Move>) {
                 }
                 assert_eq!(chain.finalizable(), None, "{context}: one call reaches the target");
             }
-            Move::PeerFinalize => {
-                let target = model.peer_finalizable();
-                assert_eq!(chain.peer_finalizable(), target, "{context}");
-                if let Some(target) = target {
-                    chain.finalize_by_peers(target);
-                    model.finalize(target);
-                }
-                assert_eq!(
-                    chain.peer_finalizable(),
-                    None,
-                    "{context}: one call reaches best − depth"
-                );
-            }
         }
 
         chain.check();
         assert_eq!(chain.best(), model.best(), "{context}: best");
         assert_eq!(chain.finalized_tip(), model.finalized_tip(), "{context}: finalized tip");
         assert_eq!(chain.finalizable(), model.finalizable(), "{context}: boundary");
-        let peer_boundary = model.peer_finalizable();
-        assert_eq!(chain.peer_finalizable(), peer_boundary, "{context}: peer boundary");
         assert_eq!(chain.ceiling(RUN), model.ceiling(), "{context}: ceiling");
         assert_eq!(chain.tree_len(), model.alive.len(), "{context}: live tree");
         let non_finalized = model.best_path().len() - model.finalized_headers.len();
@@ -631,6 +635,13 @@ fn run(moves: Vec<Move>) {
         assert_eq!(answers(&verified, &path), expected(&path, kept_from), "{context}: path");
         assert_eq!(verified.hash_at(height(path.len() as u32)), None, "{context}: above best");
         assert_eq!(verified.locator(), model.locator(), "{context}: locator");
+        let (vouched, _) = model.witnessed();
+        let finalized = model.finalized_headers.len();
+        let model_vouched: Vec<bool> =
+            (0..path.len()).map(|at| at < finalized || vouched.contains(&path[at].hash)).collect();
+        let chain_vouched: Vec<bool> =
+            (0..path.len() as u32).map(|at| verified.vouched(height(at))).collect();
+        assert_eq!(chain_vouched, model_vouched, "{context}: vouched per best-path height");
 
         let mut holds = Vec::new();
         for header in &model.mined {

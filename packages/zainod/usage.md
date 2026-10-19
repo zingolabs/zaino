@@ -38,9 +38,9 @@ moments.
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                      |
 | `provisioning` | not booted yet: an index-snapshot bootstrap, or plain startup                            |
-| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or no trusted validator vouching (every one down, or none holding the verified tip and none catching up to it on our chain) while not `degraded` |
-| `degraded`     | no trusted validator vouching, but synced to a fresh verified best (its block time within 24 target spacings of the clock: p2p peers carried the tip) |
-| `syncing`      | booted, but the served tip is not the verified best yet, or a validator is still catching up to the network on our chain and none `live` holds the best (a restored zebrad behind the peers' tip) |
+| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or the best block more than one past the last a trusted validator vouched for while not `degraded` |
+| `degraded`     | the best block more than one past the last vouched, but synced to it while fresh (its block time within 24 target spacings of the clock: p2p peers carried the tip) |
+| `syncing`      | booted, but the served tip is not the best yet, or a validator's mempool is off and none is on (zebrad's, for minutes after a catch-up) |
 | `serving`      | otherwise                                                                                |
 
 - `ready` is true exactly when `state` is `serving` or `degraded`, and only then does `/readyz`
@@ -53,9 +53,10 @@ moments.
   ([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)). Requests are never
   refused for it.
 - `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
-  validator reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or
-  `Overloaded` (a degraded node only ever shows one of the first two). When `held` it names the
-  drain: `GOAWAY pending` or `GOAWAY sent`.
+  validator reachable` (boot), `No trusted validator vouches for the tip`, `Runtime stalled` or
+  `Overloaded` (a degraded node only ever shows the second). One block past the last vouch is the
+  race a validator's next poll closes (a peer relayed the block first), not a reason. When `held`
+  it names the drain: `GOAWAY pending` or `GOAWAY sent`.
 - `Overloaded` is a backstop for a node persistently over capacity: admission already sheds
   bursts within seconds, and this only takes the node out of a load balancer. It follows the gRPC
   work pool's `overloaded` flag (thresholds in

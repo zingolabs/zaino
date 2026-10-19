@@ -12,7 +12,7 @@ use std::sync::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_grpc::{Hold, Retire};
-use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus, StatusReason};
+use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
@@ -102,7 +102,8 @@ impl Readiness {
 ///   waits for this)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DaemonReason {
-    Validators(StatusReason),
+    NoValidatorReachable,
+    TipUnvouched,
     RuntimeStalled,
     Overloaded,
     GoawayPending,
@@ -112,7 +113,8 @@ pub(crate) enum DaemonReason {
 impl DaemonReason {
     pub(crate) const fn detail(self) -> &'static str {
         match self {
-            Self::Validators(reason) => reason.detail(),
+            Self::NoValidatorReachable => "No trusted validator reachable",
+            Self::TipUnvouched => "No trusted validator vouches for the tip",
             Self::RuntimeStalled => "Runtime stalled",
             Self::Overloaded => "Overloaded",
             Self::GoawayPending => "GOAWAY pending",
@@ -174,13 +176,13 @@ fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
         };
         return at(DaemonState::Held, None, Some(goaway), notes);
     }
-    let validators = |reason| Some(DaemonReason::Validators(reason));
+    let unvouched = Some(DaemonReason::TipUnvouched);
     match (live, stage) {
         (false, Stage::Booted(booted)) => {
             at(DaemonState::Down, None, Some(DaemonReason::RuntimeStalled), booted.notes)
         }
         (_, Stage::Starting { awaiting_validator: true, .. }) => {
-            at(DaemonState::Down, None, validators(StatusReason::NoValidatorReachable), Vec::new())
+            at(DaemonState::Down, None, Some(DaemonReason::NoValidatorReachable), Vec::new())
         }
         (_, Stage::Starting { bootstrap, .. }) => {
             at(DaemonState::Provisioning, bootstrap, None, Vec::new())
@@ -189,12 +191,8 @@ fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
             at(DaemonState::Down, None, Some(DaemonReason::Overloaded), booted.notes)
         }
         (true, Stage::Booted(booted)) => match booted.serving_status {
-            ServingStatus::Down(reason) => {
-                at(DaemonState::Down, None, validators(reason), booted.notes)
-            }
-            ServingStatus::Degraded(reason) => {
-                at(DaemonState::Degraded, None, validators(reason), booted.notes)
-            }
+            ServingStatus::Down => at(DaemonState::Down, None, unvouched, booted.notes),
+            ServingStatus::Degraded => at(DaemonState::Degraded, None, unvouched, booted.notes),
             ServingStatus::Serving => at(DaemonState::Serving, None, None, booted.notes),
             ServingStatus::Syncing => {
                 let progress = booted.target.map(|total| Progress {
@@ -515,8 +513,6 @@ mod tests {
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
         let stale = serde_json::json!(["1 validator on a stale tip"]);
-        let no_holder = ServingStatus::Down(StatusReason::TipNotHeld);
-        let unreachable = ServingStatus::Down(StatusReason::NoValidatorReachable);
         let cases = [
             (
                 "plain startup",
@@ -552,61 +548,39 @@ mod tests {
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
-                "overloaded beats unreachable validators",
+                "overloaded beats down",
                 true,
-                overloaded(unreachable),
+                overloaded(ServingStatus::Down),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
                 "overloaded beats degraded",
                 true,
-                overloaded(ServingStatus::Degraded(StatusReason::NoValidatorReachable)),
+                overloaded(ServingStatus::Degraded),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
                 "runtime stalled beats degraded",
                 false,
-                booted(ServingStatus::Degraded(StatusReason::TipNotHeld), None, None),
+                booted(ServingStatus::Degraded, None, None),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
-                "every validator down, a fresh peer-verified tip served",
+                "unvouched tip, fresh: peers carried it",
                 true,
-                booted(
-                    ServingStatus::Degraded(StatusReason::NoValidatorReachable),
-                    Some(3_514_194),
-                    None,
-                ),
+                booted(ServingStatus::Degraded, Some(3_514_194), None),
                 serde_json::json!({
                     "state": "degraded", "progress": null,
-                    "detail": "No trusted validator reachable", "notes": stale,
+                    "detail": "No trusted validator vouches for the tip", "notes": stale,
                 }),
             ),
             (
-                "best unheld, a fresh peer-verified tip served",
+                "unvouched tip, stale",
                 true,
-                booted(ServingStatus::Degraded(StatusReason::TipNotHeld), Some(3_514_194), None),
-                serde_json::json!({
-                    "state": "degraded", "progress": null,
-                    "detail": "No trusted validator holds the verified tip", "notes": stale,
-                }),
-            ),
-            (
-                "every validator down",
-                true,
-                booted(unreachable, Some(3_515_406), Some(6.2)),
-                serde_json::json!({
-                    "state": "down", "progress": null, "detail": "No trusted validator reachable",
-                    "notes": stale,
-                }),
-            ),
-            (
-                "best unheld",
-                true,
-                booted(no_holder, Some(3_515_406), Some(6.2)),
+                booted(ServingStatus::Down, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
                     "state": "down", "progress": null,
-                    "detail": "No trusted validator holds the verified tip", "notes": stale,
+                    "detail": "No trusted validator vouches for the tip", "notes": stale,
                 }),
             ),
             (
@@ -674,14 +648,14 @@ mod tests {
                 "held while overloaded",
                 Hold::Drained,
                 true,
-                overloaded(unreachable),
+                overloaded(ServingStatus::Down),
                 held("GOAWAY sent", stale.clone()),
             ),
             (
                 "held while degraded",
                 Hold::Drained,
                 true,
-                booted(ServingStatus::Degraded(StatusReason::NoValidatorReachable), None, None),
+                booted(ServingStatus::Degraded, None, None),
                 held("GOAWAY sent", stale.clone()),
             ),
             (

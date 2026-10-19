@@ -6,7 +6,7 @@ boundary, the most-work tip, and the immutable `HeaderChainSnapshot` everything 
 trusted header enters by `insert`, a peer's by `insert_untrusted` (`validate` first).
 
 ```rust,ignore
-use zaino_header_chain::{decode_header, HeaderChain, Inserted};
+use zaino_header_chain::{decode_header, HeaderChain, Inserted, Witness};
 
 let mut chain = HeaderChain::new(depth);              // in memory, nothing held
 chain.anchor(&decode_header(&raw)?, claim_height - chain.anchor_below()); // max(depth, CONTEXT)
@@ -17,16 +17,13 @@ for header in &run {                                  // a trusted validator's h
         Inserted::Side | Inserted::Known => {}
     }
 }
-chain.vouch(last_of_the_run);                         // a trusted validator's best chain had it
-if let Some(boundary) = chain.finalizable() {         // min(highest vouched, best − depth)
+chain.witness(last_of_the_run, Witness::Trusted);     // a trusted validator's best chain had it
+chain.witness(announced, Witness::Peer(netgroup));    // a live outbound peer's `inv`
+if let Some(boundary) = chain.finalizable() {         // min(highest settled, best − depth)
     chain.finalize(boundary);
 }
-if let Some(boundary) = chain.peer_finalizable() {    // best − depth, no difficulty collapse
-    if enough_netgroups_carry(boundary) {             // the driver's half (zaino-chainview)
-        chain.finalize_by_peers(boundary);
-    }
-}
 let published = chain.snapshot();                     // Option<HeaderChainSnapshot> (None = no anchor)
+let stale = held_revision != chain.revision();        // any change since a snapshot was taken
 let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds the tree)
 ```
 
@@ -64,18 +61,17 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   tie). A driver fetching nothing above `ceiling(batch)` keeps the best branch within
   `depth + batch` of the finalized tip (H9).
 - The best tip is the leaf with the most cumulative work; a tie keeps the first received (H1).
-- Finality (H6): `vouch(block)` records that a trusted validator once had `block` on its best
-  chain (it and every ancestor, for good). `finalizable()` names the best-chain block at
-  `min(highest vouched, best − depth)`; `finalize(block)` moves every best-chain header up to it
-  into the finalized headers and prunes every branch not descending from it. Finalizing a block off the best
-  branch, shallower than `depth` (H2) or above the highest vouched (H6) is a caller bug: it
-  panics naming the invariant.
-- Finality on peers' word: with no vouch that deep, `peer_finalizable()` names best − depth
-  unless a non-finalized best-chain block holds under half the work of the highest vouched block (or
-  the anchor). The caller adds its own evidence (`zaino-chainview`'s `HeaderSync`;
-  [why both](../../docs/architecture.md#finality)) and calls `finalize_by_peers(block)`, which
-  panics on any other block. Peer-finalized blocks never move
-  the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
+- Witnesses (H7): `witness(hash, by)` records that `by` once had the block on its best chain: it
+  and every ancestor, for good, a no-op unless held above the finalized tip. A block is
+  **vouched** once any trusted validator witnessed it, **peer-quorate** once peers in more than
+  `ECLIPSE_NETGROUPS` (5) netgroups did (only the first 6 netgroups are kept: quorate is final).
+- Finality (H6): a block is **settled** when vouched, or peer-quorate while no unvouched
+  best-chain block holds under half the work of the highest vouched block (or the anchor;
+  [why](../../docs/architecture.md#finality)). Peers never move that difficulty reference.
+  `finalizable()` names the best-chain block at `min(highest settled, best − depth)`;
+  `finalize(block)` moves every best-chain header up to it into the finalized headers and prunes
+  every branch not descending from it. Finalizing a block off the best branch, shallower than
+  `depth` (H2) or above the highest settled (H6) is a caller bug: it panics naming the invariant.
 - Memory only: the newest max(`2 · depth`, `CONTEXT`) finalized headers stay, answering by height;
   older finalized headers are finalized by definition (`on_best` = true) and a header whose parent is one of
   them = `Orphan`.
@@ -92,13 +88,15 @@ holder's answers never change (H5).
 | `hash_at(h)` / `header_at(h)` | the best chain above the finalized tip and the finalized headers kept; `None` above best or below the finalized headers kept |
 | `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the finalized tip past the finalized headers kept |
 | `holds(at)` | `on_best(at)`, or a side block held above the finalized tip (the NFS prunes by it) |
+| `vouched(h)` | a trusted validator witnessed the best-chain block at `h`; at or below the finalized tip = `true` (settled) |
 | `locator()` | zcashd's `GetLocator`, ending at the finalized tip |
 
 ## Invariants, checked
 
 `HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finalized headers contiguous and at most
-max(`2 · depth`, `CONTEXT`), every node descends from the finalized tip), H4, H5, H6 and the tree's
-bookkeeping (cumulative work, child counts, leaf set), naming the invariant in its panic.
+max(`2 · depth`, `CONTEXT`), every node descends from the finalized tip), H4, H5, H7 (a parent
+holds every witness of its child, or is peer-quorate) and the tree's bookkeeping (cumulative
+work, child counts, leaf set), naming the invariant in its panic. `finalize` asserts H2 and H6.
 
 ## Tests
 
@@ -107,18 +105,19 @@ bookkeeping (cumulative work, child counts, leaf set), naming the invariant in i
   `validate`, every nBits reproduced; each mutation of a real header refused by its own rule; a
   chain anchored mid-mainnet follows 200 trusted headers with no history below.
 - Model (`random_header_trees_answer_like_the_naive_model`): random trusted trees with any nBits
-  (orphans, side sprays past the bounds, vouches, trusted runs, finalizations) against a naive
-  tree; `check()` after every insert.
+  (orphans, side sprays past the bounds, trusted and per-netgroup peer witnesses, trusted runs,
+  finalizations) against a naive tree; `check()` after every insert.
 - Fire drills: each check in `check()` and each precondition, seen firing on a planted bug.
 - Builder agreement (`testing`): random `MockChain` shapes, `MockChain::tip()` =
   `HeaderChain::best()` after each.
 - For consumers' tests (`testing` feature), `testing::HeaderViews` on a `MockChain`:
 
   ```rust,ignore
-  use zaino_header_chain::testing::{insert, HeaderViews};
+  use zaino_header_chain::testing::{insert, insert_unwitnessed, HeaderViews};
 
   let mut headers = chain.header_chain(depth);         // anchored at genesis
   insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
+  insert_unwitnessed(&mut headers, &peers_headers)?;   // nothing witnessed
   let snapshot = chain.snapshot(tip);                  // finalized = genesis
   let pinned = chain.snapshot_finalized(tip, h(9));    // finalized through 9 (depth = tip − 9)
   ```

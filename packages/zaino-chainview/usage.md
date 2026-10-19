@@ -55,7 +55,7 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 HeaderSync             trusted headers(Pinned) + peer headers(Peers) → HeaderChain → HeaderChainSnapshot
 ObservationMerge       each trusted validator's poll (TrafficBalancer::observe): claim + getblockhash first,
       │                then the listing diff (bytes(..) fetched between)
-PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer finality)
+PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer witnesses)
 ChainViewCore          merges all of it into one ChainViewSnapshot via ArcSwap
 ChainViewSubscriber    readers pin one `ChainViewSnapshot` per request
 ```
@@ -67,7 +67,8 @@ The merge is `O(change)`. Raw bytes are fetched once per txid, the lister prefer
 ## `HeaderSync`
 
 `HeaderSync::run(cancel)` owns the `HeaderChain` (no lock). `subscribe()` (take it before `run`) =
-`watch<Option<Arc<HeaderChainSnapshot>>>`, republished whenever best or finalized moves.
+`watch<Option<Arc<HeaderChainSnapshot>>>`, republished on every change (`HeaderChain::revision`):
+a header, a witness, finality.
 
 - **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from the first answering
   validator whose claim the header chain does not hold. Anchors at claim − `anchor_below()`
@@ -77,13 +78,13 @@ The merge is `O(change)`. Raw bytes are fetched once per txid, the lister prefer
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
   vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
   other refusal → `report`.
-- **Vouches** after every poll merge: each answering validator's claim and its held `getblockhash`
-  answer.
+- **Witnesses** after every view change, then finality: each answering validator's claim and
+  `getblockhash` answer (`Witness::Trusted`), each live outbound peer's last block `inv`
+  (`PeerSource::heard` via `PeerWatch`: `Witness::Peer` by its netgroup). A hash not held yet is
+  witnessed on a later pass.
 - **Stall** (fetch failed, retreated, malformed, empty, refused, or a fully read branch still not
   holding the claim): that validator alone backs off 5 s. A trusted run orphaned at or below the
   floor marks the member `forked` for that claim: not fetched again until the claim moves.
-- **Peer finality** (`with_peers`): `peer_finalizable()` + live outbound peers in > 5 netgroups
-  whose last block `inv` (`PeerSource::heard` via `PeerWatch`) is on our best at or above it.
 
 ## Read handle: `ChainViewSubscriber`
 
@@ -97,11 +98,12 @@ Cheap to clone; cannot drive polling or submit.
 | Method | Answer |
 |---|---|
 | `chain()` | the `HeaderChainSnapshot` every standing was judged under |
-| `best()` | the verified best, held or not |
-| `held_by()` | `TrustedValidatorSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain |
+| `best()` | the header chain's best, held or not |
+| `held_by()` | `TrustedValidatorSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain: where each is now, read from its last poll |
+| `agreements()` | each trusted validator's `Agreement`, configured order |
 | `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
 | `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
-| `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
+| `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no header chain) |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `mempool_states()` | each held transaction's `MempoolState`: `Verified` (a trusted listing), `Quorum` (a peer quorum's only), `Ours` (our relay, neither) |
 | `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
@@ -110,9 +112,9 @@ Cheap to clone; cannot drive polling or submit.
 `TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured
 positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
 
-`TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
-peers (every 60 s), release (build, user agent, end-of-service
-height), push-stream state, `blocks_to_end_of_service()`.
+`TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, peers
+(every 60 s), release (build, user agent, end-of-service height), push-stream state,
+`blocks_to_end_of_service()`.
 
 `Agreement` from its claim and `getblockhash` answer, as of its last answered poll: `Agreed` (claim
 = best), `Ahead` (claims higher, answer on our chain), `Behind` (claim on our chain, below best),
@@ -215,7 +217,7 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 - `ChainView::set_chain(Some(chain.snapshot(tip)))` stands in for header sync
   (`zaino_header_chain::testing::HeaderViews`).
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
-  holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
+  holder `Live` at best); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).
 - `testing::MockPeers` (`PeerSource` as a script), beside
   `zaino_source::testing::MockValidator`; a `MockChain` tip's `Ledger` is the `UnspentOutputs`

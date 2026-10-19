@@ -10,6 +10,7 @@ use zcash_protocol::BlockHash;
 
 use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
+use crate::witnesses::Witnesses;
 use crate::{decode_header, Inserted};
 
 /// Depth 9, `builder` mined both branches
@@ -160,10 +161,10 @@ fn check_catches_a_leaf_missing_from_the_leaf_set() {
 }
 
 #[test]
-#[should_panic(expected = "vouched, its parent not")]
-fn check_catches_a_vouched_node_under_an_unvouched_parent() {
+#[should_panic(expected = "witnessed, its parent not")]
+fn check_catches_a_witnessed_node_under_an_unwitnessed_parent() {
     let Valid { mut chain, trunk, .. } = valid();
-    chain.nodes.get_mut(&trunk[8]).expect("held").vouched = false;
+    chain.nodes.get_mut(&trunk[8]).expect("held").witnesses = Witnesses::default();
     chain.check();
 }
 
@@ -182,13 +183,13 @@ fn finalizing_within_depth_of_the_best_panics() {
 }
 
 #[test]
-#[should_panic(expected = "H6: only a vouched block")]
-fn finalizing_an_unvouched_block_panics() {
+#[should_panic(expected = "H6: only a settled block")]
+fn finalizing_an_unsettled_block_panics() {
     let Valid { mut chain, trunk, side, .. } = valid();
     chain.depth = FinalityDepth::new(NonZeroU32::MIN);
     for hash in trunk.iter().chain([&side]) {
         if let Some(node) = chain.nodes.get_mut(hash) {
-            node.vouched = false;
+            node.witnesses = Witnesses::default();
         }
     }
     chain.finalize(BlockRef { hash: trunk[5], height: h(5) });

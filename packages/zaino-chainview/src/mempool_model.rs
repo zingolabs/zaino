@@ -23,7 +23,7 @@ use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
-use zaino_primitives::types::{BlockRef, FinalityDepth, PeerTxId};
+use zaino_primitives::types::{BlockRef, FinalityDepth, Netgroup, PeerTxId, ECLIPSE_NETGROUPS};
 use zaino_source::testing::{raw_transparent, ValidatorViews};
 use zaino_traffic::TrustedValidatorId;
 use zcash_protocol::value::Zatoshis;
@@ -33,8 +33,6 @@ use zcash_transparent::bundle::OutPoint;
 use crate::admission::NextBlock;
 use crate::listings::LISTING_FRESH;
 use crate::merge::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
-use crate::netgroup::Netgroup;
-use crate::netgroup::ECLIPSE_NETGROUPS;
 use crate::peer_mempool::judge;
 use crate::trusted_validators::TrustedValidatorMeta;
 

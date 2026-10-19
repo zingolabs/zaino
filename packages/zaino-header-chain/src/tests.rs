@@ -14,7 +14,7 @@ use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
 use crate::rules::{validate, Ancestor};
 use crate::testing::{insert, HeaderViews};
-use crate::{decode_header, Header, HeaderChain, Inserted, Params};
+use crate::{decode_header, Header, HeaderChain, Inserted, Params, Witness};
 use crate::{DecodeError, Rejected};
 
 const HEADER_LEN: usize = 1487;
@@ -103,7 +103,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
 
     for (index, header) in headers[1..=200].iter().enumerate() {
         assert_eq!(chain.insert(header), Ok(Inserted::Best { reorg: false }));
-        chain.vouch(at(index + 1));
+        chain.witness(at(index + 1).hash, Witness::Trusted);
         if let Some(boundary) = chain.finalizable() {
             chain.finalize(boundary);
         }
@@ -176,7 +176,7 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
     for (index, header) in headers.iter().enumerate().take(201).skip(28) {
         let inserted = chain.insert_untrusted(header, &mainnet, now);
         assert_eq!(inserted, Ok(Inserted::Best { reorg: false }), "{index}");
-        chain.vouch(at(index));
+        chain.witness(at(index).hash, Witness::Trusted);
         if let Some(boundary) = chain.finalizable() {
             chain.finalize(boundary);
         }

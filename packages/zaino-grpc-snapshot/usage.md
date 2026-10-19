@@ -20,8 +20,8 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
   (`subscribe_published()` + `current()`), nothing else; `depth` = the header chain's reorg depth.
 - Each change of either → one publish from the latest of both (`watch`-coalesced: a burst
   publishes once). A publish = two `Arc` clones + `Copy` tips + the feed: never torn.
-- The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `finalized_tip`, `held_by`
-  and `synced` are judged under it; the NFS's own chain stays inside its `at()`.
+- The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `finalized_tip` and
+  `synced` are judged under it; the NFS's own chain stays inside its `at()`.
 
 ## Readers: `GrpcSnapshots` → `GrpcSnapshot`
 
@@ -37,7 +37,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | Method                  | Answer                                                                        |
 | ----------------------- | ----------------------------------------------------------------------------- |
 | `seq()`                 | +1 per publish                                                                |
-| `tips()`                | `Tips { best, finalized_tip, served, held_by, synced }`                           |
+| `tips()`                | `Tips { best, finalized_tip, served, synced }`                                |
 | `chain()`               | the chain view's `HeaderChainSnapshot`                                        |
 | `served()`              | the NFS's served `IndexesAtBlock` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
@@ -46,7 +46,7 @@ grpc_snapshots.changed().await?;                       // next publish
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `IndexesAtBlock`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `chain_view()`          | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `serving_status(now_unix)` | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld and none catching up to it: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or no `Live` holder and a validator `CatchingUp` on our chain: holding best or `Behind` it); `Serving`. `StatusReason::detail()` = zainod's `/readyz` + `/status` `detail` |
+| `serving_status(now_unix)` | first match: best more than one block past the last vouched (`HeaderChainSnapshot::vouched`) → `Degraded` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down`; `Syncing` (not synced, or a validator `CatchingUp` and none `Live`: zebrad's mempool off after a catch-up); `Serving` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
@@ -106,10 +106,10 @@ emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then rend
 | --- | --- | --- |
 | G1 | a request or stream reads one `GrpcSnapshot` (routes get `&GrpcSnapshot` / `&IndexesAtBlock`, never the handle) | types; route tests |
 | G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
-| G3 | `best`, `finalized_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
+| G3 | `best`, `finalized_tip` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
-| G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
+| G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
 | G8 | every NFS node on best or a side branch the chain holds (`HeaderChainSnapshot::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |

@@ -10,7 +10,6 @@ mod listings;
 #[cfg(test)]
 mod mempool_model;
 mod merge;
-mod netgroup;
 mod observe;
 mod peer_mempool;
 mod peers;

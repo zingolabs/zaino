@@ -9,7 +9,7 @@ use bytes::Bytes;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::{insert, insert_unwitnessed, HeaderViews};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
@@ -27,7 +27,7 @@ use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
     describe_metrics, emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
-    Publisher, ServingStatus, StatusReason, Tips,
+    Publisher, ServingStatus, Tips,
 };
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -204,43 +204,9 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     }
 }
 
-/// Best = peers' A12, served A4, validator 0 at A4 (no holder): catching up on our chain =
-/// `Syncing`; `Live` there, or catching up off our chain = `Down(TipNotHeld)`
-#[test]
-fn a_validator_catching_up_behind_best_is_syncing_but_live_or_diverged_is_down() {
-    let mut builder = MockChain::regtest();
-    let a12 = builder.mine_empty(12);
-    let a = builder.blocks(a12);
-    let now = i64::from(a[12].header().time);
-    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
-    let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.snapshot(a12));
-    let params = ChainParams::of(&builder);
-    let indexed =
-        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a[4].block_ref(), params, none));
-    let held = ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
-    let not_held = ServingStatus::Down(StatusReason::TipNotHeld);
-    let cases = [
-        (
-            "catching up behind best",
-            held.clone().behind(0, 8).trusted_validator(0, Health::CatchingUp, 8),
-            ServingStatus::Syncing,
-        ),
-        ("live behind best", held.clone().behind(0, 8), not_held),
-        (
-            "catching up off our chain",
-            held.ahead(0, 1, false).trusted_validator(0, Health::CatchingUp, 0),
-            not_held,
-        ),
-    ];
-    for (case, view, expected) in cases {
-        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
-        assert!(grpc_snapshot.tips().held_by.is_empty(), "{case}: best held");
-        assert_eq!(grpc_snapshot.serving_status(now), expected, "{case}");
-    }
-}
-
 /// Synced to a fresh best held by validator 0: each (holder, other) health → serving status + notes
+///
+/// - every validator down = still `Serving` (best vouched: degraded once it runs unvouched)
 #[test]
 fn each_holder_health_gives_its_standing_and_notes() {
     let mut builder = MockChain::regtest();
@@ -262,14 +228,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
             ServingStatus::Serving,
             vec!["1 validator on a stale tip".to_owned()],
         ),
-        (
-            "every validator down",
-            Health::Down,
-            0,
-            Health::Down,
-            ServingStatus::Degraded(StatusReason::NoValidatorReachable),
-            vec![],
-        ),
+        ("every validator down", Health::Down, 0, Health::Down, ServingStatus::Serving, vec![]),
     ];
     for (case, holder, behind, other, serving_status, expected_notes) in cases {
         let view = ChainViewSnapshot::fixed(
@@ -288,40 +247,47 @@ fn each_holder_health_gives_its_standing_and_notes() {
     }
 }
 
-/// No trusted validator vouching for a synced best (all down, or none holding it): degraded
-/// while best's time is within 30 min of the clock, down from 30 min
+/// Best A12, a trusted validator's run vouched through `vouched`, peers' headers above it, at the
+/// clock of A12, 1 s before it goes stale (30 min), then stale
+///
+/// - one block past the last vouch = the race a poll closes: serving
+/// - two = no trusted validator vouches for the tip: degraded while fresh, down once stale
+/// - not synced (served A4) under an unvouched tip: down
 #[test]
-fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
+fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_stale() {
     let mut builder = MockChain::regtest();
     let a12 = builder.mine_empty(12);
-    let now = i64::from(builder.blocks(a12)[12].header().time);
+    let a = builder.blocks(a12);
+    let now = i64::from(a[12].header().time);
     let stale = now + 30 * 60;
-    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.snapshot(a12));
-    let indexed =
-        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
-    let held = ChainViewSnapshot::fixed(
-        Some(Arc::clone(&chain)),
-        TrustedValidatorSet::at([0]),
-        &addresses,
-        &[],
-    );
-    let all_down = held.trusted_validator(0, Health::Down, 0).trusted_validator(1, Health::Down, 0);
-    let unheld =
-        ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
-    for (why, view) in
-        [(StatusReason::NoValidatorReachable, all_down), (StatusReason::TipNotHeld, unheld)]
-    {
-        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
+    let (serving, degraded, down) =
+        (ServingStatus::Serving, ServingStatus::Degraded, ServingStatus::Down);
+    #[rustfmt::skip]
+    let cases = [
+        // (vouched through, served, (now, stale − 1, stale))
+        (12, 12, (serving, serving, serving)),
+        (11, 12, (serving, serving, serving)),
+        (10, 12, (degraded, degraded, down)),
+        (10, 4,  (down, down, down)),
+    ];
+    for (vouched, served, expected) in cases {
+        let mut headers = builder.header_chain(DEPTH);
+        insert(&mut headers, &a[1..=vouched]).expect("trusted run links");
+        insert_unwitnessed(&mut headers, &a[vouched + 1..]).expect("peers' headers link");
+        let chain = Arc::new(headers.snapshot().expect("anchored"));
+        let params = ChainParams::of(&builder);
+        let indexed =
+            NfsPublication::fixed(Arc::clone(&chain), a[served].block_ref(), params, none.clone());
+        let holder = TrustedValidatorSet::at([0]);
+        let view = ChainViewSnapshot::fixed(Some(chain), holder, &["10.0.0.1:8232"], &[]);
+        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
         let serving_status = (
             grpc_snapshot.serving_status(now),
             grpc_snapshot.serving_status(stale - 1),
             grpc_snapshot.serving_status(stale),
         );
-        let expected =
-            (ServingStatus::Degraded(why), ServingStatus::Degraded(why), ServingStatus::Down(why));
-        assert_eq!(serving_status, expected, "{why:?}");
+        assert_eq!(serving_status, expected, "vouched through {vouched}, served {served}");
     }
 }
 
@@ -426,14 +392,6 @@ fn check_catches_a_finalized_tip_off_the_chain() {
 }
 
 #[test]
-#[should_panic(expected = "G3: held_by")]
-fn check_catches_holders_off_the_view() {
-    let d = Drill::new();
-    let tips = Tips { held_by: TrustedValidatorSet::default(), ..d.next.tips };
-    check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
-}
-
-#[test]
 #[should_panic(expected = "G3: served")]
 fn check_catches_a_served_tip_off_the_indexes() {
     let d = Drill::new();
@@ -454,9 +412,7 @@ fn check_catches_synced_opening_below_best() {
 fn check_catches_synced_opening_under_a_validator_claiming_past_best() {
     let d = Drill::new();
     let mut planted = d.serving(d.a[6].block_ref(), true);
-    let view = view(&d.chain, &[]).ahead(0, 1, false);
-    planted.tips.held_by = view.held_by();
-    planted.view = Arc::new(view);
+    planted.view = Arc::new(view(&d.chain, &[]).ahead(0, 1, false));
     check(&d.prev, &planted, DEPTH);
 }
 

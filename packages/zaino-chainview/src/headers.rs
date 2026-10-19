@@ -1,19 +1,20 @@
-//! Trusted validators' and peers' headers into the header chain, its [`HeaderChainSnapshot`] into the
-//! view and onto a watch (`docs/architecture.md` §4)
+//! Trusted validators' and peers' headers into the header chain, its [`HeaderChainSnapshot`] into
+//! the view and onto a watch (`docs/architecture.md` §4)
 //!
 //! ```text
-//!   view changed ─▶ answering validators' claims + getblockhash answers held ─▶ vouch, finalize
+//!   view changed ─▶ answering validators' claims + getblockhash answers, live peers' invs
+//!                   ─▶ witnessed, finalize
 //!               ─▶ first validator whose claim we lack (no back-off, not forked below finalized):
 //!                  no chain, or its claim − below past our ceiling ─▶ anchor at claim − below
 //!                  (below = max(depth, CONTEXT): `HeaderChain::anchor_below`)
 //!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
-//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ HeaderChainSnapshot → view + watch
+//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ snapshot → view + watch
 //! ```
 //!
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
 //! - anchored below a trusted validator's claim, never synced from genesis (zebra validated
 //!   every block below it, bulk sync reads blocks by height, not this chain)
-//! - finalized = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
+//! - finalized = min(settled, best − depth) after every change (H6: `HeaderChain::finalizable`)
 //! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above finalized,
 //!   H9)
 //! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`)
@@ -21,9 +22,6 @@
 //! - peers ([`HeaderSync::with_peers`]): no trusted run due → peer set asked past our best
 //!   (locator) every `PEER_POLL`, at once again after progress
 //! - peer headers: every rule run per header (untrusted), never vouched
-//! - peer finality: no vouch that deep → best − depth finalized anyway once live peers in more than
-//!   `ECLIPSE_NETGROUPS` netgroups announced a block at or above it and no difficulty
-//!   collapsed since the last vouch (`HeaderChain::peer_finalizable`)
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -33,16 +31,15 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zaino_header_chain::{
-    decode_header, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected,
+    decode_header, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected, Witness,
 };
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::{BlockRef, Netgroup};
 use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::chain_view_snapshot::ChainViewSnapshot;
 use crate::merge::ChainViewCore;
-use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 
 /// Heights per fetch step (tree ≤ `depth` + this above the finalized tip)
 pub(crate) const HEADER_BATCH: u32 = 2_000;
@@ -54,11 +51,14 @@ const RETRY: Duration = Duration::from_secs(5);
 const PEER_POLL: Duration = Duration::from_secs(5);
 
 /// Feeds + owns one header chain from every trusted validator (and the peer set, if any)
+///
+/// - `published` = the chain's revision last sent
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
     chain: HeaderChain,
-    verified: watch::Sender<Option<Arc<HeaderChainSnapshot>>>,
+    snapshots: watch::Sender<Option<Arc<HeaderChainSnapshot>>>,
+    published: Option<u64>,
     fetch_states: Vec<FetchState>,
     peers: Option<Peers>,
 }
@@ -101,9 +101,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
         balancer: TrafficBalancer<S>,
         chain: HeaderChain,
     ) -> Self {
-        let verified = watch::Sender::new(chain.snapshot().map(Arc::new));
+        let snapshots = watch::Sender::new(chain.snapshot().map(Arc::new));
         let fetch_states = vec![FetchState::default(); core.current().trusted_validators().len()];
-        Self { core, balancer, chain, verified, fetch_states, peers: None }
+        Self { core, balancer, chain, snapshots, published: None, fetch_states, peers: None }
     }
 
     /// Headers from the peer set too, each held to `params` (the balancer's peer-set member)
@@ -111,13 +111,12 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
     }
 
-    /// The verified chain, republished whenever its best or finalized tip moves (`None` = no anchor
-    /// yet)
+    /// The header chain, republished on every change (`None` = no anchor yet)
     pub fn subscribe(&self) -> watch::Receiver<Option<Arc<HeaderChainSnapshot>>> {
-        self.verified.subscribe()
+        self.snapshots.subscribe()
     }
 
-    /// Until `cancel`: the view's facts vouched, then one run, else a wait for the view or the
+    /// Until `cancel`: the view's facts witnessed, then one run, else a wait for the view or the
     /// earliest back-off
     pub async fn run(mut self, cancel: CancellationToken) {
         let mut published = self.core.subscribe_published();
@@ -126,7 +125,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             published.borrow_and_update();
             let step = async {
                 let view = self.core.current();
-                self.vouch(&view);
+                self.witness(&view);
                 let now = Instant::now();
                 match self.next_run(&view, now) {
                     Ok(run) => self.fetch(run).await,
@@ -153,26 +152,24 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
     }
 
-    /// Answering validators' claims + `getblockhash` answers we hold: vouched (each once had it
-    /// on its best chain), then finality (every view change: a peer's block `inv` may be what
-    /// peer finality waited on)
-    fn vouch(&mut self, view: &ChainViewSnapshot) {
-        let verified = self.verified.borrow().clone();
-        let Some(verified) = verified else { return };
-        let floor = verified.finalized_tip().height + 1;
-        let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
+    /// Answering validators' claims + `getblockhash` answers, live peers' latest `inv`s: each
+    /// source once had that block on its best chain
+    fn witness(&mut self, view: &ChainViewSnapshot) {
         let answering = view.trusted_validators().iter().filter(|meta| meta.answering());
-        let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.block_at_best));
-        facts.filter(held).for_each(|fact| self.chain.vouch(fact));
-        self.finalize(view);
-        self.publish();
+        for fact in answering.flat_map(|meta| meta.tip().into_iter().chain(meta.block_at_best)) {
+            self.chain.witness(fact.hash, Witness::Trusted);
+        }
+        for (peer, hash) in &view.peers_carrying {
+            self.chain.witness(*hash, Witness::Peer(Netgroup::of(*peer)));
+        }
+        self.after_inserts();
     }
 
     /// First answering validator whose claim we lack, not backing off, not forked below finalized
     ///
     /// - `Err` = none (the earliest back-off, if any)
     fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Result<Run, Option<Instant>> {
-        let verified = self.verified.borrow().clone();
+        let snapshot = self.snapshots.borrow().clone();
         let chain = &self.chain;
         let ceiling = chain.ceiling(HEADER_BATCH);
         let floor = chain.finalized_tip().map_or(H0, |tip| tip.height + 1);
@@ -183,7 +180,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             else {
                 continue;
             };
-            if verified.as_ref().is_some_and(|verified| verified.holds(claim)) {
+            if snapshot.as_ref().is_some_and(|snapshot| snapshot.holds(claim)) {
                 *fetch = FetchState::default();
                 continue;
             }
@@ -199,7 +196,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             if chain.finalized_tip().is_none() || anchor > ceiling {
                 return Ok(Run::Anchor { validator: id, at: anchor });
             }
-            let above_best = verified.as_ref().map_or(H0, |v| v.best().height + 1);
+            let above_best = snapshot.as_ref().map_or(H0, |s| s.best().height + 1);
             let next = fetch.next.filter(|next| *next <= claim.height);
             let from = next.unwrap_or(above_best.min(claim.height)).max(floor);
             let to = claim.height.min(ceiling);
@@ -285,13 +282,13 @@ impl<S: ChainDataSource> HeaderSync<S> {
             BlockRef { hash: headers.last().expect("headers() Ok = non-empty").hash(), height: to };
         let refused = headers.iter().find_map(|header| self.chain.insert(header).err());
         if refused.is_none() {
-            self.chain.vouch(top);
+            self.chain.witness(top.hash, Witness::Trusted);
         }
         self.after_inserts();
-        let verified = self.verified.borrow().clone();
-        let holds = |at: BlockRef| verified.as_ref().is_some_and(|v| v.holds(at));
-        let on_best = verified.as_ref().is_some_and(|v| v.hash_at(to) == Some(top.hash));
-        let floor = verified.as_ref().map_or(H0, |v| v.finalized_tip().height + 1);
+        let snapshot = self.snapshots.borrow().clone();
+        let holds = |at: BlockRef| snapshot.as_ref().is_some_and(|s| s.holds(at));
+        let on_best = snapshot.as_ref().is_some_and(|s| s.hash_at(to) == Some(top.hash));
+        let floor = snapshot.as_ref().map_or(H0, |s| s.finalized_tip().height + 1);
         match refused {
             // its whole chain read, its claim still not held (an evicted side branch)
             None if to == claim.height && !holds(claim) => FetchState::stalled(),
@@ -322,8 +319,8 @@ impl<S: ChainDataSource> HeaderSync<S> {
     ///
     /// - asked again at once after progress, else after `PEER_POLL`
     async fn extend_from_peers(&mut self) {
-        let verified = self.verified.borrow().clone();
-        let locator = verified.map(|verified| verified.locator()).unwrap_or_default();
+        let snapshot = self.snapshots.borrow().clone();
+        let locator = snapshot.map(|snapshot| snapshot.locator()).unwrap_or_default();
         let asked = self.balancer.headers(HeaderAsk::Peers { locator }).await;
         let progressed = match asked {
             Ok(answered) => self.insert_from_peers(answered),
@@ -386,55 +383,23 @@ impl<S: ChainDataSource> HeaderSync<S> {
         progressed
     }
 
-    /// Finality against the current view, then publish
+    /// Finality, then publish
     fn after_inserts(&mut self) {
-        self.finalize(&self.core.current());
-        self.publish();
-    }
-
-    /// - finalized → min(vouched, best − depth)
-    /// - peers on + no vouch that deep → best − depth on the peers' word (no difficulty collapse,
-    ///   enough netgroups carrying it)
-    fn finalize(&mut self, view: &ChainViewSnapshot) {
         if let Some(boundary) = self.chain.finalizable() {
             self.chain.finalize(boundary);
         }
-        if self.peers.is_none() {
+        self.publish();
+    }
+
+    /// Snapshot → watch + view once anchored, on every change since the last publish
+    fn publish(&mut self) {
+        let revision = Some(self.chain.revision());
+        if self.published == revision {
             return;
         }
-        let Some(boundary) = self.chain.peer_finalizable() else { return };
-        let netgroups = self.netgroups_carrying(view, boundary.height);
-        if netgroups > ECLIPSE_NETGROUPS {
-            let height = u32::from(boundary.height);
-            debug!(height, hash = %boundary.hash, netgroups, "Finalized on peers' word, unvouched");
-            self.chain.finalize_by_peers(boundary);
-        }
-    }
-
-    /// Netgroups of live peers whose latest announced block is on our best chain at or above
-    /// `from` (its chain holds `from`)
-    fn netgroups_carrying(&self, view: &ChainViewSnapshot, from: BlockHeight) -> usize {
-        let carrying = view.peers_carrying.iter().filter(|(_, announced)| {
-            self.chain.best_height_of(**announced).is_some_and(|height| height >= from)
-        });
-        netgroup::count(carrying.map(|(peer, _)| *peer))
-    }
-
-    /// `HeaderChainSnapshot` → watch + view when its best or finalized tip moved
-    fn publish(&mut self) {
-        let tips = (self.chain.best().map(|best| best.block), self.chain.finalized_tip());
-        let moved =
-            |old: &HeaderChainSnapshot| (Some(old.best()), Some(old.finalized_tip())) != tips;
-        let verified = self.chain.snapshot().map(Arc::new);
-        let changed = self.verified.send_if_modified(|published| {
-            let changed = published.as_deref().is_none_or(moved) && verified.is_some();
-            if changed {
-                *published = verified;
-            }
-            changed
-        });
-        if changed {
-            self.core.apply_headers(self.verified.borrow().clone());
-        }
+        let Some(snapshot) = self.chain.snapshot().map(Arc::new) else { return };
+        self.published = revision;
+        self.snapshots.send_replace(Some(Arc::clone(&snapshot)));
+        self.core.apply_headers(Some(snapshot));
     }
 }

@@ -22,7 +22,6 @@ pub(crate) fn compose<V>(
         best: chain.map(HeaderChainSnapshot::best),
         finalized_tip: chain.map(HeaderChainSnapshot::finalized_tip),
         served,
-        held_by: view.held_by(),
         synced: chain.is_some_and(|chain| {
             synced(was_synced, served, chain, depth, view.claimed_past_best())
         }),
@@ -66,8 +65,6 @@ pub(crate) fn check<V>(
     assert_eq!(tips.best, chain.map(|chain| chain.best()), "G3: best = the view chain's");
     let finalized_tip = chain.map(|chain| chain.finalized_tip());
     assert_eq!(tips.finalized_tip, finalized_tip, "G3: finalized = the view chain's");
-    let held_by = next.view.held_by();
-    assert_eq!(tips.held_by, held_by, "G3: held_by = the view's holders of best");
     let served = next.indexed.as_ref().map(|indexed| indexed.served().tip());
     assert_eq!(tips.served, served, "G3: served = the NFS's");
 
@@ -105,5 +102,6 @@ pub(crate) fn mempool_read<V>(grpc_snapshot: &crate::GrpcSnapshot<V>) -> bool {
     let trusted_validators = grpc_snapshot.chain_view().trusted_validators();
     let live =
         |at: usize| trusted_validators.get(at).is_some_and(|meta| meta.health == Health::Live);
-    grpc_snapshot.tips().held_by.positions().any(live) || grpc_snapshot.chain_view().peers_quorate()
+    let view = grpc_snapshot.chain_view();
+    view.held_by().positions().any(live) || view.peers_quorate()
 }

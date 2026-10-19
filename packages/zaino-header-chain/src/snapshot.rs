@@ -57,6 +57,12 @@ impl HeaderChainSnapshot {
         self.best.block
     }
 
+    /// A trusted validator had the best-chain block at `height` (or it is finalized: settled)
+    pub fn vouched(&self, height: BlockHeight) -> bool {
+        let node = self.hash_at(height).and_then(|hash| self.nodes.get(&hash));
+        node.map_or(height <= self.finalized_tip().height, |node| node.witnesses.vouched())
+    }
+
     /// Never moves back but on a re-anchor (a trusted validator far ahead)
     pub fn finalized_tip(&self) -> BlockRef {
         let (height, record) =

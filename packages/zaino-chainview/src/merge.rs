@@ -293,7 +293,7 @@ impl ChainViewCore {
         out
     }
 
-    /// After any change: holders, agreement, alarms, spreads, drops, publish
+    /// After any change: alarms, spreads, drops, publish
     fn settle(
         &self,
         mut guard: std::sync::MutexGuard<'_, ChainViewSnapshot>,
@@ -301,16 +301,6 @@ impl ChainViewCore {
         touched: Vec<TxId>,
     ) {
         let state = &mut *guard;
-        let chain = state.chain.clone();
-        let holding = state
-            .trusted_validators
-            .iter()
-            .enumerate()
-            .filter(|(_, meta)| chain.as_deref().is_some_and(|chain| meta.holds(chain)));
-        state.held_by = holding.filter_map(|(at, _)| TrustedValidatorId::new(at)).collect();
-        for meta in state.trusted_validators.iter_mut() {
-            meta.agreement = meta.agreement_with(chain.as_deref());
-        }
         let stalled = state.finality_stalled(Instant::now());
         state.alarms = telemetry::alarms(&state.trusted_validators, stalled);
 

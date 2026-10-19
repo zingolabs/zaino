@@ -207,8 +207,9 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let held = (catching_up.best(), catching_up.held_by());
     assert_eq!(held, (Some(at(11)), TrustedValidatorSet::at([0])), "catching up: still the holder");
     let meta = &catching_up.trusted_validators()[0];
-    let answered = (meta.health, meta.tip(), meta.stale_blocks(), meta.agreement);
-    let expected = (Health::CatchingUp, Some(at(11)), Some(29), Agreement::Agreed);
+    let agreement = catching_up.agreements().next();
+    let answered = (meta.health, meta.tip(), meta.stale_blocks(), agreement);
+    let expected = (Health::CatchingUp, Some(at(11)), Some(29), Some(Agreement::Agreed));
     assert_eq!(answered, expected, "an answer, no failure (a failure = Degraded)");
     assert!(catching_up.mempool().is_none(), "no mempool served");
     assert_eq!(catching_up.sighting(&one), None, "its only listing retracted: dropped");
@@ -277,11 +278,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let pinned = reader.current();
     let held = (pinned.best(), pinned.held_by());
     assert_eq!(held, (Some(agreed), TrustedValidatorSet::at([0, 1])), "never the claim");
-    assert_eq!(
-        pinned.trusted_validators()[2].agreement,
-        Agreement::Diverged,
-        "holds neither 100 nor 97"
-    );
+    assert_eq!(pinned.agreements().nth(2), Some(Agreement::Diverged), "holds neither 100 nor 97");
     let trusted = pinned.sighting(&tx7).map(|sighting| sighting.trusted().count());
     let trusted = (trusted, pinned.mempool_readers().count());
     assert_eq!(trusted, (Some(2), 3), "a and c list it, of three read");
@@ -707,9 +704,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let reader = view.subscriber();
     let held_by = |positions: &[usize]| TrustedValidatorSet::at(positions.iter().copied());
-    let agreements = || -> Vec<Agreement> {
-        reader.current().trusted_validators().iter().map(|meta| meta.agreement).collect()
-    };
+    let agreements = || -> Vec<Agreement> { reader.current().agreements().collect() };
     // best + its holders, `None` while nobody holds it
     let tip = || {
         let pinned = reader.current();
@@ -773,8 +768,8 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(tip(), None, "re-asked: on the trunk, it holds nothing of the fork (never stale)");
     let pinned = reader.current();
-    let c = &pinned.trusted_validators()[2];
-    assert_eq!((c.tip(), c.agreement), (Some(at_101), Agreement::Diverged));
+    let c = (pinned.trusted_validators()[2].tip(), pinned.agreements().nth(2));
+    assert_eq!(c, (Some(at_101), Some(Agreement::Diverged)));
     let links: usize = validators.iter().map(|v| v.calls().links).sum();
     assert_eq!(links, 0, "holding is asked by getblockhash in the poll: no header reads");
     cancel.cancel();
@@ -1074,8 +1069,12 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     tokio::time::sleep(Duration::from_secs(30)).await;
     assert_eq!(validators[0].calls().links, links, "a's forked claim never fetched again");
     let pinned = reader.current();
-    let standing = (pinned.best(), pinned.trusted_validators()[0].agreement);
-    assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below finalized: never followed");
+    let standing = (pinned.best(), pinned.agreements().next());
+    assert_eq!(
+        standing,
+        (Some(at_32), Some(Agreement::Diverged)),
+        "below finalized: never followed"
+    );
     cancel.cancel();
 }
 
@@ -1177,14 +1176,13 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 }
 
 /// The previous scenario's outage (a down at 40, peers on to 60, depth 10), now with peers' block
-/// `inv`s: finalized reaches best − depth = 50 on the peers' word once more than 5 netgroups
-/// carry it
-/// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, finalized stays 40
+/// `inv`s: a block more than 5 netgroups carried finalizes, up to best − depth = 50
+/// - 10.1–10.5 (two in 10.5) announce 60: five netgroups
 /// - none counts
 ///   - 10.7 announces a block off our chain
 ///   - 10.8 (not live: inbound) announces 60
-///   - 10.6 announces 45 (ours, but below 50: its chain may leave ours after 45)
-/// - 10.6 then announces 55 (ours, above 50): six netgroups → finalized 50, a still down
+/// - 10.6 announces 45: six netgroups carried 45 → finalized 45
+/// - 10.6 then announces 55: six carried 55 → finalized 50 (best − depth), a still down
 #[tokio::test(start_paused = true)]
 async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator_vouches() {
     use zaino_header_chain::{HeaderChain, Params};
@@ -1221,10 +1219,11 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     }
     announcing.announce_block(peer(7, 1), elsewhere.hash);
     announcing.announce_block(peer(8, 1), at_60.hash);
-    announcing.announce_block(peer(6, 1), at_45.hash);
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(published(), Some((at_60, at_40)), "five netgroups: finalized unmoved");
 
+    announcing.announce_block(peer(6, 1), at_45.hash);
+    until("six netgroups carried 45", || published() == Some((at_60, at_45))).await;
     announcing.announce_block(peer(6, 1), at_55.hash);
     until("finalized on six netgroups' word", || published() == Some((at_60, at_50))).await;
     let held_by = view.subscriber().current().held_by();

@@ -28,7 +28,7 @@ use zaino_source::testing::{decoded, raw_transaction};
 use zcash_protocol::TxId;
 
 use crate::publisher::Core;
-use crate::{MempoolTail, ServingStatus, StatusReason, Tips};
+use crate::{MempoolTail, ServingStatus, Tips};
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
@@ -122,12 +122,6 @@ impl Model {
 
     fn set(mask: u8) -> TrustedValidatorSet {
         TrustedValidatorSet::at((0..ADDRESSES.len()).filter(|at| mask & (1 << at) != 0))
-    }
-
-    /// Holders past an unread claim drop out (as a merge's `holds` would)
-    fn held_by(&self) -> TrustedValidatorSet {
-        let unread = if self.read { 0 } else { self.ahead };
-        Self::set(self.held & !unread)
     }
 
     fn view(&self) -> Arc<ChainViewSnapshot> {
@@ -241,7 +235,6 @@ impl Model {
             best: Some(best),
             finalized_tip: Some(chain.finalized_tip()),
             served: self.served,
-            held_by: self.held_by(),
             synced,
         }
     }
@@ -328,12 +321,10 @@ fn run(moves: Vec<(Input, bool)>) {
 /// Clock the model reads serving status at (before every block: every best fresh)
 const EPOCH: i64 = 0;
 
-/// From tips alone (a chain always verified, holders `Live`, the rest `Pending`)
+/// From tips alone (every header run vouched, holders `Live`, the rest `Pending`)
 fn serving_status_of(tips: &Tips) -> ServingStatus {
-    match (tips.held_by.is_empty(), tips.synced) {
-        (true, true) => ServingStatus::Degraded(StatusReason::TipNotHeld),
-        (true, false) => ServingStatus::Down(StatusReason::TipNotHeld),
-        (false, false) => ServingStatus::Syncing,
-        (false, true) => ServingStatus::Serving,
+    match tips.synced {
+        true => ServingStatus::Serving,
+        false => ServingStatus::Syncing,
     }
 }

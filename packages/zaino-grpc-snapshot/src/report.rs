@@ -148,7 +148,7 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
         metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => state.label()).set(held as f64);
     }
 
-    for meta in view.trusted_validators().iter() {
+    for (meta, agreed) in view.trusted_validators().iter().zip(view.agreements()) {
         let endpoint = meta.address.clone();
         for state in STATES {
             let labels = [("endpoint", endpoint.clone()), ("state", state.label().to_owned())];
@@ -157,7 +157,7 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
         for agreement in AGREEMENTS {
             let label = agreement.label().to_owned();
             let labels = [("endpoint", endpoint.clone()), ("agreement", label)];
-            metrics::gauge!(names::AGREEMENT, &labels).set(f64::from(meta.agreement == agreement));
+            metrics::gauge!(names::AGREEMENT, &labels).set(f64::from(agreed == agreement));
         }
         if let Some(tip) = meta.tip() {
             metrics::gauge!(names::TIP_HEIGHT, "endpoint" => endpoint.clone())
