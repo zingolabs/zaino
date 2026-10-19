@@ -316,4 +316,4 @@ impl<F> NfsCore<F> {
 #[cfg(test)]
 mod fire_drills;
 #[cfg(test)]
-mod model;
+mod model_tests;

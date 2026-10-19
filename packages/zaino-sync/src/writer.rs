@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use zaino_persistence::{BlockChanges, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, BlockRef};
 
-use crate::{emit, IndexHandle};
+use crate::{metrics, IndexHandle};
 
 /// Fold's preconditions, panic naming the index: `out` opened for `block`, `block` next above
 /// `parent` (`None` = empty parent: genesis)
@@ -49,7 +49,7 @@ pub fn held<S: Store>(store: &S, block: &Block) -> bool {
 /// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`) → time it took
 /// (auto-commit included)
 pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
-    emit::applied_block(store.schema().kind.name(), changes.rows());
+    metrics::applied_block(store.schema().kind.name(), changes.rows());
     let started = Instant::now();
     store.apply(changes);
     started.elapsed()
@@ -69,7 +69,7 @@ pub fn commit<S: Store>(store: &mut S) -> Duration {
 /// One run done: `started` (taken off the queue) → now, `write` of it in [`apply`] + [`commit`]
 /// (`zaino_index_{run,write}_seconds`)
 pub fn ran<S: Store>(store: &S, started: Instant, write: Duration) {
-    emit::index_run(store.schema().kind.name(), started.elapsed(), write);
+    metrics::index_run(store.schema().kind.name(), started.elapsed(), write);
 }
 
 /// Writer's end of its [`IndexHandle`]: applied tip after every hop, durable view on each commit
@@ -96,7 +96,7 @@ impl<V: View> IndexPublisher<V> {
     pub fn publish<S: Store<View = V>>(&self, store: &S) {
         let (applied, durable) = (store.applied().tip(), store.durable().tip());
         let height = |tip: Option<BlockRef>| tip.map(|tip| tip.height);
-        emit::index_tips(store.schema().kind.name(), height(applied), height(durable));
+        metrics::index_tips(store.schema().kind.name(), height(applied), height(durable));
         self.applied.send_replace(applied);
         if self.durable.borrow().tip() != durable {
             self.durable.send_replace(store.durable());

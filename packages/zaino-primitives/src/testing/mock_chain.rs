@@ -18,7 +18,7 @@ use zcash_protocol::consensus::{target_spacing, BlockHeight, NetworkType, Parame
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
-use super::build::{BlockBuilder, Planned, TxBuilder};
+use super::builders::{BlockBuilder, Planned, TxBuilder};
 use super::ledger::{Ledger, Unmined};
 use super::upgrades::all_at;
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};

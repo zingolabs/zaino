@@ -113,7 +113,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
 
     if let Some(endpoint) = config.metrics.listen_address {
         let status = Arc::clone(&status);
-        logging::component("Metrics").in_scope(|| admin::start(endpoint, status))?;
+        logging::component("Admin").in_scope(|| admin::start(endpoint, status))?;
     }
     // After the admin listener (`/readyz` reports the index-snapshot install inside)
     let running = boot::start(config, status).await.inspect_err(|error| {

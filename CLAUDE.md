@@ -70,7 +70,7 @@ failure — never `impl From` / `impl TryFrom`, which hide both behind `.into()`
   Reference: `packages/zaino-index-tree-state/src/heights.rs`.
 - Wire: domain crates (`zaino-primitives`, …) never depend on `zaino-proto`.
   The crate that produces or consumes the wire bytes owns the conversion (e.g.
-  `encode_compact_block` in `packages/zaino-index-compact-block/src/build.rs`); a fallible
+  `encode_compact_block` in `packages/zaino-index-compact-block/src/encode.rs`); a fallible
   wire → domain conversion returns an error enum naming each rejection.
 - A golden-bytes / round-trip test sits next to each layout and each wire
   conversion, not in a distant test module.

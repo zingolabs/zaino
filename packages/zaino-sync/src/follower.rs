@@ -25,7 +25,7 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::{emit, fetch, fetch_at, FinalizedStream, Step, Subscription, SyncProgress};
+use crate::{fetch, fetch_at, metrics, FinalizedStream, Step, Subscription, SyncProgress};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FollowError {
@@ -151,7 +151,7 @@ async fn follow<S: ChainDataSource>(
                     link(&durable, last_sent, &block)?;
                     let height = block.header().height;
                     last_sent = Some(block.header().hash);
-                    emit::handed(&block);
+                    metrics::handed(&block);
                     progress.hand(height);
                     let finalized_tip =
                         chain.borrow().as_ref().map(|chain| chain.finalized_tip().height);

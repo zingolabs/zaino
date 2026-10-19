@@ -99,7 +99,7 @@ folds and publishes pair layers with exactly the tips the core knows.
 
 ## Tests
 
-- `nfs_core/model.rs`: random chain evolutions, late and stale bodies and folds, writers committing
+- `nfs_core/model_tests.rs`: random chain evolutions, late and stale bodies and folds, writers committing
   after random delays, restarts with a wiped index, against a fold-from-genesis oracle.
 - `nfs_core/fire_drills.rs`: one planted bug per `check()` assertion and precondition.
 - `nfs/tests.rs`: `FinalizedFollower` + the five real writers + the NFS, end to end.

@@ -8,18 +8,18 @@
 
 #![forbid(unsafe_code)]
 
-mod emit;
 mod fetch;
 mod finalized_stream;
 mod follower;
 mod handle;
+mod metrics;
 mod offload;
 mod progress;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod writer;
 
-pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use self::metrics::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use fetch::fetch_at;
 pub use fetch::{fetch, Checked};
 pub use finalized_stream::{FeeSink, FinalizedStream, Run, Step, Subscription, Weight};

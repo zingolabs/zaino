@@ -386,7 +386,8 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
   component that logged it, and the message, padded to 30 columns when fields
   follow, so repeated lines align. Index `durable` heights and `size` are padded
   into columns (between fields, never inside a value).
-- Components: `Zainod` (lifecycle), `Metrics`, `Admin` (the `/livez` heartbeat),
+- Components: `Zainod` (lifecycle), `Admin` (the admin listener: `/metrics`, `/livez`, `/readyz`,
+  heartbeat),
   `IndexSnapshot` (the `[snapshot]` bootstrap),
   `Traffic` (the balancer's driver), `ChainView` (polls folded, headers, peers, mempool,
   submission), `ZainoSync` (the finalized-stream follower), `ZainoNFS` (tip-path fetch and folds,
@@ -423,7 +424,7 @@ What an operator sees at `info`:
 | `GrpcSnapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | The end of service alarm rises (`validator`, `build`, `left` blocks), then a newer release clears it. |
 | `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's zebra indexer push streams (`zebra_indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
 | `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
-| `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
+| `Grpc` / `Admin` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
 | `Grpc` | `Serving` | info / warn | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`work`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |

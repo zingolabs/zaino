@@ -1,14 +1,14 @@
 //! Regtest chains with real header bytes: hash = SHA-256d of the header, `prev_hash` links, merkle
 //! root = the txids' (`cfg(test)` too: a crate's own features don't self-enable)
 
-mod build;
+mod builders;
 mod ledger;
 mod mock_chain;
 mod upgrades;
 
 use crate::sha256d;
 
-pub use build::{p2pkh, BlockBuilder, TxBuilder};
+pub use builders::{p2pkh, BlockBuilder, TxBuilder};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 pub use upgrades::all_at;
