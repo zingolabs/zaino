@@ -1,4 +1,4 @@
-//! Admission outcomes per summary window (`report::INTERVAL`) → refusal rate + overload latch
+//! Admission outcomes per summary window (`summary::INTERVAL`) → refusal rate + overload latch
 //!
 //! - every outcome recorded here once (a refusal's metric included)
 //! - read = last closed window
@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::admission::Class;
-use crate::emit;
+use crate::metrics;
 
 /// - overloaded: every window refuses >= `ENTER_SHARE` of work (at >= `ENTER_REFUSALS_PER_S`)
 ///   for `SUSTAINED`
@@ -43,7 +43,7 @@ impl Overload {
     }
 
     pub(crate) fn refused(&self, class: Class) {
-        emit::stream_rejected(class);
+        metrics::stream_rejected(class);
         let refused = match class {
             Class::Work => &self.refused_work,
             Class::Subscription => &self.refused_subscriptions,

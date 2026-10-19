@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use crate::network::chain_name;
 use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
@@ -17,9 +16,10 @@ use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, ShieldedPool};
 
-use crate::limits::Lane;
-use crate::limits::ReadLanes;
+use super::args;
+use super::info::chain_name;
 use crate::memo::PerView;
+use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{self, streamed_response, unary_response};
 
 /// Framed answers per NFS publish: the layer heights every synced wallet asks (the tip among
@@ -175,7 +175,7 @@ where
     let id: service::BlockId = wire::decode_request(body).await?;
 
     if id.hash.is_empty() {
-        let height = wire::height(id.height, "height")?;
+        let height = args::height(id.height, "height")?;
         let state = answering.state_at(height);
         if answering.trees.is_above_durable(height) {
             return answering.once(|memos| &memos.states, height, state).await?;
@@ -185,7 +185,7 @@ where
     }
 
     let (height, hash) =
-        wire::locate(answering.served(), answering.through(), &id.hash, "GetTreeState")?;
+        args::locate(answering.served(), answering.through(), &id.hash, "GetTreeState")?;
     let (trees, state) = (answering.trees.clone(), answering.state_at(height));
     let framed = answering.reads.read(Lane::Point, move || {
         let held = trees.treestate(height).map(|state| state.block_hash);

@@ -22,14 +22,14 @@ use zaino_persistence::PinnedView;
 use zaino_source::ChainDataSource;
 
 use crate::admission::{Admission, AdmissionState, Class};
-use crate::client::TrustedProxies;
 use crate::connections::{ConnectionCaps, Reserved};
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::observe::Measured;
-use crate::report::{self, CapsInUse, INTERVAL};
+use crate::proxy_protocol::{self, TrustedProxies};
 use crate::service::{Dispatch, RouteDeps, Routing};
-use crate::{emit, GrpcLimits};
+use crate::summary::{self, CapsInUse, INTERVAL};
+use crate::{metrics, GrpcLimits};
 
 /// Per-stream send buffer (flow control paces from here: a slow wallet backs up itself, not the
 /// server)
@@ -243,7 +243,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 now = summaries.tick() => {
                     let elapsed = now - window_opened;
                     let at_capacity = shared.admission.tick(elapsed);
-                    report::summarise(elapsed, shared.caps_in_use(), at_capacity);
+                    summary::summarise(elapsed, shared.caps_in_use(), at_capacity);
                     window_opened = now;
                     continue;
                 }
@@ -256,7 +256,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 }
                 Err(error) if peer_gone(&error) => continue,
                 Err(error) => {
-                    emit::accept_failed();
+                    metrics::accept_failed();
                     warn!(%error, retry_in = ?backoff, "Accept failed");
                     tokio::select! {
                         _ = cancel.cancelled() => return,
@@ -319,11 +319,11 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
         }
 
         let header = tokio::time::timeout(
-            crate::client::HEADER_TIMEOUT,
-            crate::client::read_header(&mut socket),
+            proxy_protocol::HEADER_TIMEOUT,
+            proxy_protocol::read_header(&mut socket),
         )
         .await
-        .unwrap_or(Err(crate::client::HeaderError::Timeout));
+        .unwrap_or(Err(proxy_protocol::HeaderError::Timeout));
         let (source, read_ahead) = match header {
             Ok(read) => read,
             Err(error) => {
@@ -390,7 +390,7 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
         };
         let retired = tokio::select! {
             _ = serving.as_mut() => return,
-            _ = stalls.stalled(limits.unread_timeout) => return emit::connection_stalled(),
+            _ = stalls.stalled(limits.unread_timeout) => return metrics::connection_stalled(),
             _ = self.cancel.cancelled() => {
                 serving.as_mut().graceful_shutdown();
                 let _ = serving.await;
@@ -400,11 +400,11 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
             () = idled => "idle",
             () = retirement.fired() => "retired",
         };
-        emit::connection_retired(retired);
+        metrics::connection_retired(retired);
         serving.as_mut().graceful_shutdown();
         tokio::select! {
             _ = tokio::time::timeout(limits.max_connection_age_grace, serving.as_mut()) => {}
-            _ = stalls.stalled(limits.unread_timeout) => emit::connection_stalled(),
+            _ = stalls.stalled(limits.unread_timeout) => metrics::connection_stalled(),
         }
     }
 }

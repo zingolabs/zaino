@@ -20,9 +20,10 @@ use tokio::time::Instant;
 use tonic::Status;
 
 use crate::adaptive::Limiter;
-use crate::emit;
+use crate::layer::take_ready;
+use crate::metrics;
 use crate::overload::Overload;
-use crate::service::{take_ready, Method};
+use crate::service::Method;
 
 /// Refusal retry hint, ms (held streams = wallet syncs: a slot frees well under a second)
 const PUSHBACK_MS: &str = "250";
@@ -89,7 +90,7 @@ impl AdmissionState {
 
     /// Closes a serving summary's window (`elapsed` long): its refusals, every class
     pub(crate) fn tick(&self, elapsed: Duration) -> u64 {
-        emit::adaptive_stream_limit(self.limiter.limit());
+        metrics::adaptive_stream_limit(self.limiter.limit());
         self.overload.tick(elapsed)
     }
 
@@ -118,7 +119,7 @@ impl AdmissionState {
         match admitted {
             true => {
                 self.overload.admitted(class);
-                emit::stream_admitted(class);
+                metrics::stream_admitted(class);
             }
             false => self.overload.refused(class),
         }
@@ -127,7 +128,7 @@ impl AdmissionState {
 
     fn release(&self, class: Class) {
         self.pool(class).0.fetch_sub(1, Ordering::Relaxed);
-        emit::stream_released(class);
+        metrics::stream_released(class);
     }
 }
 

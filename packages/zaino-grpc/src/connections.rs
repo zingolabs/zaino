@@ -1,7 +1,7 @@
 //! Accept-time caps (over a cap → socket closed, never queued)
 //!
 //! - Total = at accept, before a task exists
-//! - Per client = once [`client`](crate::client) names it (behind a trusted proxy, only its PROXY
+//! - Per client = once [`proxy_protocol`](crate::proxy_protocol) names it (behind a trusted proxy, only its PROXY
 //!   header does), still before any HTTP/2 is spoken
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::{emit, GrpcLimits};
+use crate::{metrics, GrpcLimits};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionCaps {
@@ -47,7 +47,7 @@ impl ConnectionCaps {
         match Arc::clone(&self.total).try_acquire_owned() {
             Ok(permit) => Some(Reserved { _slot: permit }),
             Err(_) => {
-                emit::connection_rejected();
+                metrics::connection_rejected();
                 None
             }
         }
@@ -59,13 +59,13 @@ impl ConnectionCaps {
             let mut per_client = self.per_client.lock().expect("per-client table poisoned");
             let held = per_client.entry(client).or_insert(0);
             if *held >= self.per_client_max {
-                emit::connection_rejected();
+                metrics::connection_rejected();
                 return None;
             }
             *held += 1;
         }
 
-        emit::connection_opened();
+        metrics::connection_opened();
         Some(ConnectionGuard { _total: reserved, per_client: Arc::clone(&self.per_client), client })
     }
 }
@@ -89,6 +89,6 @@ impl Drop for ConnectionGuard {
                 held.remove();
             }
         }
-        emit::connection_closed();
+        metrics::connection_closed();
     }
 }

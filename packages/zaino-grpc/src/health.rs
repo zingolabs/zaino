@@ -15,7 +15,7 @@ use http::{header, Method, Request, Response, StatusCode, Version};
 use http_body_util::{Either, Full};
 use tokio::time::Instant;
 
-use crate::service::take_ready;
+use crate::layer::take_ready;
 
 /// What the health paths answer (zainod: its `/readyz` + public `/status` projection)
 pub trait Health: Send + Sync + 'static {

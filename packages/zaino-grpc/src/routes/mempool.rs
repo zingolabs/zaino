@@ -9,6 +9,7 @@ use zaino_grpc_snapshot::GrpcSnapshot;
 use zaino_index_compact_block::project_tx_at;
 use zaino_proto::proto::service;
 
+use super::args;
 use crate::wire::{self, decode_request, frame, streamed_response, trailers};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
@@ -28,7 +29,7 @@ where
     B::Error: std::fmt::Display,
 {
     let request: service::GetMempoolTxRequest = decode_request(body).await?;
-    let pools = wire::pools(&request.pool_types)?;
+    let pools = args::pools(&request.pool_types)?;
 
     let mempool = grpc_snapshot.mempool().map_err(wire::unavailable)?;
 

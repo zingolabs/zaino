@@ -9,34 +9,36 @@
 
 mod adaptive;
 mod admission;
-mod client;
 mod coalesce;
 mod connections;
 mod deadline;
-mod emit;
 mod health;
+mod labels;
+mod layer;
 mod lifetime;
 mod limits;
 mod memo;
-mod network;
+mod metrics;
 mod observe;
 mod overload;
-mod report;
+mod proxy_protocol;
+mod read_lanes;
 mod routes;
 mod service;
 mod stall;
+mod summary;
 #[cfg(test)]
 mod testing;
 mod tls;
 mod transport;
 mod wire;
 
+pub use crate::metrics::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use admission::{AdmissionReport, AdmissionState};
-pub use client::TrustedProxies;
-pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use health::Health;
 pub use lifetime::{Hold, Retire};
 pub use limits::GrpcLimits;
+pub use proxy_protocol::TrustedProxies;
 
 pub use service::{RouteDeps, Routing};
 pub use tls::{Tls, TlsError, TlsFiles};

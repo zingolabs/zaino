@@ -18,7 +18,7 @@ use std::time::Duration;
 use tonic::Code;
 use tracing::{debug, error, field::display, info, warn};
 
-use crate::emit::{label, slot, CODES, LABELS};
+use crate::labels::{label, slot, CODES, LABELS};
 use crate::service::Method;
 
 pub(crate) const INTERVAL: Duration = Duration::from_secs(60);

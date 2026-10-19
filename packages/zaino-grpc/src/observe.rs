@@ -15,10 +15,11 @@ use tonic::{Code, Status};
 use zaino_proto::frame::{framed_len, FRAME_HEADER};
 
 use crate::admission::AtCapacity;
-use crate::emit;
+use crate::layer::take_ready;
 use crate::lifetime::{Activity, Open};
-use crate::report;
-use crate::service::{take_ready, Method};
+use crate::metrics;
+use crate::service::Method;
+use crate::summary;
 
 /// Each request timed, its body's writes counted, held open on its connection's `activity` until
 /// the body drops
@@ -127,7 +128,7 @@ impl<Inner: Body<Data = bytes::Bytes> + Unpin> Body for Counted<Inner> {
                     if self.first_message.is_none() {
                         let elapsed = self.started.elapsed();
                         self.first_message = Some(elapsed);
-                        emit::first_message(self.method, elapsed);
+                        metrics::first_message(self.method, elapsed);
                     }
                     self.sent += chunk.len() as u64;
                     self.messages.feed(chunk);
@@ -169,7 +170,7 @@ impl<Inner> Drop for Counted<Inner> {
         let latency =
             (code == Code::Ok && !subscription).then(|| self.first_message.unwrap_or(elapsed));
 
-        emit::stream_finished(
+        metrics::stream_finished(
             self.method,
             code,
             elapsed,
@@ -178,7 +179,7 @@ impl<Inner> Drop for Counted<Inner> {
             self.sent,
         );
         if code != Code::Ok && !self.at_capacity {
-            report::answered_badly(self.method, code, self.message.as_deref().unwrap_or_default());
+            summary::answered_badly(self.method, code, self.message.as_deref().unwrap_or_default());
         }
     }
 }

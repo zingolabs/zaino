@@ -11,7 +11,6 @@ use zcash_protocol::consensus::{
     BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
 };
 
-use crate::network::chain_name;
 use crate::wire;
 
 /// `GetLightdInfo` from one `GrpcSnapshot` (fields: `docs/rpc_api.md`)
@@ -53,6 +52,17 @@ fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdI
     }
 }
 
+/// lightwalletd `chainName` / `z_gettreestate` `network` (BIP70, `regtest` = de-facto third)
+///
+/// - lightwalletd's `NetworkType` spelling (zainod's config spelling = `network_name` there)
+pub(super) fn chain_name(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::Main => "main",
+        NetworkType::Test => "test",
+        NetworkType::Regtest => "regtest",
+    }
+}
+
 /// `GetStandardFee`: the ZIP 317 marginal fee for the block after best (estimator version 0 =
 /// the static rule)
 pub(crate) fn standard_fee<V>(
@@ -79,6 +89,18 @@ mod tests {
     use zcash_protocol::consensus::BlockHeight;
 
     use crate::testing::{grpc_snapshots, indexed_at, published, rounds, routes_over};
+
+    #[test]
+    fn each_network_has_one_chain_name() {
+        let table = [
+            (NetworkType::Main, "main"),
+            (NetworkType::Test, "test"),
+            (NetworkType::Regtest, "regtest"),
+        ];
+        for (network, chain) in table {
+            assert_eq!(chain_name(network), chain, "{network:?}");
+        }
+    }
 
     /// Mainnet's compiled schedule: branch at the served height (NU6.2 from 3,364,600 below
     /// NU6.3, NU6.3 from it), the next upgrade above it (none once NU6.3 is in: NU7

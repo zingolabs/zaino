@@ -87,7 +87,7 @@ routing.route(routes);
   `INVALID_ARGUMENT`.
 - `chainName`, the tree state's `network` and the t-address mismatch message spell the
   network as lightwalletd does (`main` / `test` / `regtest`), from one match
-  (`network::chain_name`).
+  (`routes::info::chain_name`).
 - `limits: GrpcLimits` (see [Serve stack](#serve-stack)) is zainod's `[grpc]` table as
   parsed: it derives `Deserialize`/`Serialize` (unknown keys refused, omitted ones at
   `Default`), durations as whole-second `*_secs` keys (`unread_timeout_secs`,

@@ -1,7 +1,6 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
 //! (index names the txids, a validator supplies the bytes), all as of the served tip
 
-use crate::network::chain_name;
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{OverlayView, PinnedView};
@@ -18,8 +17,9 @@ use http::Response;
 use http_body::Frame;
 use tonic::{body::Body, Status};
 
-use crate::limits::Lane;
-use crate::limits::ReadLanes;
+use super::args;
+use super::info::chain_name;
+use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
 /// One request's index: the `GrpcSnapshot`'s reader (as of its tip, row-capped) + the network its
@@ -118,9 +118,9 @@ where
     let height = |bound: Option<service::BlockId>, field: &str| {
         bound
             .ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))
-            .and_then(|at| wire::height(at.height, field))
+            .and_then(|at| args::height(at.height, field))
     };
-    let (start, end) = wire::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
+    let (start, end) = args::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
 
     let found =
         reads.read(Lane::Scan, move || index.reader.transactions(&address, start, end)).await?;
@@ -158,7 +158,7 @@ where
     B::Error: std::fmt::Display,
 {
     let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
-    let from = wire::height(request.start_height, "startHeight")?;
+    let from = args::height(request.start_height, "startHeight")?;
     let addresses = request
         .addresses
         .iter()

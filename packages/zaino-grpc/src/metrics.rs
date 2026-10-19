@@ -6,8 +6,10 @@ use std::time::Duration;
 use tonic::Code;
 
 use crate::admission::Class;
-use crate::report;
-use crate::service::{Method, ROUTES};
+use crate::labels::{label, slot, CODES, LABELS};
+use crate::read_lanes::Lane;
+use crate::service::Method;
+use crate::summary;
 
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
@@ -32,40 +34,6 @@ const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total"
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
-
-/// `method` label slots: one per [`ROUTES`] row, then `unknown` (any other path: the set stays
-/// fixed however clients misbehave)
-pub(crate) const LABELS: usize = ROUTES.len() + 1;
-
-/// `method`'s label slot (`None` = `unknown`)
-pub(crate) fn slot(method: Option<Method>) -> usize {
-    method.map_or(ROUTES.len(), |method| method as usize)
-}
-
-pub(crate) fn label(slot: usize) -> &'static str {
-    ROUTES.get(slot).map_or("unknown", |row| row.name)
-}
-
-/// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)
-pub(crate) const CODES: [&str; 17] = [
-    "Ok",
-    "Cancelled",
-    "Unknown",
-    "InvalidArgument",
-    "DeadlineExceeded",
-    "NotFound",
-    "AlreadyExists",
-    "PermissionDenied",
-    "ResourceExhausted",
-    "FailedPrecondition",
-    "Aborted",
-    "OutOfRange",
-    "Unimplemented",
-    "Internal",
-    "Unavailable",
-    "DataLoss",
-    "Unauthenticated",
-];
 
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
@@ -176,7 +144,7 @@ pub(crate) fn connection_closed() {
 /// A connection closed for holding data unread past `unread_timeout`
 pub(crate) fn connection_stalled() {
     metrics::counter!(STALLED_CONNECTIONS_TOTAL).increment(1);
-    report::connection_stalled();
+    summary::connection_stalled();
 }
 
 pub(crate) fn accept_failed() {
@@ -185,7 +153,7 @@ pub(crate) fn accept_failed() {
 
 pub(crate) fn connection_rejected() {
     metrics::counter!(CONNECTIONS_REJECTED_TOTAL).increment(1);
-    report::connection_refused();
+    summary::connection_refused();
 }
 
 fn active(class: Class) -> &'static str {
@@ -210,7 +178,7 @@ pub(crate) fn stream_rejected(class: Class) {
     }
 }
 
-pub(crate) fn disk_read_waited(lane: crate::limits::Lane, waited: Duration) {
+pub(crate) fn disk_read_waited(lane: Lane, waited: Duration) {
     metrics::histogram!(DISK_READ_WAIT_SECONDS, "lane" => lane.label())
         .record(waited.as_secs_f64());
 }
@@ -230,7 +198,7 @@ pub(crate) fn stream_finished(
     messages: u64,
     sent: u64,
 ) {
-    report::finished(method, code, latency);
+    summary::finished(method, code, latency);
     let slot = slot(method);
     let series = series(slot);
     // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)

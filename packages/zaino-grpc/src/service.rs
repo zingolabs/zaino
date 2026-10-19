@@ -28,8 +28,10 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::admission::Class;
 use crate::deadline::Bounds;
-use crate::limits::ReadLanes;
-use crate::routes::{blocks, info, mempool, transactions, transparent_address, tree_state};
+use crate::read_lanes::ReadLanes;
+use crate::routes::{
+    blocks, deprecated_nullifiers, info, mempool, transactions, transparent_address, tree_state,
+};
 use crate::wire::{self, frame, unary_response};
 use crate::GrpcLimits;
 
@@ -296,7 +298,9 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
             GetLatestBlock => Ok(blocks::latest(served()?)),
             GetBlock => blocks::block(compact()?, body, &reads).await,
             GetBlockRange => blocks::range(compact()?, body, reads).await,
-            GetBlockRangeNullifiers => blocks::range_nullifiers(compact()?, body, reads).await,
+            GetBlockRangeNullifiers => {
+                deprecated_nullifiers::range_nullifiers(compact()?, body, reads).await
+            }
             GetTreeState => tree_state::treestate(&trees()?, body).await,
             GetLatestTreeState => tree_state::latest(&trees()?).await,
             GetSubtreeRoots => tree_state::subtree_roots(&trees()?, body).await,
@@ -366,12 +370,6 @@ where
             async move { Ok(bounds.apply(wired.answer(method, &path, request.into_body())).await) },
         )
     }
-}
-
-/// `inner` swapped for its clone: the instance polled ready is the one called (tower's contract)
-pub(crate) fn take_ready<Inner: Clone>(inner: &mut Inner) -> Inner {
-    let clone = inner.clone();
-    std::mem::replace(inner, clone)
 }
 
 #[cfg(test)]
