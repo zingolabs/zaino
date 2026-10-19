@@ -35,7 +35,7 @@ Waiting on height alone passes while Zaino still serves the losing branch.
 (SIGSTOP), never just kill it: kubelet restarts a first crash immediately, so a killed zainod can
 be back before the reorg lands. `thaw` resumes the same process; `kill` after `freeze` restarts it.
 
-Shapes are pinned first at unit level in `packages/zaino-nfs` (`src/nfs_core/model.rs`,
+Shapes are pinned first at unit level in `packages/zaino-nfs` (`src/nfs_core/model_tests.rs`,
 `src/nfs/tests.rs`), which run in seconds. This suite proves them against a real validator.
 
 ## Contracts
