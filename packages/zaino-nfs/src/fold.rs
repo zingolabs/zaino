@@ -1,6 +1,6 @@
 //! [`fold_block`]: one block through each covered index, in dependency order (`usage.md`)
 //!
-//! - The one place indexes meet: a new index = one fold call here
+//! - New index = its fold call here + its `schema` arm and `Views` reader (`indexes.rs`)
 
 use crate::per_index::PerIndex;
 use zaino_persistence::{AppliedLayer, BlockChanges, IndexKind, MapRead, Overlay, SequenceRead};
@@ -140,7 +140,7 @@ mod tests {
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());
             for &kind in enabled {
-                let schema = crate::schema(kind, crate::tests::NETWORK);
+                let schema = crate::schema(kind, crate::nfs::tests::NETWORK);
                 let store = engine
                     .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
                     .expect("fresh store");

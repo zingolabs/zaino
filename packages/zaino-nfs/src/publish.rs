@@ -10,12 +10,8 @@ use std::sync::Arc;
 use crate::per_index::PerIndex;
 use tokio::sync::watch;
 use zaino_header_chain::HeaderChainSnapshot;
-use zaino_index_compact_block::CompactBlockReader;
-use zaino_index_transparent_address::TransparentAddressReader;
-use zaino_index_tree_state::{pool_activations, TreeStateReader};
-use zaino_index_utxo_set::UtxoSetReader;
-use zaino_internal_block_hash_to_height::BlockHashReader;
-use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, Schema, SequenceRead, View};
+use zaino_index_tree_state::pool_activations;
+use zaino_persistence::{IndexKind, Overlay, OverlayView, View};
 use zaino_primitives::types::{Block, BlockRef, PerPool};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
@@ -166,19 +162,8 @@ fn at<V: View>(
     IndexesAtBlock { block: base.at, on_best: base.on_best, params, views }
 }
 
-/// `kind`'s store layout on `network` (its index crate's `schema`)
-pub fn schema(kind: IndexKind, network: NetworkType) -> Schema {
-    match kind {
-        IndexKind::CompactBlock => zaino_index_compact_block::schema(network),
-        IndexKind::UtxoSet => zaino_index_utxo_set::schema(network),
-        IndexKind::BlockHash => zaino_internal_block_hash_to_height::schema(network),
-        IndexKind::TreeState => zaino_index_tree_state::schema(network),
-        IndexKind::TransparentAddress => zaino_index_transparent_address::schema(network),
-    }
-}
-
 /// Every enabled index's durable view + a layer above it: [`IndexesAtBlock`]'s state, and a fold's
-/// parent
+/// parent (per-index readers: `indexes.rs`)
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -226,35 +211,6 @@ impl<V: View> Views<V> {
     pub(crate) fn view(&self, kind: IndexKind) -> Option<OverlayView<V>> {
         let layer = self.layers.get(kind)?.clone();
         Some(OverlayView::new(self.durable.get(kind)?.clone(), layer))
-    }
-}
-
-impl<V: SequenceRead> Views<V> {
-    pub fn compact_block(&self) -> Option<CompactBlockReader<OverlayView<V>>> {
-        let view = self.view(IndexKind::CompactBlock)?;
-        Some(CompactBlockReader::new(view))
-    }
-
-    pub fn tree_state(&self) -> Option<TreeStateReader<OverlayView<V>>> {
-        Some(TreeStateReader::new(self.view(IndexKind::TreeState)?))
-    }
-}
-
-impl<V: MapRead> Views<V> {
-    pub fn block_hash(&self) -> Option<BlockHashReader<OverlayView<V>>> {
-        Some(BlockHashReader::new(self.view(IndexKind::BlockHash)?))
-    }
-
-    pub fn transparent_address(&self) -> Option<TransparentAddressReader<OverlayView<V>>> {
-        let view = self.view(IndexKind::TransparentAddress)?;
-        Some(TransparentAddressReader::new(view))
-    }
-}
-
-impl<V: SequenceRead + MapRead> Views<V> {
-    /// Fold parents + a peer quorum's prevouts (no route reads utxo-set)
-    pub fn utxo_set(&self) -> Option<UtxoSetReader<OverlayView<V>>> {
-        Some(UtxoSetReader::new(self.view(IndexKind::UtxoSet)?))
     }
 }
 

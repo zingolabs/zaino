@@ -36,6 +36,7 @@ use zcash_protocol::BlockHash;
 use zcash_transparent::bundle::OutPoint;
 
 use super::*;
+use crate::schema;
 
 pub(crate) const NETWORK: NetworkType = NetworkType::Regtest;
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
