@@ -15,7 +15,7 @@ use zaino_persistence::{
 };
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
-use crate::stores::schema;
+use crate::schemas::schema;
 
 /// - Disabled index = `None`
 /// - `clean` = every sealed file present with every page intact

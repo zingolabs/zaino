@@ -1,5 +1,4 @@
-//! Each index's store schema (boot opens, `verify` scrubs by it) + the `WRITE_BUFFER` boot commits
-//! at
+//! Each index's store schema + commit `WRITE_BUFFER` (boot opens by it, `verify` scrubs by it)
 
 use std::num::NonZeroUsize;
 

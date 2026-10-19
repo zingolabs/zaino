@@ -2,7 +2,7 @@
 //!
 //! - Table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
 //!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`])
-//! - Rest translated at boot ([`crate::indexer::start_indexer`])
+//! - Rest translated at boot ([`crate::boot::start`])
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
 use std::net::SocketAddr;
@@ -431,7 +431,7 @@ impl DaemonConfig {
         }
         let fanout = self.sync.lsm_store.fanout;
         for kind in IndexKind::ALL.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
-            if !manifest_fits(&crate::stores::schema(kind, self.network).0, fanout) {
+            if !manifest_fits(&crate::schemas::schema(kind, self.network).0, fanout) {
                 return Err(IndexerError::Config(format!(
                     "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
                      manifest (lower it)",

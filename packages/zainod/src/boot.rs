@@ -23,6 +23,7 @@
 //! - Every stage = one plain task in a `JoinSet` (first to end ends the daemon)
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -55,8 +56,8 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
 use crate::error::IndexerError;
 use crate::logging::component;
+use crate::schemas;
 use crate::status::DaemonStatus;
-use crate::stores;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
@@ -64,12 +65,13 @@ type TaskExit = (&'static str, Result<(), IndexerError>);
 /// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits, nothing
 /// restarts in-process)
 ///
-/// - signal handlers first: a signal anywhere in boot (bootstrap, regtest schedule wait) = clean stop
+/// - signal handlers first: a signal anywhere in boot (snapshot install, regtest schedule wait) =
+///   clean stop
 /// - one client per validator next (unprobed: a bad entry fails before any bind or download)
-/// - gRPC listener: health answers through the index-snapshot bootstrap, a taken port fails
+/// - gRPC listener: health answers through the index-snapshot install, a taken port fails
 ///   before any download
-/// - then the bootstrap, then boot (no validator needs to answer first)
-pub(crate) async fn start_indexer(
+/// - then the snapshot install, then boot (no validator needs to answer first)
+pub(crate) async fn start(
     config: DaemonConfig,
     status: Arc<DaemonStatus>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
@@ -98,8 +100,8 @@ async fn start_over<S: ChainDataSource>(
     let booting = async {
         let serving = listen(&config, &status, &cancel, &mut tasks).await?;
         if let Some(snapshot) = &config.snapshot {
-            let bootstrap = crate::bootstrap::bootstrap(snapshot, &config, &status);
-            bootstrap.instrument(component("IndexSnapshot")).await?;
+            let install = crate::index_snapshot::install(snapshot, &config, &status);
+            install.instrument(component("IndexSnapshot")).await?;
         }
         boot_over(&config, wiring, serving, &status, &cancel, &mut tasks).await
     };
@@ -257,7 +259,7 @@ async fn boot_over<S: ChainDataSource>(
         spawn_infallible(tasks, "push-stream", chainview_span.clone(), run);
     }
     let heartbeat = crate::admin::beat(Arc::clone(status), cancel.child_token());
-    spawn(tasks, "heartbeat", component("Metrics"), heartbeat);
+    spawn(tasks, "heartbeat", component("Admin"), heartbeat);
     Ok(())
 }
 
@@ -288,7 +290,7 @@ fn pipeline<S: ChainDataSource>(
 
 /// The indexes' chain at their lowest durable tip, by hash: `CONTEXT` + 2 blocks from
 /// tree-state's records (`None` = tree-state off, or fewer blocks held)
-fn own_chain(opened: &[crate::progress::Index]) -> Option<Vec<BlockRef>> {
+fn own_chain(opened: &[OpenedIndex]) -> Option<Vec<BlockRef>> {
     let tips = opened.iter().map(|index| index.handle.durable_view().tip());
     let tip = tips.min_by_key(|tip| tip.map(|tip| tip.height))??;
     let tree_state = opened.iter().find(|index| index.kind == IndexKind::TreeState)?;
@@ -433,8 +435,16 @@ struct Indexes<S> {
     nfs: Nfs<S, DiskView>,
     engine: DiskEngine,
     network: NetworkType,
-    opened: Vec<crate::progress::Index>,
+    opened: Vec<OpenedIndex>,
     writers: Vec<(IndexKind, Span, BoxFuture<'static, ()>)>,
+}
+
+/// One enabled index: its log component, directory and writer's handle
+pub(crate) struct OpenedIndex {
+    pub(crate) kind: IndexKind,
+    pub(crate) span: Span,
+    pub(crate) dir: PathBuf,
+    pub(crate) handle: IndexHandle<DiskView>,
 }
 
 impl<S: ChainDataSource> Indexes<S> {
@@ -451,7 +461,7 @@ impl<S: ChainDataSource> Indexes<S> {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let (schema, write_buffer) = stores::schema(kind, self.network);
+        let (schema, write_buffer) = schemas::schema(kind, self.network);
         let span = crate::logging::index_component(kind.name());
         let writer = span.in_scope(|| {
             debug!("Opening from {}", crate::logging::shown_path(&config.path));
@@ -461,7 +471,7 @@ impl<S: ChainDataSource> Indexes<S> {
         let blocks = self.follower.subscribe(kind, handle.durable_view().tip(), config.queue_bytes);
         self.nfs.add(kind, handle.clone());
         self.writers.push((kind, span.clone(), Box::pin(run(writer, blocks))));
-        self.opened.push(crate::progress::Index { kind, span, dir: config.path.clone(), handle });
+        self.opened.push(OpenedIndex { kind, span, dir: config.path.clone(), handle });
         Ok(())
     }
 }
@@ -670,7 +680,7 @@ mod tests {
         config.serve.state_dir = dir.path().join("state");
         config.grpc.max_connections = NonZeroUsize::new(16).expect("non-zero");
         let status = Arc::new(DaemonStatus::new(config.network, []));
-        let booting = tokio::spawn(start_indexer(config, Arc::clone(&status)));
+        let booting = tokio::spawn(start(config, Arc::clone(&status)));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         while !status.readiness_json().1.contains("No trusted validator reachable") {

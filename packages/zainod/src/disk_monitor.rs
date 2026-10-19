@@ -2,15 +2,18 @@
 //!
 //! - per table: durable bytes + their page-cache share (cold lookups = disk reads)
 //! - per index directory: its filesystem's free + capacity
-//! - walk's total = [`walked`]
+//! - walk's total = [`walked`] (bytes by [`disk_bytes`])
 //! - process: block-device bytes read / written, time stalled on I/O (own cgroup's PSI)
 //! - unreadable source (no PSI, not Linux) = its metric left out, never a guessed zero
 
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use zaino_persistence::IndexKind;
 
-use crate::progress::Index;
+use crate::boot::OpenedIndex;
 
 mod names {
     pub(super) const COMMITTED_BYTES: &str = "zaino.disk.committed_bytes";
@@ -92,11 +95,34 @@ pub(crate) fn walked(index: &'static str, bytes: u64) {
 }
 
 /// The sampled set: each index's kind, directory and durable view now
-pub(crate) fn views(indexes: &[Index]) -> Vec<(IndexKind, PathBuf, zaino_persistence::DiskView)> {
+pub(crate) fn views(
+    indexes: &[OpenedIndex],
+) -> Vec<(IndexKind, PathBuf, zaino_persistence::DiskView)> {
     indexes
         .iter()
         .map(|index| (index.kind, index.dir.clone(), index.handle.durable_view()))
         .collect()
+}
+
+/// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
+///
+/// - file removed mid-walk = gone
+pub(crate) fn disk_bytes(path: &Path) -> io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let bytes = match entry.metadata() {
+            Ok(meta) if meta.is_dir() => disk_bytes(&entry.path()),
+            Ok(meta) => Ok(meta.len()),
+            Err(error) => Err(error),
+        };
+        match bytes {
+            Ok(bytes) => total += bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(total)
 }
 
 /// `(free, capacity)` bytes of the filesystem holding `dir` (free = what zainod may still use)
@@ -145,6 +171,20 @@ fn pressure_totals(pressure: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every file counted, nested included (missing directory = error)
+    #[test]
+    fn disk_bytes_sums_every_file_under_the_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("MANIFEST"), [0; 10]).expect("manifest");
+        std::fs::create_dir(root.path().join("by_hash")).expect("subdir");
+        std::fs::write(root.path().join("by_hash/0.seg"), [0; 4096]).expect("segment");
+        std::fs::write(root.path().join("by_hash/1.seg"), []).expect("empty segment");
+
+        assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
+        let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
 
     #[test]
     fn proc_io_reads_the_block_layer_fields() {

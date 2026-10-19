@@ -13,11 +13,10 @@ use tracing::{error, info, Instrument as _};
 use crate::cli::{Cli, Command};
 use crate::config::load_config;
 use crate::error::IndexerError;
-use crate::indexer::start_indexer;
 use crate::status::DaemonStatus;
 
 mod admin;
-mod bootstrap;
+mod boot;
 mod chainview;
 mod cli;
 mod config;
@@ -26,15 +25,15 @@ mod egress;
 mod error;
 mod fd_limit;
 mod hold;
-mod indexer;
+mod index_snapshot;
 mod logging;
 mod metrics;
 mod notify;
 mod paths;
 mod peers;
 mod progress;
+mod schemas;
 mod status;
-mod stores;
 mod utxos;
 mod verify;
 
@@ -114,10 +113,10 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
 
     if let Some(endpoint) = config.metrics.listen_address {
         let status = Arc::clone(&status);
-        logging::component("Metrics").in_scope(|| metrics::init(endpoint, status))?;
+        logging::component("Metrics").in_scope(|| admin::start(endpoint, status))?;
     }
-    // After the admin listener (`/readyz` reports the index-snapshot bootstrap inside)
-    let running = start_indexer(config, status).await.inspect_err(|error| {
+    // After the admin listener (`/readyz` reports the index-snapshot install inside)
+    let running = boot::start(config, status).await.inspect_err(|error| {
         error!(%error, "Startup failed");
     })?;
     match running.await? {

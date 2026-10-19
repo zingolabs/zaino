@@ -1,4 +1,4 @@
-//! Prometheus `/metrics` endpoint
+//! Prometheus recorder + scrape rendering
 //!
 //! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
 //!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
@@ -7,10 +7,7 @@
 //!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), registered here via their
 //!   `describe_metrics` / `METRIC_BUCKETS`
 
-use std::{net::SocketAddr, sync::Arc};
-
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
-use tracing::info;
 
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
@@ -18,11 +15,8 @@ use crate::status::DaemonStatus;
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
 
-/// Global recorder, served from [`crate::admin`] (own thread: answers however busy the workers)
-pub(crate) fn init(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
-    // - Bind first (recorder before listener = undrained samples)
-    // - Bind failure fails startup
-    let listener = crate::admin::bind(endpoint)?;
+/// Global recorder + every `# HELP` (served by [`crate::admin::start`], which binds first)
+pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
     let builder = zaino_grpc::METRIC_BUCKETS
         .iter()
         .chain(zaino_source::METRIC_BUCKETS)
@@ -38,9 +32,7 @@ pub(crate) fn init(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<()
         .map_err(|e| IndexerError::Metrics(format!("installing the recorder: {e}")))?;
 
     describe_all();
-    crate::admin::spawn(listener, handle, status)?;
-    info!(%endpoint, "Listening");
-    Ok(())
+    Ok(handle)
 }
 
 /// One scrape: `GrpcSnapshot` gauges + process sample set, rendered (blocking: walks every handle)

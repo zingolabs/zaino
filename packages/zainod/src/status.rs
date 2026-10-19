@@ -20,6 +20,7 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::admin::Heartbeat;
 use crate::egress::Egress;
+use crate::index_snapshot::SnapshotProgress;
 
 /// One process's status: config facts, then what each stage sets as it starts
 ///
@@ -32,7 +33,7 @@ pub(crate) struct DaemonStatus {
     heartbeat: Heartbeat,
     retire: Retire,
     awaiting_validator: AtomicBool,
-    bootstrap: std::sync::Mutex<Option<Bootstrap>>,
+    bootstrap: std::sync::Mutex<Option<SnapshotProgress>>,
     sources: OnceLock<Sources>,
 }
 
@@ -300,16 +301,16 @@ impl DaemonStatus {
     }
 
     /// `None` = bootstrap over (the indexer's own status takes over)
-    pub(crate) fn bootstrap(&self, progress: Option<Bootstrap>) {
+    pub(crate) fn bootstrap(&self, progress: Option<SnapshotProgress>) {
         *self.bootstrap_lock() = progress;
     }
 
     /// Poison-tolerant: the lock only guards a value swap
-    fn bootstrap_lock(&self) -> std::sync::MutexGuard<'_, Option<Bootstrap>> {
+    fn bootstrap_lock(&self) -> std::sync::MutexGuard<'_, Option<SnapshotProgress>> {
         self.bootstrap.lock().expect("bootstrap progress mutex poisoned")
     }
 
-    pub(crate) fn current_bootstrap(&self) -> Option<Bootstrap> {
+    pub(crate) fn current_bootstrap(&self) -> Option<SnapshotProgress> {
         self.bootstrap_lock().clone()
     }
 
@@ -340,30 +341,6 @@ impl zaino_grpc::Health for DaemonStatus {
     fn status(&self) -> String {
         self.public_status_json()
     }
-}
-
-/// Archive bootstrap progress, written by [`crate::bootstrap`] before the indexer boots
-///
-/// - `source` = archive host, `indexes` archives fetched, `total` = Σ their bytes
-/// - `phase` = slowest archive's, `done` = its bytes (archives past it whole)
-/// - `rate` = bytes/s (`downloading` only)
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Bootstrap {
-    pub(crate) phase: Phase,
-    pub(crate) source: String,
-    pub(crate) height: u32,
-    pub(crate) indexes: usize,
-    pub(crate) done: u64,
-    pub(crate) total: u64,
-    pub(crate) rate: Option<u64>,
-}
-
-/// Declared in pipeline order (`Ord`: earliest = slowest)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Phase {
-    Downloading,
-    Verifying,
-    Unpacking,
 }
 
 /// Public `/status` (gRPC listener): readiness + chain position + counts, safe for the open

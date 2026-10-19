@@ -17,7 +17,7 @@ use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Resp
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
@@ -69,8 +69,19 @@ fn is_fresh(age: Option<Duration>) -> bool {
     age.is_none_or(|age| age < HEARTBEAT_MAX_AGE)
 }
 
-/// Called by `metrics::init` before the recorder installs (no sample without a draining listener)
-pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
+/// Bound + serving on its own thread (answers however busy the workers)
+///
+/// - Bind first (recorder before listener = undrained samples), bind failure fails startup
+pub(crate) fn start(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
+    let listener = bind(endpoint)?;
+    let handle = crate::metrics::install_recorder()?;
+    spawn(listener, handle, status)?;
+    info!(%endpoint, "Listening");
+    Ok(())
+}
+
+/// Before the recorder installs (no sample without a draining listener)
+fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
     let listener = std::net::TcpListener::bind(endpoint).map_err(|e| {
         IndexerError::Metrics(format!("admin endpoint {endpoint} failed to bind: {e}"))
     })?;
@@ -81,7 +92,7 @@ pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, Indexe
 }
 
 /// Own thread + runtime
-pub(crate) fn spawn(
+fn spawn(
     listener: std::net::TcpListener,
     handle: PrometheusHandle,
     status: Arc<DaemonStatus>,
@@ -104,7 +115,7 @@ async fn serve(
     handle: PrometheusHandle,
     status: Arc<DaemonStatus>,
 ) {
-    // Bound before the recorder installed (`metrics::init`): this loop or a scrape drains all
+    // Bound before the recorder installed ([`start`]): this loop or a scrape drains all
     let upkeep = handle.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(UPKEEP_INTERVAL);

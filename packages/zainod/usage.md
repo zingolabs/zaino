@@ -386,7 +386,8 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
   component that logged it, and the message, padded to 30 columns when fields
   follow, so repeated lines align. Index `durable` heights and `size` are padded
   into columns (between fields, never inside a value).
-- Components: `Zainod` (lifecycle), `Metrics`, `IndexSnapshot` (the `[snapshot]` bootstrap),
+- Components: `Zainod` (lifecycle), `Metrics`, `Admin` (the `/livez` heartbeat),
+  `IndexSnapshot` (the `[snapshot]` bootstrap),
   `Traffic` (the balancer's driver), `ChainView` (polls folded, headers, peers, mempool,
   submission), `ZainoSync` (the finalized-stream follower), `ZainoNFS` (tip-path fetch and folds,
   the served tip, reorgs, sync progress), `GrpcSnapshot` (the snapshot publisher), `Grpc`, and

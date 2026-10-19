@@ -8,34 +8,23 @@
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)
 //! - the phase's blocks/s over the last two intervals (`/status` `progress.rate`)
 
-use std::{
-    collections::BTreeMap,
-    io,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use tokio::{sync::watch, time::Instant};
-use tracing::{field::display, info, warn, Span};
+use tracing::{field::display, info, warn};
 use zaino_grpc_snapshot::{GrpcSnapshots, Tips};
-use zaino_persistence::{DiskView, IndexKind};
+use zaino_persistence::DiskView;
 use zaino_primitives::display::{ByteSize, Human};
-use zaino_sync::{IndexHandle, SyncProgress};
+use zaino_sync::SyncProgress;
 use zcash_protocol::consensus::BlockHeight;
 
+use crate::boot::OpenedIndex;
+use crate::disk_monitor::disk_bytes;
 use crate::error::IndexerError;
 use crate::logging::HeightCol;
 
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 const WALK_EVERY: Duration = Duration::from_secs(120);
-
-/// One enabled index: its log component, directory and writer's handle
-pub(crate) struct Index {
-    pub(crate) kind: IndexKind,
-    pub(crate) span: Span,
-    pub(crate) dir: PathBuf,
-    pub(crate) handle: IndexHandle<DiskView>,
-}
 
 /// Last walk's bytes per index name (unreadable = absent)
 type Disk = BTreeMap<&'static str, u64>;
@@ -94,7 +83,7 @@ impl Phase {
 pub(crate) async fn run(
     grpc_snapshots: GrpcSnapshots<DiskView>,
     progress: SyncProgress,
-    indexes: Vec<Index>,
+    indexes: Vec<OpenedIndex>,
     rate: watch::Sender<Option<f64>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), IndexerError> {
@@ -186,7 +175,7 @@ fn per_second(count: u64, over: Duration) -> u64 {
 }
 
 /// Every index directory, off the runtime (an unreadable one logged here, under its component)
-async fn walk(indexes: &[Index]) -> Result<Disk, IndexerError> {
+async fn walk(indexes: &[OpenedIndex]) -> Result<Disk, IndexerError> {
     let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
     let walked = tokio::task::spawn_blocking(move || {
         dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>()
@@ -201,44 +190,9 @@ async fn walk(indexes: &[Index]) -> Result<Disk, IndexerError> {
     Ok(disk)
 }
 
-/// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
-///
-/// - file removed mid-walk = gone
-pub(crate) fn disk_bytes(path: &Path) -> io::Result<u64> {
-    let mut total = 0;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let bytes = match entry.metadata() {
-            Ok(meta) if meta.is_dir() => disk_bytes(&entry.path()),
-            Ok(meta) => Ok(meta.len()),
-            Err(error) => Err(error),
-        };
-        match bytes {
-            Ok(bytes) => total += bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every file counted, nested included (missing directory = error)
-    #[test]
-    fn disk_bytes_sums_every_file_under_the_directory() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::write(root.path().join("MANIFEST"), [0; 10]).expect("manifest");
-        std::fs::create_dir(root.path().join("by_hash")).expect("subdir");
-        std::fs::write(root.path().join("by_hash/0.seg"), [0; 4096]).expect("segment");
-        std::fs::write(root.path().join("by_hash/1.seg"), []).expect("empty segment");
-
-        assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
-        let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-    }
 
     /// - Finalized blocks first (handed, else the lowest durable tip), then the window up to best
     /// - us-west-1 restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the window
