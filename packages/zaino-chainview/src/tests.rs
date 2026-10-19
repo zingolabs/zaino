@@ -23,7 +23,7 @@ use zaino_traffic::{
     TrustedValidatorId,
 };
 use zcash_protocol::value::Zatoshis;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::bundle::OutPoint;
 
 use crate::listings::PEER_MEMPOOL_POLL;
@@ -1119,6 +1119,41 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     until("a vouches the peers' chain", || published() == Some((at_60, at_50))).await;
     until("held by a", || reader.current().held_by() == TrustedValidatorSet::at([0])).await;
     cancel.cancel();
+}
+
+/// A restart mid-outage: a unreachable from boot, the peer set at 180, our indexes' chain through
+/// 150, 30 s later
+///
+/// - own = 36 ..= 150 by hash (`CONTEXT` + 2): the peers' headers after 36 match each → anchored
+///   at 37, the peers' tip followed to 180 (finalized stays 37: nothing vouched, no quorum)
+/// - one hash not ours: never anchored (asked again every `PEER_POLL`)
+#[tokio::test(start_paused = true)]
+async fn our_own_chain_anchors_the_peers_tip_with_no_trusted_validator_answering() {
+    use zaino_header_chain::{HeaderChain, Params, CONTEXT};
+
+    let mut chain = MockChain::regtest();
+    let at_150 = chain.mine_empty(150);
+    let at_180 = chain.mine_empty(30);
+    let path = chain.blocks(at_150);
+    let own: Vec<BlockRef> = path[150 - CONTEXT - 1..].iter().map(|b| b.block_ref()).collect();
+    let mut forged = own.clone();
+    forged[65].hash = BlockHash([0xF0; 32]);
+    let rows = [("ours", own, Some((at_180, chain.at(h(37))))), ("one hash forged", forged, None)];
+    for (row, own, expected) in rows {
+        let peer_set = Arc::new(MockPeerSet::new(&chain, at_180));
+        let validator = Arc::new(chain.validator(at_180));
+        validator.reachable(&Port::ALL, false);
+        let (view, _balancer, cancel) = running(&[validator], &["a:8232"], Some(peer_set));
+        let sync =
+            view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
+        let sync = sync.with_own_chain(own);
+        let chains = sync.subscribe();
+        tokio::spawn(sync.run(cancel.clone()));
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let published = chains.borrow().clone().map(|c| (c.best(), c.finalized_tip()));
+        assert_eq!(published, expected, "{row}");
+        cancel.cancel();
+    }
 }
 
 /// a at 40 (finalized 40 once best ≥ 50), the peer set's best path above it

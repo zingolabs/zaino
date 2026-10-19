@@ -34,7 +34,7 @@ use zaino_header_chain::{
     decode_header, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected, Witness,
 };
 use zaino_primitives::types::{BlockRef, Netgroup};
-use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
+use zaino_source::{BlockLink, BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
@@ -53,6 +53,7 @@ const PEER_POLL: Duration = Duration::from_secs(5);
 /// Feeds + owns one header chain from every trusted validator (and the peer set, if any)
 ///
 /// - `published` = the chain's revision last sent
+/// - `own` = our indexes' chain by hash ([`with_own_chain`](Self::with_own_chain)), until anchored
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
@@ -61,6 +62,7 @@ pub struct HeaderSync<S> {
     published: Option<u64>,
     fetch_states: Vec<FetchState>,
     peers: Option<Peers>,
+    own: Option<Vec<BlockRef>>,
 }
 
 /// The peer path: the rules its headers meet, when it is next asked
@@ -103,12 +105,20 @@ impl<S: ChainDataSource> HeaderSync<S> {
     ) -> Self {
         let snapshots = watch::Sender::new(chain.snapshot().map(Arc::new));
         let fetch_states = vec![FetchState::default(); core.current().trusted_validators().len()];
-        Self { core, balancer, chain, snapshots, published: None, fetch_states, peers: None }
+        let (published, peers, own) = (None, None, None);
+        Self { core, balancer, chain, snapshots, published, fetch_states, peers, own }
     }
 
     /// Headers from the peer set too, each held to `params` (the balancer's peer-set member)
     pub fn with_peers(self, params: Params) -> Self {
         Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
+    }
+
+    /// Anchor with no trusted validator answering (a restart mid-outage) on our indexes' chain:
+    /// `own` = `[locator, anchor, …, durable tip]` by hash (`CONTEXT` + 2 blocks), peers' headers
+    /// each matched to our hash in turn
+    pub fn with_own_chain(self, own: Vec<BlockRef>) -> Self {
+        Self { own: Some(own), ..self }
     }
 
     /// The header chain, republished on every change (`None` = no anchor yet)
@@ -129,7 +139,10 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 let now = Instant::now();
                 match self.next_run(&view, now) {
                     Ok(run) => self.fetch(run).await,
-                    Err(_) if self.peers_due(now) => self.extend_from_peers().await,
+                    Err(_) if self.peers_due(now) => match self.chain.finalized_tip() {
+                        Some(_) => self.extend_from_peers().await,
+                        None => self.anchor_own().await,
+                    },
                     Err(retry) => {
                         let peers = self.peers.as_ref().map(|peers| peers.due);
                         let retry = retry.into_iter().chain(peers).min();
@@ -309,10 +322,37 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
     }
 
-    /// Peer path on and due, the chain anchored (a locator to ask from)
+    /// Peer path on and due, a locator to ask from (the chain anchored, or our own chain)
     fn peers_due(&self, now: Instant) -> bool {
-        let anchored = self.chain.finalized_tip().is_some();
-        anchored && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
+        let locator = self.chain.finalized_tip().is_some() || self.own.is_some();
+        locator && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
+    }
+
+    /// Peers' headers after `own[0]`, each the hash of `own[1..]` in turn → anchored at `own[1]`,
+    /// the rest inserted as trusted (our indexes folded them); else asked again after `PEER_POLL`
+    async fn anchor_own(&mut self) {
+        let Some(own) = self.own.clone() else { return };
+        if let Some(peers) = &mut self.peers {
+            peers.due = Instant::now() + PEER_POLL;
+        }
+        let asked = self.balancer.headers(HeaderAsk::Peers { locator: vec![own[0].hash] }).await;
+        let links = asked.map(|answered| answered.value).unwrap_or_default();
+        let ours = |(link, at): (Result<BlockLink, _>, &BlockRef)| {
+            let header = decode_header(&link.ok()?.header).ok()?;
+            (header.hash() == at.hash).then_some(header)
+        };
+        let headers: Vec<Header> = links.into_iter().zip(&own[1..]).map_while(ours).collect();
+        let (Some(anchor), true) = (headers.first(), headers.len() == own.len() - 1) else {
+            debug!(matched = headers.len(), "Peers short of our own chain, asked again");
+            return;
+        };
+        self.chain.anchor(anchor, own[1].height);
+        for header in &headers[1..] {
+            self.chain.insert(header).expect("our own chain: each a child of the last");
+        }
+        info!(height = u32::from(own[1].height), hash = %own[1].hash, "Header chain anchored on our own indexes");
+        self.own = None;
+        self.publish();
     }
 
     /// One peer-set answer past our best, inserted under every rule

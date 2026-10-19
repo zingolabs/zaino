@@ -17,7 +17,7 @@ use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
 
 /// Ancestors [`validate`] reads: the largest averaging window, then one more median span below it
-pub(crate) const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
+pub const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
 
 const DAMPING_FACTOR: i64 = 4;
 const MAX_ADJUST_UP_PERCENT: i64 = 16;

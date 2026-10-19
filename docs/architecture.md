@@ -73,7 +73,7 @@ counts until Zaino has checked it.
 | Need                    | Trusted validators            | Peers                                  | Check                                     |
 | ----------------------- | ----------------------------- | -------------------------------------- | ----------------------------------------- |
 | Headers                 | ✓ (`getblockheader` runs)     | ✓ (`FindHeaders`), after the anchor    | trusted: link + work; peer: every rule    |
-| Anchor (cold start)     | ✓ **only source**             | —                                      | —                                         |
+| Anchor (first sync)     | ✓ **only source**             | headers below our durable tip (restart) | each hash = the one our indexes hold     |
 | Blocks with a header    | ✓                             | ✓ (by hash)                            | hash + merkle root + coinbase height      |
 | Blocks below the headers| ✓ **only source** (by height) | —                                      | coinbase height (body trusted)            |
 | Mempool                 | ✓ (listing + fees)            | ✓ (quorum of listings)                 | txid recomputed; §5                       |
@@ -103,7 +103,10 @@ the NFS, the finalized path and the `GrpcSnapshot` publisher read.
 
 - **Anchor.** No history from genesis. With no chain, or a trusted validator so far ahead its anchor
   lies above our fetch ceiling, the tree anchors at that validator's claim − max(depth, 113) (113 =
-  the difficulty rule's context). Only a trusted validator can anchor.
+  the difficulty rule's context). With no trusted validator answering (a restart mid-outage,
+  `[p2p]` on), the indexes' own chain anchors instead: the 113 blocks below their durable tip,
+  each peer header matched to the hash the indexes hold. A first sync has no such chain: only a
+  trusted validator anchors it.
 - **Trusted headers** arrive in runs and enter on their parent link and nBits work alone: the
   validator already ran the rules.
 - **Peer headers** (`[p2p]` on, once anchored) run every consensus rule first
@@ -307,7 +310,8 @@ bench times and the API are in [its guide](../packages/zaino-traffic/usage.md).
 | one trusted validator        | ✓                                             | ✓                                      | ✓                     |
 | every trusted, `[p2p]` on    | ✓ near the tip (peers); bulk sync below the headers stalls | ✓ quorum; `GetTransaction` fails | on peers' word, else paused |
 | every trusted, `[p2p]` off   | tip stops                                     | `UNAVAILABLE`                          | paused                |
-| every trusted, at cold start | nothing (only a trusted validator anchors)    | `UNAVAILABLE`                          | —                     |
+| every trusted, restart, `[p2p]` on | ✓ anchored on the indexes' own chain, then as above | as above                  | as above              |
+| every trusted, first sync    | nothing (only a trusted validator anchors)    | `UNAVAILABLE`                          | —                     |
 | every peer                   | ✓ (trusted)                                   | ✓                                      | ✓                     |
 
 ## 11. Telemetry

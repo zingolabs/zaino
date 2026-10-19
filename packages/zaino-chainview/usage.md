@@ -74,6 +74,11 @@ a header, a witness, finality.
   validator whose claim the header chain does not hold. Anchors at claim − `anchor_below()`
   (max(depth, 113)) with no chain or that anchor past `ceiling`; otherwise extends. The run's last
   header is vouched.
+- **Own anchor** (`with_own_chain(own)`, `with_peers`): no trusted run due before any anchor (a
+  restart while every validator is down) → the peers' headers after `own[0]`, each matched to
+  `own[1..]`'s hash in turn, anchor at `own[1]` and fill the tree as trusted (our indexes folded
+  those blocks). `own` = `CONTEXT` + 2 blocks ending at the indexes' lowest durable tip (zainod
+  reads tree-state's records). A mismatch or a short answer is asked again after 5 s.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
   vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any

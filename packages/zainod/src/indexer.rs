@@ -35,21 +35,21 @@ use crate::config::network_name;
 use zaino_chainview::ChainView;
 use zaino_grpc::{AdmissionState, GrpcService, RouteDeps, Routing, Tls};
 use zaino_grpc_snapshot::Publisher;
-use zaino_header_chain::{HeaderChainSnapshot, Params};
+use zaino_header_chain::{HeaderChainSnapshot, Params, CONTEXT};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
-use zaino_index_tree_state::TreeStateIndexWriter;
+use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_index_utxo_set::UtxoSetIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::types::{Block, FinalityDepth};
+use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::{BlockchainInfo, ChainDataSource};
 use zaino_sync::{FeeSink, FinalizedFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
-use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
@@ -227,11 +227,15 @@ async fn boot_over<S: ChainDataSource>(
         balancer: wiring.balancer.clone(),
         schedule,
     };
-    pipeline(config, inputs, serving, status, cancel, tasks)?;
+    let own = pipeline(config, inputs, serving, status, cancel, tasks)?;
 
     let header_sync = match config.p2p.enabled {
         true => viewed.header_sync.with_peers(Params::for_network(config.network, &schedule)),
         false => viewed.header_sync,
+    };
+    let header_sync = match own {
+        Some(own) => header_sync.with_own_chain(own),
+        None => header_sync,
     };
     let run = header_sync.run(cancel.child_token());
     spawn_infallible(tasks, "header-sync", chainview_span.clone(), run);
@@ -267,7 +271,7 @@ struct Inputs<S: ChainDataSource> {
 }
 
 /// The NFS, every enabled index's writer, the `GrpcSnapshot` publisher, the gRPC routes:
-/// [`open_indexes`], then [`run_pipeline`] (an `Err` = nothing of it spawned)
+/// [`open_indexes`], then [`run_pipeline`] (an `Err` = nothing of it spawned) → [`own_chain`]
 fn pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
     inputs: Inputs<S>,
@@ -275,10 +279,26 @@ fn pipeline<S: ChainDataSource>(
     status: &DaemonStatus,
     cancel: &CancellationToken,
     tasks: &mut JoinSet<TaskExit>,
-) -> Result<(), IndexerError> {
+) -> Result<Option<Vec<BlockRef>>, IndexerError> {
     let indexes = open_indexes(config, &inputs)?;
+    let own = own_chain(&indexes.opened);
     run_pipeline(config, indexes, inputs, serving, status, cancel, tasks);
-    Ok(())
+    Ok(own)
+}
+
+/// The indexes' chain at their lowest durable tip, by hash: `CONTEXT` + 2 blocks from
+/// tree-state's records (`None` = tree-state off, or fewer blocks held)
+fn own_chain(opened: &[crate::progress::Index]) -> Option<Vec<BlockRef>> {
+    let tips = opened.iter().map(|index| index.handle.durable_view().tip());
+    let tip = tips.min_by_key(|tip| tip.map(|tip| tip.height))??;
+    let tree_state = opened.iter().find(|index| index.kind == IndexKind::TreeState)?;
+    let reader = TreeStateReader::new(tree_state.handle.durable_view());
+    let from = u32::from(tip.height).checked_sub(CONTEXT as u32 + 1)?;
+    let at = |height: u32| {
+        let height = BlockHeight::from(height);
+        reader.treestate(height).ok().map(|state| BlockRef { hash: state.block_hash, height })
+    };
+    (from..=u32::from(tip.height)).map(at).collect()
 }
 
 /// Every enabled index opened, subscribed to the finalized stream, added to the NFS
