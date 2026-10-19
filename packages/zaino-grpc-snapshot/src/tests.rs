@@ -22,8 +22,8 @@ use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;
 
-use crate::compose::check;
-use crate::feed::Feed;
+use crate::invariants::check;
+use crate::mempool_feed::Feed;
 use crate::publisher::Core;
 use crate::{
     describe_metrics, emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,

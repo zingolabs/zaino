@@ -2,17 +2,19 @@
 #![forbid(unsafe_code)]
 
 mod compose;
-mod feed;
 mod grpc_snapshot;
+mod mempool_feed;
 mod publisher;
 mod report;
 
 #[cfg(test)]
-mod model;
+mod invariants;
+#[cfg(test)]
+mod model_tests;
 #[cfg(test)]
 mod tests;
 
-pub use feed::{Logged, MempoolTail};
 pub use grpc_snapshot::{GrpcSnapshot, Lightd, ServingStatus, Tips, Unavailable};
+pub use mempool_feed::{Logged, MempoolTail};
 pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
 pub use report::{describe_metrics, emit_gauges, notes};

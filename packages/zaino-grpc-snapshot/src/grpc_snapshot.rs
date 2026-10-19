@@ -12,7 +12,7 @@ use zcash_protocol::consensus::{target_spacing, BlockHeight};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
 
-use crate::feed::{Feed, MempoolTail};
+use crate::mempool_feed::{Feed, MempoolTail};
 
 /// Best blocks past the last vouched one before no trusted validator vouches for the tip (a peer's
 /// block one poll ahead of every validator = the race a poll closes)

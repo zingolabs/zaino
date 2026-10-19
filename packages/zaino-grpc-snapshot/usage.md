@@ -105,19 +105,19 @@ emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then rend
 | ID | Invariant | Where |
 | --- | --- | --- |
 | G1 | a request or stream reads one `GrpcSnapshot` (routes get `&GrpcSnapshot` / `&IndexesAtBlock`, never the handle) | types; route tests |
-| G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
-| G3 | `best`, `finalized_tip` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
-| G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |
-| G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
-| G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
+| G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `invariants::check`; model |
+| G3 | `best`, `finalized_tip` = `chain()`'s; `served` = the NFS's | `invariants::check`; model |
+| G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `invariants::check`; model |
+| G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `invariants::check`; model |
+| G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | `invariants::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
 | G8 | every NFS node on best or a side branch the chain holds (`HeaderChainSnapshot::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
-| G10 | an epoch carries no txid of a block in `served_above_durable()` | `compose::check`; model |
+| G10 | an epoch carries no txid of a block in `served_above_durable()` | `invariants::check`; model |
 
-`compose::check(prev, next, depth)` is test-only: the model calls it after every publish.
+`invariants::check(prev, next, depth)` is test-only: the model calls it after every publish.
 
-- `model.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
+- `model_tests.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails
   opened at random, against naive tips and per-epoch transaction sets.
 - `tests.rs`: the run loop over real watches (seq 0, coalescing, cancel, a gone NFS); the

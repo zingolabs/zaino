@@ -269,7 +269,7 @@ fn run(moves: Vec<(Input, bool)>) {
             let expected = model.publish();
             seq += 1;
             let grpc_snapshot = handle.load();
-            crate::compose::check(&prev, &grpc_snapshot, DEPTH);
+            crate::invariants::check(&prev, &grpc_snapshot, DEPTH);
             assert_eq!(
                 (grpc_snapshot.seq(), grpc_snapshot.tips()),
                 (seq, expected),
@@ -290,7 +290,7 @@ fn run(moves: Vec<(Input, bool)>) {
                     tails.push(Tailed { tail, epoch, received, ended: false });
                 }
                 Err(refused) => {
-                    let read = crate::compose::mempool_read(&grpc_snapshot);
+                    let read = crate::invariants::mempool_read(&grpc_snapshot);
                     assert!(!read, "{context}: G6 a read mempool refused a stream: {refused}");
                 }
             }

@@ -20,8 +20,8 @@ use zaino_nfs::{NfsPublication, Published};
 use zaino_primitives::types::FinalityDepth;
 
 use crate::compose::compose;
-use crate::feed::{above_durable_txids, Feed};
 use crate::grpc_snapshot::GrpcSnapshot;
+use crate::mempool_feed::{above_durable_txids, Feed};
 use crate::report::transitions;
 
 #[derive(Debug, thiserror::Error)]
