@@ -114,7 +114,8 @@ no progress (see [running.md](./running.md#stream-time-limits)).
 | nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
 | work-stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                | `UNAVAILABLE`        | retry after the hint                                                   |
 | no verified tip, or neither a trusted validator holding it nor a peer quorum (mempool methods)      | `UNAVAILABLE`        | back off and retry                                                     |
-| validator unreachable (`GetTransaction`, `SendTransaction`)                                         | `UNAVAILABLE`        | back off and retry                                                     |
+| no validator answering, txid neither in the served mempool nor in a peer's block (tx bytes methods) | `UNAVAILABLE`        | back off and retry (absence unprovable without a validator)            |
+| `SendTransaction` neither admitted by a validator nor listed by a peer quorum                       | `UNAVAILABLE`        | back off and retry                                                     |
 | stream with nothing to send for `silent_timeout_secs` (not `GetMempoolStream`)                      | `UNAVAILABLE`        | retry                                                                  |
 | index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED`      | never retry                                                            |
 | height, hash or txid not in the chain, or above the answering index's tip                           | `NOT_FOUND`          | ask for something else                                                 |
