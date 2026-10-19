@@ -429,4 +429,4 @@ fn earliest(wake: &mut Option<Instant>, at: Instant) {
 #[cfg(test)]
 mod fire_drills;
 #[cfg(test)]
-mod model;
+mod model_tests;

@@ -157,7 +157,7 @@ its oracle checks T3 and T6 on every send.
   let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
   ```
 
-- `core/model.rs` (proptest): members `Honest`, `Slow`, `Lying`, `Lagging`, `Flapping`, `Down`,
+- `core/model_tests.rs` (proptest): members `Honest`, `Slow`, `Lying`, `Lagging`, `Flapping`, `Down`,
   `Silent`, the peer set present or not; random asks, abandons, reports, clock advances against an
   oracle with its own lanes and permits. A bound matrix pins each class's end time to its hedge
   floor + one round.
