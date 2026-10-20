@@ -6477,6 +6477,8 @@ dependencies = [
  "zaino-indexes",
  "zaino-lightserve",
  "zaino-logging",
+ "zaino-mempool",
+ "zaino-mempool-service",
  "zaino-noderpc",
  "zaino-persistence",
  "zaino-persistence-codec",

@@ -26,6 +26,7 @@ mod boot;
 pub mod config;
 pub mod deployment;
 mod health;
+pub mod mempool;
 mod orchestra;
 mod plan;
 mod run;

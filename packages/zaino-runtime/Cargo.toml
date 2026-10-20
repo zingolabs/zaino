@@ -27,6 +27,10 @@ serde = { workspace = true, features = ["derive"] }
 zaino-backend-lmdb = { workspace = true }
 zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
+# The mempool read model this runtime supervises, and the ports it is read
+# through.
+zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
+zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-consensus = { workspace = true }
 zaino-core = { path = "../zaino-core" }
 zaino-indexer = { path = "../zaino-indexer" }
