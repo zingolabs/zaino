@@ -7,7 +7,9 @@
 //!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), described here via their
 //!   `describe_metrics`
 //! - Every histogram native (exponential buckets, range rescales itself) = protobuf scrapes only
-//! - zebra-network's series carry no peer identity ([`WithoutPeerIdentity`])
+//! - zebra-network's series = a high-level few, no peer identity ([`ZebraNetworkSummary`])
+
+use std::borrow::Cow;
 
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Label, Metadata, Recorder, SharedString, Unit,
@@ -63,44 +65,57 @@ pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
 ///
 /// - every histogram native (empty prefix = every metric name, zebra-network's included)
 pub(crate) fn recorder(
-) -> Result<(WithoutPeerIdentity<PrometheusRecorder>, PrometheusHandle), IndexerError> {
+) -> Result<(ZebraNetworkSummary<PrometheusRecorder>, PrometheusHandle), IndexerError> {
     let native = NativeHistogramConfig::new(BUCKET_FACTOR, MAX_BUCKETS, 0.0)
         .map_err(|e| IndexerError::Metrics(format!("native histogram config: {e}")))?;
     let recorder = PrometheusBuilder::new()
         .set_native_histogram_for_metric(Matcher::Prefix(String::new()), native)
         .build_recorder();
     let handle = recorder.handle();
-    Ok((WithoutPeerIdentity(recorder), handle))
+    Ok((ZebraNetworkSummary(recorder), handle))
 }
 
-/// zebra-network's metrics minus who the peer is (its address, or free text it chose: unbounded
-/// series, third-party IPs shipped to wherever the scrape goes)
+/// zebra-network's metrics cut to [`ZEBRA_NETWORK_KEPT`], minus who the peer is (its address, or
+/// free text it chose: unbounded series, third-party IPs shipped to wherever the scrape goes)
 ///
-/// - counter / histogram: [`PEER_LABELS`] dropped (one total per remaining label set)
-/// - gauge with one: dropped whole (one peer's reading: its version, its connection's state;
-///   never a sum)
-pub(crate) struct WithoutPeerIdentity<R>(R);
+/// - kept series: [`PEER_LABELS`] dropped (counters = one total per remaining label set)
+/// - every other zebra-network series = noop handle (per-peer debug, no fleet signal)
+pub(crate) struct ZebraNetworkSummary<R>(R);
 
-/// zebra-network's metric name prefixes (zaino's own carry no peer identity)
-const PEER_METRICS: [&str; 2] = ["zcash.net.", "zebra.net."];
+/// zebra-network's metric namespaces (zaino's own = `zaino.` / `process_`)
+const ZEBRA_NETWORK: [&str; 6] =
+    ["zcash.net.", "zebra.net.", "candidate_set.", "crawler.", "peer.", "pool."];
+
+const ZEBRA_NETWORK_KEPT: [&str; 6] = [
+    "zcash.net.peers",
+    "zcash.net.in.messages",
+    "zcash.net.out.messages",
+    "zcash.net.connection.outcomes.total",
+    "pool.num_ready",
+    "pool.num_unready",
+];
 
 const PEER_LABELS: [&str; 6] =
     ["addr", "remote_ip", "user_agent", "remote_version", "remote_services", "error"];
 
-/// `Some` = `key` minus its peer labels (`None` = had none)
-fn without_peer(key: &Key) -> Option<Key> {
-    if !PEER_METRICS.iter().any(|prefix| key.name().starts_with(prefix)) {
+/// `key` as exported (`None` = dropped zebra-network series)
+fn exported(key: &Key) -> Option<Cow<'_, Key>> {
+    let name = key.name();
+    if !ZEBRA_NETWORK.iter().any(|prefix| name.starts_with(prefix)) {
+        return Some(Cow::Borrowed(key));
+    }
+    if !ZEBRA_NETWORK_KEPT.contains(&name) {
         return None;
     }
     let peer = |label: &Label| PEER_LABELS.contains(&label.key());
     if !key.labels().any(peer) {
-        return None;
+        return Some(Cow::Borrowed(key));
     }
     let kept: Vec<Label> = key.labels().filter(|label| !peer(label)).cloned().collect();
-    Some(Key::from_parts(key.name().to_owned(), kept))
+    Some(Cow::Owned(Key::from_parts(name.to_owned(), kept)))
 }
 
-impl<R: Recorder> Recorder for WithoutPeerIdentity<R> {
+impl<R: Recorder> Recorder for ZebraNetworkSummary<R> {
     fn describe_counter(&self, key: KeyName, unit: Option<Unit>, description: SharedString) {
         self.0.describe_counter(key, unit, description);
     }
@@ -114,18 +129,15 @@ impl<R: Recorder> Recorder for WithoutPeerIdentity<R> {
     }
 
     fn register_counter(&self, key: &Key, metadata: &Metadata<'_>) -> Counter {
-        self.0.register_counter(&without_peer(key).unwrap_or_else(|| key.clone()), metadata)
+        exported(key).map_or_else(Counter::noop, |key| self.0.register_counter(&key, metadata))
     }
 
     fn register_gauge(&self, key: &Key, metadata: &Metadata<'_>) -> Gauge {
-        match without_peer(key) {
-            Some(_) => Gauge::noop(),
-            None => self.0.register_gauge(key, metadata),
-        }
+        exported(key).map_or_else(Gauge::noop, |key| self.0.register_gauge(&key, metadata))
     }
 
     fn register_histogram(&self, key: &Key, metadata: &Metadata<'_>) -> Histogram {
-        self.0.register_histogram(&without_peer(key).unwrap_or_else(|| key.clone()), metadata)
+        exported(key).map_or_else(Histogram::noop, |key| self.0.register_histogram(&key, metadata))
     }
 }
 
@@ -171,21 +183,30 @@ pub(crate) fn describe_all() {
 mod tests {
     /// zebra-network's emissions (its own label shapes) through zainod's recorder:
     ///
-    /// - counters keep every other label, peers summed (2 addresses → one total per command)
-    /// - per-peer gauges gone, aggregate gauges + zaino's own labels untouched
+    /// - kept series keep every other label, peers summed (2 addresses → one total per command)
+    /// - every other zebra-network series gone, zaino's own labels untouched
     /// - no peer address or user agent anywhere in the scrape
     #[test]
-    fn zebra_network_series_carry_no_peer_identity() {
+    fn zebra_network_keeps_its_summary_series_without_peer_identity() {
         let (recorder, rendered) = super::recorder().expect("native config is valid");
         metrics::with_local_recorder(&recorder, || {
             for addr in ["203.0.113.7:8233", "198.51.100.2:8233"] {
                 metrics::counter!("zcash.net.out.messages", "command" => "ping", "addr" => addr)
                     .increment(2);
+                metrics::counter!("zcash.net.in.messages", "command" => "pong", "addr" => addr)
+                    .increment(1);
+                metrics::counter!(
+                    "zcash.net.connection.outcomes.total",
+                    "network" => "Mainnet",
+                    "direction" => "outbound",
+                    "address_family" => "ipv6",
+                    "stage" => "handshake",
+                    "outcome" => "success",
+                )
+                .increment(1);
                 metrics::counter!(
                     "zcash.net.peers.connected",
                     "remote_ip" => addr,
-                    "remote_version" => "170150",
-                    "negotiated_version" => "170150",
                     "user_agent" => "/Zebra:6.2.3/",
                 )
                 .increment(1);
@@ -193,10 +214,16 @@ mod tests {
                     .set(170150.0);
                 metrics::gauge!("zebra.net.connection.state", "command" => "AwaitingRequest", "addr" => addr)
                     .increment(1.0);
+                metrics::histogram!("zcash.net.peer.handshake.duration_seconds", "addr" => addr)
+                    .record(0.2);
             }
-            metrics::counter!("zcash.net.peers.cache", "cache" => "/var/lib/zainod/peers", "remote_ip" => "192.0.2.1:8233")
+            metrics::counter!("zcash.net.peers.cache", "remote_ip" => "192.0.2.1:8233")
                 .increment(1);
+            metrics::gauge!("candidate_set.pending").set(7.0);
+            metrics::counter!("peer.canceled").increment(1);
             metrics::gauge!("zcash.net.peers", "network" => "Mainnet").set(2.0);
+            metrics::gauge!("pool.num_ready", "network" => "Mainnet").set(2.0);
+            metrics::gauge!("pool.num_unready", "network" => "Mainnet").set(0.0);
             metrics::counter!("zaino.test.total", "addr" => "kept: not zebra-network's")
                 .increment(1);
         });
@@ -204,9 +231,11 @@ mod tests {
         let scrape = rendered.render();
         let missing: Vec<&str> = [
             r#"zcash_net_out_messages{command="ping"} 4"#,
-            r#"zcash_net_peers_connected{negotiated_version="170150"} 2"#,
-            r#"zcash_net_peers_cache{cache="/var/lib/zainod/peers"} 1"#,
+            r#"zcash_net_in_messages{command="pong"} 2"#,
+            r#"zcash_net_connection_outcomes_total{network="Mainnet",direction="outbound",address_family="ipv6",stage="handshake",outcome="success"} 2"#,
             r#"zcash_net_peers{network="Mainnet"} 2"#,
+            r#"pool_num_ready{network="Mainnet"} 2"#,
+            r#"pool_num_unready{network="Mainnet"} 0"#,
             r#"zaino_test_total{addr="kept: not zebra-network's"} 1"#,
         ]
         .into_iter()
@@ -218,8 +247,11 @@ mod tests {
             "198.51.100.2",
             "192.0.2.1",
             "Zebra:6.2.3",
-            "version_connected",
-            "connection_state",
+            "zcash_net_peers_",
+            "zebra_net",
+            "handshake_duration",
+            "candidate_set",
+            "peer_canceled",
         ];
         let leaked: Vec<_> = leaked.into_iter().filter(|needle| scrape.contains(needle)).collect();
         assert!(leaked.is_empty(), "{leaked:?} in:\n{scrape}");

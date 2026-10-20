@@ -18,10 +18,10 @@ use std::{
 use super::{
     dir::SegmentDir,
     layout::Shape,
-    policy::{behind, merge_candidates, stall_at, tier_of, tier_shape},
+    policy::{behind, merge_candidates, tier_of},
     reader::SegmentsView,
     slots::Slots,
-    telemetry::{self, Series},
+    telemetry::{self, IndexShare, Series},
     writer::{Merged, SegmentWriter},
     Fanout, Result, SegmentMeta,
 };
@@ -46,7 +46,7 @@ pub(crate) struct SegmentSet {
     segments: Vec<SegmentMeta>,
     staged: Option<Staged>,
     merges: Vec<Merge>,
-    shape_tiers: usize,
+    share: IndexShare,
 }
 
 /// List awaiting the owner's manifest + merge inputs it no longer lists + merges it lands
@@ -97,9 +97,10 @@ impl SegmentSet {
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
             .max()
             .unwrap_or(0);
+        let series = Series { index: index.name(), table: table.name };
         let mut set = Self {
             writer: SegmentWriter::new(dir, shape),
-            series: Series { index: index.name(), table: table.name },
+            series,
             segments_view,
             fanout,
             slots,
@@ -107,9 +108,8 @@ impl SegmentSet {
             segments: listed.to_vec(),
             staged: None,
             merges: Vec::new(),
-            shape_tiers: 0,
+            share: IndexShare::opened(series),
         };
-        telemetry::opened(set.series, stall_at(fanout));
         set.launch_merges()?;
         Ok(set)
     }
@@ -143,7 +143,6 @@ impl SegmentSet {
         let id = self.allocate();
         if let Some(segment) = self.writer.write(id, rows)? {
             self.writer.dir().sync()?;
-            telemetry::batched(self.series, &segment);
             staged.segments.push(segment);
         }
 
@@ -194,13 +193,10 @@ impl SegmentSet {
         }
     }
 
-    /// Every tier up to the highest ever published (emptied tier re-sent as zero)
+    /// The map's share of its index's gauges: listed segments, running merges, live keys
     fn publish_shape(&mut self) {
-        let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
-        let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
-        self.shape_tiers = shape.len();
         let live_rows = self.segments.iter().map(SegmentMeta::live).sum();
-        telemetry::shape(self.series, &shape, live_rows);
+        self.share.report(self.segments.len(), self.merges.len(), live_rows);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
@@ -228,7 +224,7 @@ impl SegmentSet {
                 };
                 writer.dir().sync()?;
                 let took = started.elapsed();
-                telemetry::merged(series, tier, &merged, took);
+                telemetry::merged(series, &merged, took);
                 Ok(Some((merged, took)))
             }
         })?;

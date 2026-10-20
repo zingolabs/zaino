@@ -132,41 +132,64 @@ fn a_tombstone_in_a_map_without_deletes_panics() {
     let _ = set.batch(vec![(&[0; 12], None)]);
 }
 
-/// - open publishes every `zaino_lsm_*` series of the map at zero (absent ≠ nothing happened yet)
+/// - open publishes every `zaino_lsm_*` series of the index at zero (absent ≠ nothing happened yet)
+/// - an index's maps sum into one series per metric, a dropped map's share withdrawn
 #[test]
-fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
+fn an_index_s_maps_sum_into_one_series_and_a_dropped_map_withdraws_its_share() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let rendered = recorder.handle();
     let _recording = metrics::set_default_local_recorder(&recorder);
-
     let fs = SimFs::new();
-    fs.create_dir_all(Path::new("/m")).expect("dir");
-    SegmentSet::open(
-        fs,
-        Path::new("/m"),
-        IndexKind::TransparentAddress,
-        &scanned(),
-        &[],
-        FANOUT,
-        Arc::new(Slots::new(4, u64::MAX)),
-    )
-    .expect("open");
+    let open = |dir: &str| {
+        fs.create_dir_all(Path::new(dir)).expect("dir");
+        SegmentSet::open(
+            fs.clone(),
+            Path::new(dir),
+            IndexKind::TransparentAddress,
+            &scanned(),
+            &[],
+            FANOUT,
+            Arc::new(Slots::new(4, u64::MAX)),
+        )
+        .expect("open")
+    };
+    let scraped = |expected: &[&str]| {
+        let scrape = rendered.render();
+        for line in expected {
+            assert!(scrape.lines().any(|scraped| scraped == *line), "{line:?} not in:\n{scrape}");
+        }
+        assert!(!scrape.contains("table="), "per-map label leaked:\n{scrape}");
+    };
 
-    let scrape = rendered.render();
-    let expected = [
-        "zaino_lsm_stall_at{index=\"transparent_address\",table=\"scanned\"} 6",
-        "zaino_lsm_live_rows{index=\"transparent_address\",table=\"scanned\"} 0",
-        "zaino_lsm_batch_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
-        "zaino_lsm_merge_rows_total{index=\"transparent_address\",table=\"scanned\"} 0",
-        "zaino_lsm_merge_bytes_total{index=\"transparent_address\",table=\"scanned\"} 0",
-        "zaino_lsm_merge_cancelled_total{index=\"transparent_address\",table=\"scanned\"} 0",
-        "zaino_lsm_merge_duration_seconds_count{index=\"transparent_address\",table=\"scanned\",\
-         tier=\"0\"} 0",
-        "zaino_lsm_stall_duration_seconds_count{index=\"transparent_address\",table=\"scanned\"} 0",
-    ];
-    for line in expected {
-        assert!(scrape.lines().any(|scraped| scraped == line), "{line:?} not in:\n{scrape}");
+    let mut first = open("/a");
+    let mut second = open("/b");
+    scraped(&[
+        "zaino_lsm_segments{index=\"transparent_address\"} 0",
+        "zaino_lsm_merging{index=\"transparent_address\"} 0",
+        "zaino_lsm_live_rows{index=\"transparent_address\"} 0",
+        "zaino_lsm_merge_bytes_total{index=\"transparent_address\"} 0",
+        "zaino_lsm_merge_duration_seconds_count{index=\"transparent_address\"} 0",
+        "zaino_lsm_stall_duration_seconds_count{index=\"transparent_address\"} 0",
+    ]);
+
+    // one segment of 1 key in `first`, one of 2 keys in `second`
+    for (set, rows) in [
+        (&mut first, vec![scanned_row(1, 0)]),
+        (&mut second, vec![scanned_row(2, 0), scanned_row(2, 1)]),
+    ] {
+        set.batch(borrowed(&rows)).expect("batch");
+        set.on_manifest_durable().expect("manifest");
     }
+    scraped(&[
+        "zaino_lsm_segments{index=\"transparent_address\"} 2",
+        "zaino_lsm_live_rows{index=\"transparent_address\"} 3",
+    ]);
+
+    drop(second);
+    scraped(&[
+        "zaino_lsm_segments{index=\"transparent_address\"} 1",
+        "zaino_lsm_live_rows{index=\"transparent_address\"} 1",
+    ]);
 }
 
 /// - retain removes unlisted segments (+ checksums) + any writer's scratch

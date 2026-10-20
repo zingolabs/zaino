@@ -1,6 +1,6 @@
 //! What the disk is doing to zainod: one sample per progress tick, as metrics
 //!
-//! - per table: durable bytes + their page-cache share (cold lookups = disk reads)
+//! - per index (tables summed): durable bytes + their page-cache share (cold lookups = disk reads)
 //! - per index directory: its filesystem's free + capacity
 //! - walk's total = [`walked`] (bytes by [`disk_bytes`])
 //! - process: block-device bytes read / written
@@ -31,12 +31,12 @@ pub(crate) fn describe_metrics() {
     describe_gauge!(
         names::COMMITTED_BYTES,
         Unit::Bytes,
-        "Committed data per table (records + rows as stored), by index and table"
+        "Committed data (records + rows as stored), by index"
     );
     describe_gauge!(
         names::CACHED_BYTES,
         Unit::Bytes,
-        "Committed bytes in page cache (rest = a disk read on first touch), by index and table"
+        "Committed bytes in page cache (rest = a disk read on first touch), by index"
     );
     describe_gauge!(
         names::BYTES,
@@ -57,12 +57,12 @@ pub(crate) fn describe_metrics() {
 pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView)]) {
     for (kind, dir, view) in indexes {
         let index = kind.name();
-        for table in view.footprint() {
-            let labels = [("index", index), ("table", table.table)];
-            metrics::gauge!(names::COMMITTED_BYTES, &labels).set(table.bytes as f64);
-            if let Some(cached) = table.cached {
-                metrics::gauge!(names::CACHED_BYTES, &labels).set(cached as f64);
-            }
+        let footprint = view.footprint();
+        let committed: u64 = footprint.iter().map(|table| table.bytes).sum();
+        metrics::gauge!(names::COMMITTED_BYTES, "index" => index).set(committed as f64);
+        // one unreadable table = no total (a partial sum would read as cache loss)
+        if let Some(cached) = footprint.iter().map(|table| table.cached).sum::<Option<u64>>() {
+            metrics::gauge!(names::CACHED_BYTES, "index" => index).set(cached as f64);
         }
         if let Some((free, capacity)) = space(dir) {
             metrics::gauge!(names::FREE_BYTES, "index" => index).set(free as f64);

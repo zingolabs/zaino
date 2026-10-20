@@ -1,7 +1,7 @@
-//! LSM metrics (labelled `index` = the store's index kind, `table` = the map's name) + operator
-//! log lines
+//! LSM metrics, labelled `index` only (every map of an index summed: tree_state's per-level maps =
+//! one series each) + operator log lines (per map)
 //!
-//! - write amplification = `merge_rows_total / batch_rows_total`
+//! - write amplification = `merge_bytes_total / zaino_store_commit_bytes_total` (both per index)
 //! - every merge = DEBUG: `Compacting segments` at launch, `Compacted segments` once the manifest
 //!   listing its output is durable (routine: bulk sync lands several a second)
 //! - commit waiting on a merge = WARN (go-ethereum "Database compacting, degraded performance")
@@ -17,11 +17,7 @@ mod metric_names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
     pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
     pub(super) const MERGING: &str = "zaino.lsm.merging";
-    pub(super) const STALL_AT: &str = "zaino.lsm.stall_at";
-    pub(super) const BATCH_ROWS_TOTAL: &str = "zaino.lsm.batch_rows_total";
-    pub(super) const MERGE_ROWS_TOTAL: &str = "zaino.lsm.merge_rows_total";
     pub(super) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
-    pub(super) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
     pub(super) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
     pub(super) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
 }
@@ -32,51 +28,32 @@ pub(crate) fn describe_metrics() {
 
     describe_gauge!(
         metric_names::SEGMENTS,
-        "Committed segments a read searches, by index, table and size tier (⌊log_fanout rows⌋)"
+        "Committed segments, summed over the index's maps (a read searches its map's)"
     );
     describe_gauge!(
         metric_names::LIVE_ROWS,
-        "Keys the committed segments hold, by index and table (a `deletes()` table: values minus \
-         tombstones, each cancelling one older value)"
+        "Keys the committed segments hold, summed over the index's maps (a `deletes()` map: \
+         values minus tombstones)"
     );
-    describe_gauge!(
-        metric_names::MERGING,
-        "1 = a background merge of this size tier is running, by index, table and tier"
-    );
-    describe_gauge!(
-        metric_names::STALL_AT,
-        "Segments a merging tier may list before a commit waits on its merge, by index and table"
-    );
-    describe_counter!(
-        metric_names::BATCH_ROWS_TOTAL,
-        "Rows written as new segments by commits, by index and table"
-    );
-    describe_counter!(
-        metric_names::MERGE_ROWS_TOTAL,
-        "Rows rewritten by finished background merges, by index and table"
-    );
+    describe_gauge!(metric_names::MERGING, "Background merges running, by index");
     describe_counter!(
         metric_names::MERGE_BYTES_TOTAL,
         Unit::Bytes,
-        "Segment bytes written by finished background merges, by index and table"
-    );
-    describe_counter!(
-        metric_names::MERGE_CANCELLED_TOTAL,
-        "Key value + tombstone pairs dropped by finished background merges, by index and table"
+        "Segment bytes written by finished background merges, by index"
     );
     describe_histogram!(
         metric_names::MERGE_DURATION_SECONDS,
         Unit::Seconds,
-        "One background merge, read through sealed and linked, by index, table and input tier"
+        "One background merge, read through sealed and linked, by index"
     );
     describe_histogram!(
         metric_names::STALL_DURATION_SECONDS,
         Unit::Seconds,
-        "Commit time spent waiting on a merge that fell two windows behind, by index and table"
+        "Commit time spent waiting on a merge that fell two windows behind, by index"
     );
 }
 
-/// One map's label values (table names repeat across indexes: `index` keeps series apart)
+/// One map's names (`index` = the metric label; `table` = log lines only)
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Series {
     pub(super) index: &'static str,
@@ -84,62 +61,66 @@ pub(super) struct Series {
 }
 
 impl Series {
-    fn labels(self) -> [(&'static str, String); 2] {
-        [("index", self.index.to_owned()), ("table", self.table.to_owned())]
-    }
-
-    fn tier_labels(self, tier: impl ToString) -> [(&'static str, String); 3] {
-        let [index, table] = self.labels();
-        [index, table, ("tier", tier.to_string())]
+    fn labels(self) -> [(&'static str, &'static str); 1] {
+        [("index", self.index)]
     }
 }
 
-/// Per tier `0..shape.len()`: `(segments listed, merge running)`, then the map's live keys
+/// One map's share of its index's gauges, sent as the change since its last report (an index's
+/// maps share each series: a `set` would keep only the last map's), withdrawn on drop
 ///
-/// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
-pub(super) fn shape(series: Series, shape: &[(usize, bool)], live_rows: i64) {
-    metrics::gauge!(metric_names::LIVE_ROWS, &series.labels()).set(live_rows as f64);
-    for (tier, &(segments, merging)) in shape.iter().enumerate() {
-        let labels = series.tier_labels(tier);
-        metrics::gauge!(metric_names::SEGMENTS, &labels).set(segments as f64);
-        metrics::gauge!(metric_names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
+/// - built at open: every series of the index registered (absent on /metrics = not built, never
+///   "nothing yet")
+pub(super) struct IndexShare {
+    series: Series,
+    segments: usize,
+    merging: usize,
+    live_rows: i64,
+}
+
+impl IndexShare {
+    pub(super) fn opened(series: Series) -> Self {
+        let labels = series.labels();
+        metrics::counter!(metric_names::MERGE_BYTES_TOTAL, &labels).increment(0);
+        let _ = metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &labels);
+        let _ = metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &labels);
+        let share = Self { series, segments: 0, merging: 0, live_rows: 0 };
+        share.add(0.0, 0.0, 0.0);
+        share
+    }
+
+    /// The map's listed segments, its running merges, its live keys
+    pub(super) fn report(&mut self, segments: usize, merging: usize, live_rows: i64) {
+        self.add(
+            segments as f64 - self.segments as f64,
+            merging as f64 - self.merging as f64,
+            (live_rows - self.live_rows) as f64,
+        );
+        (self.segments, self.merging, self.live_rows) = (segments, merging, live_rows);
+    }
+
+    fn add(&self, segments: f64, merging: f64, live_rows: f64) {
+        let labels = self.series.labels();
+        metrics::gauge!(metric_names::SEGMENTS, &labels).increment(segments);
+        metrics::gauge!(metric_names::MERGING, &labels).increment(merging);
+        metrics::gauge!(metric_names::LIVE_ROWS, &labels).increment(live_rows);
     }
 }
 
-/// Every per-map series registered at open (absent on /metrics = not built, never "nothing yet")
-///
-/// - merge histogram registered at tier 0 (first tier to merge)
-pub(super) fn opened(series: Series, stall_at: usize) {
-    let labels = series.labels();
-    metrics::gauge!(metric_names::STALL_AT, &labels).set(stall_at as f64);
-    for counter in [
-        metric_names::BATCH_ROWS_TOTAL,
-        metric_names::MERGE_ROWS_TOTAL,
-        metric_names::MERGE_BYTES_TOTAL,
-        metric_names::MERGE_CANCELLED_TOTAL,
-    ] {
-        metrics::counter!(counter, &labels).increment(0);
+impl Drop for IndexShare {
+    fn drop(&mut self) {
+        self.report(0, 0, 0);
     }
-    let _ = metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &series.tier_labels(0));
-    let _ = metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &labels);
 }
 
-pub(super) fn batched(series: Series, segment: &SegmentMeta) {
-    metrics::counter!(metric_names::BATCH_ROWS_TOTAL, &series.labels()).increment(segment.records);
-}
-
-/// `tier` = the inputs' tier (output lands one above)
-pub(super) fn merged(series: Series, tier: u32, merged: &Merged, took: Duration) {
+pub(super) fn merged(series: Series, merged: &Merged, took: Duration) {
     let labels = series.labels();
-    let (rows, bytes) = merged.output.map_or((0, 0), |output| (output.records, output.sealed.len));
-    metrics::counter!(metric_names::MERGE_ROWS_TOTAL, &labels).increment(rows);
+    let bytes = merged.output.map_or(0, |output| output.sealed.len);
     metrics::counter!(metric_names::MERGE_BYTES_TOTAL, &labels).increment(bytes);
-    metrics::counter!(metric_names::MERGE_CANCELLED_TOTAL, &labels).increment(merged.cancelled);
-    metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &series.tier_labels(tier))
-        .record(took);
+    metrics::histogram!(metric_names::MERGE_DURATION_SECONDS, &labels).record(took);
 }
 
-/// `tiers` = merging tiers the commit joined (each `stall_at` segments deep)
+/// `tiers` = merging tiers the commit joined (each [`stall_at`](super::stall_at) segments deep)
 pub(super) fn stalled(series: Series, tiers: &[u32], waited: Duration) {
     metrics::histogram!(metric_names::STALL_DURATION_SECONDS, &series.labels()).record(waited);
     let Series { index, table } = series;

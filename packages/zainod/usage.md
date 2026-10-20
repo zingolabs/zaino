@@ -45,10 +45,12 @@ no bucket edges are configured anywhere. Only the protobuf exposition carries na
 `zaino_state{state}` = the `state` below, one-hot: every scrape sets all six (1 = now, 0 = the
 rest), from the same evaluation as `/readyz`.
 
-zebra-network's series (`zcash_net_*`, `zebra_net_*`) carry no peer identity: its address and the
-free text it sends (`addr`, `remote_ip`, `user_agent`, `remote_version`, `remote_services`,
-`error`) are dropped at the recorder. Its counters stay as totals over the remaining labels; a
-gauge naming one peer (its version, its connection's state) is not exported.
+zebra-network's series are cut to a summary: `zcash_net_peers`, `pool_num_ready`,
+`pool_num_unready`, `zcash_net_{in,out}_messages{command}` and
+`zcash_net_connection_outcomes_total{direction, address_family, stage, outcome}`. The rest
+(per-peer versions and connection states, candidate set, crawler, handshake timings) is dropped at
+the recorder, and so is any peer identity (`addr`, `remote_ip`, `user_agent`, `remote_version`,
+`remote_services`, `error`): counters stay as totals over the remaining labels.
 
 `state` is one of six, and the first rule that matches wins:
 
@@ -197,8 +199,8 @@ node exporter):
 
 | Metric | Labels | Answers |
 |---|---|---|
-| `zaino_disk_committed_bytes` | `index`, `table` | durable data per table |
-| `zaino_disk_cached_bytes` | `index`, `table` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch) |
+| `zaino_disk_committed_bytes` | `index` | durable data, every table of the index summed |
+| `zaino_disk_cached_bytes` | `index` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch) |
 | `zaino_disk_bytes` | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
 | `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes` | `index` | room left on the index's filesystem |
 | `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` | | block-device bytes zainod moved (`/proc/self/io`) |

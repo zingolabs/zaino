@@ -41,31 +41,6 @@ pub(super) fn merge_candidates(
     })
 }
 
-/// Per tier `(segments listed, merge running)`, `0..` highest occupied tier or `floor`
-pub(super) fn tier_shape(
-    segments: &[SegmentMeta],
-    merging: &[u32],
-    fanout: Fanout,
-    floor: usize,
-) -> Vec<(usize, bool)> {
-    let tiers: Vec<usize> =
-        segments.iter().map(|segment| tier_of(segment, fanout) as usize).collect();
-    let len = tiers
-        .iter()
-        .copied()
-        .chain(merging.iter().map(|&tier| tier as usize))
-        .map(|tier| tier + 1)
-        .fold(floor, usize::max);
-    let mut shape = vec![(0, false); len];
-    for tier in tiers {
-        shape[tier].0 += 1;
-    }
-    for &tier in merging {
-        shape[tier as usize].1 = true;
-    }
-    shape
-}
-
 /// `segments` lists [`stall_at`] of merging `tier`
 pub(super) fn behind(tier: u32, segments: &[SegmentMeta], fanout: Fanout) -> bool {
     let listed = segments.iter().filter(|segment| tier_of(segment, fanout) == tier).count();
@@ -117,30 +92,6 @@ mod tests {
                     (tier, segments.iter().map(|segment| segment.id).collect::<Vec<_>>())
                 });
             assert_eq!(picked, expected, "{records:?} busy {busy:?}");
-        }
-    }
-
-    /// - counts + merging flags per tier
-    /// - length = highest occupied or merging tier, never below `floor` (emptied tier stays as 0)
-    #[test]
-    fn tier_shape_counts_every_tier_and_never_shrinks_below_the_floor() {
-        let sizes = |sizes: &[u64]| -> Vec<SegmentMeta> {
-            (0u32..).zip(sizes).map(|(id, &n)| segment(id, n)).collect()
-        };
-
-        // (records/segment, merging tiers, floor) → shape
-        // fanout 4: tier 0 < 4 ≤ tier 1 < 16
-        for (records, merging, floor, expected) in [
-            (vec![], vec![], 0, vec![]),
-            (vec![], vec![], 3, vec![(0, false); 3]),
-            (vec![1, 2, 5], vec![], 0, vec![(2, false), (1, false)]),
-            (vec![1, 2, 5], vec![0], 0, vec![(2, true), (1, false)]),
-            (vec![1], vec![2], 0, vec![(1, false), (0, false), (0, true)]),
-            (vec![20, 1], vec![], 4, vec![(1, false), (0, false), (1, false), (0, false)]),
-        ] {
-            let shape =
-                tier_shape(&sizes(&records), &merging, Fanout::new(4).expect(">= 2"), floor);
-            assert_eq!(shape, expected, "{records:?} merging {merging:?} floor {floor}");
         }
     }
 }
