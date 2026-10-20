@@ -2241,6 +2241,7 @@ mod retained_mempool {
 
     use super::{engine_with, height};
     use zaino_source::mock::MockChain;
+    use zaino_source::{RetryPolicy, ValidatorClient};
 
     const TX: [u8; 32] = [7u8; 32];
     const BYTES: &[u8] = b"a retained transaction";
@@ -2309,10 +2310,19 @@ mod retained_mempool {
         config.set_poll_interval_ms(NonZeroU64::new(5).expect("non-zero test interval"));
         config.set_metadata_min_interval(config.poll_interval());
 
+        // The core reads the canonical ports, so the stub is wrapped in the
+        // client that carries the retry ladder — one attempt, since this
+        // fixture never fails and a ladder would only slow the test down.
         let service = MempoolService::spawn(
-            OneTxMempool {
-                tip: (BlockHash::from([1u8; 32]), height(1)),
-            },
+            ValidatorClient::new(
+                OneTxMempool {
+                    tip: (BlockHash::from([1u8; 32]), height(1)),
+                },
+                RetryPolicy {
+                    max_attempts: 1,
+                    ..RetryPolicy::default()
+                },
+            ),
             config,
             tokio_util::sync::CancellationToken::new(),
         );

@@ -953,8 +953,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
 
         let (block_wake_signal, block_wake) = tokio::sync::watch::channel(());
 
+        // The mempool core reads the canonical ports, so the adapter is wrapped
+        // in the client that carries the retry ladder.
         let mempool = zaino_mempool_service::MempoolService::spawn(
-            mempool::MempoolSourceAdapter::new(source.clone(), block_wake),
+            zaino_source::ValidatorClient::new(
+                mempool::MempoolSourceAdapter::new(source.clone(), block_wake),
+                zaino_source::RetryPolicy::default(),
+            ),
             config.mempool.clone(),
             cancel_token.child_token(),
         );

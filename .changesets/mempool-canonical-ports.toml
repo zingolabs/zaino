@@ -1,0 +1,24 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a15aa9-3a70-72f5-9608-66f9f9922b3b"
+
+[[changes]]
+crate = "zaino-mempool"
+kind = "breaking"
+description = """
+`MempoolSource` now names the canonical validator ports rather than their \
+single-attempt twins, so a transient transport failure is retried by the \
+`ValidatorClient` the mempool core reads through instead of reaching the poll \
+loop. An implementor passes its source through a `ValidatorClient`; the core \
+carries no retry ladder of its own.
+"""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "breaking"
+description = """
+`MempoolService` and `CoherenceService` take a source that satisfies the \
+canonical `MempoolSource` bound, so they are constructed over a \
+`ValidatorClient`. The poll loop reports a `SourceError` where it previously \
+named a single-attempt `QueryError`; it absorbs every variant the same way, \
+keeping the set and marking it incomplete.
+"""

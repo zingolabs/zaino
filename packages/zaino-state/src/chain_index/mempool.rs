@@ -30,8 +30,9 @@ use crate::chain_index::source::BlockchainSource;
 ///
 /// Serves the live, never-frozen reads — `getrawmempool`, `getmempoolinfo`,
 /// `GetMempoolTx` — which must keep answering across a tip transition.
-pub(crate) type ChainIndexMempool<Source> =
-    zaino_mempool_service::MempoolService<MempoolSourceAdapter<Source>>;
+pub(crate) type ChainIndexMempool<Source> = zaino_mempool_service::MempoolService<
+    zaino_source::ValidatorClient<MempoolSourceAdapter<Source>>,
+>;
 
 /// The tip-aware coherence layer the ChainIndex owns.
 ///

@@ -9,6 +9,8 @@
 //!   and validator-only mode.
 
 use std::collections::{HashMap, HashSet};
+use crate::MempoolService;
+use zaino_source::{RetryPolicy, ValidatorClient};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -309,6 +311,31 @@ fn fast_config() -> MempoolConfig {
 
 // ============================ CORE ============================
 
+/// A one-attempt retry policy, so an injected fault is terminal.
+///
+/// The core reads through a [`ValidatorClient`], which retries. Under the
+/// default policy a single injected fault would succeed on the next attempt
+/// and the degradation these tests assert would never be published.
+fn one_attempt() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 1,
+        ..RetryPolicy::default()
+    }
+}
+
+/// The core over `source`, read through the client the production wiring
+/// uses, so the tests exercise the same error translation.
+fn core_over(
+    source: &MockSource,
+    config: MempoolConfig,
+) -> Arc<MempoolService<ValidatorClient<MockSource>>> {
+    MempoolService::spawn(
+        ValidatorClient::new(source.clone(), one_attempt()),
+        config,
+        CancellationToken::new(),
+    )
+}
+
 mod core {
     use super::*;
 
@@ -323,14 +350,14 @@ mod core {
         mempool: Vec<MockTx>,
         config: MempoolConfig,
     ) -> (
-        Arc<MempoolService<MockSource>>,
+        Arc<MempoolService<ValidatorClient<MockSource>>>,
         MempoolSubscriber,
         MockSource,
     ) {
         let source = MockSource::new();
         source.set_tip(block_ref(height, hash_byte));
         source.set_mempool(mempool);
-        let service = MempoolService::spawn(source.clone(), config, CancellationToken::new());
+        let service = core_over(&source, config);
         let subscriber = service.subscriber();
         (service, subscriber, source)
     }
@@ -532,7 +559,7 @@ mod core {
             bytes: vec![1],
         }]);
         let service =
-            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+            core_over(&source, fast_config());
         let subscriber = service.subscriber();
 
         let snapshot = wait_for(&subscriber, |s| s.tx_count() == 1).await;
@@ -728,7 +755,7 @@ mod core {
         // Same entry_time and height, so only the tiebreak separates them.
         source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
         let service = MempoolService::spawn_with_admission_salt(
-            source,
+            ValidatorClient::new(source, one_attempt()),
             config,
             CancellationToken::new(),
             salt,
@@ -866,7 +893,7 @@ mod core {
             },
         ]);
         let service =
-            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+            core_over(&source, fast_config());
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
@@ -926,7 +953,7 @@ mod core {
         let source = MockSource::new();
         source.set_tip(block_ref(100, 0xAB));
         let service =
-            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+            core_over(&source, fast_config());
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| {
             s.completeness() == MempoolCompleteness::Complete
@@ -965,7 +992,7 @@ mod core {
 
         let source = MockSource::new();
         source.set_tip(block_ref(100, 0xAB));
-        let service = MempoolService::spawn(source.clone(), config, CancellationToken::new());
+        let service = core_over(&source, config);
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| {
             s.completeness() == MempoolCompleteness::Complete
@@ -1014,7 +1041,7 @@ mod core {
             .collect();
         source.set_mempool(mempool);
         let service =
-            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+            core_over(&source, fast_config());
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| s.tx_count() == 200).await;
 
@@ -1048,7 +1075,7 @@ mod coherence {
 
     /// Keep the core service alive alongside the coherence layer under test.
     struct Harness {
-        core: Arc<MempoolService<MockSource>>,
+        core: Arc<MempoolService<ValidatorClient<MockSource>>>,
         coherence: Arc<CoherenceService<MempoolSubscriber, MockNfs>>,
         subscriber: CoherentSubscriber,
         source: MockSource,
@@ -1075,7 +1102,7 @@ mod coherence {
         source.set_mempool(mempool);
         nfs.set(epoch(generation, height, hash_byte));
 
-        let core = MempoolService::spawn(source.clone(), config.clone(), CancellationToken::new());
+        let core = core_over(&source, config.clone());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),
@@ -1151,7 +1178,7 @@ mod coherence {
         let mut slow_tick = fast_config();
         slow_tick.set_poll_interval_ms(NonZeroU64::new(30_000).expect("non-zero test interval"));
 
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),
@@ -1266,7 +1293,7 @@ mod coherence {
         source.set_mempool(vec![mtx(1, 100)]);
         nfs.set(epoch(1, 100, 0xBB)); // diverged
 
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),
@@ -1328,7 +1355,7 @@ mod coherence {
         source.set_tip(block_ref(100, 0xAA));
         source.set_mempool(vec![mtx(1, 100)]);
 
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),
@@ -1518,7 +1545,7 @@ mod coherence {
         let source = MockSource::new();
         source.set_tip(block_ref(100, 0xAA));
         source.set_mempool(vec![mtx(1, 100)]);
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn_validator_only(
             core.subscriber(),
             fast_config(),
@@ -1563,7 +1590,7 @@ mod coherence {
         // this from going live is that the core has not polled the source yet.
         nfs.set(epoch(1, 100, 0xAB));
 
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),
@@ -1604,7 +1631,7 @@ mod coherence {
         let nfs = MockNfs::new();
         nfs.set(epoch(1, 100, 0xAB));
 
-        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let core = core_over(&source, fast_config());
         let coherence = CoherenceService::spawn(
             core.subscriber(),
             nfs.clone(),

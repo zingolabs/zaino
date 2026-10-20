@@ -44,6 +44,15 @@ use crate::update::MempoolUpdate;
 /// type that answers all of the questions, so an adapter earns the bound by
 /// implementing the ports it can serve.
 ///
+/// # Retrying lives below this bound
+///
+/// These are the canonical ports, so a transient transport failure has already
+/// been retried by the [`ValidatorClient`](zaino_source::ValidatorClient) the
+/// core holds, and what reaches the poll loop is a domain answer, a
+/// non-retryable failure, or a validator that is genuinely unreachable. The
+/// loop absorbs all three the same way — keep the set, mark it incomplete,
+/// retry on the next tick — so the core carries no retry ladder of its own.
+///
 /// # The single-source rule
 ///
 /// Every *validator* port in this bound — the four data and tip reads — must be
@@ -63,10 +72,10 @@ use crate::update::MempoolUpdate;
 /// `Clone` is required because the core clones the source to fan out bounded,
 /// concurrent raw-transaction fetches, so implementations must be cheap to clone.
 pub trait MempoolSource:
-    zaino_source::OneShotGetMempoolTxids
-    + zaino_source::OneShotGetMempoolMetadata
-    + zaino_source::OneShotGetRawMempoolTransaction
-    + zaino_source::OneShotGetMempoolSourceTip
+    zaino_source::GetMempoolTxids
+    + zaino_source::GetMempoolMetadata
+    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::GetMempoolSourceTip
     + zaino_source::SubscribeBlocks
     + Clone
     + Send
@@ -76,10 +85,10 @@ pub trait MempoolSource:
 }
 
 impl<T> MempoolSource for T where
-    T: zaino_source::OneShotGetMempoolTxids
-        + zaino_source::OneShotGetMempoolMetadata
-        + zaino_source::OneShotGetRawMempoolTransaction
-        + zaino_source::OneShotGetMempoolSourceTip
+    T: zaino_source::GetMempoolTxids
+        + zaino_source::GetMempoolMetadata
+        + zaino_source::GetRawMempoolTransaction
+        + zaino_source::GetMempoolSourceTip
         + zaino_source::SubscribeBlocks
         + Clone
         + Send

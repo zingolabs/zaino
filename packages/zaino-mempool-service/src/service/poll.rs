@@ -14,7 +14,7 @@ use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::MempoolSource;
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_primitives::types::BlockRef;
-use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, QueryError};
+use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, SourceError};
 
 use super::state::{admission_key, PollState};
 
@@ -375,7 +375,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     // transport failure as gone too would let any validator
                     // hiccup silently delete a transaction from a set that still
                     // publishes as complete.
-                    Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
+                    Err(SourceError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
                         return Ok(None)
                     }
                     Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
