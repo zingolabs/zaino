@@ -78,9 +78,15 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 /// - peer not in the set = a failure, never another's listing
 /// - lie = an answer, not a failure (A = `None`, B never labelled A)
 /// - its block `inv` attributed to its address (a transaction `inv` = nothing), peer = live
+/// - round trips timed for answers only: unknown hash + stranger = failures, never latency
 // multi_thread required: zebra-network's codec parses blocks and txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_inv_is_attributed() {
+    // thread-local: `call` records on the test body's thread (the body awaits every request)
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recording = metrics::set_default_local_recorder(&recorder);
+
     let blocks: Vec<Arc<Block>> = [
         zebra_test::vectors::BLOCK_MAINNET_1_BYTES.as_slice(),
         zebra_test::vectors::BLOCK_MAINNET_2_BYTES.as_slice(),
@@ -166,6 +172,20 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     let stranger = SocketAddr::from(([127, 0, 0, 9], 1));
     assert!(peers.mempool_of(stranger).await.is_err(), "no other peer answers for it");
 
+    // zebra's local refusals (unknown hash → notfound, stranger → no ready peer) = failures only
+    let scrape = rendered.render();
+    let missing: Vec<&str> = [
+        r#"zaino_peers_request_duration_seconds_count{request="FindHeaders"} 1"#,
+        r#"zaino_peers_request_duration_seconds_count{request="BlocksByHash"} 1"#,
+        r#"zaino_peers_request_duration_seconds_count{request="MempoolTransactionIds"} 1"#,
+        r#"zaino_peers_request_failures_total{request="BlocksByHash",failure="peer"} 1"#,
+        r#"zaino_peers_request_failures_total{request="MempoolTransactionIds",failure="peer"} 1"#,
+    ]
+    .into_iter()
+    .filter(|line| !scrape.lines().any(|scraped| scraped == *line))
+    .collect();
+    assert!(missing.is_empty(), "missing {missing:?} from:\n{scrape}");
+
     let (id_a, id_c) = (wire::peer_tx_id(a.id), wire::peer_tx_id(c.id));
     let lied = peers.transactions_by_id(&[id_a]).await.expect("an answer, not a failure");
     assert_eq!(lied, [(id_a, None)], "B's bytes never labelled A");
@@ -194,7 +214,7 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
 ///   from our IP = dropped by zebra's one-per-IP limit), exactly the bytes, named by their txid
 /// - Malformed bytes never sent
 /// - No ready peer = a `Peers` failure, not a verdict
-/// - Every request reaching the peer set timed by command, its timeout counted (malformed = none)
+/// - A push never timed (zebra's fan-out answers `Nil`, no peer replies), its timeout counted
 // multi_thread required: zebra-network's codec parses txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
@@ -243,12 +263,8 @@ async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
     assert_eq!(pushed.lock().expect("pushed").len(), 1, "nothing else reached the peer");
 
     let scrape = rendered.render();
-    let missing: Vec<&str> = [
-        r#"zaino_peers_request_duration_seconds_count{request="PushTransaction"} 2"#,
-        r#"zaino_peers_request_failures_total{request="PushTransaction",failure="timeout"} 1"#,
-    ]
-    .into_iter()
-    .filter(|line| !scrape.lines().any(|scraped| scraped == *line))
-    .collect();
-    assert!(missing.is_empty(), "missing {missing:?} from:\n{scrape}");
+    let timeout =
+        r#"zaino_peers_request_failures_total{request="PushTransaction",failure="timeout"} 1"#;
+    assert!(scrape.lines().any(|line| line == timeout), "{timeout} missing from:\n{scrape}");
+    assert!(!scrape.contains("zaino_peers_request_duration_seconds"), "a push timed:\n{scrape}");
 }

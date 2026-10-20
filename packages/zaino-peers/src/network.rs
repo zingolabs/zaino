@@ -285,23 +285,37 @@ impl PeerNetwork {
         asked.iter().map(|key| (*key, found.remove(key))).collect()
     }
 
-    /// Every request's one funnel: timed + counted here (`crate::metrics`)
+    /// Every request's one funnel: round trip + failures counted here (`crate::metrics`)
+    ///
+    /// - timed = sent to a ready peer → answered: the ready wait = local queueing, an error = zebra
+    ///   refusing without the wire (`NoReadyPeers`, a synthetic `notfound`), a push = `Nil` from
+    ///   zebra's fan-out, never a peer's answer
     async fn call(&self, request: Request) -> Result<Response, PeerError> {
         let command = request.command();
-        let started = Instant::now();
+        let round_trip = !matches!(request, Request::PushTransaction(..));
         let mut peers = self.peers.clone();
-        let answered = async { peers.ready().await?.call(request).await };
-        let settled = match tokio::time::timeout(self.timeout, answered).await {
-            Ok(answer) => answer.map_err(PeerError::Network),
-            Err(_) => Err(PeerError::Timeout(self.timeout)),
+        let answered = async {
+            let ready = peers.ready().await?;
+            let sent = Instant::now();
+            let answer = ready.call(request).await?;
+            Ok::<_, BoxError>((answer, sent.elapsed()))
         };
-        let failure = match &settled {
-            Ok(_) => None,
-            Err(PeerError::Timeout(_)) => Some("timeout"),
-            Err(_) => Some("peer"),
-        };
-        crate::metrics::request_settled(command, started.elapsed(), failure);
-        settled
+        match tokio::time::timeout(self.timeout, answered).await {
+            Ok(Ok((answer, took))) => {
+                if round_trip {
+                    crate::metrics::answered(command, took);
+                }
+                Ok(answer)
+            }
+            Ok(Err(cause)) => {
+                crate::metrics::failed(command, "peer");
+                Err(PeerError::Network(cause))
+            }
+            Err(_) => {
+                crate::metrics::failed(command, "timeout");
+                Err(PeerError::Timeout(self.timeout))
+            }
+        }
     }
 
     fn lied(&self, peer: Option<PeerSocketAddr>, what: &str) {

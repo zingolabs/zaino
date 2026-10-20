@@ -105,8 +105,16 @@ registers the descriptions (zainod calls it with every crate's).
 
 | Metric | Labels | Answers |
 |---|---|---|
-| `zaino_peers_request_duration_seconds` | `request` | ready wait + answer (histogram) |
-| `zaino_peers_request_failures_total` | `request`, `failure` (`timeout`, `peer`) | requests ending in an error; `peer` = zebra's error, an inventory `notfound` included |
+| `zaino_peers_request_duration_seconds` | `request` | network round trip: sent to a ready peer → its answer (histogram) |
+| `zaino_peers_request_failures_total` | `request`, `failure` (`timeout`, `peer`) | requests ending in an error; `peer` = zebra's error |
+
+The histogram holds answered requests only, so it is a latency and nothing else:
+
+- the wait for a ready peer (local queueing) is not in it
+- a failure never is: zebra refuses many without touching the wire (`MempoolTransactionIdsFrom` a
+  peer not ready = `NoReadyPeers`, an item no usable peer holds = a synthetic `notfound`), and a
+  timeout is the timeout; both land in the failure counter
+- a push never is: zebra fans it out and answers `Nil` itself, no peer replies
 
 `request` = zebra's `Request::command` (`FindHeaders`, `BlocksByHash`, `TransactionsById`,
 `MempoolTransactionIds`, `PushTransaction`), the label zebra's own `zebra_net_out_requests` and

@@ -11,22 +11,19 @@ pub fn describe_metrics() {
     metrics::describe_histogram!(
         DURATION_SECONDS,
         metrics::Unit::Seconds,
-        "Peer-set request (ready wait + answer), by request"
+        "Peer round trip (sent to a ready peer → its answer), answered requests only, by request"
     );
     metrics::describe_counter!(
         FAILURES_TOTAL,
         "Peer-set requests that settled on an error, by request and failure (timeout; peer = \
-         zebra's error, an inventory `notfound` included)"
+         zebra's error: no ready peer, an inventory `notfound`)"
     );
 }
 
-pub(crate) fn request_settled(
-    request: &'static str,
-    elapsed: Duration,
-    failure: Option<&'static str>,
-) {
-    metrics::histogram!(DURATION_SECONDS, "request" => request).record(elapsed.as_secs_f64());
-    if let Some(failure) = failure {
-        metrics::counter!(FAILURES_TOTAL, "request" => request, "failure" => failure).increment(1);
-    }
+pub(crate) fn answered(request: &'static str, round_trip: Duration) {
+    metrics::histogram!(DURATION_SECONDS, "request" => request).record(round_trip.as_secs_f64());
+}
+
+pub(crate) fn failed(request: &'static str, failure: &'static str) {
+    metrics::counter!(FAILURES_TOTAL, "request" => request, "failure" => failure).increment(1);
 }
