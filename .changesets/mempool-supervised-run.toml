@@ -1,0 +1,13 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a15a96-439c-726f-842f-e55980efbdf7"
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "feature"
+description = """
+`MempoolService` and `CoherenceService` can now be built without starting a \
+task — `new` constructs one and `run_until` is the loop a caller drives — so a \
+supervisor that owns task lifetimes can restart either loop and read its \
+handles before anything polls. `spawn` is unchanged for a caller that wants \
+the service to own its own task.
+"""

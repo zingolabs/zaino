@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use zaino_status::StatusType;
 
 use zaino_mempool::ports::{Mempool, NfsEpochObserver};
@@ -18,7 +19,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// sub-second and mostly no-ops, so the signal is in the freeze/thaw edges
     /// rather than in per-reconcile spans.
     #[tracing::instrument(name = "mempool_coherence_loop", skip_all)]
-    pub(super) async fn run(self: Arc<Self>) {
+    pub(super) async fn run(self: Arc<Self>, cancel: CancellationToken) {
         self.status.store(StatusType::Syncing);
 
         let mut updates = self.mempool.subscribe_updates();
@@ -43,7 +44,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
 
         loop {
             tokio::select! {
-                _ = self.cancel.cancelled() => {
+                _ = cancel.cancelled() => {
                     tracing::debug!("mempool coherence loop cancelled; publishing Closing");
                     self.publish_closing();
                     return;

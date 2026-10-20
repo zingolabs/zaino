@@ -108,9 +108,38 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         config: MempoolConfig,
         cancel: CancellationToken,
     ) -> Arc<Self> {
+        let service = Self::new_inner(mempool, nfs, config, cancel);
+
+        let task_service = Arc::clone(&service);
+        let own_cancel = service.cancel.clone();
+        let handle = tokio::spawn(async move {
+            task_service.run(own_cancel).await;
+        });
+
+        *service.task.lock().expect("coherence task lock poisoned") = Some(handle);
+
+        service
+    }
+
+    /// Build the coherence layer without starting its loop.
+    ///
+    /// The counterpart to [`MempoolService::new`](crate::MempoolService::new),
+    /// for a caller that owns task lifetimes: the
+    /// [`subscriber`](Self::subscriber) is available at once, and
+    /// [`run_until`](Self::run_until) is the loop to drive.
+    pub fn new(mempool: M, nfs: N, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
+        Self::new_inner(mempool, Some(nfs), config, cancel)
+    }
+
+    fn new_inner(
+        mempool: M,
+        nfs: Option<N>,
+        config: MempoolConfig,
+        cancel: CancellationToken,
+    ) -> Arc<Self> {
         let (events, _) = broadcast::channel(config.event_buffer_len());
 
-        let service = Arc::new(Self {
+        Arc::new(Self {
             mempool,
             nfs,
             synth_epoch: std::sync::Mutex::new(SynthesizedEpochState::default()),
@@ -121,16 +150,13 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             frozen_since: Arc::new(std::sync::Mutex::new(None)),
             cancel,
             task: std::sync::Mutex::new(None),
-        });
+        })
+    }
 
-        let task_service = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            task_service.run().await;
-        });
-
-        *service.task.lock().expect("coherence task lock poisoned") = Some(handle);
-
-        service
+    /// Reconcile the two tips until `cancel` fires, publishing `Closing` on the
+    /// way out.
+    pub async fn run_until(self: Arc<Self>, cancel: CancellationToken) {
+        self.run(cancel).await;
     }
 
     /// A cheap, cloneable read handle onto the coherent mempool view.

@@ -88,9 +88,43 @@ impl<S: MempoolSource> MempoolService<S> {
         cancel: CancellationToken,
         admission_salt: u64,
     ) -> Arc<Self> {
+        let service = Self::new_with_admission_salt(source, config, cancel, admission_salt);
+
+        let task_service = Arc::clone(&service);
+        let own_cancel = service.cancel.clone();
+        let handle = tokio::spawn(async move {
+            task_service.run(own_cancel).await;
+        });
+
+        *service.task.lock().expect("mempool task lock poisoned") = Some(handle);
+
+        service
+    }
+
+    /// Build the service without starting its loop.
+    ///
+    /// For a caller that owns task lifetimes itself — a supervisor that drives
+    /// [`run_until`](Self::run_until) and restarts it on failure. The read
+    /// handles are available immediately, so the consumers that need a
+    /// [`subscriber`](Self::subscriber) can be wired before anything polls.
+    ///
+    /// The admission tiebreak salt is drawn per process, as in
+    /// [`spawn`](Self::spawn).
+    pub fn new(source: S, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
+        let salt = std::collections::hash_map::RandomState::new().hash_one(0u8);
+        Self::new_with_admission_salt(source, config, cancel, salt)
+    }
+
+    /// [`Self::new`] with an explicit admission salt.
+    pub fn new_with_admission_salt(
+        source: S,
+        config: MempoolConfig,
+        cancel: CancellationToken,
+        admission_salt: u64,
+    ) -> Arc<Self> {
         let (updates, _) = broadcast::channel(config.event_buffer_len());
 
-        let service = Arc::new(Self {
+        Arc::new(Self {
             source,
             current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty())),
             updates,
@@ -99,16 +133,17 @@ impl<S: MempoolSource> MempoolService<S> {
             cancel,
             task: std::sync::Mutex::new(None),
             admission_salt,
-        });
+        })
+    }
 
-        let task_service = Arc::clone(&service);
-        let handle = tokio::spawn(async move {
-            task_service.run().await;
-        });
-
-        *service.task.lock().expect("mempool task lock poisoned") = Some(handle);
-
-        service
+    /// Poll the validator's mempool until `cancel` fires, publishing a `Closing`
+    /// set on the way out.
+    ///
+    /// The token is the caller's, not the one held for [`close`](Self::close):
+    /// a supervisor cancels the run it drives without closing a service it may
+    /// start again.
+    pub async fn run_until(self: Arc<Self>, cancel: CancellationToken) {
+        self.run(cancel).await;
     }
 
     /// A cheap, cloneable read handle onto the core mempool.

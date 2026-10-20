@@ -3,6 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
 use std::time::Instant;
 
 use futures::{stream, StreamExt as _};
@@ -45,7 +47,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         skip_all,
         fields(poll_interval_ms = self.config.poll_interval().as_millis()),
     )]
-    pub(super) async fn run(self: Arc<Self>) {
+    pub(super) async fn run(self: Arc<Self>, cancel: CancellationToken) {
         self.status.store(StatusType::Syncing);
 
         let mut interval = tokio::time::interval(self.config.poll_interval());
@@ -60,7 +62,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
 
         loop {
             tokio::select! {
-                _ = self.cancel.cancelled() => {
+                _ = cancel.cancelled() => {
                     tracing::debug!("mempool poll loop cancelled; publishing Closing");
                     self.publish_closing();
                     return;
