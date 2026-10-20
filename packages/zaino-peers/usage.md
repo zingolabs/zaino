@@ -98,6 +98,20 @@ knows it missed some.
 
 `live()`: outbound peers live in the last few minutes (the ones the chain view polls).
 
+## Metrics
+
+Every request above passes one function, which times and counts it; `describe_metrics()`
+registers the descriptions (zainod calls it with every crate's).
+
+| Metric | Labels | Answers |
+|---|---|---|
+| `zaino_peers_request_duration_seconds` | `request` | ready wait + answer (histogram) |
+| `zaino_peers_request_failures_total` | `request`, `failure` (`timeout`, `peer`) | requests ending in an error; `peer` = zebra's error, an inventory `notfound` included |
+
+`request` = zebra's `Request::command` (`FindHeaders`, `BlocksByHash`, `TransactionsById`,
+`MempoolTransactionIds`, `PushTransaction`), the label zebra's own `zebra_net_out_requests` and
+`zcash_net_out_messages` counters use, so a latency lines up with its message counts.
+
 ## Tests
 
 - Loopback, no DNS: a scripted zebra-network regtest node (a full `init`, since

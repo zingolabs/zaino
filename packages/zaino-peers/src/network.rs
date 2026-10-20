@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc};
 use tower::buffer::Buffer;
@@ -285,13 +285,23 @@ impl PeerNetwork {
         asked.iter().map(|key| (*key, found.remove(key))).collect()
     }
 
+    /// Every request's one funnel: timed + counted here (`crate::metrics`)
     async fn call(&self, request: Request) -> Result<Response, PeerError> {
+        let command = request.command();
+        let started = Instant::now();
         let mut peers = self.peers.clone();
         let answered = async { peers.ready().await?.call(request).await };
-        match tokio::time::timeout(self.timeout, answered).await {
+        let settled = match tokio::time::timeout(self.timeout, answered).await {
             Ok(answer) => answer.map_err(PeerError::Network),
             Err(_) => Err(PeerError::Timeout(self.timeout)),
-        }
+        };
+        let failure = match &settled {
+            Ok(_) => None,
+            Err(PeerError::Timeout(_)) => Some("timeout"),
+            Err(_) => Some("peer"),
+        };
+        crate::metrics::request_settled(command, started.elapsed(), failure);
+        settled
     }
 
     fn lied(&self, peer: Option<PeerSocketAddr>, what: &str) {

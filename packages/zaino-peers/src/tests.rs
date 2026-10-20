@@ -194,9 +194,15 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
 ///   from our IP = dropped by zebra's one-per-IP limit), exactly the bytes, named by their txid
 /// - Malformed bytes never sent
 /// - No ready peer = a `Peers` failure, not a verdict
+/// - Every request reaching the peer set timed by command, its timeout counted (malformed = none)
 // multi_thread required: zebra-network's codec parses txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
+    // thread-local: `call` records on the test body's thread (the body awaits every push)
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recording = metrics::set_default_local_recorder(&recorder);
+
     let pushed: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
     let recorded = Arc::clone(&pushed);
     let inbound = tower::service_fn(move |request: Request| {
@@ -235,4 +241,14 @@ async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
     assert!(matches!(unpeered, Err(PushError::Peers(PeerError::Timeout(_)))), "{unpeered:?}");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(pushed.lock().expect("pushed").len(), 1, "nothing else reached the peer");
+
+    let scrape = rendered.render();
+    let missing: Vec<&str> = [
+        r#"zaino_peers_request_duration_seconds_count{request="PushTransaction"} 2"#,
+        r#"zaino_peers_request_failures_total{request="PushTransaction",failure="timeout"} 1"#,
+    ]
+    .into_iter()
+    .filter(|line| !scrape.lines().any(|scraped| scraped == *line))
+    .collect();
+    assert!(missing.is_empty(), "missing {missing:?} from:\n{scrape}");
 }

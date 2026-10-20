@@ -94,6 +94,7 @@ pub(crate) fn describe_all() {
     zaino_grpc_snapshot::describe_metrics();
     zaino_sync::describe_metrics();
     zaino_persistence::describe_metrics();
+    zaino_peers::describe_metrics();
     crate::disk_monitor::describe_metrics();
     metrics::describe_gauge!(BUILD_INFO, "Always 1; the zainod version rides the `version` label");
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
