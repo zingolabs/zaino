@@ -40,6 +40,8 @@ use zaino_store_service::StoreComponent;
 
 use crate::config::{FetchStrategy, IndexedDeploymentConfig};
 use crate::deployment::{compose, DeploymentEngine, IndexedSource};
+use crate::mempool::MempoolComponent;
+use zaino_mempool::MempoolConfig;
 use crate::orchestra::{Orchestra, OrchestraBuilder};
 use crate::plan::RuntimePlan;
 use crate::run_component::RunComponent;
@@ -115,7 +117,7 @@ pub async fn boot_indexed<D, A, C>(
 ) -> Result<Orchestra, DeployError>
 where
     D: RuntimePlan<Config = IndexedDeploymentConfig>,
-    C: IndexedSource + GetBlockchainInfo,
+    C: IndexedSource + GetBlockchainInfo + zaino_mempool::ports::MempoolSource,
     StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
     IndexedEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
@@ -141,7 +143,7 @@ async fn deploy<D, A, C>(
 ) -> Result<(Orchestra, LmdbBackend, ChainHeadSubscriber), DeployError>
 where
     D: RuntimePlan<Config = IndexedDeploymentConfig>,
-    C: IndexedSource + GetBlockchainInfo,
+    C: IndexedSource + GetBlockchainInfo + zaino_mempool::ports::MempoolSource,
     StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
     IndexedEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
@@ -289,7 +291,7 @@ async fn assemble<D, A, C, F, Fetch>(
 ) -> Result<(Orchestra, ChainHeadSubscriber), DeployError>
 where
     D: RuntimePlan<Config = IndexedDeploymentConfig>,
-    C: IndexedSource,
+    C: IndexedSource + zaino_mempool::ports::MempoolSource,
     StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
     IndexedEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
@@ -321,17 +323,32 @@ where
     // kept to hand back (the volatile tier's coverage is otherwise unobservable
     // once the head is composed in).
     let chain_head_handle = chain_head_subscriber.clone();
+
+    // The mempool read model, over the same client and the same chain head the
+    // engine is composed on. Built before the engine so its read handle can be
+    // composed in; it polls nothing until the Orchestra boots it.
+    let mempool = MempoolComponent::new(
+        (*source).clone(),
+        chain_head_subscriber.clone(),
+        MempoolConfig::default(),
+    );
+
     let engine = compose::<D, _, _, _>(
         store_reader.clone(),
         chain_head_subscriber,
         (*source).clone(),
-    );
+    )
+    // The mempool reads are answered from the retained set rather than by
+    // asking the validator per request.
+    .with_mempool(mempool.mempool());
 
     let validator_component = ValidatorComponent::connect(&AlreadyReachable).await?;
     let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let store = StoreComponent::new(ComponentName("store"), store_reader);
     // The chain-head writer is escalated and supervised exactly like the indexer.
     let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
+    // Both mempool loops ride one supervised task; see `crate::mempool`.
+    let mempool_component = RunComponent::new(ComponentName("mempool"), mempool);
     let server = RunComponent::new(ComponentName(D::UseCase::NAME), serve(engine));
 
     let orchestra = OrchestraBuilder::new()
@@ -345,6 +362,9 @@ where
         .await
         .map_err(|e| DeployError::Component(Box::new(e)))?
         .boot(chain_head)
+        .await
+        .map_err(|e| DeployError::Component(Box::new(e)))?
+        .boot(mempool_component)
         .await
         .map_err(|e| DeployError::Component(Box::new(e)))?
         .boot(server)
