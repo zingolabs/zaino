@@ -46,7 +46,7 @@ no bucket edges are configured anywhere. Only the protobuf exposition carries na
 rest), from the same evaluation as `/readyz`.
 
 zebra-network's series are cut to a summary: `zcash_net_peers`, `pool_num_ready`,
-`pool_num_unready`, `zcash_net_{in,out}_messages{command}` and
+`pool_num_unready`, `zcash_net_{in,out}_messages{command}`, `zcash_net_{in,out}_bytes_total` and
 `zcash_net_connection_outcomes_total{direction, address_family, stage, outcome}`. The rest
 (per-peer versions and connection states, candidate set, crawler, handshake timings) is dropped at
 the recorder, and so is any peer identity (`addr`, `remote_ip`, `user_agent`, `remote_version`,

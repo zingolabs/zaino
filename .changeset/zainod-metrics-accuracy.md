@@ -12,9 +12,9 @@ default: major
   error reply included). No answer (refused connection, timeout) = `failures_total` only.
 - **State:** `zaino_state{state}`, one-hot over `/readyz`'s six states.
 - **Peers:** zebra-network's series cut to `zcash_net_peers`, `pool_num_{ready,unready}`,
-  `zcash_net_{in,out}_messages{command}` and `zcash_net_connection_outcomes_total`, with no
-  `addr`, `remote_ip`, `user_agent`, `remote_version`, `remote_services` or `error` label (counters
-  summed over them). Every other `zcash_net_*`, `zebra_net_*`, `candidate_set_*`, `crawler_*`,
+  `zcash_net_{in,out}_messages{command}`, `zcash_net_{in,out}_bytes_total` and
+  `zcash_net_connection_outcomes_total`, with no `addr`, `remote_ip`, `user_agent`,
+  `remote_version`, `remote_services` or `error` label (counters summed over them). Every other `zcash_net_*`, `zebra_net_*`, `candidate_set_*`, `crawler_*`,
   `peer_*` and `pool_*` series is gone.
 - **Storage:** `zaino_lsm_*` and `zaino_disk_{committed,cached}_bytes` lose `table` (one series
   per index, its tables summed); `zaino_lsm_*` also loses `tier`. `zaino_lsm_stall_at`,

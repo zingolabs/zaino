@@ -86,10 +86,12 @@ pub(crate) struct ZebraNetworkSummary<R>(R);
 const ZEBRA_NETWORK: [&str; 6] =
     ["zcash.net.", "zebra.net.", "candidate_set.", "crawler.", "peer.", "pool."];
 
-const ZEBRA_NETWORK_KEPT: [&str; 6] = [
+const ZEBRA_NETWORK_KEPT: [&str; 8] = [
     "zcash.net.peers",
     "zcash.net.in.messages",
     "zcash.net.out.messages",
+    "zcash.net.in.bytes.total",
+    "zcash.net.out.bytes.total",
     "zcash.net.connection.outcomes.total",
     "pool.num_ready",
     "pool.num_unready",
@@ -195,6 +197,8 @@ mod tests {
                     .increment(2);
                 metrics::counter!("zcash.net.in.messages", "command" => "pong", "addr" => addr)
                     .increment(1);
+                metrics::counter!("zcash.net.out.bytes.total", "addr" => addr).increment(100);
+                metrics::counter!("zcash.net.in.bytes.total", "addr" => addr).increment(300);
                 metrics::counter!(
                     "zcash.net.connection.outcomes.total",
                     "network" => "Mainnet",
@@ -232,6 +236,8 @@ mod tests {
         let missing: Vec<&str> = [
             r#"zcash_net_out_messages{command="ping"} 4"#,
             r#"zcash_net_in_messages{command="pong"} 2"#,
+            "zcash_net_out_bytes_total 200",
+            "zcash_net_in_bytes_total 600",
             r#"zcash_net_connection_outcomes_total{network="Mainnet",direction="outbound",address_family="ipv6",stage="handshake",outcome="success"} 2"#,
             r#"zcash_net_peers{network="Mainnet"} 2"#,
             r#"pool_num_ready{network="Mainnet"} 2"#,
