@@ -376,7 +376,7 @@ format.
 The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
-WARN  [09-28|17:29:15.175] ChainView:           Validator mempool inactive     validator=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
+WARN  [09-28|17:29:15.175] ChainView:           Validator mempool inactive     validator=zebrad:18232 height=3,434,171 behind=65,512 hash=…1a76bf89
 INFO  [09-28|17:29:42.659] ZainoNFS:            Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
 INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        applied=3,501,900 durable=3,501,802 size=31.0GB
 INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        applied=3,501,900 durable=3,501,802  size=134MB
@@ -397,7 +397,7 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
   the event's enclosing span.
 - Fields are `key=value` logfmt, parseable by Loki and `hl`. Integers from
   1,000 up, heights included, are grouped with commas (`json` keeps them plain
-  numbers). A 64-hex hash shows its first and last 8 digits (`json` keeps it
+  numbers). A 64-hex hash shows its last 8 digits (`json` keeps it
   whole). A value containing a space or `=` is quoted, and an error field
   carries its whole source chain. A path in a message longer than 48 columns
   keeps its tail (`…/zaino/indexes/compact_block`).

@@ -40,8 +40,8 @@ const GROUP_FROM: u64 = 1_000;
 /// - Right-aligned = spaces before the key, so the column's right edge lines up
 const COLUMNS: &[(&str, usize, bool)] = &[("durable", 9, false), ("size", 6, true)];
 
-/// Hash shown as its first + last this many hex digits
-const HASH_ENDS: usize = 8;
+/// Hash shown as its last this many hex digits (leading digits = PoW zeroes)
+const HASH_TAIL: usize = 8;
 
 const TIME: &[time::format_description::FormatItem<'static>] =
     format_description!("[month]-[day]|[hour]:[minute]:[second].[subsecond digits:3]");
@@ -259,10 +259,10 @@ pub(super) fn grouped(value: u64) -> String {
     out
 }
 
-/// 64 hex digits → `00000000…1a76bf89`
+/// 64 hex digits → `…1a76bf89`
 fn shortened(value: String) -> String {
     match value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        true => format!("{}…{}", &value[..HASH_ENDS], &value[64 - HASH_ENDS..]),
+        true => format!("…{}", &value[64 - HASH_TAIL..]),
         false => value,
     }
 }
@@ -359,7 +359,7 @@ mod tests {
                 "ZainoSource:", "Syncing blocks"
             ),
             format!(
-                "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
+                "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=…1a76bf89",
                 "ZainoSource:", "Commit waited"
             ),
             // columns: `durable=—` padded to the 9-wide height, `size` right-aligned to 6
