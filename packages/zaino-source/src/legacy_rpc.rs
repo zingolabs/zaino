@@ -195,7 +195,8 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         };
         let mut blocks = Vec::with_capacity(heights.len());
         for batch in heights.chunks(self.rpc.response_size_cap().blocks_per_batch().get()) {
-            let replies = self.rpc.call_batch::<json::HexBytes>(batch.iter().map(call).collect());
+            let calls = batch.iter().map(call).collect();
+            let replies = self.rpc.call_batch::<json::HexBytes>("getblock", calls);
             let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
@@ -217,7 +218,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                     params: vec![u32::from(*height).to_string().into(), false.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch::<json::HexBytes>(calls).await?;
+            let replies = self.rpc.call_batch::<json::HexBytes>("getblockheader", calls).await?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
                 let link = reply.map(|json::HexBytes(header)| BlockLink { header });
@@ -239,7 +240,8 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         if metadata {
             calls.extend(["getpeerinfo", "getinfo", "getdeprecationinfo"].map(|m| call(m, vec![])));
         }
-        let mut replies = self.rpc.call_batch::<serde_json::Value>(calls).await?.into_iter();
+        let mut replies =
+            self.rpc.call_batch::<serde_json::Value>("poll", calls).await?.into_iter();
         let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
         let info = json::parse_blockchain_info(&next()?).map_err(from_parse)?;
@@ -288,7 +290,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                     params: vec![entry.txid.to_string().into(), 0.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch::<json::HexBytes>(calls).await?;
+            let replies = self.rpc.call_batch::<json::HexBytes>("getrawtransaction", calls).await?;
             for (entry, reply) in batch.iter().zip(replies) {
                 let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
                 let raw = reply.map(|json::HexBytes(raw)| raw);

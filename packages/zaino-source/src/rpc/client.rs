@@ -144,18 +144,13 @@ impl RpcClient {
     /// `calls` in one HTTP request, one outcome per item (call order)
     ///
     /// - `Err` = whole batch failed
-    /// - metric `method` = the calls' one method, or `batch` when mixed
+    /// - `label` = metric `method` (the request's purpose: a mixed batch has no one method)
     pub(crate) async fn call_batch<T: DeserializeOwned>(
         &self,
+        label: &'static str,
         calls: Vec<Call>,
     ) -> Result<Vec<Result<T, RpcError>>, RpcError> {
         let _in_flight = metrics::InFlight::start(&self.name);
-        let label = match calls.split_first() {
-            Some((first, rest)) if rest.iter().all(|call| call.method == first.method) => {
-                first.method
-            }
-            _ => "batch",
-        };
         let started = Instant::now();
         let first = self.id_counter.fetch_add(calls.len() as i64, Ordering::Relaxed);
         let body = envelope::build_batch(calls.iter(), first);
@@ -308,7 +303,7 @@ mod tests {
             .map(|param| Call { method: "getrawtransaction", params: vec![Value::from(param)] })
             .to_vec();
         let outcomes: Vec<Result<String, RpcError>> =
-            client.call_batch(calls).await.expect("batch");
+            client.call_batch("getrawtransaction", calls).await.expect("batch");
         let outcomes: Vec<String> = outcomes
             .into_iter()
             .map(|outcome| match outcome {

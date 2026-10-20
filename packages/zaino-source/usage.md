@@ -88,7 +88,10 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   `response_size_cap` (`ResponseSizeCap`: one full block's reply ..= 32 MiB) = the largest
   JSON-RPC reply buffered, and sets how many blocks one `getblock` batch asks.
 - Per-validator metrics carry a `validator` label: call duration by method,
-  failures, calls in flight, bytes received.
+  failures, calls in flight, bytes received. Every call is recorded at the transport, whoever
+  asked (the balancer's routed reads, the chain view's polls, sync's fetches). A batch's
+  `method` is what it is for: its one method (`getblock`, `getblockheader`,
+  `getrawtransaction`), or `poll` for `get_poll_reading`'s mixed batch.
 
 ## Error model
 
