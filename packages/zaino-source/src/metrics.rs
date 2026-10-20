@@ -15,7 +15,8 @@ pub fn describe_metrics() {
     metrics::describe_histogram!(
         DURATION_SECONDS,
         metrics::Unit::Seconds,
-        "Validator JSON-RPC call (one attempt), by validator and method"
+        "Validator round trip (one attempt the validator answered, an error reply included), by \
+         validator and method"
     );
     metrics::describe_gauge!(IN_FLIGHT, "Validator JSON-RPC calls in flight, by validator");
     metrics::describe_counter!(
@@ -51,18 +52,23 @@ pub(crate) fn received(validator: &str, bytes: usize) {
 }
 
 /// One settled call, JSON-RPC or indexer gRPC (`method` = the RPC's own name)
+///
+/// - duration = answered attempts only: no answer (refused connection, timeout) = µs of nothing or
+///   the timeout itself, never a round trip (failure counter only)
 pub(crate) fn call_settled(
     validator: &str,
     method: &str,
     elapsed: Duration,
     failure: Option<FailureMode>,
 ) {
-    metrics::histogram!(
-        DURATION_SECONDS,
-        "validator" => validator.to_owned(),
-        "method" => method.to_owned(),
-    )
-    .record(elapsed.as_secs_f64());
+    if !matches!(failure, Some(FailureMode::Connection | FailureMode::Timeout)) {
+        metrics::histogram!(
+            DURATION_SECONDS,
+            "validator" => validator.to_owned(),
+            "method" => method.to_owned(),
+        )
+        .record(elapsed.as_secs_f64());
+    }
     if let Some(mode) = failure {
         metrics::counter!(
             FAILURES_TOTAL,

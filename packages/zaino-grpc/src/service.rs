@@ -62,18 +62,33 @@ pub(crate) enum Method {
     GetStandardFee,
 }
 
-/// One registry row: wire name (= the `method` metric label), admission pool, the index whose view
-/// its handler reads (`None` = reads none: always served)
+/// One registry row: wire name (= the `method` metric label), admission pool, reply shape (its
+/// latency metric), the index whose view its handler reads (`None` = reads none: always served)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Route {
     pub(crate) method: Method,
     pub(crate) name: &'static str,
     pub(crate) class: Class,
+    pub(crate) reply: Reply,
     pub(crate) index: Option<IndexKind>,
 }
 
-const fn row(method: Method, name: &'static str, class: Class, index: Option<IndexKind>) -> Route {
-    Route { method, name, class, index }
+/// The proto's response side (`returns (stream …)` = `Stream`; a client-streaming request with
+/// one reply = `One`)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reply {
+    One,
+    Stream,
+}
+
+const fn row(
+    method: Method,
+    name: &'static str,
+    class: Class,
+    reply: Reply,
+    index: Option<IndexKind>,
+) -> Route {
+    Route { method, name, class, reply, index }
 }
 
 /// The registry: every served method (a new RPC = a [`Method`], its row, its `handle` arm)
@@ -81,33 +96,46 @@ pub(crate) const ROUTES: [Route; 19] = {
     use Class::{Subscription, Work};
     use IndexKind::{CompactBlock, TransparentAddress, TreeState};
     use Method::*;
+    use Reply::{One, Stream};
 
     [
         // served tip itself
-        row(GetLatestBlock, "GetLatestBlock", Work, None),
-        row(GetBlock, "GetBlock", Work, Some(CompactBlock)),
-        row(GetBlockRange, "GetBlockRange", Work, Some(CompactBlock)),
+        row(GetLatestBlock, "GetLatestBlock", Work, One, None),
+        row(GetBlock, "GetBlock", Work, One, Some(CompactBlock)),
+        row(GetBlockRange, "GetBlockRange", Work, Stream, Some(CompactBlock)),
         // TODO: REMOVE — deprecated alias of `GetBlockRange` (pepper-sync still calls it)
-        row(GetBlockRangeNullifiers, "GetBlockRangeNullifiers", Work, Some(CompactBlock)),
-        row(GetTreeState, "GetTreeState", Work, Some(TreeState)),
-        row(GetLatestTreeState, "GetLatestTreeState", Work, Some(TreeState)),
-        row(GetSubtreeRoots, "GetSubtreeRoots", Work, Some(TreeState)),
-        row(GetAddressUtxos, "GetAddressUtxos", Work, Some(TransparentAddress)),
-        row(GetAddressUtxosStream, "GetAddressUtxosStream", Work, Some(TransparentAddress)),
-        row(GetTaddressBalance, "GetTaddressBalance", Work, Some(TransparentAddress)),
-        row(GetTaddressBalanceStream, "GetTaddressBalanceStream", Work, Some(TransparentAddress)),
+        row(GetBlockRangeNullifiers, "GetBlockRangeNullifiers", Work, Stream, Some(CompactBlock)),
+        row(GetTreeState, "GetTreeState", Work, One, Some(TreeState)),
+        row(GetLatestTreeState, "GetLatestTreeState", Work, One, Some(TreeState)),
+        row(GetSubtreeRoots, "GetSubtreeRoots", Work, Stream, Some(TreeState)),
+        row(GetAddressUtxos, "GetAddressUtxos", Work, One, Some(TransparentAddress)),
+        row(GetAddressUtxosStream, "GetAddressUtxosStream", Work, Stream, Some(TransparentAddress)),
+        row(GetTaddressBalance, "GetTaddressBalance", Work, One, Some(TransparentAddress)),
+        row(
+            GetTaddressBalanceStream,
+            "GetTaddressBalanceStream",
+            Work,
+            One,
+            Some(TransparentAddress),
+        ),
         // index names the txs, a validator holds the bytes (`docs/architecture.md` §1)
-        row(GetTaddressTransactions, "GetTaddressTransactions", Work, Some(TransparentAddress)),
+        row(
+            GetTaddressTransactions,
+            "GetTaddressTransactions",
+            Work,
+            Stream,
+            Some(TransparentAddress),
+        ),
         // TODO: REMOVE — deprecated alias of `GetTaddressTransactions` (pepper-sync calls it)
-        row(GetTaddressTxids, "GetTaddressTxids", Work, Some(TransparentAddress)),
+        row(GetTaddressTxids, "GetTaddressTxids", Work, Stream, Some(TransparentAddress)),
         // one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
-        row(SendTransaction, "SendTransaction", Work, None),
-        row(GetMempoolTx, "GetMempoolTx", Work, None),
+        row(SendTransaction, "SendTransaction", Work, One, None),
+        row(GetMempoolTx, "GetMempoolTx", Work, Stream, None),
         // open until the served tip moves, silent between arrivals
-        row(GetMempoolStream, "GetMempoolStream", Subscription, None),
-        row(GetTransaction, "GetTransaction", Work, None),
-        row(GetLightdInfo, "GetLightdInfo", Work, None),
-        row(GetStandardFee, "GetStandardFee", Work, None),
+        row(GetMempoolStream, "GetMempoolStream", Subscription, Stream, None),
+        row(GetTransaction, "GetTransaction", Work, One, None),
+        row(GetLightdInfo, "GetLightdInfo", Work, One, None),
+        row(GetStandardFee, "GetStandardFee", Work, One, None),
     ]
 };
 
@@ -389,7 +417,7 @@ mod tests {
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, MockChain};
 
-    use super::{Method, RouteDeps, ROUTES};
+    use super::{Method, Reply, RouteDeps, ROUTES};
     use crate::testing::{
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, grpc_snapshots_held,
         indexed, request_at, routes, MAINNET,
@@ -404,6 +432,29 @@ mod tests {
         let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
         let others = ["/grpc.health.v1.Health/GetBlock", "/", "", &format!("{service}/GetBlocks")];
         assert_eq!(others.map(Method::of), [None; 4]);
+    }
+
+    /// Each row's `Reply` = its proto response side, so the latency metric a row feeds can't drift
+    /// from the wire (`returns (stream …)` = `Stream`)
+    #[test]
+    fn every_row_replies_as_the_proto_declares() {
+        let proto = include_str!("../../zaino-proto/lightwallet-protocol/walletrpc/service.proto");
+        let declared: std::collections::HashMap<&str, Reply> = proto
+            .lines()
+            .filter_map(|line| {
+                let (name, rest) = line.trim().strip_prefix("rpc ")?.split_once('(')?;
+                let returns = rest.split_once("returns")?.1.trim_start();
+                let reply =
+                    if returns.starts_with("(stream ") { Reply::Stream } else { Reply::One };
+                Some((name.trim(), reply))
+            })
+            .collect();
+        let drifted: Vec<_> = ROUTES
+            .iter()
+            .filter(|row| declared.get(row.name) != Some(&row.reply))
+            .map(|row| (row.name, row.reply, declared.get(row.name)))
+            .collect();
+        assert!(drifted.is_empty(), "rows vs service.proto (name, ours, proto's): {drifted:?}");
     }
 
     /// Routed with only tree_state configured, nothing served yet:

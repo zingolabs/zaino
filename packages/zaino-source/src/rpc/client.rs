@@ -323,4 +323,62 @@ mod tests {
             .collect();
         assert_eq!((sent, resent), (vec!["x", "y", "z"], false), "one request, nothing re-sent");
     }
+
+    /// Latency = round trips the validator answered:
+    ///
+    /// - an error reply (`-8`) = answered: timed + counted `rpc_-8`
+    /// - a refused connection = no answer: counted `connection`, never timed
+    #[tokio::test]
+    async fn only_an_answered_attempt_is_timed_a_refused_one_is_only_counted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let rendered = recorder.handle();
+        let _recording = ::metrics::set_default_local_recorder(&recorder);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let answering = format!("http://{}", listener.local_addr().expect("bound"));
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request).await.expect("read");
+            let reply = r#"{"id":0,"error":{"code":-8,"message":"above the tip"}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("write");
+        });
+        // bound then dropped: nothing listens
+        let refusing = {
+            let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            format!("http://{}", gone.local_addr().expect("bound"))
+        };
+
+        for (name, url) in [("answering", answering), ("refusing", refusing)] {
+            let config = RpcClientConfig {
+                url,
+                name: name.to_owned(),
+                auth: None,
+                timeouts: Timeouts::default(),
+                limits: LinkLimits::default(),
+            };
+            let client = RpcClient::new(config).expect("client");
+            let settled = client.call::<Value>("getblock", vec![Value::from("99")]).await;
+            assert!(settled.is_err(), "{name}: {settled:?}");
+        }
+
+        let scrape = rendered.render();
+        let missing: Vec<&str> = [
+            r#"zaino_validator_rpc_duration_seconds_count{validator="answering",method="getblock"} 1"#,
+            r#"zaino_validator_rpc_failures_total{validator="answering",method="getblock",failure="rpc_-8"} 1"#,
+            r#"zaino_validator_rpc_failures_total{validator="refusing",method="getblock",failure="connection"} 1"#,
+        ]
+        .into_iter()
+        .filter(|line| !scrape.lines().any(|scraped| scraped == *line))
+        .collect();
+        assert!(missing.is_empty(), "missing {missing:?} from:\n{scrape}");
+        let refused_timed = r#"zaino_validator_rpc_duration_seconds_count{validator="refusing""#;
+        assert!(!scrape.contains(refused_timed), "a refused attempt timed:\n{scrape}");
+    }
 }

@@ -766,8 +766,7 @@ mod tests {
         use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
-        let recorder = crate::metrics::builder().expect("native config is valid").build_recorder();
-        let rendered = recorder.handle();
+        let (recorder, rendered) = crate::metrics::recorder().expect("native config is valid");
         let _recording = metrics::set_default_local_recorder(&recorder);
         crate::metrics::describe_all();
 

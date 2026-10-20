@@ -8,12 +8,13 @@ use tonic::Code;
 use crate::admission::Class;
 use crate::labels::{label, slot, CODES, LABELS};
 use crate::read_lanes::Lane;
-use crate::service::Method;
+use crate::service::{Method, Reply};
 use crate::summary;
 
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
 const DURATION_SECONDS: &str = "zaino.grpc.duration_seconds";
+const STREAM_DURATION_SECONDS: &str = "zaino.grpc.stream_duration_seconds";
 const STREAM_MESSAGES: &str = "zaino.grpc.stream_messages";
 const SENT_BYTES_TOTAL: &str = "zaino.grpc.sent_bytes_total";
 const ACTIVE_STREAMS: &str = "zaino.grpc.active_streams";
@@ -38,23 +39,44 @@ const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
 struct MethodSeries {
-    first_message: metrics::Histogram,
-    duration: metrics::Histogram,
-    messages: metrics::Histogram,
+    timing: Timing,
     sent: metrics::Counter,
     requests: [std::sync::OnceLock<metrics::Counter>; CODES.len()],
 }
 
-fn series(slot: usize) -> &'static MethodSeries {
+/// By the row's [`Reply`]: one reply = its latency; a stream = time to first message (its latency)
+/// + lifetime + messages (a stream's duration is how long its client kept it, not a latency)
+enum Timing {
+    One {
+        duration: metrics::Histogram,
+    },
+    Stream {
+        first_message: metrics::Histogram,
+        lifetime: metrics::Histogram,
+        messages: metrics::Histogram,
+    },
+}
+
+fn series(method: Option<Method>) -> &'static MethodSeries {
     static SERIES: [std::sync::OnceLock<MethodSeries>; LABELS] =
         [const { std::sync::OnceLock::new() }; LABELS];
 
+    let slot = slot(method);
     SERIES[slot].get_or_init(|| {
         let name = label(slot);
+        // an unknown path = no row: answered UNIMPLEMENTED in one reply
+        let timing = match method.map_or(Reply::One, |method| method.route().reply) {
+            Reply::One => {
+                Timing::One { duration: metrics::histogram!(DURATION_SECONDS, "method" => name) }
+            }
+            Reply::Stream => Timing::Stream {
+                first_message: metrics::histogram!(FIRST_MESSAGE_SECONDS, "method" => name),
+                lifetime: metrics::histogram!(STREAM_DURATION_SECONDS, "method" => name),
+                messages: metrics::histogram!(STREAM_MESSAGES, "method" => name),
+            },
+        };
         MethodSeries {
-            first_message: metrics::histogram!(FIRST_MESSAGE_SECONDS, "method" => name),
-            duration: metrics::histogram!(DURATION_SECONDS, "method" => name),
-            messages: metrics::histogram!(STREAM_MESSAGES, "method" => name),
+            timing,
             sent: metrics::counter!(SENT_BYTES_TOTAL, "method" => name),
             requests: [const { std::sync::OnceLock::new() }; CODES.len()],
         }
@@ -65,14 +87,23 @@ fn series(slot: usize) -> &'static MethodSeries {
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
-    describe_counter!(REQUESTS_TOTAL, "Finished streams, by method and gRPC status code");
+    describe_counter!(REQUESTS_TOTAL, "Finished requests, by method and gRPC status code");
+    describe_histogram!(
+        DURATION_SECONDS,
+        Unit::Seconds,
+        "One-reply RPC latency: admission through trailers, OK answers only, by method"
+    );
     describe_histogram!(
         FIRST_MESSAGE_SECONDS,
         Unit::Seconds,
-        "Admission to first DATA frame, by method"
+        "Server-streaming RPC latency: admission to first message, by method"
     );
-    describe_histogram!(DURATION_SECONDS, Unit::Seconds, "Admission through trailers, by method");
-    describe_histogram!(STREAM_MESSAGES, "Messages sent per stream, by method");
+    describe_histogram!(
+        STREAM_DURATION_SECONDS,
+        Unit::Seconds,
+        "Server-streaming RPC lifetime: admission through trailers or the client leaving, by method"
+    );
+    describe_histogram!(STREAM_MESSAGES, "Messages sent per server stream, by method");
     describe_counter!(SENT_BYTES_TOTAL, Unit::Bytes, "Response body bytes, by method");
     describe_gauge!(ACTIVE_STREAMS, "Work streams holding an admission slot");
     describe_counter!(
@@ -169,8 +200,11 @@ pub(crate) fn disk_read_waited(lane: Lane, waited: Duration) {
         .record(waited.as_secs_f64());
 }
 
+/// A stream's first message (a one-reply RPC's = its whole answer: [`stream_finished`] times it)
 pub(crate) fn first_message(method: Option<Method>, elapsed: Duration) {
-    series(slot(method)).first_message.record(elapsed.as_secs_f64());
+    if let Timing::Stream { first_message, .. } = &series(method).timing {
+        first_message.record(elapsed.as_secs_f64());
+    }
 }
 
 /// One stream's close-out (recorded where the body drops)
@@ -185,18 +219,24 @@ pub(crate) fn stream_finished(
     sent: u64,
 ) {
     summary::finished(method, code, latency);
-    let slot = slot(method);
-    let series = series(slot);
+    let series = series(method);
     // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)
     let at = code as usize;
     series.requests[at]
         .get_or_init(|| {
-            let (method, code) = (label(slot), CODES[at]);
+            let (method, code) = (label(slot(method)), CODES[at]);
             metrics::counter!(REQUESTS_TOTAL, "method" => method, "code" => code)
         })
         .increment(1);
-    series.duration.record(elapsed.as_secs_f64());
-    series.messages.record(messages as f64);
+    match &series.timing {
+        // latency of answers only: a refusal (UNAVAILABLE held, UNIMPLEMENTED) = µs of no work
+        Timing::One { duration } if code == Code::Ok => duration.record(elapsed.as_secs_f64()),
+        Timing::One { .. } => {}
+        Timing::Stream { lifetime, messages: sent_messages, .. } => {
+            lifetime.record(elapsed.as_secs_f64());
+            sent_messages.record(messages as f64);
+        }
+    }
     series.sent.increment(sent);
     SENT_BYTES.fetch_add(sent, Ordering::Relaxed);
 }

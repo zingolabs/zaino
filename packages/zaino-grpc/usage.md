@@ -320,8 +320,14 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 
 - **Rate** = streams finished in the window, per second. **conns** = connections
   held at the summary; **work** / **subs** (and **conns** as `used/max`) appear
-  only under `High load`. Latency and bytes out: `zaino.grpc.first_message_seconds`
-  and `zaino.grpc.sent_bytes_total`.
+  only under `High load`. Latency and bytes out, by each `ROUTES` row's `Reply` (the proto's
+  response side; a test holds every row to `service.proto`):
+  - one reply: `zaino.grpc.duration_seconds` (admission through trailers, `OK` answers only: a
+    refusal is microseconds of no work, counted by `requests_total{code}`)
+  - a server stream: `zaino.grpc.first_message_seconds` (its latency),
+    `zaino.grpc.stream_duration_seconds` (its lifetime: how long the client kept it),
+    `zaino.grpc.stream_messages`
+  - both: `zaino.grpc.sent_bytes_total`, `zaino.grpc.requests_total{method, code}`
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
   nothing served yet, validator unreachable; `at_capacity` = the admission share);

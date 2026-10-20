@@ -5318,6 +5318,7 @@ dependencies = [
  "futures",
  "governor",
  "metrics",
+ "metrics-exporter-prometheus",
  "orchard",
  "proptest",
  "rcgen",

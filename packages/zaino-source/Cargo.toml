@@ -41,6 +41,7 @@ zcash_primitives = { workspace = true, features = ["test-dependencies"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 rcgen.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

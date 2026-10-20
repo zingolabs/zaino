@@ -61,6 +61,34 @@ pub(crate) enum DaemonState {
     Down,
 }
 
+/// One-hot by `state` (every state each scrape: 1 = now, 0 = the rest; no series left stale)
+const STATE: &str = "zaino.state";
+
+impl DaemonState {
+    const ALL: [Self; 6] =
+        [Self::Provisioning, Self::Syncing, Self::Serving, Self::Degraded, Self::Held, Self::Down];
+
+    /// = its `/readyz` + `/status` spelling (serde's)
+    fn label(self) -> &'static str {
+        match self {
+            Self::Provisioning => "provisioning",
+            Self::Syncing => "syncing",
+            Self::Serving => "serving",
+            Self::Degraded => "degraded",
+            Self::Held => "held",
+            Self::Down => "down",
+        }
+    }
+}
+
+pub(crate) fn describe_metrics() {
+    metrics::describe_gauge!(
+        STATE,
+        "Daemon state, one-hot by state (= /readyz's: provisioning, syncing, serving, degraded, \
+         held, down)"
+    );
+}
+
 /// `rate` per second of `unit` (`None` = not measured yet, or a bootstrap phase past downloading)
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Progress {
@@ -275,8 +303,13 @@ impl DaemonStatus {
         serde_json::to_string(&status).unwrap_or_default()
     }
 
-    /// Every `GrpcSnapshot` gauge, set just before a scrape renders (nothing before boot)
+    /// The state (`/readyz`'s) + every `GrpcSnapshot` gauge (none before boot), set just before a
+    /// scrape renders
     pub(crate) fn emit_gauges(&self) {
+        let now = self.current_readiness().state;
+        for state in DaemonState::ALL {
+            metrics::gauge!(STATE, "state" => state.label()).set(f64::from(u8::from(state == now)));
+        }
         if let Some(sources) = self.sources.get() {
             zaino_grpc_snapshot::emit_gauges(&sources.grpc_snapshots.load(), &sources.progress);
         }
@@ -707,5 +740,40 @@ mod tests {
                 "info": { "blockHeight": 3_515_400 },
             }),
         );
+    }
+
+    /// `zaino_state` = `/readyz`'s state, one-hot over all six (each label = its serde spelling)
+    ///
+    /// - not booted = provisioning, an operator hold = held: one 1, five 0s each time
+    #[test]
+    fn the_state_gauge_is_readyz_one_hot() {
+        let (recorder, rendered) = crate::metrics::recorder().expect("native config is valid");
+        let _recording = metrics::set_default_local_recorder(&recorder);
+        let status = DaemonStatus::new(NetworkType::Regtest, []);
+        // sorted: the exporter renders a family's series in no fixed order
+        let one_hot = |now: DaemonState| -> Vec<String> {
+            let mut lines = DaemonState::ALL.map(|state| {
+                format!("zaino_state{{state=\"{}\"}} {}", state.label(), u8::from(state == now))
+            });
+            lines.sort();
+            lines.to_vec()
+        };
+        let scraped = || {
+            status.emit_gauges();
+            let text = rendered.render();
+            let mut lines: Vec<_> = text
+                .lines()
+                .filter(|line| line.starts_with("zaino_state{"))
+                .map(str::to_owned)
+                .collect();
+            lines.sort();
+            lines
+        };
+
+        let spellings = DaemonState::ALL.map(|state| (serde_json::json!(state), state.label()));
+        assert!(spellings.iter().all(|(serde, label)| serde == label), "{spellings:?}");
+        assert_eq!(scraped(), one_hot(DaemonState::Provisioning), "not booted");
+        status.retire().hold(std::time::Duration::ZERO);
+        assert_eq!(scraped(), one_hot(DaemonState::Held), "operator hold");
     }
 }

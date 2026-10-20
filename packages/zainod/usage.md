@@ -42,6 +42,14 @@ no bucket edges are configured anywhere. Only the protobuf exposition carries na
 - The text format has every counter and gauge but no histogram; a scraper wanting latencies
   enables native histograms (and `send_native_histograms` on any remote write after it)
 
+`zaino_state{state}` = the `state` below, one-hot: every scrape sets all six (1 = now, 0 = the
+rest), from the same evaluation as `/readyz`.
+
+zebra-network's series (`zcash_net_*`, `zebra_net_*`) carry no peer identity: its address and the
+free text it sends (`addr`, `remote_ip`, `user_agent`, `remote_version`, `remote_services`,
+`error`) are dropped at the recorder. Its counters stay as totals over the remaining labels; a
+gauge naming one peer (its version, its connection's state) is not exported.
+
 `state` is one of six, and the first rule that matches wins:
 
 | `state`        | When                                                                                     |
@@ -183,8 +191,9 @@ each index writer's `zaino_index_*` progress included
 ([writer loop](../zaino-sync/usage.md#writer-loop)). One progress task logs the sync summary and
 each index's `Syncing` line (applied, durable, size) every 30 s.
 
-The same task samples the disk every 30 s (a metric whose source is unreadable, e.g. no cgroup v2
-PSI, is left out rather than reported as zero):
+The same task samples the disk every 30 s (a metric whose source is unreadable, e.g. no
+`/proc/self/io`, is left out rather than reported as zero; I/O pressure = the host's PSI, from the
+node exporter):
 
 | Metric | Labels | Answers |
 |---|---|---|
@@ -193,7 +202,6 @@ PSI, is left out rather than reported as zero):
 | `zaino_disk_bytes` | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
 | `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes` | `index` | room left on the index's filesystem |
 | `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` | | block-device bytes zainod moved (`/proc/self/io`) |
-| `zaino_io_stall_seconds_total` | `kind` = `some` / `full` | time zainod's own cgroup had tasks stalled on I/O |
 
 Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit_bytes_total`
 (`{index}`, [`zaino-persistence`](../zaino-persistence/usage.md)).

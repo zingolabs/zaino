@@ -236,8 +236,7 @@ mod tests {
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing, scrape negotiation
     #[tokio::test]
     async fn the_admin_surface_answers_metrics_and_probes() {
-        let recorder = crate::metrics::builder().expect("native config is valid").build_recorder();
-        let handle = recorder.handle();
+        let (recorder, handle) = crate::metrics::recorder().expect("native config is valid");
         metrics::with_local_recorder(&recorder, || {
             metrics::counter!("zaino.test.total").increment(7);
             metrics::histogram!("zaino.test.seconds").record(0.042);

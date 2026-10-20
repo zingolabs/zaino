@@ -3,8 +3,8 @@
 //! - per table: durable bytes + their page-cache share (cold lookups = disk reads)
 //! - per index directory: its filesystem's free + capacity
 //! - walk's total = [`walked`] (bytes by [`disk_bytes`])
-//! - process: block-device bytes read / written, time stalled on I/O (own cgroup's PSI)
-//! - unreadable source (no PSI, not Linux) = its metric left out, never a guessed zero
+//! - process: block-device bytes read / written
+//! - unreadable source (not Linux) = its metric left out, never a guessed zero
 
 use std::{
     io,
@@ -23,7 +23,6 @@ mod names {
     pub(super) const CAPACITY_BYTES: &str = "zaino.disk.capacity_bytes";
     pub(super) const READ_BYTES_TOTAL: &str = "zaino.disk.read_bytes_total";
     pub(super) const WRITTEN_BYTES_TOTAL: &str = "zaino.disk.written_bytes_total";
-    pub(super) const IO_STALL_SECONDS_TOTAL: &str = "zaino.io.stall_seconds_total";
 }
 
 pub(crate) fn describe_metrics() {
@@ -52,11 +51,6 @@ pub(crate) fn describe_metrics() {
         Unit::Bytes,
         "Block-device bytes zainod caused to be written"
     );
-    describe_counter!(
-        names::IO_STALL_SECONDS_TOTAL,
-        Unit::Seconds,
-        "Time zainod's cgroup had tasks stalled on I/O: some = at least one, full = all"
-    );
 }
 
 /// One sample of every index + the process (blocking: `mincore` + `statvfs` + procfs reads)
@@ -80,12 +74,6 @@ pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView
     {
         metrics::counter!(names::READ_BYTES_TOTAL).absolute(read);
         metrics::counter!(names::WRITTEN_BYTES_TOTAL).absolute(written);
-    }
-    if let Some((some, full)) = own_io_pressure() {
-        metrics::counter!(names::IO_STALL_SECONDS_TOTAL, "kind" => "some")
-            .absolute(some / 1_000_000);
-        metrics::counter!(names::IO_STALL_SECONDS_TOTAL, "kind" => "full")
-            .absolute(full / 1_000_000);
     }
 }
 
@@ -140,34 +128,6 @@ fn proc_io(io: &str) -> Option<(u64, u64)> {
     Some((field("read_bytes")?, field("write_bytes")?))
 }
 
-/// This process's cgroup v2 `io.pressure` totals (µs): own cgroup = the container, the systemd
-/// unit, or the session
-fn own_io_pressure() -> Option<(u64, u64)> {
-    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let path = cgroup_v2_path(&cgroup)?;
-    let pressure =
-        std::fs::read_to_string(Path::new("/sys/fs/cgroup").join(path).join("io.pressure"));
-    pressure_totals(&pressure.ok()?)
-}
-
-/// `0::<path>` line of `/proc/self/cgroup`, relative (cgroup v2 only)
-fn cgroup_v2_path(cgroup: &str) -> Option<&str> {
-    cgroup
-        .lines()
-        .find_map(|line| line.strip_prefix("0::"))
-        .map(|path| path.trim_start_matches('/'))
-}
-
-/// `(some, full)` `total=` µs of a PSI file
-fn pressure_totals(pressure: &str) -> Option<(u64, u64)> {
-    let total = |kind: &str| {
-        let line = pressure.lines().find(|line| line.starts_with(kind))?;
-        let total = line.split_whitespace().find_map(|field| field.strip_prefix("total="))?;
-        total.parse::<u64>().ok()
-    };
-    Some((total("some ")?, total("full ")?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,24 +152,5 @@ mod tests {
                   read_bytes: 23569625088\nwrite_bytes: 70950584320\ncancelled_write_bytes: 0\n";
         assert_eq!(proc_io(io), Some((23_569_625_088, 70_950_584_320)));
         assert_eq!(proc_io("rchar: 1\n"), None, "no block-layer fields");
-    }
-
-    #[test]
-    fn cgroup_v2_path_is_the_unified_line_relative() {
-        for (cgroup, path) in [
-            ("0::/\n", Some("")),
-            ("0::/system.slice/zainod.service\n", Some("system.slice/zainod.service")),
-            ("12:cpu,cpuacct:/x\n", None),
-        ] {
-            assert_eq!(cgroup_v2_path(cgroup), path, "{cgroup:?}");
-        }
-    }
-
-    #[test]
-    fn pressure_totals_need_both_some_and_full() {
-        let pressure = "some avg10=92.26 avg60=92.93 avg300=91.80 total=11954751839\n\
-                        full avg10=89.02 avg60=89.51 avg300=87.84 total=9874765437\n";
-        assert_eq!(pressure_totals(pressure), Some((11_954_751_839, 9_874_765_437)));
-        assert_eq!(pressure_totals("some avg10=0.00 total=5\n"), None, "no full line");
     }
 }
