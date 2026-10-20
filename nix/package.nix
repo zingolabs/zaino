@@ -21,13 +21,11 @@ let
     ];
   };
 
-  crateInfo = craneLib.crateNameFromCargoToml {
-    cargoToml = ../packages/zainod/Cargo.toml;
-  };
-
   commonArgs = {
     inherit src;
-    inherit (crateInfo) pname version;
+    pname = "zainod";
+    # lockstep workspace version (crateNameFromCargoToml can't follow `version.workspace = true` → 0.0.1)
+    version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
     strictDeps = true;
     doCheck = false;
