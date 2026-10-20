@@ -33,7 +33,7 @@ mod tls;
 mod transport;
 mod wire;
 
-pub use crate::metrics::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
+pub use crate::metrics::{describe_metrics, sent_bytes_total};
 pub use admission::{AdmissionReport, AdmissionState};
 pub use health::Health;
 pub use lifetime::{Hold, Retire};

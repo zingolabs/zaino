@@ -39,7 +39,7 @@ config = { workspace = true }
 
 # Admin listener: Prometheus /metrics scrape endpoint and /livez probe
 metrics = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
+metrics-exporter-prometheus = { workspace = true, features = ["protobuf"] }
 metrics-process = { workspace = true }
 hyper = { workspace = true, features = ["server", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }

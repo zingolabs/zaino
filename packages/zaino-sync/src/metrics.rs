@@ -24,12 +24,6 @@ mod names {
     pub(super) const INDEX_WRITE_SECONDS: &str = "zaino.index.write_seconds";
 }
 
-/// `(metric, bucket edges)` for the exporter (ms tip runs → minutes for a stalled bulk run)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] =
-    &[(names::INDEX_RUN_SECONDS, RUN_BUCKETS), (names::INDEX_WRITE_SECONDS, RUN_BUCKETS)];
-
-const RUN_BUCKETS: &[f64] = &[1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0];
-
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
     for (name, what) in [

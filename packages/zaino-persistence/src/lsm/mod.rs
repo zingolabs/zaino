@@ -39,7 +39,7 @@ pub(crate) use policy::stall_at;
 pub(crate) use reader::SegmentsView;
 pub(crate) use segment_set::SegmentSet;
 pub(crate) use slots::Slots;
-pub(crate) use telemetry::{describe_metrics, metric_names};
+pub(crate) use telemetry::describe_metrics;
 
 use std::num::{NonZeroU32, NonZeroUsize};
 

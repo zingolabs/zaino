@@ -766,7 +766,7 @@ mod tests {
         use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
-        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let recorder = crate::metrics::builder().expect("native config is valid").build_recorder();
         let rendered = recorder.handle();
         let _recording = metrics::set_default_local_recorder(&recorder);
         crate::metrics::describe_all();
@@ -895,7 +895,9 @@ mod tests {
         let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
         assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");
 
-        let scrape = crate::metrics::scrape(&rendered, &status);
+        use crate::metrics::{scrape, Format};
+        let text = String::from_utf8(scrape(&rendered, &status, Format::Text));
+        let text = text.expect("text exposition is UTF-8");
         let per_index = |family: &'static str| {
             let name = move |kind: IndexKind| format!("{family}{{index=\"{}\"}}", kind.name());
             IndexKind::ALL.into_iter().map(name)
@@ -913,14 +915,22 @@ mod tests {
             "zaino_fetch_sapling_outputs_total ",
             "zaino_fetch_orchard_actions_total ",
             "zaino_fetch_ironwood_actions_total ",
-            "zaino_grpc_first_message_seconds{",
-            "zaino_grpc_duration_seconds{",
         ];
         let families = families.into_iter().map(str::to_owned);
         let families = families.chain(per_index("zaino_index_finalized_height"));
         for family in families.chain(per_index("zaino_index_synced")) {
-            let found = scrape.lines().any(|line| line.starts_with(&family));
-            assert!(found, "ztest family {family:?} not in the scrape:\n{scrape}");
+            let found = text.lines().any(|line| line.starts_with(&family));
+            assert!(found, "ztest family {family:?} not in the text scrape:\n{text}");
+        }
+        // native histograms: protobuf scrape only (lossy: names are plain strings in the payload)
+        let protobuf = scrape(&rendered, &status, Format::Protobuf);
+        let protobuf = String::from_utf8_lossy(&protobuf);
+        for family in ["zaino_grpc_first_message_seconds", "zaino_grpc_duration_seconds"] {
+            assert!(
+                protobuf.contains(family),
+                "ztest histogram {family:?} not in the protobuf scrape"
+            );
+            assert!(!text.contains(family), "{family:?} in the text scrape = not native");
         }
 
         // header sync's sender drops on the same cancel (NFS + follower see it close mid-drain)

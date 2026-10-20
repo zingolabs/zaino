@@ -20,18 +20,6 @@ mod names {
     pub(super) const SUBMISSION_ATTEMPTS: &str = "zaino.chainview.submission_attempts";
 }
 
-/// Sub-second relay hops to hour-long residence
-const SPREAD_BUCKETS: &[f64] =
-    &[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
-
-/// Per-histogram bucket edges (installed by the daemon's exporter)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
-    (names::FIRST_TRUSTED, SPREAD_BUCKETS),
-    (names::ALL_TRUSTED, SPREAD_BUCKETS),
-    (names::RESIDENCE, SPREAD_BUCKETS),
-    (names::SUBMISSION_ATTEMPTS, &[1.0, 2.0, 3.0, 4.0, 6.0, 8.0]),
-];
-
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_histogram};

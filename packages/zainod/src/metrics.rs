@@ -4,10 +4,13 @@
 //!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
 //!   ([`DaemonStatus::emit_gauges`])
 //! - Events emitted where they happen (`zaino-nfs` / `zaino-sync` / `zaino-grpc` /
-//!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), registered here via their
-//!   `describe_metrics` / `METRIC_BUCKETS`
+//!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), described here via their
+//!   `describe_metrics`
+//! - Every histogram native (exponential buckets, range rescales itself) = protobuf scrapes only
 
-use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{
+    Matcher, NativeHistogramConfig, PrometheusBuilder, PrometheusHandle,
+};
 
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
@@ -15,19 +18,36 @@ use crate::status::DaemonStatus;
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
 
+/// ~9% wide buckets (schema 3 = Prometheus' default native resolution)
+const BUCKET_FACTOR: f64 = 1.1;
+
+/// Past it, bucket width doubles (schema − 1) instead of dropping samples
+const MAX_BUCKETS: u32 = 160;
+
+/// `/metrics` exposition, negotiated per scrape from `Accept`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Format {
+    /// No native histograms (the text format cannot carry them)
+    Text,
+    Protobuf,
+}
+
+impl Format {
+    pub(crate) fn content_type(self) -> &'static str {
+        match self {
+            // Load-bearing: Prometheus >= 3.0 drops a scrape with a blank `Content-Type`
+            Format::Text => "text/plain; version=0.0.4; charset=utf-8",
+            Format::Protobuf => {
+                "application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; \
+                 encoding=delimited"
+            }
+        }
+    }
+}
+
 /// Global recorder + every `# HELP` (served by [`crate::admin::start`], which binds first)
 pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
-    let builder = zaino_grpc::METRIC_BUCKETS
-        .iter()
-        .chain(zaino_source::METRIC_BUCKETS)
-        .chain(zaino_chainview::METRIC_BUCKETS)
-        .chain(zaino_persistence::METRIC_BUCKETS)
-        .chain(zaino_sync::METRIC_BUCKETS)
-        .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
-            builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
-        })
-        .map_err(|e| IndexerError::Metrics(format!("setting histogram buckets: {e}")))?;
-    let handle = builder
+    let handle = builder()?
         .install_recorder()
         .map_err(|e| IndexerError::Metrics(format!("installing the recorder: {e}")))?;
 
@@ -35,11 +55,22 @@ pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
     Ok(handle)
 }
 
+/// Every histogram native (empty prefix = every metric name, zebra-network's included)
+pub(crate) fn builder() -> Result<PrometheusBuilder, IndexerError> {
+    let native = NativeHistogramConfig::new(BUCKET_FACTOR, MAX_BUCKETS, 0.0)
+        .map_err(|e| IndexerError::Metrics(format!("native histogram config: {e}")))?;
+    Ok(PrometheusBuilder::new()
+        .set_native_histogram_for_metric(Matcher::Prefix(String::new()), native))
+}
+
 /// One scrape: `GrpcSnapshot` gauges + process sample set, rendered (blocking: walks every handle)
-pub(crate) fn scrape(handle: &PrometheusHandle, status: &DaemonStatus) -> String {
+pub(crate) fn scrape(handle: &PrometheusHandle, status: &DaemonStatus, format: Format) -> Vec<u8> {
     status.emit_gauges();
     collect_process_metrics();
-    handle.render()
+    match format {
+        Format::Text => handle.render().into_bytes(),
+        Format::Protobuf => handle.render_protobuf(),
+    }
 }
 
 /// Process CPU, memory, fds sampled per scrape (sample age = answer age)

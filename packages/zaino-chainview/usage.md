@@ -209,7 +209,7 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 ## Telemetry
 
 zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` gauges are
-`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only (buckets: `METRIC_BUCKETS`):
+`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only:
 
 | Metric | Kind | Labels |
 |---|---|---|

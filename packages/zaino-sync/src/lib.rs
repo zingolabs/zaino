@@ -19,7 +19,7 @@ mod progress;
 pub mod testing;
 mod writer;
 
-pub use self::metrics::{describe_metrics, METRIC_BUCKETS};
+pub use self::metrics::describe_metrics;
 pub(crate) use fetch::fetch_at;
 pub use fetch::{fetch, Checked};
 pub use finalized_stream::{FeeSink, FinalizedStream, Run, Step, Subscription, Weight};

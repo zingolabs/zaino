@@ -13,7 +13,7 @@ use zaino_primitives::display::{ByteSize, Human};
 
 use super::{segment_set::Landed, writer::Merged, SegmentMeta};
 
-pub(crate) mod metric_names {
+mod metric_names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
     pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
     pub(super) const MERGING: &str = "zaino.lsm.merging";
@@ -22,8 +22,8 @@ pub(crate) mod metric_names {
     pub(super) const MERGE_ROWS_TOTAL: &str = "zaino.lsm.merge_rows_total";
     pub(super) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
     pub(super) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
-    pub(crate) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
-    pub(crate) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
+    pub(super) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
+    pub(super) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
 }
 
 /// `# HELP` registrations for every metric this module emits

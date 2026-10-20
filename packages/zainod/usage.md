@@ -32,6 +32,16 @@ may reach it: [running.md: Network exposure](../../docs/running.md#network-expos
 each read **one** `GrpcSnapshot` load (`zaino-grpc-snapshot`): none of them can mix two
 moments.
 
+Every histogram is a Prometheus **native** histogram: exponential buckets about 9% wide
+(schema 3), at most 160 per series; past that the width doubles rather than dropping samples, so
+no bucket edges are configured anywhere. Only the protobuf exposition carries native histograms:
+
+- `/metrics` answers protobuf when the scrape's `Accept` offers
+  `application/vnd.google.protobuf` (Prometheus with `scrape_native_histograms`, Alloy with
+  `scrape_native_histograms = true`), else the text format
+- The text format has every counter and gauge but no histogram; a scraper wanting latencies
+  enables native histograms (and `send_native_histograms` on any remote write after it)
+
 `state` is one of six, and the first rule that matches wins:
 
 | `state`        | When                                                                                     |

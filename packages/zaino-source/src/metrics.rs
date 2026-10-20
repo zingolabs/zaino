@@ -10,12 +10,6 @@ const IN_FLIGHT: &str = "zaino.validator_rpc.in_flight";
 const RECEIVED_BYTES: &str = "zaino.validator_rpc.received_bytes_total";
 const FAILURES_TOTAL: &str = "zaino.validator_rpc.failures_total";
 
-/// `(metric, bucket edges)` for the exporter (ms-scale `getblock` → minutes-scale heavy calls)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[(
-    DURATION_SECONDS,
-    &[1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 50e-3, 100e-3, 250e-3, 1.0, 5.0, 30.0, 120.0],
-)];
-
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
     metrics::describe_histogram!(

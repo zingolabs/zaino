@@ -13,13 +13,17 @@ use std::{
 };
 
 use http_body_util::Full;
-use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Response, StatusCode};
+use hyper::{
+    body::Bytes, header::HeaderValue, server::conn::http1, service::service_fn, Request, Response,
+    StatusCode,
+};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::error::IndexerError;
+use crate::metrics::Format;
 use crate::status::DaemonStatus;
 
 /// Bounds `AtomicBucket` growth between scrapes (`render` drains itself, upkeep covers no scraper)
@@ -170,9 +174,10 @@ async fn route(
         // Off the admin runtime: `render` walks every handle, and this thread answers probes
         "/metrics" => {
             let handle = handle.clone();
-            let scrape = move || crate::metrics::scrape(&handle, &status);
+            let format = negotiate(request.headers().get(hyper::header::ACCEPT));
+            let scrape = move || crate::metrics::scrape(&handle, &status, format);
             match tokio::task::spawn_blocking(scrape).await {
-                Ok(scrape) => body(StatusCode::OK, EXPOSITION_CONTENT_TYPE, scrape),
+                Ok(scrape) => body(StatusCode::OK, format.content_type(), scrape),
                 Err(e) => {
                     error!(%e, "rendering the scrape panicked");
                     body(StatusCode::INTERNAL_SERVER_ERROR, PLAIN_CONTENT_TYPE, String::new())
@@ -194,20 +199,33 @@ async fn route(
     }
 }
 
-/// Prometheus text exposition format
-///
-/// - Load-bearing: Prometheus >= 3.0 drops a scrape with a blank `Content-Type`
-const EXPOSITION_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+/// Protobuf when any `Accept` entry offers it with q > 0 (Prometheus / Alloy: listed first, weighted)
+fn negotiate(accept: Option<&HeaderValue>) -> Format {
+    let offers_protobuf = |entry: &str| {
+        let mut parts = entry.split(';').map(str::trim);
+        let refused =
+            |param: &str| param.strip_prefix("q=").and_then(|q| q.parse::<f64>().ok()) == Some(0.0);
+        parts.next() == Some("application/vnd.google.protobuf") && !parts.any(refused)
+    };
+    match accept.and_then(|accept| accept.to_str().ok()) {
+        Some(accept) if accept.split(',').any(offers_protobuf) => Format::Protobuf,
+        _ => Format::Text,
+    }
+}
 
 const PLAIN_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
-fn body(status: StatusCode, content_type: &'static str, payload: String) -> Response<Full<Bytes>> {
+fn body(
+    status: StatusCode,
+    content_type: &'static str,
+    payload: impl Into<Bytes>,
+) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, content_type)
-        .body(Full::new(Bytes::from(payload)))
+        .body(Full::new(payload.into()))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
 }
 
@@ -215,13 +233,14 @@ fn body(status: StatusCode, content_type: &'static str, payload: String) -> Resp
 mod tests {
     use super::*;
 
-    /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing
+    /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing, scrape negotiation
     #[tokio::test]
     async fn the_admin_surface_answers_metrics_and_probes() {
-        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let recorder = crate::metrics::builder().expect("native config is valid").build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
             metrics::counter!("zaino.test.total").increment(7);
+            metrics::histogram!("zaino.test.seconds").record(0.042);
         });
 
         let listener = bind("127.0.0.1:0".parse().expect("a loopback socket address parses"))
@@ -230,36 +249,58 @@ mod tests {
         let network = zcash_protocol::consensus::NetworkType::Regtest;
         tokio::spawn(serve(listener, handle, Arc::new(DaemonStatus::new(network, []))));
 
-        // Retry, no fixed sleep (accept loop races the connect)
-        let get = |path: &'static str| async move {
+        // Retry, no fixed sleep (accept loop races the connect); lossy: protobuf bodies are binary
+        let get = |path: &'static str, accept: &'static str| async move {
             for _ in 0..50 {
                 if let Ok(mut stream) = tokio::net::TcpStream::connect(endpoint).await {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let request =
-                        format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+                    let request = format!(
+                        "GET {path} HTTP/1.1\r\nHost: x\r\nAccept: {accept}\r\nConnection: close\r\n\r\n"
+                    );
                     stream.write_all(request.as_bytes()).await.unwrap();
-                    let mut response = String::new();
-                    stream.read_to_string(&mut response).await.unwrap();
-                    return response;
+                    let mut response = Vec::new();
+                    stream.read_to_end(&mut response).await.unwrap();
+                    return String::from_utf8_lossy(&response).into_owned();
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             panic!("admin endpoint never accepted a connection on {endpoint}");
         };
 
-        let metrics = get("/metrics").await;
-        assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
-        assert!(metrics.contains("zaino_test_total 7"), "{metrics}");
+        // Prometheus 3 / Alloy with native histograms on: protobuf first, text as fallback
+        let protobuf = get(
+            "/metrics",
+            "application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;\
+             encoding=delimited;q=0.6,text/plain;version=0.0.4;q=0.4,*/*;q=0.1",
+        )
+        .await;
+        assert!(protobuf.starts_with("HTTP/1.1 200"), "{protobuf}");
         assert!(
-            metrics.to_ascii_lowercase().contains("content-type: text/plain; version=0.0.4"),
-            "{metrics}"
+            protobuf.to_ascii_lowercase().contains("content-type: application/vnd.google.protobuf"),
+            "{protobuf}"
         );
-        assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
+        for family in ["zaino_test_total", "zaino_test_seconds"] {
+            assert!(protobuf.contains(family), "{family} missing from the protobuf scrape");
+        }
+
+        // Text (curl, or protobuf refused): counters only, a native histogram has no text form
+        for accept in ["*/*", "application/vnd.google.protobuf;q=0,text/plain"] {
+            let text = get("/metrics", accept).await;
+            assert!(text.starts_with("HTTP/1.1 200"), "{accept}: {text}");
+            assert!(
+                text.to_ascii_lowercase().contains("content-type: text/plain; version=0.0.4"),
+                "{accept}: {text}"
+            );
+            assert!(text.contains("zaino_test_total 7"), "{accept}: {text}");
+            assert!(!text.contains("zaino_test_seconds"), "{accept}: histogram not native: {text}");
+        }
+
+        assert!(get("/livez", "*/*").await.starts_with("HTTP/1.1 200"));
         // no indexer booted in this test = sources unpublished
-        let readyz = get("/readyz").await;
+        let readyz = get("/readyz", "*/*").await;
         assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
         assert!(readyz.ends_with(r#"{"detail":null,"state":"provisioning"}"#), "{readyz}");
-        assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
+        assert!(get("/nope", "*/*").await.starts_with("HTTP/1.1 404"));
     }
 
     /// Held port → bind error naming the endpoint

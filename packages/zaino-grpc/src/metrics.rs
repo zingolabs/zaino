@@ -61,20 +61,6 @@ fn series(slot: usize) -> &'static MethodSeries {
     })
 }
 
-/// `(metric, bucket edges)` for the exporter
-///
-/// - Per metric (defaults span one decade: RAM hit = µs, cold mmap = 10s of ms, stream = minutes)
-/// - `1.0` / `10.0` first-message edges: a load test's second-scale SLO judged on zaino's clock
-pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
-    (
-        FIRST_MESSAGE_SECONDS,
-        &[50e-6, 100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 100e-3, 1.0, 10.0],
-    ),
-    (DURATION_SECONDS, &[1e-3, 10e-3, 100e-3, 1.0, 10.0, 60.0, 300.0, 1800.0]),
-    (STREAM_MESSAGES, &[1.0, 10.0, 100.0, 1e3, 10e3, 100e3, 1e6]),
-    (DISK_READ_WAIT_SECONDS, &[1e-6, 100e-6, 1e-3, 10e-3, 100e-3, 1.0, 5.0]),
-];
-
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};

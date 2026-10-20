@@ -21,7 +21,7 @@ mod node_release;
 mod peer_info;
 mod rpc;
 
-pub use self::metrics::{describe_metrics, METRIC_BUCKETS};
+pub use self::metrics::describe_metrics;
 pub use blockchain_info::{BlockchainInfo, ScheduleError};
 pub use chain_data_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
