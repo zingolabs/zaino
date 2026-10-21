@@ -20,11 +20,9 @@ use tokio::time::Instant;
 use tonic::Status;
 
 use crate::adaptive::Limiter;
-use crate::egress::WindowVerdict;
 use crate::layer::take_ready;
 use crate::metrics;
-use crate::overload::{Overload, OverloadCause};
-use crate::pressure::PressureShares;
+use crate::overload::{Overload, OverloadCause, Signals};
 use crate::service::Method;
 use crate::OverloadLimits;
 
@@ -91,27 +89,20 @@ impl AdmissionState {
         }
     }
 
-    /// The operator's overload thresholds + whether a latched cause is reported, from the next
-    /// serving summary (zainod: `[grpc.overload]` under `zainod overload` markers)
+    /// The operator's overload thresholds + whether a latched cause is reported (next window on)
     pub fn set_overload(&self, limits: OverloadLimits, detection: bool) {
         self.overload.set(limits, detection);
     }
 
-    /// The breadth rule's live value (the egress sampler reads it per sample)
-    pub(crate) fn egress_min_networks(&self) -> usize {
-        self.overload.egress_min_networks()
+    pub(crate) fn overload_limits(&self) -> OverloadLimits {
+        self.overload.limits()
     }
 
-    /// Closes a serving summary's window (`elapsed` long, with its egress + pressure verdicts):
-    /// its refusals, every class
-    pub(crate) fn tick(
-        &self,
-        elapsed: Duration,
-        egress: WindowVerdict,
-        pressure: PressureShares,
-    ) -> u64 {
+    /// Closes a serving summary's window (`elapsed` long, on its `signals`): its refusals, every
+    /// class
+    pub(crate) fn tick(&self, elapsed: Duration, signals: Signals) -> u64 {
         metrics::adaptive_stream_limit(self.limiter.limit());
-        self.overload.tick(elapsed, egress, pressure)
+        self.overload.tick(elapsed, signals)
     }
 
     fn pool(&self, class: Class) -> (&AtomicUsize, usize) {
@@ -483,12 +474,8 @@ mod tests {
         assert_eq!(refusal, expected);
         assert_eq!(state.held(Class::Work), (256, 2048), "refused below the ceiling");
 
-        let quiet = (WindowVerdict::default(), PressureShares::default());
-        assert_eq!(
-            state.tick(Duration::from_secs(1), quiet.0, quiet.1),
-            1,
-            "the window's one refusal"
-        );
+        let refusals = state.tick(Duration::from_secs(1), Signals::default());
+        assert_eq!(refusals, 1, "the window's one refusal");
         let report = state.report();
         let expected =
             AdmissionReport { limit: 256, in_flight: 256, refused_per_s: 1.0, overload: None };

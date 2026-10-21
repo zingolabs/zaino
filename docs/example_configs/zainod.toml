@@ -139,17 +139,11 @@ trusted_proxies = []
 # sent). Out of a load balancer's rotation first = `zainod hold` (see docs/running.md)
 shutdown_grace_secs = 10
 
-# When /readyz reports `Overloaded: <cause>` (a load balancer stops sending new wallets here); each
-# cause latches over its threshold and clears under half of it (packages/zaino-grpc/usage.md
-# "Overload"). A *_percent of 0 turns that cause off.
+# When /readyz reports `Overloaded: <cause>` (0 = that cause off; `zainod overload` overrides live)
 [grpc.overload]
-# send queueing (RTT over min RTT), median over client networks: idle ≈ 1 ms
-egress_queue_delay_ms = 10
-# client networks (/24, /48) sending at once before egress has a verdict (one downloader = one)
-egress_min_networks = 20
-# retransmitted share of sent segments, median over client networks (a policing link)
-retransmit_percent = 5
-# share of time zainod waited for a CPU / for IO (Linux PSI, its own cgroup)
+# 20th percentile of zaino_grpc_queue_delay_seconds; off until real traffic sets it
+network_queue_delay_ms = 0
+network_min_networks = 20
 cpu_pressure_percent = 25
 io_pressure_percent = 25
 

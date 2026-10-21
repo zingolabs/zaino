@@ -44,16 +44,12 @@ pub struct GrpcLimits {
     pub overload: OverloadLimits,
 }
 
-/// When the node reports `Overloaded` for the capacity it lacks (zainod's `[grpc.overload]`)
-///
-/// - each cause and its window rule: usage.md "Overload"
-/// - a `*_percent` of 0 = that cause off
+/// When `/readyz` reports `Overloaded` (zainod's `[grpc.overload]`, usage.md "Overload"; 0 = off)
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OverloadLimits {
-    pub egress_queue_delay_ms: NonZeroU32,
-    pub egress_min_networks: NonZeroUsize,
-    pub retransmit_percent: u8,
+    pub network_queue_delay_ms: u32,
+    pub network_min_networks: NonZeroUsize,
     pub cpu_pressure_percent: u8,
     pub io_pressure_percent: u8,
 }
@@ -61,12 +57,10 @@ pub struct OverloadLimits {
 impl Default for OverloadLimits {
     fn default() -> Self {
         Self {
-            // idle ≈ 1 ms, a saturated 10 Gbit/s node 12–20 ms (median over client networks)
-            egress_queue_delay_ms: const { NonZeroU32::new(10).expect("10 is non-zero") },
-            // one heavy downloader / a proxy in front = one network, never a verdict
-            egress_min_networks: const { NonZeroUsize::new(20).expect("20 is non-zero") },
-            // a policing link drops instead of queueing (internet baseline < 1 %)
-            retransmit_percent: 5,
+            // off until real traffic's `zaino_grpc_queue_delay_seconds` sets it
+            network_queue_delay_ms: 0,
+            // one heavy client (or a proxy in front) = one network
+            network_min_networks: const { NonZeroUsize::new(20).expect("20 is non-zero") },
             cpu_pressure_percent: 25,
             io_pressure_percent: 25,
         }

@@ -254,6 +254,11 @@ impl DaemonStatus {
         }
     }
 
+    /// The operator's overload overrides in force (`overload.rs`): `/status` notes
+    pub(crate) fn set_overload_notes(&self, notes: Vec<String>) {
+        *self.overload_notes.lock().expect("notes mutex poisoned") = notes;
+    }
+
     pub(crate) fn beat(&self) {
         self.heartbeat.beat();
     }
@@ -269,11 +274,6 @@ impl DaemonStatus {
         &self.retire
     }
 
-    /// Operator overload overrides in force (`overload.rs`, from its markers): `/status` notes
-    pub(crate) fn set_overload_notes(&self, notes: Vec<String>) {
-        *self.overload_notes.lock().expect("notes mutex poisoned") = notes;
-    }
-
     /// Boot waiting on its first validator answer (the upgrade schedule): `down`, not `provisioning`
     pub(crate) fn awaiting_validator(&self, awaiting: bool) {
         self.awaiting_validator.store(awaiting, Ordering::Relaxed);
@@ -287,9 +287,7 @@ impl DaemonStatus {
         let stage = match self.sources.get() {
             Some(sources) => {
                 let mut booted = Booted::of(sources, &sources.grpc_snapshots.load());
-                booted
-                    .notes
-                    .extend(self.overload_notes.lock().expect("notes mutex poisoned").clone());
+                booted.notes.extend(self.overload_notes.lock().expect("notes poisoned").clone());
                 Stage::Booted(booted)
             }
             None => Stage::Starting {
@@ -532,8 +530,9 @@ mod tests {
             Stage::Booted(Booted { serving_status, overload, done, target, rate, notes })
         };
         let booted = |serving_status, target, rate| stage(serving_status, None, target, rate);
-        let queued = Some(OverloadCause::EgressQueue);
-        let overloaded = |serving_status| stage(serving_status, queued, Some(3_515_406), Some(6.2));
+        let saturated = Some(OverloadCause::NetworkSaturated);
+        let overloaded =
+            |serving_status| stage(serving_status, saturated, Some(3_515_406), Some(6.2));
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
         let stale = serde_json::json!(["1 validator on a stale tip"]);
@@ -569,19 +568,19 @@ mod tests {
                 "overloaded beats syncing",
                 true,
                 overloaded(ServingStatus::Syncing),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
             ),
             (
                 "overloaded beats down",
                 true,
                 overloaded(ServingStatus::Down),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
             ),
             (
                 "overloaded beats degraded",
                 true,
                 overloaded(ServingStatus::Degraded),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
             ),
             (
                 "runtime stalled beats degraded",

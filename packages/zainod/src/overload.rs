@@ -1,13 +1,9 @@
-//! Operator overload overrides: `zainod overload on|off|set|unset`
+//! `zainod overload on|off|set|unset`: operator markers in `<serve.state_dir>/overload/` over
+//! `[grpc.overload]`
 //!
-//! - markers in `<serve.state_dir>/overload/`: `off` = `Overloaded` never reported; `<param>` =
-//!   that `[grpc.overload]` threshold, the value inside
-//! - config = the baseline, a marker wins; markers survive restart, deploy, reboot (as `held`)
-//! - the running zainod reads them every [`POLL`] → zaino-grpc's latch + `/status` notes
-//! - no write endpoint: as `hold`, the state dir is the authority
+//! - `off` = never `Overloaded`; `<key>` = that key's value; both survive restarts (as `held`)
+//! - the running zainod reads them every second → the gRPC overload latch + `/status` notes
 
-use std::io;
-use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -18,180 +14,108 @@ use zaino_grpc::{AdmissionState, OverloadLimits};
 
 use crate::status::DaemonStatus;
 
-/// Marker check cadence (a command lands within this)
-const POLL: Duration = Duration::from_secs(1);
-
-const DIR: &str = "overload";
 const OFF: &str = "off";
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Subcommand)]
 pub(crate) enum Action {
-    /// Report `Overloaded` again when a cause latches (undo `zainod overload off`).
+    /// Report `Overloaded` again when a cause latches.
     On,
-    /// Never report `Overloaded`, across restarts, until `zainod overload on`.
-    ///
-    /// For a detector misfiring during an incident: the node stays in rotation. The signals are
-    /// still measured and exported, and `/status` notes say detection is off.
+    /// Never report `Overloaded` (a misfiring detector keeps the node in rotation).
     Off,
-    /// Override one `[grpc.overload]` threshold, across restarts, until `zainod overload unset`.
-    Set { param: Param, value: String },
-    /// Back to the config's value for one threshold.
-    Unset { param: Param },
+    /// Override one `[grpc.overload]` key, e.g. `cpu_pressure_percent 40`.
+    Set { key: String, value: String },
+    /// Back to the config's value for one key.
+    Unset { key: String },
 }
 
-/// A `[grpc.overload]` threshold (its marker file's name = the config key)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub(crate) enum Param {
-    EgressQueueDelayMs,
-    EgressMinNetworks,
-    RetransmitPercent,
-    CpuPressurePercent,
-    IoPressurePercent,
-}
-
-impl Param {
-    const ALL: [Self; 5] = [
-        Self::EgressQueueDelayMs,
-        Self::EgressMinNetworks,
-        Self::RetransmitPercent,
-        Self::CpuPressurePercent,
-        Self::IoPressurePercent,
-    ];
-
-    const fn name(self) -> &'static str {
-        match self {
-            Self::EgressQueueDelayMs => "egress_queue_delay_ms",
-            Self::EgressMinNetworks => "egress_min_networks",
-            Self::RetransmitPercent => "retransmit_percent",
-            Self::CpuPressurePercent => "cpu_pressure_percent",
-            Self::IoPressurePercent => "io_pressure_percent",
-        }
-    }
-
-    /// `value` into `limits`, by the config's own rules (non-zero; a percent 0–100, 0 = off)
-    fn apply(self, limits: &mut OverloadLimits, value: &str) -> Result<(), String> {
-        let value = value.trim();
-        let invalid = |rule: &str| format!("{} = {value:?}: {rule}", self.name());
-        let percent = || match value.parse::<u8>() {
-            Ok(percent) if percent <= 100 => Ok(percent),
-            _ => Err(invalid("a whole percent, 0 (off) to 100")),
-        };
-        match self {
-            Self::EgressQueueDelayMs => {
-                limits.egress_queue_delay_ms =
-                    value.parse::<NonZeroU32>().map_err(|_| invalid("milliseconds, at least 1"))?;
-            }
-            Self::EgressMinNetworks => {
-                limits.egress_min_networks =
-                    value.parse::<NonZeroUsize>().map_err(|_| invalid("networks, at least 1"))?;
-            }
-            Self::RetransmitPercent => limits.retransmit_percent = percent()?,
-            Self::CpuPressurePercent => limits.cpu_pressure_percent = percent()?,
-            Self::IoPressurePercent => limits.io_pressure_percent = percent()?,
-        }
-        Ok(())
-    }
-
-    fn get(self, limits: &OverloadLimits) -> String {
-        match self {
-            Self::EgressQueueDelayMs => limits.egress_queue_delay_ms.to_string(),
-            Self::EgressMinNetworks => limits.egress_min_networks.to_string(),
-            Self::RetransmitPercent => limits.retransmit_percent.to_string(),
-            Self::CpuPressurePercent => limits.cpu_pressure_percent.to_string(),
-            Self::IoPressurePercent => limits.io_pressure_percent.to_string(),
-        }
-    }
-}
-
-/// What the latch runs on: the config with every marker applied
+/// The config with every marker applied
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Settings {
     limits: OverloadLimits,
     detection: bool,
-    overridden: Vec<Param>,
+    overrides: Vec<String>,
 }
 
 impl Settings {
-    fn of(config: &OverloadLimits) -> Self {
-        Self { limits: config.clone(), detection: true, overridden: Vec::new() }
-    }
-
-    /// `/status` notes: one per kind of override in force (none = no notes)
-    pub(crate) fn notes(&self) -> Vec<String> {
-        let mut notes = Vec::new();
-        if !self.detection {
-            notes.push("Overload detection off (zainod overload on)".to_owned());
-        }
-        if !self.overridden.is_empty() {
-            let set: Vec<String> = self
-                .overridden
-                .iter()
-                .map(|param| format!("{} = {}", param.name(), param.get(&self.limits)))
-                .collect();
-            notes.push(format!(
-                "Overload thresholds overridden: {} (zainod overload unset)",
-                set.join(", ")
-            ));
-        }
-        notes
+    /// `/status` notes (none while nothing is overridden)
+    fn notes(&self) -> Vec<String> {
+        let off =
+            (!self.detection).then(|| "Overload detection off (zainod overload on)".to_owned());
+        let set = (!self.overrides.is_empty()).then(|| {
+            format!("Overload overridden: {} (zainod overload unset)", self.overrides.join(", "))
+        });
+        off.into_iter().chain(set).collect()
     }
 }
 
-/// `dir`'s markers over `config` + each marker that would not parse (its threshold left at the
-/// config's)
-fn read(dir: &Path, config: &OverloadLimits) -> io::Result<(Settings, Vec<String>)> {
-    let mut settings = Settings::of(config);
-    settings.detection = !dir.join(OFF).try_exists()?;
-    let mut invalid = Vec::new();
-    for param in Param::ALL {
-        let value = match std::fs::read_to_string(dir.join(param.name())) {
-            Ok(value) => value,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        match param.apply(&mut settings.limits, &value) {
-            Ok(()) => settings.overridden.push(param),
-            Err(problem) => invalid.push(problem),
-        }
+/// `config` with `markers` (`key`, `value`) applied, by `[grpc.overload]`'s own rules
+fn merged(config: &OverloadLimits, markers: &[(String, String)]) -> Result<OverloadLimits, String> {
+    let mut table = toml::Table::try_from(config).map_err(|error| error.to_string())?;
+    for (key, value) in markers {
+        let value = toml::from_str::<toml::Table>(&format!("value = {value}"))
+            .ok()
+            .and_then(|mut parsed| parsed.remove("value"))
+            .ok_or_else(|| format!("{key} = {value}: not a value"))?;
+        table.insert(key.clone(), value);
     }
-    Ok((settings, invalid))
+    table.try_into().map_err(|error: toml::de::Error| error.message().to_owned())
 }
 
-/// The marker `action` names written (synced, with its directory) or removed (idempotent)
-///
-/// - `Set` validated before anything is written
-fn apply(dir: &Path, action: &Action) -> Result<(), OverloadError> {
-    let marker_failed = |marker: PathBuf| move |source| OverloadError::Marker { marker, source };
-    let write = |name: &str, value: &str| {
-        let marker = dir.join(name);
-        std::fs::create_dir_all(dir)
-            .and_then(|()| std::fs::write(&marker, value))
-            .and_then(|()| std::fs::File::open(&marker)?.sync_all())
-            .map_err(marker_failed(marker))
-    };
-    let remove = |name: &str| {
-        let marker = dir.join(name);
-        match std::fs::remove_file(&marker) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                Err(marker_failed(marker)(error))
+/// `dir`'s markers over `config`
+fn read(dir: &Path, config: &OverloadLimits) -> Result<Settings, String> {
+    let mut markers = Vec::new();
+    let mut detection = true;
+    for entry in std::fs::read_dir(dir).into_iter().flatten() {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let key = entry.file_name().to_string_lossy().into_owned();
+        match key.as_str() {
+            OFF => detection = false,
+            _ => {
+                let value =
+                    std::fs::read_to_string(entry.path()).map_err(|error| error.to_string())?;
+                markers.push((key, value.trim().to_owned()));
             }
-            _ => Ok(()),
         }
-    };
-    match action {
-        Action::On => remove(OFF)?,
-        Action::Off => write(OFF, "")?,
-        Action::Set { param, value } => {
-            param.apply(&mut OverloadLimits::default(), value).map_err(OverloadError::Value)?;
-            write(param.name(), &format!("{}\n", value.trim()))?;
-        }
-        Action::Unset { param } => remove(param.name())?,
     }
-    // the marker's own entry durable: an override must survive a reboot right after the command
-    match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            Err(marker_failed(dir.to_owned())(error))
+    markers.sort();
+    let limits = merged(config, &markers)?;
+    let overrides = markers.iter().map(|(key, value)| format!("{key} = {value}")).collect();
+    Ok(Settings { limits, detection, overrides })
+}
+
+/// The marker `action` names written or removed (`Set` validated first), its directory synced: it
+/// must survive a reboot right after the command
+fn apply(dir: &Path, config: &OverloadLimits, action: &Action) -> Result<(), String> {
+    match action {
+        Action::Off => write(dir, OFF, "")?,
+        Action::Set { key, value } => {
+            merged(config, &[(key.clone(), value.clone())])?;
+            write(dir, key, value)?;
+        }
+        Action::On => remove(dir, OFF)?,
+        Action::Unset { key } => remove(dir, key)?,
+    }
+    absent_ok(dir, std::fs::File::open(dir).and_then(|dir| dir.sync_all()))
+}
+
+fn write(dir: &Path, name: &str, value: &str) -> Result<(), String> {
+    let path = dir.join(name);
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&path, format!("{value}\n")))
+        .and_then(|()| std::fs::File::open(&path)?.sync_all());
+    written.map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn remove(dir: &Path, name: &str) -> Result<(), String> {
+    let path = dir.join(name);
+    absent_ok(&path, std::fs::remove_file(&path))
+}
+
+/// `result` at `path`, a missing file counting as done
+fn absent_ok(path: &Path, result: std::io::Result<()>) -> Result<(), String> {
+    match result {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("{}: {error}", path.display()))
         }
         _ => Ok(()),
     }
@@ -201,67 +125,57 @@ fn apply(dir: &Path, action: &Action) -> Result<(), OverloadError> {
 pub(super) enum OverloadError {
     #[error(transparent)]
     Config(#[from] crate::error::IndexerError),
-    #[error("{}: {source}", marker.display())]
-    Marker { marker: PathBuf, source: io::Error },
     #[error("{0}")]
-    Value(String),
+    Marker(String),
 }
 
-/// `zainod overload …`: prints the settings now in force (stdout), what changed (stderr)
+/// `zainod overload …`: prints the settings now in force
 pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, OverloadError> {
     let config = crate::config::load_config(config_path)?;
-    let dir = config.serve.state_dir.join(DIR);
-    apply(&dir, &action)?;
-    let (settings, invalid) = read(&dir, &config.grpc.overload)
-        .map_err(|source| OverloadError::Marker { marker: dir.clone(), source })?;
-    println!("detection {}", if settings.detection { "on" } else { "off" });
-    for param in Param::ALL {
-        let source = if settings.overridden.contains(&param) { "override" } else { "config" };
-        println!("{} = {} ({source})", param.name(), param.get(&settings.limits));
-    }
-    for problem in invalid {
-        eprintln!("ignored marker: {problem}");
-    }
-    eprintln!("markers in {}: a running zainod applies them within 1 s", dir.display());
+    let dir = config.serve.state_dir.join("overload");
+    let limits = &config.grpc.overload;
+    apply(&dir, limits, &action).map_err(OverloadError::Marker)?;
+    let settings = read(&dir, limits).map_err(OverloadError::Marker)?;
+    println!("detection = {}", settings.detection);
+    print!(
+        "{}",
+        toml::to_string(&settings.limits)
+            .map_err(|error| OverloadError::Marker(error.to_string()))?
+    );
+    eprintln!(
+        "overridden: [{}] in {} (a running zainod applies within 1 s)",
+        settings.overrides.join(", "),
+        dir.display()
+    );
     Ok(ExitCode::SUCCESS)
 }
 
-/// For the process's life: the markers every [`POLL`] → `admission`'s latch + `status`'s notes
-///
-/// - a change = WARN with what is in force (at boot too, when markers were left set)
-/// - unreadable markers = last settings kept, warned
+/// Every second for the process's life: the markers → `admission` + `status` notes (a change =
+/// WARN; unreadable or invalid = WARN, settings kept)
 pub(crate) fn spawn(
     admission: Arc<AdmissionState>,
     status: Arc<DaemonStatus>,
     state_dir: &Path,
     config: OverloadLimits,
 ) {
-    let dir = state_dir.join(DIR);
+    let dir: PathBuf = state_dir.join("overload");
     tokio::spawn(async move {
-        let mut current = Settings::of(&config);
-        let mut tick = tokio::time::interval(POLL);
+        let mut current =
+            Settings { limits: config.clone(), detection: true, overrides: Vec::new() };
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
-            let (settings, invalid) = match read(&dir, &config) {
-                Ok(read) => read,
+            let settings = match read(&dir, &config) {
+                Ok(settings) if settings == current => continue,
+                Ok(settings) => settings,
                 Err(error) => {
-                    warn!(%error, dir = %dir.display(), "Overload markers unreadable, settings kept");
+                    warn!(%error, "Overload markers ignored, settings kept");
                     continue;
                 }
             };
-            if settings == current {
-                continue;
-            }
-            for problem in invalid {
-                warn!(problem, "Overload marker ignored");
-            }
             admission.set_overload(settings.limits.clone(), settings.detection);
             status.set_overload_notes(settings.notes());
-            warn!(
-                detection = settings.detection,
-                overrides = ?settings.notes(),
-                "Overload settings changed by operator"
-            );
+            warn!(notes = ?settings.notes(), "Overload settings changed by operator");
             current = settings;
         }
     });
@@ -271,71 +185,67 @@ pub(crate) fn spawn(
 mod tests {
     use super::*;
 
-    /// A session of commands against a state dir, read back as the running zainod reads it:
-    /// - off / on toggle `detection`, set / unset one threshold over the config's, twice = once
-    /// - notes name every override in force, none once all are undone
-    /// - an invalid `set` writes nothing; a hand-written marker that will not parse is reported,
-    ///   its threshold left at the config's
+    /// A session of commands, read back as the running zainod reads it:
+    /// - off / on toggle detection; set / unset one key over the config's (twice = once)
+    /// - an invalid key or value is refused before anything is written
+    /// - notes name what is in force, none once all is undone
     #[test]
-    fn markers_override_the_config_until_undone_and_bad_values_never_apply() {
+    fn markers_override_the_config_until_undone_and_bad_values_never_land() {
         let root = tempfile::tempdir().expect("tempdir");
-        let dir = root.path().join("state").join(DIR);
-        let config = OverloadLimits { cpu_pressure_percent: 30, ..OverloadLimits::default() };
-        let now = || read(&dir, &config).expect("readable");
-        let set = |param, value: &str| Action::Set { param, value: value.to_owned() };
+        let dir = root.path().join("overload");
+        let config = OverloadLimits::default();
+        let run = |action: Action| apply(&dir, &config, &action);
+        let set =
+            |key: &str, value: &str| Action::Set { key: key.to_owned(), value: value.to_owned() };
+        let defaults = Settings { limits: config.clone(), detection: true, overrides: vec![] };
 
-        assert_eq!(now(), (Settings::of(&config), vec![]), "no markers: the config, detection on");
-
+        assert_eq!(read(&dir, &config), Ok(defaults.clone()), "no markers: the config");
         for action in [
             Action::Off,
             Action::Off,
-            set(Param::CpuPressurePercent, "60"),
-            set(Param::EgressMinNetworks, " 3\n"),
+            set("network_queue_delay_ms", "10"),
+            set("cpu_pressure_percent", "40"),
         ] {
-            apply(&dir, &action).expect("applies");
+            run(action).expect("applies");
         }
         let expected = Settings {
             limits: OverloadLimits {
-                cpu_pressure_percent: 60,
-                egress_min_networks: NonZeroUsize::new(3).expect("3 is non-zero"),
+                network_queue_delay_ms: 10,
+                cpu_pressure_percent: 40,
                 ..config.clone()
             },
             detection: false,
-            overridden: vec![Param::EgressMinNetworks, Param::CpuPressurePercent],
+            overrides: vec![
+                "cpu_pressure_percent = 40".into(),
+                "network_queue_delay_ms = 10".into(),
+            ],
         };
-        assert_eq!(now(), (expected.clone(), vec![]));
+        assert_eq!(read(&dir, &config), Ok(expected.clone()));
         assert_eq!(
             expected.notes(),
             [
                 "Overload detection off (zainod overload on)",
-                "Overload thresholds overridden: egress_min_networks = 3, cpu_pressure_percent = 60 \
+                "Overload overridden: cpu_pressure_percent = 40, network_queue_delay_ms = 10 \
                  (zainod overload unset)",
             ]
         );
 
-        for (param, value) in [(Param::CpuPressurePercent, "101"), (Param::EgressQueueDelayMs, "0")]
+        for refused in
+            [set("nope", "1"), set("network_min_networks", "0"), set("io_pressure_percent", "x")]
         {
-            let refused = apply(&dir, &set(param, value)).expect_err("out of range");
-            assert!(matches!(refused, OverloadError::Value(_)), "{refused}");
+            assert!(run(refused.clone()).is_err(), "{refused:?}");
         }
-        assert_eq!(now().0, expected, "a refused set changes nothing");
-
-        std::fs::write(dir.join("io_pressure_percent"), "lots").expect("hand-written marker");
-        let (settings, invalid) = now();
-        assert_eq!(settings.limits.io_pressure_percent, config.io_pressure_percent);
-        assert_eq!(invalid, ["io_pressure_percent = \"lots\": a whole percent, 0 (off) to 100"]);
+        assert_eq!(read(&dir, &config), Ok(expected), "nothing refused landed");
 
         for action in [
             Action::On,
             Action::On,
-            Action::Unset { param: Param::CpuPressurePercent },
-            Action::Unset { param: Param::EgressMinNetworks },
-            Action::Unset { param: Param::IoPressurePercent },
-            Action::Unset { param: Param::IoPressurePercent },
+            Action::Unset { key: "cpu_pressure_percent".into() },
+            Action::Unset { key: "network_queue_delay_ms".into() },
         ] {
-            apply(&dir, &action).expect("applies");
+            run(action).expect("applies");
         }
-        assert_eq!(now(), (Settings::of(&config), vec![]), "all undone: the config again");
-        assert!(Settings::of(&config).notes().is_empty());
+        assert_eq!(read(&dir, &config), Ok(defaults.clone()), "all undone");
+        assert!(defaults.notes().is_empty());
     }
 }
