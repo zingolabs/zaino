@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use tracing::{info, warn};
+
 use crate::admission::Class;
 use crate::metrics;
 use crate::OverloadLimits;
@@ -172,6 +174,7 @@ impl Overload {
                 (share >= ENTER_SHARE && refused_per_s >= ENTER_REFUSALS_PER_S, share < EXIT_SHARE)
             }
         });
+        let detection = closed.detection;
         for (cause, (over, under)) in OverloadCause::ALL.into_iter().zip(conditions) {
             let latch = &mut closed.latches[cause as usize];
             let (enter, exit) = cause.rule();
@@ -180,6 +183,11 @@ impl Overload {
                 if flipping { latch.flipping_for + elapsed } else { Duration::ZERO };
             if latch.flipping_for >= needed {
                 (latch.held, latch.flipping_for) = (!latch.held, Duration::ZERO);
+                let cause = cause.detail();
+                match latch.held {
+                    true => warn!(cause, detection, ?signals, refused = share, "Overload latched"),
+                    false => info!(cause, ?signals, refused = share, "Overload cleared"),
+                }
             }
             metrics::overload_latched(cause, latch.held);
         }

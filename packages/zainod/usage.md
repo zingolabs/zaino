@@ -438,6 +438,9 @@ What an operator sees at `info`:
 
 | Component | Event | Level | When |
 |---|---|---|---|
+| `Zainod` | `State changed` | by the new state | `/readyz`'s state or detail changed, within 1 s (`from`, `to`, `detail`, `after` = time in the last, `notes`). Level: `down` (overloaded included) error, `held` / `degraded` warn, the rest info. |
+| `Zainod` | `Not ready` | error / warn | Every 60 s while `down`, `degraded` or `held`, at the state's level (`state`, `detail`, `for` = since the change, `notes`). Syncing and serving log their own activity instead. |
+| `Grpc` | `Overload latched` / `Overload cleared` | warn / info | A cause's latch flips (`cause`, `detection`, the window's `signals`, `refused` share); `/readyz` names the first latched while detection is on. |
 | `ChainView` | `Chain view configured` | info | At startup (`validators`, `p2p`). |
 | `ChainView` | `Polling validator` | info | A validator's first listing (`validator`, `listed` = its mempool size). |
 | `ChainView` | `Header chain anchored` | info | Header sync anchors its in-memory header chain (`height`, `hash`). |

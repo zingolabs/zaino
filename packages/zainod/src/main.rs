@@ -34,6 +34,7 @@ mod paths;
 mod peers;
 mod progress;
 mod schemas;
+mod state_log;
 mod status;
 mod utxos;
 mod verify;
@@ -113,6 +114,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     config.warn_about_metrics_listener();
     // Before the index-snapshot bootstrap (its progress extends systemd's start timeout)
     notify::spawn(Arc::clone(&status));
+    state_log::spawn(Arc::clone(&status));
 
     if let Some(endpoint) = config.metrics.listen_address {
         let status = Arc::clone(&status);

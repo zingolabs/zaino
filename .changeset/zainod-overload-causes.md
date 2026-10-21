@@ -16,3 +16,5 @@ default: minor
 - `zainod overload on|off|set|unset`: overrides across restarts, as `zainod hold`.
 - Library: `AdmissionReport::overload: Option<OverloadCause>` replaces `overloaded`;
   `GrpcLimits::overload`; `AdmissionState::set_overload`.
+- Logs: `State changed` on each `/readyz` state or detail change, `Not ready` every 60 s while
+  down (error), held or degraded (warn); `Overload latched` / `Overload cleared` per cause.

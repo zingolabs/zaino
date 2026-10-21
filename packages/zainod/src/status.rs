@@ -72,7 +72,7 @@ impl DaemonState {
         [Self::Provisioning, Self::Syncing, Self::Serving, Self::Degraded, Self::Held, Self::Down];
 
     /// = its `/readyz` + `/status` spelling (serde's)
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Provisioning => "provisioning",
             Self::Syncing => "syncing",
@@ -119,11 +119,11 @@ enum Unit {
 ///   provisioning or syncing, `notes` = raised alarms
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Readiness {
-    state: DaemonState,
+    pub(crate) state: DaemonState,
     progress: Option<Progress>,
     #[serde(rename = "detail")]
-    reason: Option<DaemonReason>,
-    notes: Vec<String>,
+    pub(crate) reason: Option<DaemonReason>,
+    pub(crate) notes: Vec<String>,
 }
 
 impl Readiness {
@@ -314,7 +314,7 @@ impl DaemonStatus {
         assert!(self.sources.set(sources).is_ok(), "one pipeline boot per process");
     }
 
-    fn current_readiness(&self) -> Readiness {
+    pub(crate) fn current_readiness(&self) -> Readiness {
         let stage = match self.sources.get() {
             Some(sources) => {
                 let mut booted = Booted::of(sources, &sources.grpc_snapshots.load());
