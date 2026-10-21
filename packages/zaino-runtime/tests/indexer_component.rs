@@ -74,7 +74,7 @@ async fn a_syncing_indexer_boots_but_gates_readiness() {
     assert!(!signals.ready, "a syncing indexer gates readiness");
     assert!(!signals.started, "still booting while syncing");
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 /// A sync driver whose run loop *panics* (after yielding so the component is
@@ -125,7 +125,7 @@ async fn a_panicking_run_loop_goes_critical_and_escalates() {
         status.reason
     );
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 /// A stub that reports a progress reading (then Ready), to prove a component

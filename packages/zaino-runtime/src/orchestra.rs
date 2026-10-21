@@ -14,6 +14,8 @@
 //! (`dyn StatusSource`); control stays per-component (each babysitter is
 //! monomorphised, so it calls the component's async methods with no boxing).
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
@@ -38,12 +40,48 @@ pub enum BootError<E: std::error::Error + Send + Sync + 'static> {
 }
 
 /// Boots components in order and wires their supervision.
+/// A boxed stop in flight: the component's own error, type-erased so one
+/// collection can hold components of different types.
+type Stopping<'a> =
+    Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>>;
+
+/// A stop the orchestra can call once a component's concrete type is erased.
+///
+/// [`Managed::stop`] returns `impl Future`, which no trait object can name, so
+/// one `Vec` cannot hold the differently-typed components the runtime booted.
+/// Boxing the future here is what makes them uniform; nothing else about the
+/// contract changes, and the component's own error reaches the caller as its
+/// source.
+trait Stoppable: Send + Sync {
+    /// Stop the component and release what it holds.
+    fn stop_erased(
+        &self,
+    ) -> Stopping<'_>;
+}
+
+impl<C: Managed + Send + Sync> Stoppable for C {
+    fn stop_erased(
+        &self,
+    ) -> Stopping<'_>
+    {
+        Box::pin(async move {
+            Managed::stop(self)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+        })
+    }
+}
+
 pub struct OrchestraBuilder {
     escalations_tx: mpsc::UnboundedSender<ComponentName>,
     escalations_rx: mpsc::UnboundedReceiver<ComponentName>,
     babysitters: Vec<Task>,
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
     watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
+    /// The components the runtime owns, in boot order, so a teardown can stop
+    /// them in reverse. An observed component is absent: the runtime does not
+    /// own it and must not stop it.
+    stoppers: Vec<(ComponentName, Arc<dyn Stoppable>)>,
     signals_tx: watch::Sender<RuntimeSignals>,
     readiness: ReadinessCriteria,
 }
@@ -62,6 +100,7 @@ impl OrchestraBuilder {
             babysitters: Vec::new(),
             statuses: Vec::new(),
             watches: Vec::new(),
+            stoppers: Vec::new(),
             signals_tx,
             readiness: ReadinessCriteria::default(),
         }
@@ -97,6 +136,8 @@ impl OrchestraBuilder {
         self.statuses.push(handle);
         let watch_handle: Arc<dyn StatusWatch + Send + Sync> = Arc::new(component.clone());
         self.watches.push(watch_handle);
+        let stopper: Arc<dyn Stoppable> = Arc::new(component.clone());
+        self.stoppers.push((name, stopper));
 
         let escalations = self.escalations_tx.clone();
         let watched = component;
@@ -162,6 +203,7 @@ impl OrchestraBuilder {
         Orchestra {
             babysitters: self.babysitters,
             statuses: self.statuses,
+            stoppers: self.stoppers,
             escalations: self.escalations_rx,
             signals,
         }
@@ -178,6 +220,7 @@ impl Default for OrchestraBuilder {
 pub struct Orchestra {
     babysitters: Vec<Task>,
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
+    stoppers: Vec<(ComponentName, Arc<dyn Stoppable>)>,
     escalations: mpsc::UnboundedReceiver<ComponentName>,
     signals: watch::Receiver<RuntimeSignals>,
 }
@@ -222,7 +265,7 @@ impl Orchestra {
                         "runtime escalation: component went Critical; tearing down all components"
                     ),
                 }
-                self.shutdown();
+                self.tear_down(Some(component)).await;
                 tracing::warn!(%component, "runtime torn down after escalation; outcome is fatal");
                 RuntimeOutcome::Fatal { component }
             }
@@ -251,12 +294,36 @@ impl Orchestra {
         self.signals.clone()
     }
 
-    /// Stop supervising every component.
+    /// Stop every component the runtime owns, and wait for each to release what
+    /// it holds.
     ///
-    /// This cancels each component's supervisor; it does not itself await the
-    /// components' own tasks releasing their resources (e.g. the serve socket) —
-    /// that gap is why an immediate re-boot can still race a not-yet-freed port.
-    pub fn shutdown(&self) {
+    /// Supervisors are cancelled first, so nothing restarts a component while it
+    /// is being stopped. Then each component's own
+    /// [`stop`](zaino_component::Managed::stop) is awaited in **reverse boot
+    /// order**: a component is never torn down while something booted on top of
+    /// it is still serving.
+    ///
+    /// Awaiting is the point. A caller that re-boots — the restart an escalation
+    /// triggers — needs the serve socket actually closed, not merely asked to
+    /// close, or the next boot fails to bind it.
+    ///
+    /// An observed component is not stopped: the runtime does not own its
+    /// lifetime and only watches it.
+    ///
+    /// A component that fails to stop is reported and the teardown continues, so
+    /// one stubborn component cannot strand the rest.
+    pub async fn shutdown(&self) {
+        self.tear_down(None).await;
+    }
+
+    /// [`shutdown`](Self::shutdown), leaving `escalated`'s status untouched.
+    ///
+    /// A component that escalated has already left its run loop, so there is
+    /// nothing to stop — and stopping it would overwrite the `Critical` status
+    /// carrying *why* the runtime is coming down with a plain `Offline`. That
+    /// reason is what reaches the health surface and the logs, so the teardown
+    /// steps around the one component whose failure explains it.
+    async fn tear_down(&self, escalated: Option<ComponentName>) {
         let components: Vec<ComponentName> =
             self.statuses.iter().map(|s| s.status().name).collect();
         tracing::info!(
@@ -266,6 +333,20 @@ impl Orchestra {
         for babysitter in &self.babysitters {
             babysitter.cancel();
         }
+
+        for (name, component) in self.stoppers.iter().rev() {
+            if Some(*name) == escalated {
+                continue;
+            }
+            if let Err(error) = component.stop_erased().await {
+                tracing::warn!(
+                    %name,
+                    error = %zaino_component::error_chain(error.as_ref()),
+                    "component did not stop cleanly; continuing the teardown"
+                );
+            }
+        }
+        tracing::info!("runtime shutdown: every owned component stopped");
     }
 }
 
@@ -451,7 +532,7 @@ mod tests {
             .expect("escalation arrived in time");
         assert_eq!(escalated, Some(ComponentName("fs")));
 
-        orchestra.shutdown();
+        orchestra.shutdown().await;
     }
 
     #[tokio::test]

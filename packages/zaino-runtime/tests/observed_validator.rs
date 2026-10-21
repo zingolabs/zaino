@@ -81,5 +81,5 @@ async fn the_validator_boots_before_the_servers() {
         names,
         vec![ComponentName("validator"), ComponentName("light-serve")]
     );
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }

@@ -82,7 +82,7 @@ async fn the_whole_runtime_boots_in_dependency_order() {
         "every component reached Ready",
     );
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 #[tokio::test]
@@ -124,7 +124,7 @@ async fn the_signals_track_the_runtime() {
     assert!(!s.ready);
     assert!(s.started, "startup stays latched after boot");
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 #[tokio::test]

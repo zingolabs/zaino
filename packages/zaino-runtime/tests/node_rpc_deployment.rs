@@ -69,5 +69,5 @@ async fn the_node_rpc_deployment_boots_its_server() {
         "every component reached Ready",
     );
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }

@@ -80,5 +80,5 @@ async fn the_health_edge_reflects_the_runtime() {
     assert_eq!(get_status(addr, "/startupz").await, 200);
     assert_eq!(get_status(addr, "/nope").await, 404);
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }

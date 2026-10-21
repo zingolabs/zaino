@@ -751,7 +751,7 @@ mod tests {
                 u32::from(watermark),
             );
 
-            orchestra.shutdown();
+            orchestra.shutdown().await;
         }
     }
 }
