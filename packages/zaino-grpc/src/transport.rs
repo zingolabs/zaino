@@ -252,8 +252,10 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 now = summaries.tick() => {
                     let elapsed = now - window_opened;
                     let min_networks = shared.admission.overload_limits().network_min_networks;
+                    let saturation = network.verdict(min_networks.get());
                     let signals = Signals {
-                        network_delay: network.queue_delay(min_networks.get()),
+                        network_delay: saturation.delay,
+                        network_loss: saturation.loss,
                         cpu: cpu.share(elapsed),
                         io: io.share(elapsed),
                     };

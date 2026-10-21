@@ -141,8 +141,10 @@ shutdown_grace_secs = 10
 
 # When /readyz reports `Overloaded: <cause>` (0 = that cause off; `zainod overload` overrides live)
 [grpc.overload]
-# 20th percentile of zaino_grpc_queue_delay_seconds; off until real traffic sets it
+# 20th percentiles of zaino_grpc_queue_delay_seconds / zaino_grpc_retransmit_ratio (either =
+# saturated); off until real traffic sets them
 network_queue_delay_ms = 0
+network_retransmit_percent = 0
 network_min_networks = 20
 cpu_pressure_percent = 25
 io_pressure_percent = 25

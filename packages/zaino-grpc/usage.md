@@ -313,7 +313,7 @@ thresholds live.
 
 | Cause | Signal, per one-minute window | Enter / exit |
 | ----- | ----------------------------- | ------------ |
-| `network saturated` | 20th percentile of `zaino_grpc_queue_delay_seconds` (RTT over min RTT of this listener's sockets, one per client /24 or /48 every 10 s, sock_diag) over samples with ≥ `network_min_networks` networks | 2 / 3 min |
+| `network saturated` | 20th percentile of `zaino_grpc_queue_delay_seconds` (RTT over the client network's base RTT: min over 10 min of every socket, as LEDBAT) or of `zaino_grpc_retransmit_ratio` (`network_retransmit_percent`); one per client /24 or /48 every 10 s (this listener's sockets, sock_diag), over samples with ≥ `network_min_networks` networks | 2 / 3 min |
 | `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI) | 2 / 3 min |
 | `refusing work` | admission refused ≥ 10% of work at ≥ 1/s (exit: < 2%) | 5 / 5 min |
 

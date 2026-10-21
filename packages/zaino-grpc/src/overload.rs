@@ -2,8 +2,8 @@
 //!
 //! - one latch per [`OverloadCause`]: over its threshold for its `enter` → latched, under half of
 //!   it (refusals: under 2 %) for its `exit` → cleared; reported = the first latched
-//! - signals: admission refusals (counted here), network queueing (`network.rs`), CPU / IO pressure
-//!   (`pressure.rs`)
+//! - signals: admission refusals (counted here), network queueing or loss (`network.rs`, either =
+//!   saturated), CPU / IO pressure (`pressure.rs`)
 //! - operator settings live (`set`): while detection is off the latches still step, none reported
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +58,7 @@ impl OverloadCause {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Signals {
     pub(crate) network_delay: Option<Duration>,
+    pub(crate) network_loss: Option<f64>,
     pub(crate) cpu: Option<f64>,
     pub(crate) io: Option<f64>,
 }
@@ -144,10 +145,15 @@ impl Overload {
         let limits = &closed.limits;
         let percent = |p: u8| f64::from(p) / 100.0;
         let conditions = OverloadCause::ALL.map(|cause| match cause {
-            OverloadCause::NetworkSaturated => against(
-                signals.network_delay.map(|delay| delay.as_secs_f64()),
-                f64::from(limits.network_queue_delay_ms) / 1000.0,
-            ),
+            OverloadCause::NetworkSaturated => {
+                let (queued, unqueued) = against(
+                    signals.network_delay.map(|delay| delay.as_secs_f64()),
+                    f64::from(limits.network_queue_delay_ms) / 1000.0,
+                );
+                let (lossy, clean) =
+                    against(signals.network_loss, percent(limits.network_retransmit_percent));
+                (queued || lossy, unqueued && clean)
+            }
             OverloadCause::CpuPressure => {
                 against(signals.cpu, percent(limits.cpu_pressure_percent))
             }
@@ -238,30 +244,42 @@ mod tests {
         assert_eq!(counted.tick(minute, Signals::default()), 0, "a window starts at zero");
     }
 
-    /// 10 ms network, 25 % CPU, one-minute windows:
+    /// 10 ms / 2 % network, 25 % CPU, one-minute windows:
     /// - 14 ms + 30 % CPU: both latch at 2 min, network named first
     /// - 7 ms (not under 5) holds; 3 windows unmeasured clear network, CPU named
+    /// - 3 % loss without queueing latches network; 1.5 % (not under 1) holds, then clears
     /// - detection off: nothing named; a limit of 0 = that cause off (clears by its exit)
     #[test]
     fn each_cause_latches_on_its_rule_and_the_operator_settings_apply() {
         let minute = Duration::from_secs(60);
-        let window = |overload: &Overload, delay_ms: Option<u64>, cpu: f64| {
+        let window = |overload: &Overload, delay_ms: Option<u64>, loss: Option<f64>, cpu: f64| {
             let network_delay = delay_ms.map(Duration::from_millis);
-            overload.tick(minute, Signals { network_delay, cpu: Some(cpu), io: Some(0.0) });
+            let (cpu, io) = (Some(cpu), Some(0.0));
+            overload.tick(minute, Signals { network_delay, network_loss: loss, cpu, io });
             overload.cause()
         };
         let network = Some(OverloadCause::NetworkSaturated);
         let cpu = Some(OverloadCause::CpuPressure);
-        let limits = OverloadLimits { network_queue_delay_ms: 10, ..OverloadLimits::default() };
+        let limits = OverloadLimits {
+            network_queue_delay_ms: 10,
+            network_retransmit_percent: 2,
+            ..OverloadLimits::default()
+        };
 
         let overload = Overload::new(limits.clone());
-        let loaded =
-            [Some(14), Some(14), Some(7), None, None, None].map(|ms| window(&overload, ms, 0.3));
+        let loaded = [Some(14), Some(14), Some(7), None, None, None]
+            .map(|ms| window(&overload, ms, None, 0.3));
         assert_eq!(loaded, [None, network, network, network, network, cpu]);
+
+        let policed = Overload::new(limits.clone());
+        let dropping = [0.03, 0.03, 0.015, 0.0, 0.0, 0.0]
+            .map(|loss| window(&policed, Some(2), Some(loss), 0.0));
+        assert_eq!(dropping, [None, network, network, network, network, None]);
 
         overload.set(limits.clone(), false);
         assert_eq!(overload.cause(), None, "detection off");
         overload.set(OverloadLimits { cpu_pressure_percent: 0, ..limits }, true);
-        assert_eq!([0; 3].map(|_| window(&overload, None, 1.0)), [cpu, cpu, None], "0 = off");
+        let off = [0; 3].map(|_| window(&overload, None, None, 1.0));
+        assert_eq!(off, [cpu, cpu, None], "0 = off");
     }
 }

@@ -36,6 +36,7 @@ const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 const QUEUE_DELAY_SECONDS: &str = "zaino.grpc.queue_delay_seconds";
+const RETRANSMIT_RATIO: &str = "zaino.grpc.retransmit_ratio";
 
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
@@ -142,7 +143,13 @@ pub fn describe_metrics() {
     describe_histogram!(
         QUEUE_DELAY_SECONDS,
         Unit::Seconds,
-        "Send queueing (RTT over min RTT), one per client network every 10 s (its sockets' median)"
+        "Send queueing (RTT over the client network's 10 min base RTT), one per client network \
+         every 10 s (its sockets' median)"
+    );
+    describe_histogram!(
+        RETRANSMIT_RATIO,
+        "Share of sent data segments retransmitted, one per client network sending >= 100 \
+         segments every 10 s"
     );
 }
 
@@ -203,6 +210,10 @@ pub(crate) fn stream_rejected(class: Class) {
 
 pub(crate) fn queue_delay(delay: Duration) {
     metrics::histogram!(QUEUE_DELAY_SECONDS).record(delay.as_secs_f64());
+}
+
+pub(crate) fn retransmit_ratio(ratio: f64) {
+    metrics::histogram!(RETRANSMIT_RATIO).record(ratio);
 }
 
 pub(crate) fn disk_read_waited(lane: Lane, waited: Duration) {

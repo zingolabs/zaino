@@ -49,6 +49,7 @@ pub struct GrpcLimits {
 #[serde(deny_unknown_fields, default)]
 pub struct OverloadLimits {
     pub network_queue_delay_ms: u32,
+    pub network_retransmit_percent: u8,
     pub network_min_networks: NonZeroUsize,
     pub cpu_pressure_percent: u8,
     pub io_pressure_percent: u8,
@@ -59,6 +60,8 @@ impl Default for OverloadLimits {
         Self {
             // off until real traffic's `zaino_grpc_queue_delay_seconds` sets it
             network_queue_delay_ms: 0,
+            // off until real traffic's `zaino_grpc_retransmit_ratio` sets it
+            network_retransmit_percent: 0,
             // one heavy client (or a proxy in front) = one network
             network_min_networks: const { NonZeroUsize::new(20).expect("20 is non-zero") },
             cpu_pressure_percent: 25,
