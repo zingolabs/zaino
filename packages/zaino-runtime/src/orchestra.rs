@@ -122,6 +122,23 @@ impl OrchestraBuilder {
     /// Boot `component`: spawn it, wait until it is `Ready`, then start
     /// supervising it. Components boot in call order — each reaches `Ready`
     /// before the next begins.
+    ///
+    /// # The call order is the dependency order
+    ///
+    /// Boot a component after the ones it reads, because that order is also the
+    /// one a teardown reverses: [`shutdown`](Orchestra::shutdown) stops
+    /// components back to front, so a component outlives everything booted on
+    /// top of it.
+    ///
+    /// Nothing declares those dependencies, and nothing checks the order against
+    /// them — a component says what it is, not what it needs, so this sequence
+    /// is the only place the shape of the stack is written down. A declared
+    /// dependency graph, topologically sorted here, would make the order
+    /// unforgeable; with one booting call site and a handful of components, the
+    /// sequence being readable in one place is worth more than the machinery.
+    ///
+    /// A component that fails to boot is not retained, so a teardown never
+    /// stops something that never started.
     pub async fn boot<C>(mut self, component: C) -> Result<Self, BootError<C::Error>>
     where
         C: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,

@@ -351,6 +351,13 @@ where
     let mempool_component = RunComponent::new(ComponentName("mempool"), mempool);
     let server = RunComponent::new(ComponentName(D::UseCase::NAME), serve(engine));
 
+    // This order is load-bearing, not cosmetic: each component boots after the
+    // ones it reads, and a teardown stops them in reverse, so the server comes
+    // down before the tiers it serves from and the indexer last of all. Moving
+    // a line here moves the teardown with it.
+    //
+    // The validator is observed rather than owned — the runtime cannot start or
+    // stop it, only watch it — so it takes no part in the teardown.
     let orchestra = OrchestraBuilder::new()
         .with_readiness(D::READINESS)
         .boot_observed(validator_component)
