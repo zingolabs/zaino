@@ -29,6 +29,7 @@ mod index_snapshot;
 mod logging;
 mod metrics;
 mod notify;
+mod overload;
 mod paths;
 mod peers;
 mod progress;
@@ -48,8 +49,9 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
-    // logging → stdout by default (reserved for `verify`'s JSON and `hold`/`resume`'s state)
-    if !matches!(cli.command, Command::Verify | Command::Hold(_)) {
+    // logging → stdout by default (reserved for `verify`'s JSON, `hold`/`resume`'s and
+    // `overload`'s state)
+    if !matches!(cli.command, Command::Verify | Command::Hold(_) | Command::Overload { .. }) {
         if let Err(error) = logging::init() {
             eprintln!("Error: logging: {error}");
             return ExitCode::from(2);
@@ -72,6 +74,7 @@ fn main() -> ExitCode {
             }
             Command::Verify => exit(verify::run(&config), 2),
             Command::Hold(action) => exit(hold::command(&config, action), 1),
+            Command::Overload { action } => exit(overload::command(&config, action), 1),
         }
     });
     // never waits on blocking work a failed start left behind (it may never finish)

@@ -145,6 +145,13 @@ async fn listen<S: ChainDataSource>(
         server = server.with_tls(Tls::load(tls.clone())?);
     }
     let serving = Serving { routing: server.routing(), admission: server.admission() };
+    let overload = config.grpc.overload.clone();
+    crate::overload::spawn(
+        server.admission(),
+        Arc::clone(status),
+        &config.serve.state_dir,
+        overload,
+    );
     let server = server.bind().await?;
     let span = component("Grpc");
     let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));

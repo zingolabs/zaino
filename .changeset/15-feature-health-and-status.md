@@ -28,7 +28,7 @@ Public endpoints on the gRPC listener (same port and TLS, HTTP/1.1 or h2), safe 
 | `held` | operator hold (`zainod hold`) |
 | `down` | `detail` says why: no trusted validator reachable, tip not held, runtime stalled, overloaded |
 
-A node refusing ≥ 10% of gRPC work for 5 minutes reports `down` / `Overloaded` until it has
-refused under 2% for 5 minutes. Under systemd `Type=notify`, zainod sends `READY=1` the first time
+A node that persistently lacks capacity reports `down` / `Overloaded: <cause>` (egress queue,
+retransmits, CPU pressure, IO pressure or refusing work) until it recovers. Under systemd `Type=notify`, zainod sends `READY=1` the first time
 `/readyz` passes (or the node is held), and extends the start timeout while a sync or snapshot
 download makes progress.

@@ -222,10 +222,9 @@ Every cap refuses; none queues except the read lanes:
     keeps the limit at `max_work_streams`.
   - `zaino_grpc_adaptive_stream_limit` exports the limit.
 - **Load report.** `GrpcService::admission()` → `AdmissionState::report()` gives
-  `{limit, in_flight, refused_per_s, overloaded}`. `refused_per_s` and
-  `overloaded` move once a minute, at the serving summary: `overloaded` sets
-  once every minute for 5 minutes refused ≥ 10% of work (at ≥ 1/s), and clears
-  once every minute for 5 minutes refused under 2% (`overload.rs`).
+  `{limit, in_flight, refused_per_s, overload}`. `refused_per_s` and `overload`
+  move once a minute, at the serving summary; `overload` is the
+  `OverloadCause` readiness names, or `None` ([Overload](#overload)).
 - A stream's slot is owned by the response body, so it returns when the stream
   ends or the client disconnects.
 - A mempool subscription idles until the next block, one per connected wallet,
@@ -349,6 +348,62 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 - Cost: one or two relaxed atomic adds per request into fixed per-method counters,
   swapped to zero once a minute on the accept loop; no lock, no allocation per
   request.
+
+### Overload
+
+`overload` says the node lacks capacity for more wallets, so a load balancer
+should send new ones elsewhere (zainod's `/readyz` turns `down` with `detail`
+`Overloaded: <cause>`). Admission already sheds bursts within seconds; this is
+for a shortfall that persists. Every cause is measured, none needs the link's
+speed or the machine's size, so the same rules hold on a shared VM, a dedicated
+host or bare metal, on any cloud.
+
+Each serving summary closes a one-minute window. A cause latches once its signal
+has been over its threshold for its **enter** time, and clears once under its
+exit for its **exit** time. While several are latched, the first in this table
+is named.
+
+| Cause | Signal | Over | Under | Enter / exit |
+| ----- | ------ | ---- | ----- | ------------ |
+| `egress queue` | send queueing: median over client networks of each network's median `rtt − min_rtt` | `egress_queue_delay_ms` | half of it, or no verdict | 1 / 3 min |
+| `retransmits` | retransmitted / sent segments, median over client networks | `retransmit_percent` | half of it, or no verdict | 2 / 3 min |
+| `CPU pressure` | share of the window zainod waited for a CPU (PSI `some`) | `cpu_pressure_percent` | half of it | 2 / 3 min |
+| `IO pressure` | share of the window zainod waited for IO (PSI `some`) | `io_pressure_percent` | half of it | 2 / 3 min |
+| `refusing work` | admission refusals | ≥ 10% of work at ≥ 1/s | < 2% | 5 / 5 min |
+
+- **Egress** (`egress.rs`): every 5 s one sock_diag dump (as `ss -ti`,
+  unprivileged) reads `tcp_info` for the listener's established sockets. A socket
+  counts if it sent within those 5 s (an idle one's RTT is stale). Its smoothed
+  RTT over its own minimum is time its data waited in a queue: the qdisc, the
+  NIC, a hypervisor's shaper, an upstream switch. Sockets group by client network
+  (IPv4 /24, v4-mapped IPv6 as IPv4, IPv6 /48); a network is the median of its
+  sockets, the sample the median of the networks. The window is the median of its
+  samples. A sample with fewer sending networks than `egress_min_networks` has
+  no verdict: one heavy downloader, or a proxy in front (every socket its
+  network), measures its own last mile, never this node's.
+- Retransmits are the symptom of a link that drops instead of queueing (a cloud's
+  bandwidth policer). Per socket, the segments retransmitted and sent since the
+  last sample; networks that sent ≥ 100 segments count.
+- **Pressure** (`pressure.rs`): zainod's own cgroup v2 `cpu.pressure` /
+  `io.pressure` (a noisy neighbour on a shared host is not zainod's load), else
+  the system's `/proc/pressure/*`. The share is the change in `some total=` over
+  the window, not the kernel's averages.
+- A signal the host lacks gives no verdict, and that cause never latches:
+  non-Linux, a kernel without PSI or older than 4.10 (`min_rtt`), or sock_diag
+  blocked (logged once at WARN). A `*_percent` of 0 turns its cause off.
+- `AdmissionState::set_overload(limits, detection)` swaps the thresholds live (the egress
+  sampler reads `egress_min_networks` per sample, the latch the rest per window); `detection =
+  false` keeps every latch stepping but reports no cause (zainod: `zainod overload`).
+- `[grpc.overload]` (`OverloadLimits`) sets the thresholds; defaults
+  `egress_queue_delay_ms = 10` (idle ≈ 1 ms, a node saturated at 10 Gbit/s
+  12–20 ms), `egress_min_networks = 20`, `retransmit_percent = 5`,
+  `cpu_pressure_percent = 25`, `io_pressure_percent = 25`.
+- Each window exports `zaino_grpc_egress_queue_delay_seconds`,
+  `zaino_grpc_egress_retransmit_ratio` (both NaN without a verdict),
+  `zaino_grpc_egress_networks`, `zaino_grpc_cpu_pressure_ratio`,
+  `zaino_grpc_io_pressure_ratio`, `zaino_grpc_overloaded{cause}` (1 = named
+  now) and `zaino_grpc_overload_detection` (0 = off). Latching logs WARN `Overloaded` with the cause and the window's signals,
+  clearing INFO `Overload cleared`.
 
 ## Stored bytes on the wire
 

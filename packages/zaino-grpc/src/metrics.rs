@@ -6,7 +6,9 @@ use std::time::Duration;
 use tonic::Code;
 
 use crate::admission::Class;
+use crate::egress::WindowVerdict;
 use crate::labels::{label, slot, CODES, LABELS};
+use crate::pressure::PressureShares;
 use crate::read_lanes::Lane;
 use crate::service::{Method, Reply};
 use crate::summary;
@@ -35,6 +37,13 @@ const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total"
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
+const EGRESS_NETWORKS: &str = "zaino.grpc.egress_networks";
+const EGRESS_QUEUE_DELAY_SECONDS: &str = "zaino.grpc.egress_queue_delay_seconds";
+const EGRESS_RETRANSMIT_RATIO: &str = "zaino.grpc.egress_retransmit_ratio";
+const CPU_PRESSURE_RATIO: &str = "zaino.grpc.cpu_pressure_ratio";
+const OVERLOAD_DETECTION: &str = "zaino.grpc.overload_detection";
+const IO_PRESSURE_RATIO: &str = "zaino.grpc.io_pressure_ratio";
+const OVERLOADED: &str = "zaino.grpc.overloaded";
 
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
@@ -138,11 +147,53 @@ pub fn describe_metrics() {
         ADAPTIVE_STREAM_LIMIT,
         "Work streams admitted at once now (latency-adaptive; max_work_streams when off)"
     );
+    describe_gauge!(EGRESS_NETWORKS, "Client networks (/24, /48) this node sent to, last window");
+    describe_gauge!(
+        EGRESS_QUEUE_DELAY_SECONDS,
+        Unit::Seconds,
+        "Send queueing (RTT over min RTT), median over client networks, last window (NaN = too few)"
+    );
+    describe_gauge!(
+        EGRESS_RETRANSMIT_RATIO,
+        "Retransmitted / sent segments, median over client networks, last window (NaN = too few)"
+    );
+    describe_gauge!(
+        CPU_PRESSURE_RATIO,
+        "Share of the last window zainod waited for CPU (PSI some)"
+    );
+    describe_gauge!(IO_PRESSURE_RATIO, "Share of the last window zainod waited for IO (PSI some)");
+    describe_gauge!(OVERLOADED, "1 = the cause readiness names now (Overloaded), by cause");
+    describe_gauge!(
+        OVERLOAD_DETECTION,
+        "0 = an operator turned overload off (zainod overload off)"
+    );
 }
 
 /// A connection sent GOAWAY (`reason` = `age` | `idle` | `retired`)
 pub(crate) fn connection_retired(reason: &'static str) {
     metrics::counter!(RETIRED_CONNECTIONS_TOTAL, "reason" => reason).increment(1);
+}
+
+/// A closed overload window: its signals (no verdict = NaN, a gap rather than a zero) and which
+/// cause is named
+pub(crate) fn overload_window(
+    egress: WindowVerdict,
+    pressure: PressureShares,
+    detection: bool,
+    causes: [(&'static str, bool); 5],
+) {
+    metrics::gauge!(OVERLOAD_DETECTION).set(if detection { 1.0 } else { 0.0 });
+    metrics::gauge!(EGRESS_NETWORKS).set(egress.networks as f64);
+    let set = |name: &'static str, value: Option<f64>| {
+        metrics::gauge!(name).set(value.unwrap_or(f64::NAN));
+    };
+    set(EGRESS_QUEUE_DELAY_SECONDS, egress.queue_delay.map(|delay| delay.as_secs_f64()));
+    set(EGRESS_RETRANSMIT_RATIO, egress.retransmit);
+    set(CPU_PRESSURE_RATIO, pressure.cpu);
+    set(IO_PRESSURE_RATIO, pressure.io);
+    for (cause, named) in causes {
+        metrics::gauge!(OVERLOADED, "cause" => cause).set(if named { 1.0 } else { 0.0 });
+    }
 }
 
 /// Set at each serving summary

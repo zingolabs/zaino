@@ -23,6 +23,7 @@ zainod start                             # reads $XDG_CONFIG_HOME/zaino/zainod.t
 zainod start -c /path/to/zainod.toml
 zainod verify -c /path/to/zainod.toml    # read-only page-checksum scrub
 zainod hold -c /path/to/zainod.toml      # out of rotation until `zainod resume`
+zainod overload off -c /path/to/zainod.toml  # never `Overloaded` until `zainod overload on`
 ```
 
 `-c, --config <FILE>` works before or after any subcommand. `generate-config` writes to

@@ -42,4 +42,14 @@ pub(super) enum Command {
     Verify,
     #[command(flatten)]
     Hold(crate::hold::Action),
+    /// Override when this node reports `Overloaded`, across restarts, for an incident.
+    ///
+    /// Writes markers in `[serve] state_dir`/overload, read by the running zainod within a
+    /// second; `[grpc.overload]` in the config stays the baseline. Prints the settings in force
+    /// (each threshold marked `config` or `override`). Exits 0 once the marker matches, 1 when
+    /// the config or state directory could not be read or written, or the value is invalid.
+    Overload {
+        #[command(subcommand)]
+        action: crate::overload::Action,
+    },
 }

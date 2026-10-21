@@ -11,7 +11,7 @@ use std::sync::{
 
 use serde::Serialize;
 use tokio::sync::watch;
-use zaino_grpc::{Hold, Retire};
+use zaino_grpc::{Hold, OverloadCause, Retire};
 use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_sync::SyncProgress;
@@ -34,6 +34,7 @@ pub(crate) struct DaemonStatus {
     retire: Retire,
     awaiting_validator: AtomicBool,
     bootstrap: std::sync::Mutex<Option<SnapshotProgress>>,
+    overload_notes: std::sync::Mutex<Vec<String>>,
     sources: OnceLock<Sources>,
 }
 
@@ -126,7 +127,7 @@ impl Readiness {
 
 /// Why `down`, `degraded` or `held` (`detail()` = `/readyz` + `/status` `detail`)
 ///
-/// - `Overloaded` = `zaino_grpc::AdmissionReport::overloaded`
+/// - `Overloaded` = `zaino_grpc::AdmissionReport::overload`
 /// - `GoawaySent` = held past `hold_goaway_delay_secs`, every connection GOAWAY'd (`zainod hold`
 ///   waits for this)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +135,7 @@ pub(crate) enum DaemonReason {
     NoValidatorReachable,
     TipUnvouched,
     RuntimeStalled,
-    Overloaded,
+    Overloaded(OverloadCause),
     GoawayPending,
     GoawaySent,
 }
@@ -145,7 +146,7 @@ impl DaemonReason {
             Self::NoValidatorReachable => "No trusted validator reachable",
             Self::TipUnvouched => "No trusted validator vouches for the tip",
             Self::RuntimeStalled => "Runtime stalled",
-            Self::Overloaded => "Overloaded",
+            Self::Overloaded(cause) => cause.detail(),
             Self::GoawayPending => "GOAWAY pending",
             Self::GoawaySent => "GOAWAY sent",
         }
@@ -161,7 +162,7 @@ enum Stage {
 /// One snapshot's facts: `done` = served height (else handed), `target` = [`GrpcSnapshot::sync_target`]
 struct Booted {
     serving_status: ServingStatus,
-    overloaded: bool,
+    overload: Option<OverloadCause>,
     done: Option<u32>,
     target: Option<u32>,
     rate: Option<f64>,
@@ -176,7 +177,7 @@ impl Booted {
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
             serving_status: grpc_snapshot.serving_status(now),
-            overloaded: sources.grpc_admission.report().overloaded,
+            overload: sources.grpc_admission.report().overload,
             done: served.or(progress.handed()).map(u32::from),
             target: grpc_snapshot.sync_target().map(u32::from),
             rate,
@@ -216,8 +217,8 @@ fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
         (_, Stage::Starting { bootstrap, .. }) => {
             at(DaemonState::Provisioning, bootstrap, None, Vec::new())
         }
-        (true, Stage::Booted(booted)) if booted.overloaded => {
-            at(DaemonState::Down, None, Some(DaemonReason::Overloaded), booted.notes)
+        (true, Stage::Booted(Booted { overload: Some(cause), notes, .. })) => {
+            at(DaemonState::Down, None, Some(DaemonReason::Overloaded(cause)), notes)
         }
         (true, Stage::Booted(booted)) => match booted.serving_status {
             ServingStatus::Down => at(DaemonState::Down, None, unvouched, booted.notes),
@@ -248,6 +249,7 @@ impl DaemonStatus {
             retire: Retire::default(),
             awaiting_validator: AtomicBool::new(false),
             bootstrap: std::sync::Mutex::new(None),
+            overload_notes: std::sync::Mutex::new(Vec::new()),
             sources: OnceLock::new(),
         }
     }
@@ -267,6 +269,11 @@ impl DaemonStatus {
         &self.retire
     }
 
+    /// Operator overload overrides in force (`overload.rs`, from its markers): `/status` notes
+    pub(crate) fn set_overload_notes(&self, notes: Vec<String>) {
+        *self.overload_notes.lock().expect("notes mutex poisoned") = notes;
+    }
+
     /// Boot waiting on its first validator answer (the upgrade schedule): `down`, not `provisioning`
     pub(crate) fn awaiting_validator(&self, awaiting: bool) {
         self.awaiting_validator.store(awaiting, Ordering::Relaxed);
@@ -278,7 +285,13 @@ impl DaemonStatus {
 
     fn current_readiness(&self) -> Readiness {
         let stage = match self.sources.get() {
-            Some(sources) => Stage::Booted(Booted::of(sources, &sources.grpc_snapshots.load())),
+            Some(sources) => {
+                let mut booted = Booted::of(sources, &sources.grpc_snapshots.load());
+                booted
+                    .notes
+                    .extend(self.overload_notes.lock().expect("notes mutex poisoned").clone());
+                Stage::Booted(booted)
+            }
             None => Stage::Starting {
                 bootstrap: self.bootstrap_bytes(),
                 awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
@@ -513,13 +526,14 @@ mod tests {
     /// - `progress` only provisioning or syncing
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
-        let stage = |serving_status, overloaded, target: Option<u32>, rate: Option<f64>| {
+        let stage = |serving_status, overload, target: Option<u32>, rate: Option<f64>| {
             let notes = vec!["1 validator on a stale tip".to_owned()];
             let done = Some(3_514_194);
-            Stage::Booted(Booted { serving_status, overloaded, done, target, rate, notes })
+            Stage::Booted(Booted { serving_status, overload, done, target, rate, notes })
         };
-        let booted = |serving_status, target, rate| stage(serving_status, false, target, rate);
-        let overloaded = |serving_status| stage(serving_status, true, Some(3_515_406), Some(6.2));
+        let booted = |serving_status, target, rate| stage(serving_status, None, target, rate);
+        let queued = Some(OverloadCause::EgressQueue);
+        let overloaded = |serving_status| stage(serving_status, queued, Some(3_515_406), Some(6.2));
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
         let stale = serde_json::json!(["1 validator on a stale tip"]);
@@ -555,19 +569,19 @@ mod tests {
                 "overloaded beats syncing",
                 true,
                 overloaded(ServingStatus::Syncing),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
             ),
             (
                 "overloaded beats down",
                 true,
                 overloaded(ServingStatus::Down),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
             ),
             (
                 "overloaded beats degraded",
                 true,
                 overloaded(ServingStatus::Degraded),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: egress queue", "notes": stale }),
             ),
             (
                 "runtime stalled beats degraded",
@@ -715,7 +729,7 @@ mod tests {
 
         let serving = Stage::Booted(Booted {
             serving_status: ServingStatus::Serving,
-            overloaded: false,
+            overload: None,
             done: Some(3_515_400),
             target: Some(3_515_406),
             rate: None,

@@ -41,6 +41,36 @@ pub struct GrpcLimits {
     pub trusted_proxies: TrustedProxies,
     #[serde(rename = "shutdown_grace_secs", with = "serde_secs::any")]
     pub drain_timeout: Duration,
+    pub overload: OverloadLimits,
+}
+
+/// When the node reports `Overloaded` for the capacity it lacks (zainod's `[grpc.overload]`)
+///
+/// - each cause and its window rule: usage.md "Overload"
+/// - a `*_percent` of 0 = that cause off
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct OverloadLimits {
+    pub egress_queue_delay_ms: NonZeroU32,
+    pub egress_min_networks: NonZeroUsize,
+    pub retransmit_percent: u8,
+    pub cpu_pressure_percent: u8,
+    pub io_pressure_percent: u8,
+}
+
+impl Default for OverloadLimits {
+    fn default() -> Self {
+        Self {
+            // idle ≈ 1 ms, a saturated 10 Gbit/s node 12–20 ms (median over client networks)
+            egress_queue_delay_ms: const { NonZeroU32::new(10).expect("10 is non-zero") },
+            // one heavy downloader / a proxy in front = one network, never a verdict
+            egress_min_networks: const { NonZeroUsize::new(20).expect("20 is non-zero") },
+            // a policing link drops instead of queueing (internet baseline < 1 %)
+            retransmit_percent: 5,
+            cpu_pressure_percent: 25,
+            io_pressure_percent: 25,
+        }
+    }
 }
 
 impl Default for GrpcLimits {
@@ -72,6 +102,7 @@ impl Default for GrpcLimits {
             adaptive_work_streams: true,
             trusted_proxies: TrustedProxies::default(),
             drain_timeout: Duration::from_secs(10),
+            overload: OverloadLimits::default(),
         }
     }
 }

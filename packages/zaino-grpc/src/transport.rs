@@ -23,9 +23,11 @@ use zaino_source::ChainDataSource;
 
 use crate::admission::{Admission, AdmissionState, Class};
 use crate::connections::{ConnectionCaps, Reserved};
+use crate::egress;
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::observe::Measured;
+use crate::pressure::Pressure;
 use crate::proxy_protocol::{self, TrustedProxies};
 use crate::service::{Dispatch, RouteDeps, Routing};
 use crate::summary::{self, CapsInUse, INTERVAL};
@@ -219,6 +221,18 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         if let Some(tls) = &server.tls {
             tokio::spawn(tls.reload(cancel.clone()).instrument(Span::current()));
         }
+        let egress = Arc::new(egress::Window::default());
+        #[cfg(target_os = "linux")]
+        match listener.local_addr() {
+            Ok(bound) => {
+                let admission = Arc::clone(&server.admission);
+                let sampling =
+                    egress::run(bound.port(), admission, Arc::clone(&egress), cancel.clone());
+                tokio::spawn(sampling.instrument(Span::current()));
+            }
+            Err(error) => warn!(%error, "No listener port to sample; overload ignores egress"),
+        }
+        let mut pressure = Pressure::new();
         let shared = Arc::new(Shared {
             caps: ConnectionCaps::new(&server.limits),
             proxies: server.limits.trusted_proxies.clone(),
@@ -242,7 +256,8 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 accepted = listener.accept() => accepted,
                 now = summaries.tick() => {
                     let elapsed = now - window_opened;
-                    let at_capacity = shared.admission.tick(elapsed);
+                    let at_capacity =
+                        shared.admission.tick(elapsed, egress.take(), pressure.window(elapsed));
                     summary::summarise(elapsed, shared.caps_in_use(), at_capacity);
                     window_opened = now;
                     continue;

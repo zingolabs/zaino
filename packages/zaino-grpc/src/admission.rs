@@ -20,10 +20,13 @@ use tokio::time::Instant;
 use tonic::Status;
 
 use crate::adaptive::Limiter;
+use crate::egress::WindowVerdict;
 use crate::layer::take_ready;
 use crate::metrics;
-use crate::overload::Overload;
+use crate::overload::{Overload, OverloadCause};
+use crate::pressure::PressureShares;
 use crate::service::Method;
+use crate::OverloadLimits;
 
 /// Refusal retry hint, ms (held streams = wallet syncs: a slot frees well under a second)
 const PUSHBACK_MS: &str = "250";
@@ -57,13 +60,13 @@ pub struct AdmissionState {
 /// Work pool
 ///
 /// - `limit` = the adaptive one (`max_work_streams` when off)
-/// - `refused_per_s`, `overloaded` as of the last serving summary (thresholds: `overload.rs`)
+/// - `refused_per_s`, `overload` as of the last serving summary (rules: `overload.rs`)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AdmissionReport {
     pub limit: usize,
     pub in_flight: usize,
     pub refused_per_s: f64,
-    pub overloaded: bool,
+    pub overload: Option<OverloadCause>,
 }
 
 impl AdmissionState {
@@ -75,7 +78,7 @@ impl AdmissionState {
             max_work_streams,
             max_subscriptions: limits.max_subscriptions.get(),
             limiter: Limiter::new(max_work_streams, limits.adaptive_work_streams),
-            overload: Overload::default(),
+            overload: Overload::new(limits.overload.clone()),
         }
     }
 
@@ -84,14 +87,31 @@ impl AdmissionState {
             limit: self.limiter.limit(),
             in_flight: self.held(Class::Work).0,
             refused_per_s: self.overload.refused_per_s(),
-            overloaded: self.overload.overloaded(),
+            overload: self.overload.cause(),
         }
     }
 
-    /// Closes a serving summary's window (`elapsed` long): its refusals, every class
-    pub(crate) fn tick(&self, elapsed: Duration) -> u64 {
+    /// The operator's overload thresholds + whether a latched cause is reported, from the next
+    /// serving summary (zainod: `[grpc.overload]` under `zainod overload` markers)
+    pub fn set_overload(&self, limits: OverloadLimits, detection: bool) {
+        self.overload.set(limits, detection);
+    }
+
+    /// The breadth rule's live value (the egress sampler reads it per sample)
+    pub(crate) fn egress_min_networks(&self) -> usize {
+        self.overload.egress_min_networks()
+    }
+
+    /// Closes a serving summary's window (`elapsed` long, with its egress + pressure verdicts):
+    /// its refusals, every class
+    pub(crate) fn tick(
+        &self,
+        elapsed: Duration,
+        egress: WindowVerdict,
+        pressure: PressureShares,
+    ) -> u64 {
         metrics::adaptive_stream_limit(self.limiter.limit());
-        self.overload.tick(elapsed)
+        self.overload.tick(elapsed, egress, pressure)
     }
 
     fn pool(&self, class: Class) -> (&AtomicUsize, usize) {
@@ -463,10 +483,15 @@ mod tests {
         assert_eq!(refusal, expected);
         assert_eq!(state.held(Class::Work), (256, 2048), "refused below the ceiling");
 
-        assert_eq!(state.tick(Duration::from_secs(1)), 1, "the window's one refusal");
+        let quiet = (WindowVerdict::default(), PressureShares::default());
+        assert_eq!(
+            state.tick(Duration::from_secs(1), quiet.0, quiet.1),
+            1,
+            "the window's one refusal"
+        );
         let report = state.report();
         let expected =
-            AdmissionReport { limit: 256, in_flight: 256, refused_per_s: 1.0, overloaded: false };
+            AdmissionReport { limit: 256, in_flight: 256, refused_per_s: 1.0, overload: None };
         assert_eq!(report, expected);
 
         let mempool = Method::GetMempoolStream.path();

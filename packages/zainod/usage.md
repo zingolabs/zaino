@@ -74,13 +74,13 @@ the recorder, and so is any peer identity (`addr`, `remote_ip`, `user_agent`, `r
   refused for it.
 - `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
   validator reachable` (boot), `No trusted validator vouches for the tip`, `Runtime stalled` or
-  `Overloaded` (a degraded node only ever shows the second). One block past the last vouch is the
-  race a validator's next poll closes (a peer relayed the block first), not a reason. When `held`
-  it names the drain: `GOAWAY pending` or `GOAWAY sent`.
-- `Overloaded` is a backstop for a node persistently over capacity: admission already sheds
-  bursts within seconds, and this only takes the node out of a load balancer. It follows the gRPC
-  work pool's `overloaded` flag (thresholds in
-  [zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack)).
+  `Overloaded: <cause>` (a degraded node only ever shows the second). One block past the last
+  vouch is the race a validator's next poll closes (a peer relayed the block first), not a reason.
+  When `held` it names the drain: `GOAWAY pending` or `GOAWAY sent`.
+- `Overloaded: <cause>` takes a node that persistently lacks capacity out of a load balancer:
+  `egress queue`, `retransmits`, `CPU pressure`, `IO pressure` or `refusing work`, each measured
+  and latched by the gRPC server (rules and `[grpc.overload]` in
+  [zaino-grpc: Overload](../zaino-grpc/usage.md#overload)).
 - `progress` is set only while `provisioning` or `syncing`, as `{done, total, unit, rate}`:
   - A bootstrap reports `unit` `byte`, with `rate` in bytes/s while downloading.
   - Syncing reports `unit` `block`:
@@ -138,6 +138,38 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
     a zainod restarted since it was written never cuts the wait short.
   - Exit 0 once the marker matches the command (both commands are idempotent), 1 when the
     config or state directory could not be read or written.
+
+## Operator overload overrides
+
+`zainod overload <on|off|set|unset> [--config FILE]` changes when this node reports `Overloaded`
+([zaino-grpc: Overload](../zaino-grpc/usage.md#overload)), for an incident, without a deploy.
+`[grpc.overload]` in the config stays the baseline; tune it there for good.
+
+| Command | Marker in `<[serve] state_dir>/overload/` | Effect |
+| ------- | ------------------------------------------ | ------ |
+| `off` | `off` | never reports `Overloaded` (a detector misfiring keeps the node in rotation) |
+| `on` | `off` removed | reports a latched cause again, at once |
+| `set <param> <value>` | `<param>`, the value inside | that threshold overrides the config's |
+| `unset <param>` | `<param>` removed | back to the config's value |
+
+- `<param>` is a `[grpc.overload]` key: `egress_queue_delay_ms`, `egress_min_networks`,
+  `retransmit_percent`, `cpu_pressure_percent`, `io_pressure_percent`. A value follows the
+  config's rules (a percent 0–100, 0 = that cause off; the others at least 1); an invalid one is
+  refused before anything is written.
+- Markers persist across restarts, deploys and reboots, as `held` does (an incident restart must
+  not undo them). Each is synced to disk with its directory; there is no network endpoint.
+- The running zainod reads them every second once the gRPC listener is up and applies them from
+  the next one-minute window. While off, causes still latch and every signal is still exported,
+  so `on` names what holds at that moment.
+- Never silent: every change (and markers found at start) logs WARN `Overload settings changed by
+  operator`; `/status` `notes` carries `Overload detection off (zainod overload on)` and
+  `Overload thresholds overridden: <param> = <value>, … (zainod overload unset)`;
+  `zaino_grpc_overload_detection` is 0 while off. A marker that will not parse (hand-written) is
+  ignored with a WARN, its threshold left at the config's.
+- Output: stdout, `detection on|off` then each threshold as `<param> = <value> (config|override)`;
+  stderr, any ignored marker and where the markers live. Exit 0 once the marker matches (every
+  command is idempotent), 1 when the config or state directory could not be read or written, or
+  the value is invalid.
 
 ## Public health on the gRPC listener
 
