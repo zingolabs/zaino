@@ -5045,7 +5045,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-chainview"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5070,7 +5070,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-grpc"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5122,7 +5122,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-grpc-snapshot"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -5148,7 +5148,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-header-chain"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "const-hex",
  "equihash",
@@ -5163,7 +5163,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-index-compact-block"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "bytes",
  "proptest",
@@ -5180,7 +5180,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-index-transparent-address"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -5195,7 +5195,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-index-tree-state"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "incrementalmerkletree",
  "orchard",
@@ -5213,7 +5213,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-index-utxo-set"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -5226,7 +5226,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-internal-block-hash-to-height"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "tokio",
  "zaino-persistence",
@@ -5237,7 +5237,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-internal-txid-location"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "tokio",
  "zaino-persistence",
@@ -5248,7 +5248,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-nfs"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "imbl",
  "metrics",
@@ -5275,7 +5275,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-peers"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "chrono",
  "metrics",
@@ -5296,7 +5296,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-persistence"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -5320,7 +5320,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-primitives"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "serde",
  "sha2 0.10.9",
@@ -5335,7 +5335,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "prost",
  "tonic",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "const-hex",
  "futures",
@@ -5375,7 +5375,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-sync"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "futures",
  "metrics",
@@ -5395,7 +5395,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-traffic"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "futures",
  "metrics",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 dependencies = [
  "bytes",
  "clap",

@@ -27,7 +27,7 @@ resolver = "2"
 
 [workspace.package]
 # Lockstep: every crate ships at this version (the `zaino-*` entries below match it)
-version = "0.11.0-alpha.3"
+version = "0.11.0-alpha.4"
 authors = ["Zingo Lab Cyan"]
 repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
@@ -103,37 +103,37 @@ dirs = "6"
 # Test
 tempfile = "3.2"
 # Domain vocabulary (heights, hashes, blocks, transactions)
-zaino-primitives = { path = "packages/zaino-primitives", version = "0.11.0-alpha.3" }
-zaino-persistence = { path = "packages/zaino-persistence", version = "0.11.0-alpha.3" }
-zaino-sync = { path = "packages/zaino-sync", version = "0.11.0-alpha.3" }
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.11.0-alpha.4" }
+zaino-persistence = { path = "packages/zaino-persistence", version = "0.11.0-alpha.4" }
+zaino-sync = { path = "packages/zaino-sync", version = "0.11.0-alpha.4" }
 # Non-finalized state: fetch, folds above the durable root, the finalized stream
-zaino-nfs = { path = "packages/zaino-nfs", version = "0.11.0-alpha.3" }
+zaino-nfs = { path = "packages/zaino-nfs", version = "0.11.0-alpha.4" }
 # Validated Header tree: most-work tip above a trusted anchor
-zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.11.0-alpha.3" }
+zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.11.0-alpha.4" }
 # Validator source: `ChainDataSource` port + its JSON-RPC and indexer-gRPC clients
-zaino-source = { path = "packages/zaino-source", version = "0.11.0-alpha.3" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.11.0-alpha.3" }
-zaino-peers = { path = "packages/zaino-peers", version = "0.11.0-alpha.3" }
-zaino-traffic = { path = "packages/zaino-traffic", version = "0.11.0-alpha.3" }
-zaino-chainview = { path = "packages/zaino-chainview", version = "0.11.0-alpha.3" }
-zaino-grpc-snapshot = { path = "packages/zaino-grpc-snapshot", version = "0.11.0-alpha.3" }
-zaino-grpc = { path = "packages/zaino-grpc", version = "0.11.0-alpha.3" }
+zaino-source = { path = "packages/zaino-source", version = "0.11.0-alpha.4" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.11.0-alpha.4" }
+zaino-peers = { path = "packages/zaino-peers", version = "0.11.0-alpha.4" }
+zaino-traffic = { path = "packages/zaino-traffic", version = "0.11.0-alpha.4" }
+zaino-chainview = { path = "packages/zaino-chainview", version = "0.11.0-alpha.4" }
+zaino-grpc-snapshot = { path = "packages/zaino-grpc-snapshot", version = "0.11.0-alpha.4" }
+zaino-grpc = { path = "packages/zaino-grpc", version = "0.11.0-alpha.4" }
 # p2p layer (zaino-peers): zebra main on the same librustzcash/orchard/sapling forks patched below
 zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0ad140b6b44b88cecf2385067568b7a575b", version = "14.0.0" }
 zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0ad140b6b44b88cecf2385067568b7a575b", version = "14.0.0" }
 zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "a300f0ad140b6b44b88cecf2385067568b7a575b", version = "4.0.0" }
 # Height → gRPC-framed compact block, served as contiguous mmap spans
-zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.11.0-alpha.3" }
+zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.11.0-alpha.4" }
 # Block hash <-> height: the locator every by-hash request resolves through.
-zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.3" }
+zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.4" }
 # Txid -> mined location: where GetTransaction finds a mined transaction's block
-zaino-internal-txid-location = { path = "packages/zaino-internal-txid-location", version = "0.11.0-alpha.3" }
+zaino-internal-txid-location = { path = "packages/zaino-internal-txid-location", version = "0.11.0-alpha.4" }
 # Outpoint -> value: each transaction's fee for compact blocks
-zaino-index-utxo-set = { path = "packages/zaino-index-utxo-set", version = "0.11.0-alpha.3" }
+zaino-index-utxo-set = { path = "packages/zaino-index-utxo-set", version = "0.11.0-alpha.4" }
 # Height → commitment-tree state, subtree roots (any historical frontier, no hashing)
-zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.11.0-alpha.3" }
+zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.11.0-alpha.4" }
 # Transparent address → receives + their spends (two maps, composed per query)
-zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.11.0-alpha.3" }
+zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.11.0-alpha.4" }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
