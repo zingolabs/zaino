@@ -196,3 +196,46 @@ async fn an_escalation_still_stops_the_other_components() {
         .await
         .expect("the neighbour's port is free once the escalation teardown returns");
 }
+
+/// The whole cycle a fatal escalation puts the process through: run, escalate,
+/// tear down, and boot a fresh runtime on the same ports.
+///
+/// This is the sequence, not a property of it. A teardown that leaves a port
+/// held still passes a "the port is bindable" check if something frees it a
+/// moment later, and still fails here — which is what the process does next,
+/// and what a held port turns into a restart loop.
+#[tokio::test]
+async fn a_fresh_runtime_boots_on_the_ports_the_torn_down_one_held() {
+    let probe = TcpListener::bind("127.0.0.1:0").await.expect("probe bind");
+    let addr = probe.local_addr().expect("probe addr");
+    drop(probe);
+
+    // First runtime: a server on `addr`, and a component that escalates under it.
+    let first = OrchestraBuilder::new()
+        .boot(RunComponent::new(ComponentName("server"), Listening { addr }))
+        .await
+        .expect("boot the first server")
+        .boot(RunComponent::new(ComponentName("doomed"), FailsAfterReady))
+        .await
+        .expect("boot doomed")
+        .build();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), first.run())
+        .await
+        .expect("the first runtime reached a decision");
+    assert!(
+        matches!(outcome, zaino_runtime::RuntimeOutcome::Fatal { .. }),
+        "the escalation is fatal, which is what drives the restart"
+    );
+
+    // The restart. `Listening` binds inside its run loop, so a port still held
+    // leaves the component un-`Ready` and this boot fails.
+    let second = OrchestraBuilder::new()
+        .boot(RunComponent::new(ComponentName("server"), Listening { addr }))
+        .await
+        .expect("a fresh runtime boots on the port the torn-down one held")
+        .build();
+
+    assert_eq!(second.statuses()[0].lifecycle, Lifecycle::Ready);
+    second.shutdown().await;
+}
