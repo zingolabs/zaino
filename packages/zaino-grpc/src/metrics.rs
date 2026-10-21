@@ -7,6 +7,7 @@ use tonic::Code;
 
 use crate::admission::Class;
 use crate::labels::{label, slot, CODES, LABELS};
+use crate::overload::OverloadCause;
 use crate::read_lanes::Lane;
 use crate::service::{Method, Reply};
 use crate::summary;
@@ -37,6 +38,7 @@ const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 const QUEUE_DELAY_SECONDS: &str = "zaino.grpc.queue_delay_seconds";
 const RETRANSMIT_RATIO: &str = "zaino.grpc.retransmit_ratio";
+const OVERLOAD_LATCHED: &str = "zaino.grpc.overload_latched";
 
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
@@ -146,6 +148,11 @@ pub fn describe_metrics() {
         "Send queueing (RTT over the client network's 10 min base RTT), one per client network \
          every 10 s (its sockets' median)"
     );
+    describe_gauge!(
+        OVERLOAD_LATCHED,
+        "Overload causes latched, by cause (1 = latched, also while detection is off; /readyz names \
+         the first only while on)"
+    );
     describe_histogram!(
         RETRANSMIT_RATIO,
         "Share of sent data segments retransmitted, one per client network sending >= 100 \
@@ -210,6 +217,11 @@ pub(crate) fn stream_rejected(class: Class) {
 
 pub(crate) fn queue_delay(delay: Duration) {
     metrics::histogram!(QUEUE_DELAY_SECONDS).record(delay.as_secs_f64());
+}
+
+/// Set at each overload window
+pub(crate) fn overload_latched(cause: OverloadCause, held: bool) {
+    metrics::gauge!(OVERLOAD_LATCHED, "cause" => cause.label()).set(f64::from(u8::from(held)));
 }
 
 pub(crate) fn retransmit_ratio(ratio: f64) {

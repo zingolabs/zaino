@@ -10,6 +10,9 @@ default: minor
   network's 10 min base RTT (native histogram).
 - `zaino_grpc_retransmit_ratio`: retransmitted share per client network every 10 s (native
   histogram); `network_retransmit_percent` latches `network saturated` on it.
+- `zaino_state_reason{reason}`: `/readyz`'s detail, one-hot (`overloaded`, `runtime_stalled`,
+  `no_validator_reachable`, `tip_unvouched`, `goaway_pending`, `goaway_sent`).
+- `zaino_grpc_overload_latched{cause}`: each overload cause's latch, also while detection is off.
 - `zainod overload on|off|set|unset`: overrides across restarts, as `zainod hold`.
 - Library: `AdmissionReport::overload: Option<OverloadCause>` replaces `overloaded`;
   `GrpcLimits::overload`; `AdmissionState::set_overload`.

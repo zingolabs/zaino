@@ -64,6 +64,8 @@ pub(crate) enum DaemonState {
 
 /// One-hot by `state` (every state each scrape: 1 = now, 0 = the rest; no series left stale)
 const STATE: &str = "zaino.state";
+/// One-hot by `reason` as STATE (all 0 = none: serving, syncing, provisioning)
+const REASON: &str = "zaino.state_reason";
 
 impl DaemonState {
     const ALL: [Self; 6] =
@@ -87,6 +89,11 @@ pub(crate) fn describe_metrics() {
         STATE,
         "Daemon state, one-hot by state (= /readyz's: provisioning, syncing, serving, degraded, \
          held, down)"
+    );
+    metrics::describe_gauge!(
+        REASON,
+        "Why down, degraded or held, one-hot by reason (= /readyz's detail; overloaded = its cause \
+         in zaino_grpc_overload_latched)"
     );
 }
 
@@ -114,7 +121,8 @@ enum Unit {
 pub(crate) struct Readiness {
     state: DaemonState,
     progress: Option<Progress>,
-    detail: Option<&'static str>,
+    #[serde(rename = "detail")]
+    reason: Option<DaemonReason>,
     notes: Vec<String>,
 }
 
@@ -141,6 +149,27 @@ pub(crate) enum DaemonReason {
 }
 
 impl DaemonReason {
+    /// Every `label()`, in declaration order
+    const LABELS: [&'static str; 6] = [
+        "no_validator_reachable",
+        "tip_unvouched",
+        "runtime_stalled",
+        "overloaded",
+        "goaway_pending",
+        "goaway_sent",
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::NoValidatorReachable => "no_validator_reachable",
+            Self::TipUnvouched => "tip_unvouched",
+            Self::RuntimeStalled => "runtime_stalled",
+            Self::Overloaded(_) => "overloaded",
+            Self::GoawayPending => "goaway_pending",
+            Self::GoawaySent => "goaway_sent",
+        }
+    }
+
     pub(crate) const fn detail(self) -> &'static str {
         match self {
             Self::NoValidatorReachable => "No trusted validator reachable",
@@ -150,6 +179,13 @@ impl DaemonReason {
             Self::GoawayPending => "GOAWAY pending",
             Self::GoawaySent => "GOAWAY sent",
         }
+    }
+}
+
+/// = its `detail()`
+impl Serialize for DaemonReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.detail())
     }
 }
 
@@ -188,12 +224,7 @@ impl Booted {
 
 /// Pure: the state rules over the hold + heartbeat + stage (held > the rest)
 fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
-    let at = |state, progress, reason: Option<DaemonReason>, notes| Readiness {
-        state,
-        progress,
-        detail: reason.map(DaemonReason::detail),
-        notes,
-    };
+    let at = |state, progress, reason, notes| Readiness { state, progress, reason, notes };
     let goaway = match hold {
         Hold::Off => None,
         Hold::Draining => Some(DaemonReason::GoawayPending),
@@ -301,7 +332,7 @@ impl DaemonStatus {
     /// `/readyz`: `(ready, {"state", "detail"})`
     pub(crate) fn readiness_json(&self) -> (bool, String) {
         let readiness = self.current_readiness();
-        let body = serde_json::json!({ "state": readiness.state, "detail": readiness.detail });
+        let body = serde_json::json!({ "state": readiness.state, "detail": readiness.reason });
         (readiness.ready(), body.to_string())
     }
 
@@ -314,12 +345,18 @@ impl DaemonStatus {
         serde_json::to_string(&status).unwrap_or_default()
     }
 
-    /// The state (`/readyz`'s) + every `GrpcSnapshot` gauge (none before boot), set just before a
+    /// The state + reason (`/readyz`'s) + every `GrpcSnapshot` gauge (none before boot), set just before a
     /// scrape renders
     pub(crate) fn emit_gauges(&self) {
-        let now = self.current_readiness().state;
+        let readiness = self.current_readiness();
         for state in DaemonState::ALL {
-            metrics::gauge!(STATE, "state" => state.label()).set(f64::from(u8::from(state == now)));
+            let now = u8::from(state == readiness.state);
+            metrics::gauge!(STATE, "state" => state.label()).set(f64::from(now));
+        }
+        let reason = readiness.reason.map(DaemonReason::label);
+        for label in DaemonReason::LABELS {
+            metrics::gauge!(REASON, "reason" => label)
+                .set(f64::from(u8::from(Some(label) == reason)));
         }
         if let Some(sources) = self.sources.get() {
             zaino_grpc_snapshot::emit_gauges(&sources.grpc_snapshots.load(), &sources.progress);
@@ -652,7 +689,7 @@ mod tests {
             let serving = matches!(state, DaemonState::Serving | DaemonState::Degraded);
             assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
             let detailed = matches!(state, DaemonState::Down | DaemonState::Degraded);
-            assert_eq!(readiness.detail.is_some(), detailed, "{case}: detail ⇔ down or degraded");
+            assert_eq!(readiness.reason.is_some(), detailed, "{case}: detail ⇔ down or degraded");
             let progressing = matches!(state, DaemonState::Provisioning | DaemonState::Syncing);
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
@@ -755,38 +792,63 @@ mod tests {
         );
     }
 
-    /// `zaino_state` = `/readyz`'s state, one-hot over all six (each label = its serde spelling)
+    /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail, each one-hot
     ///
-    /// - not booted = provisioning, an operator hold = held: one 1, five 0s each time
+    /// - state labels = their serde spelling, every reason variant labelled
+    /// - not booted = provisioning, no reason; a zero-delay operator hold = held, its GOAWAYs sent
     #[test]
-    fn the_state_gauge_is_readyz_one_hot() {
+    fn the_state_gauges_are_readyz_one_hot() {
         let (recorder, rendered) = crate::metrics::recorder().expect("native config is valid");
         let _recording = metrics::set_default_local_recorder(&recorder);
         let status = DaemonStatus::new(NetworkType::Regtest, []);
         // sorted: the exporter renders a family's series in no fixed order
-        let one_hot = |now: DaemonState| -> Vec<String> {
-            let mut lines = DaemonState::ALL.map(|state| {
-                format!("zaino_state{{state=\"{}\"}} {}", state.label(), u8::from(state == now))
-            });
-            lines.sort();
-            lines.to_vec()
-        };
-        let scraped = || {
-            status.emit_gauges();
-            let text = rendered.render();
-            let mut lines: Vec<_> = text
-                .lines()
-                .filter(|line| line.starts_with("zaino_state{"))
-                .map(str::to_owned)
+        let one_hot = |family: &str, key: &str, labels: &[&str], now: Option<&str>| {
+            let mut lines: Vec<_> = (labels.iter())
+                .map(|&label| {
+                    format!("{family}{{{key}=\"{label}\"}} {}", u8::from(Some(label) == now))
+                })
                 .collect();
             lines.sort();
             lines
         };
+        let scraped = |family: &str| {
+            status.emit_gauges();
+            let text = rendered.render();
+            let prefix = format!("{family}{{");
+            let mut lines: Vec<_> =
+                text.lines().filter(|line| line.starts_with(&prefix)).map(str::to_owned).collect();
+            lines.sort();
+            lines
+        };
 
+        let states = DaemonState::ALL.map(DaemonState::label);
         let spellings = DaemonState::ALL.map(|state| (serde_json::json!(state), state.label()));
         assert!(spellings.iter().all(|(serde, label)| serde == label), "{spellings:?}");
-        assert_eq!(scraped(), one_hot(DaemonState::Provisioning), "not booted");
+        let reasons = [
+            DaemonReason::NoValidatorReachable,
+            DaemonReason::TipUnvouched,
+            DaemonReason::RuntimeStalled,
+            DaemonReason::Overloaded(OverloadCause::CpuPressure),
+            DaemonReason::GoawayPending,
+            DaemonReason::GoawaySent,
+        ];
+        assert_eq!(reasons.map(DaemonReason::label), DaemonReason::LABELS, "every reason labelled");
+
+        let reasons = &DaemonReason::LABELS;
+        assert_eq!(
+            scraped("zaino_state"),
+            one_hot("zaino_state", "state", &states, Some("provisioning"))
+        );
+        assert_eq!(
+            scraped("zaino_state_reason"),
+            one_hot("zaino_state_reason", "reason", reasons, None)
+        );
         status.retire().hold(std::time::Duration::ZERO);
-        assert_eq!(scraped(), one_hot(DaemonState::Held), "operator hold");
+        assert_eq!(scraped("zaino_state"), one_hot("zaino_state", "state", &states, Some("held")));
+        let sent = Some("goaway_sent");
+        assert_eq!(
+            scraped("zaino_state_reason"),
+            one_hot("zaino_state_reason", "reason", reasons, sent)
+        );
     }
 }

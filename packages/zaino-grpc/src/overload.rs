@@ -41,6 +41,16 @@ impl OverloadCause {
         }
     }
 
+    /// `zaino_grpc_overload_latched{cause}`
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::NetworkSaturated => "network_saturated",
+            Self::CpuPressure => "cpu_pressure",
+            Self::IoPressure => "io_pressure",
+            Self::RefusingWork => "refusing_work",
+        }
+    }
+
     /// (enter, exit)
     fn rule(self) -> (Duration, Duration) {
         let minutes = |m: u64| Duration::from_secs(m * 60);
@@ -171,6 +181,7 @@ impl Overload {
             if latch.flipping_for >= needed {
                 (latch.held, latch.flipping_for) = (!latch.held, Duration::ZERO);
             }
+            metrics::overload_latched(cause, latch.held);
         }
         closed.refused_per_s = refused_per_s;
 
