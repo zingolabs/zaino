@@ -295,9 +295,12 @@ impl HeaderChain {
         assert!(self.on_best(through), "H2: only a best-branch block becomes finalized");
         let best = self.best().expect("a best-branch block has a best tip");
         let deep = u32::from(best.block.height) - u32::from(through.height);
+        let depth = self.depth.get();
         assert!(
-            deep >= self.depth.get(),
-            "H2: the finalized boundary stays `depth` below the best"
+            deep >= depth,
+            "H2: the finalized boundary stays `depth` below the best: {through:?} {deep} below \
+             {:?}, depth {depth}",
+            best.block
         );
 
         let count = self.offset(through.height).expect("on the best branch") + 1;
@@ -396,8 +399,9 @@ impl HeaderChain {
 
         let side_nodes = self.nodes.len() - self.best_path.len();
         let side_tips = self.leaves.len() - usize::from(best.is_some());
-        assert!(side_nodes <= self.max_side_nodes(), "H4: {side_nodes} side nodes");
-        assert!(side_tips <= SIDE_TIPS, "H4: {side_tips} side tips");
+        let max_nodes = self.max_side_nodes();
+        assert!(side_nodes <= max_nodes, "H4: {side_nodes} side nodes, bound {max_nodes}");
+        assert!(side_tips <= SIDE_TIPS, "H4: {side_tips} side tips, bound {SIDE_TIPS}");
     }
 
     /// First height above the finalized tip
