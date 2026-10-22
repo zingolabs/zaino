@@ -1,10 +1,13 @@
-//! G2–G6, G10 checker between two consecutive publishes (model + fire drills)
+//! G2–G5, G10 checker between two consecutive publishes (model + fire drills)
+//!
+//! - G6 (the mempool gate) = the model's naive gate + the gate table (`tests.rs`): `mempool()`
+//!   passes the chain view's gate through, nothing here to restate it from
 
 use zaino_primitives::types::FinalityDepth;
 
 use crate::mempool_feed::above_durable_txids;
 
-/// G2–G6 between two consecutive publishes
+/// G2–G5, G10 between two consecutive publishes
 ///
 /// - panics naming the invariant broken
 /// - after `next`'s store and `prev`'s seal (the publisher's order)
@@ -13,48 +16,51 @@ pub(crate) fn check<V>(
     next: &crate::GrpcSnapshot<V>,
     depth: FinalityDepth,
 ) {
-    assert_eq!(next.seq, prev.seq + 1, "G2: seq + 1 per publish");
+    let seq = (prev.seq, next.seq);
+    assert_eq!(next.seq, prev.seq + 1, "seq + 1 per publish (G2): (prev, next) seq {seq:?}");
     let tips = next.tips;
     let chain = next.view.chain();
-    assert_eq!(tips.best, chain.map(|chain| chain.best()), "G3: best = the view chain's");
+    let best = chain.map(|chain| chain.best());
+    assert_eq!(tips.best, best, "tips.best (left) = the view chain's best (right) (G3)");
     let finalized_tip = chain.map(|chain| chain.finalized_tip());
-    assert_eq!(tips.finalized_tip, finalized_tip, "G3: finalized = the view chain's");
+    let message = "tips.finalized_tip (left) = the view chain's finalized tip (right) (G3)";
+    assert_eq!(tips.finalized_tip, finalized_tip, "{message}");
     let served = next.indexed.as_ref().map(|indexed| indexed.served().tip());
-    assert_eq!(tips.served, served, "G3: served = the NFS's");
+    assert_eq!(tips.served, served, "tips.served (left) = the NFS's served tip (right) (G3)");
 
     if tips.synced {
-        let chain = chain.expect("G4: synced under a chain");
-        let (best, served) = (chain.best(), tips.served.expect("G4: synced = something served"));
-        let opened = prev.tips.synced || (served == best && !next.view.claimed_past_best());
-        assert!(opened, "G4: synced opens only at served = best, no validator claiming past it");
-        assert!(chain.on_best(served), "G4: synced stays on best");
+        let chain = chain.expect("synced under a chain (G4)");
+        let (best, served) = (chain.best(), tips.served.expect("synced = something served (G4)"));
+        let claimed = next.view.claimed_past_best();
+        let opened = prev.tips.synced || (served == best && !claimed);
+        let (best_height, served_height) = (best.height, served.height);
+        assert!(
+            opened,
+            "synced opens only at served = best, no validator claiming past it (G4): served \
+             {served_height:?}, best {best_height:?}, claimed past best {claimed}"
+        );
+        let message = "synced stays on best (G4)";
+        assert!(chain.on_best(served), "{message}: served {served:?} off best {best:?}");
         let behind = u32::from(best.height) - u32::from(served.height);
-        assert!(behind <= depth.get(), "G4: synced stays within {depth:?} of best");
+        let depth = depth.get();
+        assert!(
+            behind <= depth,
+            "synced stays within depth {depth} of best (G4): served {served_height:?}, best \
+             {best_height:?} ({behind} behind)"
+        );
     }
 
     let moved = tips.served != prev.tips.served;
     let rotated = !next.feed.same_epoch(&prev.feed);
-    assert_eq!(rotated, moved, "G5: epoch rotates iff the served tip moved");
-    assert_eq!(prev.feed.sealed(), moved, "G5: the old epoch sealed iff rotated");
-    assert!(!next.feed.sealed(), "G5: the stored epoch open");
-
-    let gate = next.mempool().is_ok();
-    let reads = mempool_read(next);
-    assert_eq!(gate, reads, "G6: mempool() Ok iff a `Live` holder of the tip or a peer quorum");
+    let served_moved = format!("served {:?} → {:?}", prev.tips.served, tips.served);
+    let message = "epoch rotated (left) iff the served tip moved (right) (G5)";
+    assert_eq!(rotated, moved, "{message}: {served_moved}");
+    let message = "old epoch sealed (left) iff the served tip moved (right) (G5)";
+    assert_eq!(prev.feed.sealed(), moved, "{message}: {served_moved}");
+    assert!(!next.feed.sealed(), "stored epoch open (G5): {served_moved}");
 
     let mined = above_durable_txids(next.indexed.as_deref());
     let carried = mined.iter().find(|txid| next.feed.carries(txid));
-    assert_eq!(carried, None, "G10: the epoch carries a tx of the served tip's own chain");
-}
-
-/// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the
-/// peers' listings spanning a quorum's netgroups
-pub(crate) fn mempool_read<V>(grpc_snapshot: &crate::GrpcSnapshot<V>) -> bool {
-    use zaino_traffic::Health;
-
-    let trusted_validators = grpc_snapshot.chain_view().trusted_validators();
-    let live =
-        |at: usize| trusted_validators.get(at).is_some_and(|meta| meta.health == Health::Live);
-    let view = grpc_snapshot.chain_view();
-    view.held_by().positions().any(live) || view.peers_quorate()
+    let message = "epoch carries no tx of the served tip's own chain (G10): carried (left)";
+    assert_eq!(carried, None, "{message}");
 }

@@ -1,4 +1,5 @@
-//! The run loop over real watches, the `/metrics` golden, `check()`'s fire drills
+//! The run loop over real watches, the `/metrics` golden, serving status and the mempool gate,
+//! `check()`'s fire drills
 
 use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -26,18 +27,16 @@ use crate::mempool_feed::Feed;
 use crate::publisher::Core;
 use crate::{
     emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots, Publisher, ServingStatus,
-    Tips, METRICS,
+    Tips, Unavailable, METRICS,
 };
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 
 /// - Seq 0 stored at `new` (nothing verified, nothing served)
 /// - A chain view publish → seq 1 under the new chain
-/// - Three NFS publishes before the publisher runs → one publish, from the last (coalesced)
-/// - Cancel → `Ok`
-/// - NFS's watch dropped → `IndexedGone`
+/// - Three NFS publishes (A1, A2, A3) before the publisher wakes → one publish, from A3
 #[tokio::test]
-async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_gone_nfs() {
+async fn the_publisher_stores_seq_0_then_one_publish_per_change_coalescing_bursts() {
     let mut builder = MockChain::regtest();
     let a3 = builder.mine_empty(3);
     let path = builder.blocks(a3);
@@ -48,23 +47,21 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let trusted = TrustedValidator { address, source, priority: 0, limits };
     let (balancer, _never_driven) = TrafficBalancer::new(vec![trusted], None);
     let schedule = builder.schedule().upgrades;
-    let shutdown = tokio_util::sync::CancellationToken::new();
-    let view = ChainView::new(balancer, DEPTH, schedule, shutdown);
+    let view = ChainView::new(balancer, DEPTH, schedule, CancellationToken::new());
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
     let mut grpc_snapshots = publisher.handle();
-    assert_eq!((grpc_snapshots.load().seq(), grpc_snapshots.load().tips()), (0, Tips::default()));
+    let first = grpc_snapshots.load();
+    assert_eq!((first.seq(), first.tips()), (0, Tips::default()), "(seq, tips) at new");
+    tokio::spawn(publisher.run(CancellationToken::new()));
 
-    let cancel = CancellationToken::new();
-    let running = tokio::spawn(publisher.run(cancel.clone()));
     let chain = HeaderChainSnapshot::of(&builder, a3);
     view.set_chain(Some(chain.clone()));
     within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
     let grpc_snapshot = grpc_snapshots.load();
-    assert_eq!(
-        (grpc_snapshot.seq(), grpc_snapshot.tips().best, grpc_snapshot.tips().served),
-        (1, Some(a3), None)
-    );
+    let tips = grpc_snapshot.tips();
+    let published = (grpc_snapshot.seq(), tips.best, tips.served);
+    assert_eq!(published, (1, Some(a3), None), "chain view published: (seq, best, served)");
 
     let none: [(IndexKind, DiskView); 0] = [];
     for block in &path[1..] {
@@ -75,19 +72,35 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
     let grpc_snapshot = grpc_snapshots.load();
     let tips = grpc_snapshot.tips();
-    assert_eq!(
-        (grpc_snapshot.seq(), tips.served, tips.synced),
-        (2, Some(a3), true),
-        "coalesced burst"
-    );
+    let published = (grpc_snapshot.seq(), tips.served, tips.synced);
+    assert_eq!(published, (2, Some(a3), true), "A1..=A3 coalesced: (seq, served, synced)");
+}
 
+#[tokio::test]
+async fn the_publisher_stops_ok_on_cancel_and_as_indexed_gone_once_the_nfs_drops() {
+    let mut builder = MockChain::regtest();
+    let a3 = builder.mine_empty(3);
+    let source = Arc::new(builder.validator(a3).client());
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let address = "10.0.0.1:8232".to_owned();
+    let trusted = TrustedValidator { address, source, priority: 0, limits };
+    let (balancer, _never_driven) = TrafficBalancer::new(vec![trusted], None);
+    let schedule = builder.schedule().upgrades;
+    let view = ChainView::new(balancer, DEPTH, schedule, CancellationToken::new());
+    let (nfs, indexed) = watch::channel(None);
+
+    let cancel = CancellationToken::new();
+    let cancelled = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
+    let running = tokio::spawn(cancelled.run(cancel.clone()));
     cancel.cancel();
-    let ended = within("the publisher stopped", running).await;
-    assert!(matches!(ended.expect("task"), Ok(())), "cancel = clean stop");
-    let gone = Publisher::<DiskView>::new(nfs.subscribe(), view.subscriber(), DEPTH);
+    let ended = within("the publisher stopped", running).await.expect("publisher task");
+    assert!(ended.is_ok(), "cancel → Ok, got {ended:?}");
+
+    let orphaned = Publisher::<DiskView>::new(nfs.subscribe(), view.subscriber(), DEPTH);
     drop(nfs);
-    let stopped = within("the publisher stopped", gone.run(CancellationToken::new())).await;
-    assert!(matches!(stopped, Err(GrpcSnapshotError::IndexedGone)), "{stopped:?}");
+    let stopped = within("the publisher stopped", orphaned.run(CancellationToken::new())).await;
+    let gone = matches!(stopped, Err(GrpcSnapshotError::IndexedGone));
+    assert!(gone, "NFS watch dropped → Err(IndexedGone), got {stopped:?}");
 }
 
 /// Gauges a scrape renders, given:
@@ -157,8 +170,8 @@ fn one_snapshot_renders_every_gauge() {
 }
 
 /// Validator back from an outage, catching up 1,200 blocks behind the network, its tip moving in
-/// jumps the NFS catches between: every publish serves best yet stays `Syncing` toward the
-/// validator's estimate
+/// jumps the NFS catches between (A4, A8, A12): every publish serves best yet stays `Syncing`
+/// toward the validator's estimate
 #[test]
 fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let mut builder = MockChain::regtest();
@@ -167,113 +180,65 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let now = i64::from(a[12].header().time);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let served_at = |tip: &Block| {
+    let catching_up_holding = |tip: &Block| {
         let chain = Arc::new(HeaderChainSnapshot::of(&builder, tip.block_ref()));
         let params = ChainParams::of(&builder);
         let indexed =
             NfsPublication::fixed(Arc::clone(&chain), tip.block_ref(), params, none.clone());
         let view =
             ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
-        (Arc::new(indexed), view)
+        let view = view.trusted_validator(0, Health::CatchingUp, 1_200);
+        (Some(Arc::new(indexed)), Arc::new(view))
     };
 
-    let (indexed, view) = served_at(&a[4]);
-    let core = Core::new(
-        Some(indexed),
-        Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)),
-        DEPTH,
-    );
+    let (indexed, view) = catching_up_holding(&a[4]);
+    let core = Core::new(indexed, view, DEPTH);
     let grpc_snapshots = core.handle();
     for tip in [&a[4], &a[8], &a[12]] {
-        let (indexed, view) = served_at(tip);
-        core.publish(Some(indexed), Arc::new(view.trusted_validator(0, Health::CatchingUp, 1_200)));
+        let (indexed, view) = catching_up_holding(tip);
+        core.publish(indexed, view);
+
         let grpc_snapshot = grpc_snapshots.load();
         let height = u32::from(tip.header().height);
-        assert_eq!(
-            grpc_snapshot.tips().served,
-            grpc_snapshot.tips().best,
-            "at {height}: served = best"
-        );
+        let tips = grpc_snapshot.tips();
+        assert_eq!(tips.served, tips.best, "at A{height}: served (left) = best (right)");
         let target = grpc_snapshot.sync_target().map(u32::from);
         assert_eq!(
             (grpc_snapshot.serving_status(now), target),
             (ServingStatus::Syncing, Some(height + 1_200)),
-            "{height}"
+            "at A{height}: (status, sync target) vs (Syncing, the validator's estimate)"
         );
     }
 }
 
-/// Synced to a fresh best held by validator 0: each (holder, other) health → serving status + notes
-///
-/// - every validator down = still `Serving` (best vouched: degraded once it runs unvouched)
-#[test]
-fn each_holder_health_gives_its_standing_and_notes() {
-    let mut builder = MockChain::regtest();
-    let a12 = builder.mine_empty(12);
-    let now = i64::from(builder.blocks(a12)[12].header().time);
-    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
-    let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(HeaderChainSnapshot::of(&builder, a12));
-    let indexed =
-        Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
-    let cases = [
-        ("caught up", Health::Live, 0, Health::Pending, ServingStatus::Serving, vec![]),
-        ("one failed poll", Health::Degraded, 0, Health::Pending, ServingStatus::Serving, vec![]),
-        (
-            "holder stale",
-            Health::Live,
-            30,
-            Health::Pending,
-            ServingStatus::Serving,
-            vec!["1 validator on a stale tip".to_owned()],
-        ),
-        ("every validator down", Health::Down, 0, Health::Down, ServingStatus::Serving, vec![]),
-    ];
-    for (case, holder, behind, other, serving_status, expected_notes) in cases {
-        let view = ChainViewSnapshot::fixed(
-            Some(Arc::clone(&chain)),
-            TrustedValidatorSet::at([0]),
-            &addresses,
-            &[],
-        );
-        let view = view.trusted_validator(0, holder, behind).trusted_validator(1, other, 0);
-        let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
-        assert_eq!(
-            (grpc_snapshot.serving_status(now), notes(&grpc_snapshot)),
-            (serving_status, expected_notes),
-            "{case}"
-        );
-    }
-}
-
-/// Best A12, a trusted validator's run vouched through `vouched`, peers' headers above it, at the
-/// clock of A12, 1 s before it goes stale (30 min), then stale
+/// Best A12 (a 12-block chain), validator 0 holding it, a trusted run vouched through `vouched`,
+/// peers' headers above it, served `served`, read at A12's clock, 1 s before stale (30 min), stale
 ///
 /// - one block past the last vouch = the race a poll closes: serving
 /// - two = no trusted validator vouches for the tip: degraded while fresh, down once stale
-/// - not synced (served A4) under an unvouched tip: down
-/// - vouched but the one validator down (`[p2p]` off: the tip frozen): serving while fresh, down
-///   once stale
+/// - every validator down (`[p2p]` off: the tip frozen) = serving while fresh, down once stale
 #[test]
-fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_stale() {
+fn serving_status_by_vouch_holder_health_and_the_clock() {
+    use ServingStatus::{Degraded, Down, Serving};
     let mut builder = MockChain::regtest();
     let a12 = builder.mine_empty(12);
     let a = builder.blocks(a12);
     let now = i64::from(a[12].header().time);
     let stale = now + 30 * 60;
     let none: [(IndexKind, DiskView); 0] = [];
-    let (serving, degraded, down) =
-        (ServingStatus::Serving, ServingStatus::Degraded, ServingStatus::Down);
+    let stale_tip: &[&str] = &["1 validator on a stale tip"];
     #[rustfmt::skip]
     let cases = [
-        // (vouched through, served, validator, (now, stale − 1, stale))
-        (12, 12, Health::Live, (serving, serving, serving)),
-        (11, 12, Health::Live, (serving, serving, serving)),
-        (10, 12, Health::Live, (degraded, degraded, down)),
-        (10, 4,  Health::Live, (down, down, down)),
-        (12, 12, Health::Down, (serving, serving, down)),
+        // (case,                       vouched, served, (holder, behind),         other,           [now,     stale − 1, stale],   notes)
+        ("caught up",                   12,      12,     (Health::Live, 0),        Health::Pending, [Serving,  Serving,   Serving], &[][..]),
+        ("one failed poll",             12,      12,     (Health::Degraded, 0),    Health::Pending, [Serving,  Serving,   Serving], &[]),
+        ("holder 30 blocks stale",      12,      12,     (Health::Live, 30),       Health::Pending, [Serving,  Serving,   Serving], stale_tip),
+        ("every validator down",        12,      12,     (Health::Down, 0),        Health::Down,    [Serving,  Serving,   Down],    &[]),
+        ("one past the last vouch",     11,      12,     (Health::Live, 0),        Health::Pending, [Serving,  Serving,   Serving], &[]),
+        ("two past the last vouch",     10,      12,     (Health::Live, 0),        Health::Pending, [Degraded, Degraded,  Down],    &[]),
+        ("unvouched, not synced (A4)",  10,      4,      (Health::Live, 0),        Health::Pending, [Down,     Down,      Down],    &[]),
     ];
-    for (vouched, served, health, expected) in cases {
+    for (case, vouched, served, (holder, behind), other, expected, expected_notes) in cases {
         let mut headers = HeaderChain::anchored(&builder, DEPTH);
         insert(&mut headers, &a[1..=vouched]).expect("trusted run links");
         insert_unwitnessed(&mut headers, &a[vouched + 1..]).expect("peers' headers link");
@@ -281,17 +246,65 @@ fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_st
         let params = ChainParams::of(&builder);
         let indexed =
             NfsPublication::fixed(Arc::clone(&chain), a[served].block_ref(), params, none.clone());
-        let holder = TrustedValidatorSet::at([0]);
-        let view = ChainViewSnapshot::fixed(Some(chain), holder, &["10.0.0.1:8232"], &[]);
-        let view = view.trusted_validator(0, health, 0);
+        let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+        let view =
+            ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
+        let view = view.trusted_validator(0, holder, behind).trusted_validator(1, other, 0);
         let grpc_snapshot = GrpcSnapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
-        let serving_status = (
-            grpc_snapshot.serving_status(now),
-            grpc_snapshot.serving_status(stale - 1),
-            grpc_snapshot.serving_status(stale),
+
+        let statuses = [now, stale - 1, stale].map(|clock| grpc_snapshot.serving_status(clock));
+
+        let case = format!(
+            "{case}: vouched through {vouched}, served {served}, holder {holder:?} {behind} \
+             behind, other {other:?}"
         );
-        let case = format!("vouched through {vouched}, served {served}, {health:?}");
-        assert_eq!(serving_status, expected, "{case}");
+        assert_eq!(statuses, expected, "{case}: status at [now, stale − 1, stale]");
+        assert_eq!(notes(&grpc_snapshot), expected_notes, "{case}: notes");
+    }
+}
+
+/// Best A6, two validators configured, validator 0 the only candidate holder
+#[test]
+fn the_mempool_is_served_only_while_a_live_validator_holds_best() {
+    let mut builder = MockChain::regtest();
+    let a6 = builder.mine_empty(6);
+    let chain = Arc::new(HeaderChainSnapshot::of(&builder, a6));
+    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+    let not_held = Err(Unavailable::NotHeld { height: 6, configured: 2 });
+    let holding = |health: Health| {
+        let view = ChainViewSnapshot::fixed(
+            Some(Arc::clone(&chain)),
+            TrustedValidatorSet::at([0]),
+            &addresses,
+            &[],
+        );
+        view.trusted_validator(0, health, 0)
+    };
+    let no_holder = ChainViewSnapshot::fixed(
+        Some(Arc::clone(&chain)),
+        TrustedValidatorSet::at([]),
+        &addresses,
+        &[],
+    );
+    let no_chain = ChainViewSnapshot::fixed(None, TrustedValidatorSet::at([0]), &addresses, &[]);
+    #[rustfmt::skip]
+    let cases = [
+        // (case,                                  view,                                     mempool())
+        ("Live holder",                            holding(Health::Live),                    Ok(())),
+        ("Live, ahead, its hash at best read",     holding(Health::Live).ahead(0, 1, true),  Ok(())),
+        ("Live, ahead, unread: not a holder",      holding(Health::Live).ahead(0, 1, false), not_held),
+        ("catching-up holder: its mempool off",    holding(Health::CatchingUp),              not_held),
+        ("no holder",                              no_holder,                                not_held),
+        ("no verified chain",                      no_chain,                                 Err(Unavailable::NoChain)),
+    ];
+    for (case, view, expected) in cases {
+        let grpc_snapshot = GrpcSnapshots::<DiskView>::fixed(None, Arc::new(view)).load();
+
+        let served = grpc_snapshot.mempool().map(|_| ());
+
+        assert_eq!(served, expected, "{case}: mempool()");
+        let stream = grpc_snapshot.mempool_stream().map(|_| ()).err();
+        assert_eq!(stream, expected.err(), "{case}: mempool_stream() refusal = mempool()'s");
     }
 }
 
@@ -308,7 +321,7 @@ struct Drill {
 
 impl Drill {
     /// `prev` = seq 0 serving A3 (not synced), `next` = seq 1 serving A6 (synced, epoch rotated)
-    fn new() -> Self {
+    fn served_a3_then_a6() -> Self {
         let mut builder = MockChain::regtest();
         builder.mine_empty(5);
         let a6 = builder.mine(|block| block.tx(|tx| tx));
@@ -374,95 +387,111 @@ fn fresh() -> Feed {
 }
 
 #[test]
-#[should_panic(expected = "G2: seq + 1")]
+fn the_unplanted_drill_passes_check() {
+    let d = Drill::served_a3_then_a6();
+
+    check(&d.prev, &d.next, DEPTH);
+
+    let (a3, a6) = (d.a[3].block_ref(), d.a[6].block_ref());
+    let seen = |s: &GrpcSnapshot<DiskView>| (s.seq, s.tips.served, s.tips.synced, s.feed.sealed());
+    let expected = [(0, Some(a3), false, true), (1, Some(a6), true, false)];
+    assert_eq!([seen(&d.prev), seen(&d.next)], expected, "(seq, served, synced, epoch sealed)");
+    assert!(!d.next.feed.same_epoch(&d.prev.feed), "served A3 → A6: epoch rotated");
+}
+
+#[test]
+#[should_panic(expected = "seq + 1 per publish (G2): (prev, next) seq (0, 5)")]
 fn check_catches_a_skipped_seq() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     check(&d.prev, &GrpcSnapshot { seq: 5, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G3: best")]
+#[should_panic(expected = "tips.best (left) = the view chain's best (right) (G3)")]
 fn check_catches_a_best_off_the_chain() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let tips = Tips { best: None, ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G3: finalized")]
+#[should_panic(expected = "tips.finalized_tip (left) = the view chain's finalized tip (right)")]
 fn check_catches_a_finalized_tip_off_the_chain() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let tips = Tips { finalized_tip: Some(d.a[1].block_ref()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G3: served")]
+#[should_panic(expected = "tips.served (left) = the NFS's served tip (right) (G3)")]
 fn check_catches_a_served_tip_off_the_indexes() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let tips = Tips { served: Some(d.a[5].block_ref()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G4: synced opens only at served = best")]
+#[should_panic(expected = "synced opens only at served = best, no validator claiming past it \
+                           (G4): served BlockHeight(5), best BlockHeight(6), claimed past best \
+                           false")]
 fn check_catches_synced_opening_below_best() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     check(&d.prev, &d.serving(d.a[5].block_ref(), true), DEPTH);
 }
 
 /// Boot race: validator 0's claim past best, its hash at best not polled yet
 #[test]
-#[should_panic(expected = "no validator claiming past it")]
+#[should_panic(expected = "served BlockHeight(6), best BlockHeight(6), claimed past best true")]
 fn check_catches_synced_opening_under_a_validator_claiming_past_best() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let mut planted = d.serving(d.a[6].block_ref(), true);
     planted.view = Arc::new(view(&d.chain, &[]).ahead(0, 1, false));
     check(&d.prev, &planted, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G4: synced stays on best")]
+#[should_panic(expected = "synced stays on best (G4)")]
 fn check_catches_synced_serving_a_side_branch() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     check(&d.synced_prev(), &d.serving(d.s5, true), DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G4: synced stays within")]
+#[should_panic(expected = "synced stays within depth 3 of best (G4): served BlockHeight(2), best \
+                           BlockHeight(6) (4 behind)")]
 fn check_catches_synced_falling_behind_its_window() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     check(&d.synced_prev(), &d.serving(d.a[2].block_ref(), true), DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G5: epoch rotates iff")]
+#[should_panic(expected = "epoch rotated (left) iff the served tip moved (right) (G5)")]
 fn check_catches_an_epoch_rotating_without_a_move() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let again = GrpcSnapshot { seq: 2, feed: fresh(), ..copy(&d.next) };
     check(&d.next, &again, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G5: the old epoch sealed iff rotated")]
+#[should_panic(expected = "old epoch sealed (left) iff the served tip moved (right) (G5)")]
 fn check_catches_an_old_epoch_left_open() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     check(&GrpcSnapshot { feed: fresh(), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G5: the stored epoch open")]
+#[should_panic(expected = "stored epoch open (G5)")]
 fn check_catches_a_sealed_stored_epoch() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let feed = fresh();
     feed.seal();
     check(&d.prev, &GrpcSnapshot { feed, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
-#[should_panic(expected = "G10: the epoch carries a tx of the served tip's own chain")]
+#[should_panic(expected = "epoch carries no tx of the served tip's own chain (G10)")]
 fn check_catches_an_epoch_carrying_a_tx_its_served_tip_mined() {
-    let d = Drill::new();
+    let d = Drill::served_a3_then_a6();
     let none: [(IndexKind, DiskView); 0] = [];
     let indexed = NfsPublication::fixed_above(
         Arc::clone(&d.chain),

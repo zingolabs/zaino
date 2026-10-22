@@ -110,7 +110,7 @@ metrics::with_local_recorder(&recorder, || {
 | G3 | `best`, `finalized_tip` = `chain()`'s; `served` = the NFS's | `invariants::check`; model |
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `invariants::check`; model |
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `invariants::check`; model |
-| G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | `invariants::check`; model |
+| G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | gate table; model |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
 | G10 | an epoch carries no txid of a block in `served_above_durable()` | `invariants::check`; model |
 
@@ -118,8 +118,9 @@ metrics::with_local_recorder(&recorder, || {
 
 - `model_tests.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails
-  opened at random, against naive tips and per-epoch transaction sets.
+  opened at random, against naive tips, a naive mempool gate and per-epoch transaction sets.
 - `tests.rs`: the run loop over real watches (seq 0, coalescing, cancel, a gone NFS); the
-  rendered gauges of one snapshot; one fire drill per `check` assertion.
+  rendered gauges of one snapshot; the serving-status and mempool-gate tables; one fire drill per
+  `check` assertion.
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).
