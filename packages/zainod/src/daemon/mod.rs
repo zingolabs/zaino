@@ -557,22 +557,49 @@ fn shutdown_signals() -> mpsc::Receiver<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU32;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
-    /// - First task to end = the daemon's failure, named (clean end, own error, panic)
-    /// - Returned only after every other task saw the cancel and finished
-    #[tokio::test]
-    async fn a_task_ending_first_cancels_and_drains_the_rest_then_fails_the_daemon() {
+    use zaino_header_chain::testing::insert;
+    use zaino_header_chain::HeaderChain;
+    use zaino_primitives::types::Block;
+    use zaino_proto::proto::service::{
+        compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec, Empty,
+    };
+    use zaino_source::testing::{h, p2pkh, within, MockChain, MockValidator};
+    use zaino_source::ZcashLegacyRpcClient;
+
+    /// Every way `supervise` ends: the first task to end = the daemon's failure, named; a signal =
+    /// clean `Ok`
+    ///
+    /// - either way every other task cancelled at once (no serving delay) and drained first
+    #[tokio::test(start_paused = true)]
+    async fn the_first_end_cancels_and_drains_every_task_and_names_the_cause() {
         type Run = Pin<Box<dyn Future<Output = Result<(), IndexerError>> + Send>>;
-        let early: [(&str, Run); 3] = [
-            ("ends ok", Box::pin(async { Ok(()) })),
-            ("fails", Box::pin(async { Err(IndexerError::Config("boom".into())) })),
-            ("panics", Box::pin(async { panic!("boom") })),
+        let ends_ok: fn(CancellationToken) -> Run = |_| Box::pin(async { Ok(()) });
+        let fails: fn(CancellationToken) -> Run =
+            |_| Box::pin(async { Err(IndexerError::Config("boom".into())) });
+        let panics: fn(CancellationToken) -> Run = |_| Box::pin(async { panic!("boom") });
+        let until_cancel: fn(CancellationToken) -> Run = |token| {
+            Box::pin(async move {
+                token.cancelled().await;
+                Ok(())
+            })
+        };
+        #[rustfmt::skip]
+        let cases = [
+            // case,          "early" task,  signal,          supervise's outcome (Debug)
+            ("task ends ok",  ends_ok,       None,            r#"Err(TaskEnded { task: "early" })"#),
+            ("task fails",    fails,         None,            r#"Err(Config("boom"))"#),
+            ("task panics",   panics,        None,            r#"Err(Join(JoinError::Panic("#),
+            ("SIGTERM",       until_cancel,  Some("SIGTERM"), "Ok(())"),
         ];
 
-        for (case, run) in early {
+        for (case, early, signalled, expected) in cases {
             let cancel = CancellationToken::new();
+            let early = early(cancel.child_token());
             let drained = Arc::new(AtomicBool::new(false));
             let mut tasks = JoinSet::new();
             let (token, flag) = (cancel.child_token(), Arc::clone(&drained));
@@ -582,49 +609,22 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
                 Ok::<_, IndexerError>(())
             });
-            spawn(&mut tasks, "early", Span::none(), run);
+            spawn(&mut tasks, "early", Span::none(), early);
+            let (signal, signals) = mpsc::channel(1);
+            if let Some(signalled) = signalled {
+                signal.send(signalled).await.expect("supervise receives");
+            }
+            let started = tokio::time::Instant::now();
 
-            let (_no_signal, signals) = mpsc::channel(1);
             let outcome = supervise(tasks, cancel.clone(), signals).await;
 
-            let named = match case {
-                "ends ok" => matches!(outcome, Err(IndexerError::TaskEnded { task: "early" })),
-                "fails" => {
-                    matches!(outcome, Err(IndexerError::Config(ref boom)) if boom == "boom")
-                }
-                _ => {
-                    matches!(outcome, Err(IndexerError::Join(ref join)) if join.is_panic())
-                }
-            };
-            assert!(named, "{case}: {outcome:?}");
+            let outcome = format!("{outcome:?}");
+            assert!(outcome.starts_with(expected), "{case}: {outcome}, want {expected}…");
             assert!(cancel.is_cancelled(), "{case}: rest not cancelled");
             assert!(drained.load(Ordering::SeqCst), "{case}: returned before the drain");
+            let waited = started.elapsed();
+            assert_eq!(waited, Duration::ZERO, "{case}: a delay before the cancel");
         }
-    }
-
-    /// Signal → every task cancelled at once (no serving delay), waited for, clean `Ok`
-    #[tokio::test(start_paused = true)]
-    async fn a_signal_cancels_every_task_at_once_and_stops_clean() {
-        let cancel = CancellationToken::new();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let mut tasks = JoinSet::new();
-        let (token, flag) = (cancel.child_token(), Arc::clone(&stopped));
-        spawn(&mut tasks, "serving", Span::none(), async move {
-            token.cancelled().await;
-            tokio::task::yield_now().await;
-            flag.store(true, Ordering::SeqCst);
-            Ok::<_, IndexerError>(())
-        });
-        let (signal, signals) = mpsc::channel(1);
-        let started = tokio::time::Instant::now();
-
-        signal.send("SIGTERM").await.expect("supervise receives");
-        let outcome = supervise(tasks, cancel.clone(), signals).await;
-
-        assert!(outcome.is_ok(), "{outcome:?}");
-        assert_eq!(started.elapsed(), std::time::Duration::ZERO, "a delay before the cancel");
-        assert!(cancel.is_cancelled(), "rest not cancelled");
-        assert!(stopped.load(Ordering::SeqCst), "returned before the task stopped");
     }
 
     /// Real SIGTERM to this process while boot waits on a regtest validator that never answers:
@@ -633,7 +633,6 @@ mod tests {
     #[tokio::test]
     async fn a_shutdown_signal_during_boot_stops_the_daemon_cleanly() {
         use std::num::NonZeroUsize;
-        use std::time::Duration;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -653,41 +652,45 @@ mod tests {
         let status = Arc::new(DaemonStatus::new(config.network, []));
         let booting = tokio::spawn(start(config, Arc::clone(&status)));
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        while !status.readiness_json().1.contains("No trusted validator reachable") {
-            assert!(tokio::time::Instant::now() < deadline, "boot never waited on its validator");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(std::net::TcpStream::connect(grpc).is_ok(), "gRPC bound during boot");
+        within("boot waiting on its validator (/readyz down)", async {
+            while !status.readiness_json().1.contains("No trusted validator reachable") {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        std::net::TcpStream::connect(grpc).expect("gRPC listener bound during boot");
         let this = rustix::process::getpid();
         rustix::process::kill_process(this, rustix::process::Signal::TERM).expect("SIGTERM sent");
 
-        let booted = tokio::time::timeout(Duration::from_secs(10), booting).await;
-        let running = booted.expect("boot returns on the signal").expect("joins");
+        let running = within("boot returning on SIGTERM", booting).await.expect("joins");
         let stopped = running.expect("no boot failure").await.expect("joins");
-        assert!(stopped.is_ok(), "SIGTERM during boot = clean stop: {stopped:?}");
-        assert!(std::net::TcpStream::connect(grpc).is_err(), "listener closed");
+        let stopped = stopped.map_err(|error| error.to_string());
+        assert_eq!(stopped, Ok(()), "SIGTERM during boot = clean stop");
+        let closed = std::net::TcpStream::connect(grpc).map_err(|error| error.kind());
+        assert_eq!(closed.err(), Some(std::io::ErrorKind::ConnectionRefused), "listener closed");
     }
 
-    /// `boot` raced against the signal channel
-    ///
-    /// - Boot first = its outcome
-    /// - Signal first = boot dropped mid-await (its holdings released: aria2c child killed on drop)
+    /// `boot` raced against the signal channel: boot first = its outcome
     #[tokio::test]
-    async fn boot_raced_against_a_signal_drops_boot_on_the_signal() {
-        let (signal, mut signals) = mpsc::channel(1);
+    async fn boot_ending_before_a_signal_returns_its_own_outcome() {
+        let (_signal, mut signals) = mpsc::channel(1);
         let done = unless_signalled(async { Ok(()) }, &mut signals).await;
-        assert!(matches!(done, Ok(None)), "{done:?}");
+        assert!(matches!(done, Ok(None)), "booted: {done:?}");
         let failed =
-            unless_signalled(async { Err(IndexerError::Config("x".into())) }, &mut signals);
-        assert!(matches!(failed.await, Err(IndexerError::Config(_))));
+            unless_signalled(async { Err(IndexerError::Config("x".into())) }, &mut signals).await;
+        assert!(matches!(failed, Err(IndexerError::Config(ref x)) if x == "x"), "{failed:?}");
+    }
 
+    /// Signal first = boot dropped mid-await (its holdings released: aria2c child killed on drop)
+    #[tokio::test]
+    async fn a_signal_during_boot_drops_boot_and_releases_what_it_holds() {
         struct Held(Arc<AtomicBool>);
         impl Drop for Held {
             fn drop(&mut self) {
                 self.0.store(true, Ordering::SeqCst);
             }
         }
+        let (signal, mut signals) = mpsc::channel(1);
         let released = Arc::new(AtomicBool::new(false));
         let held = Held(Arc::clone(&released));
         let pending = async move {
@@ -695,116 +698,124 @@ mod tests {
             std::future::pending::<Result<(), IndexerError>>().await
         };
         signal.send("SIGINT").await.expect("receiver open");
+
         let signalled = unless_signalled(pending, &mut signals).await;
+
         assert!(matches!(signalled, Ok(Some("SIGINT"))), "{signalled:?}");
-        assert!(released.load(Ordering::SeqCst), "boot dropped");
+        assert!(released.load(Ordering::SeqCst), "boot not dropped: its holdings kept");
     }
 
-    /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3)
-    ///
-    /// - A 0..=8 at once (0..=5 finalized: bulk, committed on idle)
-    /// - A 6..=8 folded at the tip
-    /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's, `GetLightdInfo` B8 under
-    ///   zainod's version (not zaino-grpc's)
-    /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
-    /// - a `GetMempoolStream` opened at A8 ends on the reorg
-    /// - `GetLatestBlock` right after it never A8 (G5: the race one `GrpcSnapshot` closes)
-    /// - a scrape then renders every ztest family this process emits
-    /// - SIGTERM stops every task cleanly (header sync's sender gone mid-drain included)
+    /// Whole pipeline over `validator` (indexes on `SimFs`, gRPC on localhost, depth 3), header
+    /// sync stood in by [`Pipeline::publish`]
+    struct Pipeline {
+        wallet: CompactTxStreamerClient<tonic::transport::Channel>,
+        headers: HeaderChain,
+        verified: watch::Sender<Option<Arc<HeaderChainSnapshot>>>,
+        view: Arc<ChainView<ZcashLegacyRpcClient>>,
+        status: Arc<DaemonStatus>,
+        cancel: CancellationToken,
+        tasks: JoinSet<TaskExit>,
+    }
+
+    impl Pipeline {
+        async fn up(blocks: &MockChain, validator: &MockValidator) -> Self {
+            let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
+            let headers = HeaderChain::anchored(blocks, depth);
+            let (verified, chain) = watch::channel(None);
+            let schedule = blocks.schedule().upgrades;
+            let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+            let trusted = zaino_traffic::TrustedValidator {
+                address: "mock".to_owned(),
+                source: Arc::new(validator.client()),
+                priority: 0,
+                limits,
+            };
+            let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
+            let shutdown = CancellationToken::new();
+            let view = Arc::new(ChainView::new(balancer.clone(), depth, schedule, shutdown));
+            let merge = view.observation_merge();
+            let fs = zaino_persistence::fs::SimFs::new();
+            let inputs = Inputs { fs, chain, view: Arc::clone(&view), balancer, schedule };
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+            let address = probe.local_addr().expect("local addr");
+            drop(probe);
+            let mut config =
+                DaemonConfig { network: NetworkType::Regtest, ..DaemonConfig::default() };
+            config.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
+            config.serve.grpc_listen_address = address;
+            let (cancel, mut tasks) = (CancellationToken::new(), JoinSet::new());
+            let status = Arc::new(DaemonStatus::new(config.network, []));
+            let serving = listen(&config, &status, &cancel, &mut tasks).await.expect("binds");
+            spawn_infallible(
+                &mut tasks,
+                "traffic",
+                Span::none(),
+                balancing.run(cancel.child_token()),
+            );
+            spawn_infallible(
+                &mut tasks,
+                "chainview",
+                Span::none(),
+                merge.run(cancel.child_token()),
+            );
+            pipeline(&config, inputs, serving, &status, &cancel, &mut tasks).expect("pipeline up");
+            let wallet = CompactTxStreamerClient::connect(format!("http://{address}"));
+            let wallet = wallet.await.expect("the gRPC listener is bound");
+            Self { wallet, headers, verified, view, status, cancel, tasks }
+        }
+
+        /// Header sync's word, to both its readers (the NFS's watch, the view)
+        fn publish(&mut self, added: &[Arc<Block>]) {
+            insert(&mut self.headers, added).expect("valid headers");
+            if let Some(boundary) = self.headers.finalizable() {
+                self.headers.finalize(boundary);
+            }
+            self.verified.send_replace(self.headers.snapshot().map(Arc::new));
+            self.view.set_chain(self.headers.snapshot());
+        }
+
+        /// Until `GetLatestBlock` answers `tip` (`UNAVAILABLE` = still syncing)
+        async fn served_at(&mut self, tip: &Block) {
+            let expected = (u64::from(tip.header().height), tip.header().hash.0.to_vec());
+            let mut last = None;
+            let polled = async {
+                loop {
+                    match self.wallet.get_latest_block(ChainSpec {}).await {
+                        Ok(latest) => {
+                            let latest = latest.into_inner();
+                            if (latest.height, latest.hash.clone()) == expected {
+                                return;
+                            }
+                            last = Some(latest);
+                        }
+                        Err(syncing) if syncing.code() == tonic::Code::Unavailable => {}
+                        Err(status) => panic!("GetLatestBlock: {status}"),
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            };
+            if tokio::time::timeout(Duration::from_secs(60), polled).await.is_err() {
+                panic!("never served {tip:?} (60 s): last GetLatestBlock {last:?}");
+            }
+        }
+    }
+
+    /// A 0..=8 at once (0..=5 finalized: bulk, committed on idle, 6..=8 folded at the tip), then
+    /// B7 (heavier, off A6) + B8:
+    /// - at each tip `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
+    /// - reorged heights serve B's, `GetLightdInfo` = B8 under zainod's version (not zaino-grpc's)
     #[tokio::test]
-    async fn the_pipeline_follows_a_reorg_and_every_rpc_agrees_on_the_served_tip() {
-        use std::num::NonZeroU32;
-        use std::time::Duration;
-
-        use zaino_header_chain::testing::insert;
-        use zaino_header_chain::HeaderChain;
-        use zaino_primitives::types::Block;
-        use zaino_proto::proto::service::{
-            compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
-            Empty,
-        };
-        use zaino_source::testing::{h, MockChain};
-        use zcash_protocol::BlockHash;
-
-        // current-thread runtime: every task's samples land here (blocking-pool work's do not)
-        use crate::telemetry::metrics::{describe_all, recorder, scrape, Format};
-        let (recorder, rendered) = recorder().expect("native config is valid");
-        let _recording = metrics::set_default_local_recorder(&recorder);
-        describe_all();
-
+    async fn a_reorg_serves_the_heavier_chain_and_every_rpc_agrees_on_the_served_tip() {
         let mut blocks = MockChain::regtest().varied_work();
         let a8 = blocks.mine_empty(8);
         let a = blocks.blocks(a8);
         let b8 = blocks.fork(h(6)).outweigh().mine_empty(2).tip();
         let b = blocks.blocks(b8);
-        let hash = |block: &Block| block.header().hash;
-
-        let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
-        let mut headers = HeaderChain::anchored(&blocks, depth);
-        let (verified, chain) = watch::channel(None);
         let validator = blocks.validator(a8);
-        let schedule = blocks.schedule().upgrades;
-        let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = zaino_traffic::TrustedValidator {
-            address: "mock".to_owned(),
-            source: Arc::new(validator.client()),
-            priority: 0,
-            limits,
-        };
-        let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
-        let shutdown = tokio_util::sync::CancellationToken::new();
-        let view = Arc::new(ChainView::new(balancer.clone(), depth, schedule, shutdown));
-        let merge = view.observation_merge();
-        let fs = zaino_persistence::fs::SimFs::new();
-        let inputs = Inputs { fs, chain, view: Arc::clone(&view), balancer, schedule };
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-        let address = probe.local_addr().expect("local addr");
-        drop(probe);
-        let mut config = DaemonConfig {
-            network: zcash_protocol::consensus::NetworkType::Regtest,
-            ..DaemonConfig::default()
-        };
-        config.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
-        config.serve.grpc_listen_address = address;
-        let cancel = CancellationToken::new();
-        let mut tasks = JoinSet::new();
-        let status = Arc::new(DaemonStatus::new(config.network, []));
-        let serving =
-            listen(&config, &status, &cancel, &mut tasks).await.expect("the gRPC listener binds");
-        spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
-        spawn_infallible(&mut tasks, "chainview", Span::none(), merge.run(cancel.child_token()));
-        pipeline(&config, inputs, serving, &status, &cancel, &mut tasks).expect("pipeline up");
-        let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
-            .await
-            .expect("the gRPC listener is bound");
-        let mut streamer = wallet.clone();
-
-        // header sync's word, to both its readers (the NFS's watch, the view)
-        let mut publish = |added: &[Arc<Block>]| {
-            insert(&mut headers, added).expect("valid headers");
-            if let Some(boundary) = headers.finalizable() {
-                headers.finalize(boundary);
-            }
-            verified.send_replace(headers.snapshot().map(Arc::new));
-            view.set_chain(headers.snapshot());
-        };
-        // (latest, range's last, tree state at it): each the block's (height, hash)
-        let mut agree_at = async |tip: &Block| {
-            let expected = (u64::from(tip.header().height), tip.header().hash.0);
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-            loop {
-                let latest = match wallet.get_latest_block(ChainSpec {}).await {
-                    Ok(latest) => Some(latest.into_inner()),
-                    Err(syncing) if syncing.code() == tonic::Code::Unavailable => None,
-                    Err(status) => panic!("GetLatestBlock: {status}"),
-                };
-                let served = latest.as_ref().map(|id| (id.height, id.hash.as_slice()));
-                if served == Some((expected.0, &expected.1[..])) {
-                    break;
-                }
-                assert!(tokio::time::Instant::now() < deadline, "served {latest:?}, want {tip:?}");
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+        let mut pipeline = Pipeline::up(&blocks, &validator).await;
+        let agree_at = async |wallet: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+                              tip: &Block| {
+            let (height, hash) = (u64::from(tip.header().height), tip.header().hash);
             let at = |height| Some(BlockId { height, hash: Vec::new() });
             let range = BlockRange { start: at(0), end: at(99), pool_types: Vec::new() };
             let mut stream = wallet.get_block_range(range).await.expect("range").into_inner();
@@ -816,48 +827,100 @@ mod tests {
                     Err(status) => break status.code(),
                 }
             };
-            assert_eq!(last, Some((expected.0, expected.1.to_vec())), "range ends at the tip");
-            assert_eq!(ended, tonic::Code::OutOfRange, "then OUT_OF_RANGE (99 is past it)");
-            let state = wallet.get_tree_state(BlockId { height: expected.0, hash: Vec::new() });
+            assert_eq!(last, Some((height, hash.0.to_vec())), "range ends at {tip:?}");
+            assert_eq!(ended, tonic::Code::OutOfRange, "then OUT_OF_RANGE (99 is past {height})");
+            let state = wallet.get_tree_state(BlockId { height, hash: Vec::new() });
             let state = state.await.expect("tree state").into_inner();
-            assert_eq!(state.hash, BlockHash(expected.1).to_string(), "tree state's block");
+            assert_eq!(state.hash, hash.to_string(), "tree state at {height} = {tip:?}'s");
         };
 
-        publish(&a);
-        agree_at(&a[8]).await;
-        // UNAVAILABLE until the merge's first poll shows the mock holding A8
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut mempool = loop {
-            match streamer.get_mempool_stream(Empty {}).await {
-                Ok(stream) => break stream.into_inner(),
-                Err(unheld) if unheld.code() == tonic::Code::Unavailable => {}
-                Err(status) => panic!("GetMempoolStream: {status}"),
-            }
-            assert!(tokio::time::Instant::now() < deadline, "A8 never held");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
+        pipeline.publish(&a);
+        pipeline.served_at(&a[8]).await;
+        agree_at(&mut pipeline.wallet, &a[8]).await;
 
-        let open = tokio::time::timeout(Duration::from_millis(100), mempool.message()).await;
-        assert!(open.is_err(), "served at A8, no arrival: a live, silent stream");
         validator.follow(&blocks, b8);
-        publish(&b[7..]);
-        let ended = tokio::time::timeout(Duration::from_secs(60), mempool.message()).await;
-        let ended = ended.expect("the reorg ends the stream").expect("OK trailers");
-        assert!(ended.is_none(), "an empty mempool: no record, only the end");
-        let after = streamer.get_latest_block(ChainSpec {}).await.expect("served").into_inner();
-        let on_b = b.get(after.height as usize).map(|at| hash(at).0.to_vec());
-        assert_eq!(Some(after.hash.clone()), on_b, "{after:?}: on B's chain, never A8");
-
-        agree_at(&b[8]).await;
-        let reorged = wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
+        pipeline.publish(&b[7..]);
+        pipeline.served_at(&b[8]).await;
+        agree_at(&mut pipeline.wallet, &b[8]).await;
+        let reorged = pipeline.wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
         let reorged = reorged.expect("block 7").into_inner().hash;
-        assert_eq!(reorged, hash(&b[7]).0.to_vec(), "7 = B7 now");
-        let lightd = wallet.get_lightd_info(Empty {}).await.expect("served").into_inner();
+        assert_eq!(reorged, b[7].header().hash.0.to_vec(), "7 = B7 now, not A7");
+        let lightd = pipeline.wallet.get_lightd_info(Empty {}).await.expect("served").into_inner();
         let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
-        assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");
+        assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "(version, vendor, height)");
+    }
 
-        let text = String::from_utf8(scrape(&rendered, &status, Format::Text));
+    /// `GetMempoolStream` opened at A8: an arrival streams (live), the reorg to B8 ends it, and
+    /// `GetLatestBlock` right after is never A8 (G5: the race one `GrpcSnapshot` closes)
+    #[tokio::test]
+    async fn a_mempool_stream_streams_arrivals_then_ends_on_a_reorg_never_serving_the_old_tip() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut blocks = MockChain::regtest().varied_work();
+        let funding = blocks.mine(|b| b.coinbase(|c| c.pay(&alice, 10_000)));
+        let a8 = blocks.mine_empty(7);
+        let a = blocks.blocks(a8);
+        let b8 = blocks.fork(h(6)).outweigh().mine_empty(2).tip();
+        let b = blocks.blocks(b8);
+        let funded = blocks.output(funding, 0, 0);
+        let spend = blocks.submit(|t| t.spend(funded).pay(&alice, 9_000));
+        let spend_raw = blocks.mempool()[0].bytes.clone();
+        let validator = blocks.validator(a8);
+        let mut pipeline = Pipeline::up(&blocks, &validator).await;
+        pipeline.publish(&a);
+        pipeline.served_at(&a[8]).await;
+        // UNAVAILABLE until the merge's first poll shows the mock holding A8
+        let mut mempool = within("A8 held (GetMempoolStream opens)", async {
+            loop {
+                match pipeline.wallet.get_mempool_stream(Empty {}).await {
+                    Ok(stream) => break stream.into_inner(),
+                    Err(unheld) if unheld.code() == tonic::Code::Unavailable => {}
+                    Err(status) => panic!("GetMempoolStream: {status}"),
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        validator.hear(&blocks, spend);
+        let arrived = within("the spend streaming", mempool.message()).await;
+        let arrived = arrived.expect("OK frame").map(|tx| tx.data.to_vec());
+        assert_eq!(arrived, Some(spend_raw), "{spend}: heard at A8, streamed live");
+
+        validator.follow(&blocks, b8);
+        pipeline.publish(&b[7..]);
+        let ended = within("the reorg ending the stream", mempool.message()).await;
+        let ended = ended.expect("OK trailers").map(|tx| tx.data.len());
+        assert_eq!(ended, None, "reorg: the stream's end, no further record");
+        let after = pipeline.wallet.get_latest_block(ChainSpec {}).await.expect("served");
+        let after = after.into_inner();
+        let on_b = b.get(after.height as usize).map(|at| at.header().hash.0.to_vec());
+        assert_eq!(Some(after.hash.clone()), on_b, "{after:?}: on B's chain, never A8");
+    }
+
+    /// A scrape of a running pipeline renders every ztest family this process emits (text), its
+    /// native histograms in protobuf only
+    #[tokio::test]
+    async fn a_scrape_of_a_running_pipeline_renders_every_ztest_family() {
+        // current-thread runtime: every task's samples land here (blocking-pool work's do not)
+        use crate::telemetry::metrics::{describe_all, recorder, scrape, Format};
+        let (recorder, rendered) = recorder().expect("native config is valid");
+        let _recording = metrics::set_default_local_recorder(&recorder);
+        describe_all();
+        let mut blocks = MockChain::regtest();
+        let a8 = blocks.mine_empty(8);
+        let validator = blocks.validator(a8);
+        let mut pipeline = Pipeline::up(&blocks, &validator).await;
+        pipeline.publish(&blocks.blocks(a8));
+        pipeline.served_at(&blocks.blocks(a8)[8]).await;
+        // a streaming RPC: first-message latency recorded
+        let at = |height| Some(BlockId { height, hash: Vec::new() });
+        let range = BlockRange { start: at(0), end: at(8), pool_types: Vec::new() };
+        let mut range = pipeline.wallet.get_block_range(range).await.expect("range").into_inner();
+        while range.message().await.expect("0..=8 served").is_some() {}
+
+        let text = String::from_utf8(scrape(&rendered, &pipeline.status, Format::Text));
         let text = text.expect("text exposition is UTF-8");
+
         let per_index = |family: &'static str| {
             let name = move |kind: IndexKind| format!("{family}{{index=\"{}\"}}", kind.name());
             IndexKind::ALL.iter().copied().map(name)
@@ -882,17 +945,25 @@ mod tests {
             let found = text.lines().any(|line| line.starts_with(&family));
             assert!(found, "ztest family {family:?} not in the text scrape:\n{text}");
         }
-        // native histograms: protobuf scrape only (lossy: names are plain strings in the payload)
-        let protobuf = scrape(&rendered, &status, Format::Protobuf);
+        // lossy: names are plain strings in the payload
+        let protobuf = scrape(&rendered, &pipeline.status, Format::Protobuf);
         let protobuf = String::from_utf8_lossy(&protobuf);
         for family in ["zaino_grpc_first_message_seconds", "zaino_grpc_duration_seconds"] {
-            assert!(
-                protobuf.contains(family),
-                "ztest histogram {family:?} not in the protobuf scrape"
-            );
+            assert!(protobuf.contains(family), "ztest histogram {family:?} not in protobuf");
             assert!(!text.contains(family), "{family:?} in the text scrape = not native");
         }
+    }
 
+    /// SIGTERM stops every pipeline task cleanly, header sync's sender gone mid-drain included
+    #[tokio::test]
+    async fn sigterm_stops_every_pipeline_task_cleanly() {
+        let mut blocks = MockChain::regtest();
+        let a8 = blocks.mine_empty(8);
+        let validator = blocks.validator(a8);
+        let mut pipeline = Pipeline::up(&blocks, &validator).await;
+        pipeline.publish(&blocks.blocks(a8));
+        pipeline.served_at(&blocks.blocks(a8)[8]).await;
+        let Pipeline { verified, cancel, mut tasks, .. } = pipeline;
         // header sync's sender drops on the same cancel (NFS + follower see it close mid-drain)
         let token = cancel.child_token();
         spawn_infallible(&mut tasks, "header-sync", Span::none(), async move {
@@ -901,6 +972,9 @@ mod tests {
         });
         let (signal, signals) = mpsc::channel(1);
         signal.send("SIGTERM").await.expect("supervise receives");
-        supervise(tasks, cancel, signals).await.expect("SIGTERM = clean stop");
+
+        let stopped = within("every task stopping", supervise(tasks, cancel, signals)).await;
+
+        assert_eq!(stopped.map_err(|error| error.to_string()), Ok(()), "SIGTERM = clean stop");
     }
 }
