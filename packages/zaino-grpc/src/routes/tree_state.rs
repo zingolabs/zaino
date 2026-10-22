@@ -287,21 +287,21 @@ fn subtree_root_message(root: &SubtreeRoot) -> Bytes {
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderValue, Response};
     use prost::Message as _;
-    use tonic::{body::Body, Status};
+    use tonic::Code;
+    use zaino_chainview::TrustedValidatorSet;
     use zaino_persistence::IndexKind;
     use zaino_primitives::types::{BlockRef, SubtreeRoot, TreeRoot};
-    use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::service;
     use zaino_source::testing::{all_at, h, MockChain};
     use zcash_protocol::consensus::NetworkUpgrade;
     use zcash_protocol::local_consensus::LocalNetwork;
     use zcash_protocol::BlockHash;
 
-    use crate::service::{Method, RouteDeps};
+    use crate::service::Method;
     use crate::testing::{
-        decode_frames, dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET,
+        answer, decode_frames, dispatch, fixed_snapshots, framed_request, indexed, routes_serving,
+        MAINNET,
     };
 
     /// - `start..start + max` of the pre-framed list = exactly those roots, one frame each
@@ -339,15 +339,10 @@ mod tests {
         }
     }
 
-    /// Over the router, no subtree complete yet:
-    ///
-    /// - every pool, any `startIndex` / `maxEntries` (past `u16` too) = an empty `OK` stream
-    ///   (status in trailers: pepper-sync's resume probe)
-    /// - Orchard after Sapling = iOS's pass
-    /// - unknown pool = `UNIMPLEMENTED`, trailers-only (no body: never a partial prefix)
+    /// No subtree complete yet: an empty `OK` stream, status in trailers (pepper-sync's resume
+    /// probe), any start / max (past `u16` too)
     #[tokio::test]
     async fn subtree_roots_answer_whole_or_refuse_before_the_first_byte() {
-        use http_body_util::BodyExt as _;
         use tower::Service as _;
 
         let chain = MockChain::regtest()
@@ -355,55 +350,46 @@ mod tests {
             .upgrades(all_at(h(0)))
             .genesis_with(|b| b.coinbase(|c| c.sapling_output(1)));
         let genesis = chain.genesis();
-        let trees = indexed(IndexKind::TreeState, &chain, genesis);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees]),
-            ..routes()
-        });
+        let views = vec![indexed(IndexKind::TreeState, &chain, genesis)];
+        let snapshots =
+            fixed_snapshots(&chain, genesis, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::TreeState], snapshots));
 
         let (sapling, orchard, ironwood) = (0, 1, 2);
-        let ok = || (None, Some("0".to_owned()), 0);
+        // case, shieldedProtocol, startIndex, maxEntries, code
+        #[rustfmt::skip]
         let cases = [
-            ((sapling, 0, 0), ok()),
-            ((orchard, 0, 0), ok()),
-            ((ironwood, 0, 0), ok()),
-            ((sapling, 1, 0), ok()),
-            ((orchard, 70_000, 0), ok()),
-            ((sapling, u32::MAX, u32::MAX), ok()),
-            ((orchard, 0, 100_000), ok()),
-            ((3, 0, 0), (Some("12".to_owned()), None, 0)),
+            ("sapling",                 sapling,  0,        0,        Code::Ok),
+            ("orchard after sapling",   orchard,  0,        0,        Code::Ok),
+            ("ironwood",                ironwood, 0,        0,        Code::Ok),
+            ("sapling from 1",          sapling,  1,        0,        Code::Ok),
+            ("orchard past u16",        orchard,  70_000,   0,        Code::Ok),
+            ("sapling at u32::MAX",     sapling,  u32::MAX, u32::MAX, Code::Ok),
+            ("orchard max past u16",    orchard,  0,        100_000,  Code::Ok),
+            ("unknown pool 3",          3,        0,        0,        Code::Unimplemented),
         ];
-        for ((protocol, start_index, max_entries), expected) in cases {
-            let arg = service::GetSubtreeRootsArg {
-                start_index,
-                shielded_protocol: protocol,
-                max_entries,
-            };
-            let request = framed_request(Method::GetSubtreeRoots, arg.encode_to_vec().into());
-            let response = router.call(request).await.expect("router answers");
-            let status = |headers: &http::HeaderMap| {
-                headers.get("grpc-status").and_then(|s| s.to_str().ok()).map(str::to_owned)
-            };
-            let headed = status(response.headers());
-            let body = response.into_body().collect().await.expect("body");
-            let trailed = body.trailers().and_then(status);
-            let got = (headed, trailed, body.to_bytes().len());
-            assert_eq!(got, expected, "protocol {protocol} start {start_index} max {max_entries}");
+        for (case, shielded_protocol, start_index, max_entries, code) in cases {
+            let arg = service::GetSubtreeRootsArg { start_index, shielded_protocol, max_entries };
+
+            let response = router
+                .call(framed_request(Method::GetSubtreeRoots, arg.encode_to_vec().into()))
+                .await;
+
+            let response = response.expect("infallible");
+            let trailers_only = response.headers().contains_key("grpc-status");
+            let (chunks, status) = answer(response).await;
+            assert_eq!(status.code(), code, "{case}: {status:?}");
+            assert_eq!(chunks, Vec::<bytes::Bytes>::new(), "{case}: no complete root, no prefix");
+            assert_eq!(trailers_only, code != Code::Ok, "{case}: refusal alone = Trailers-Only");
         }
     }
 
-    /// Z#1622:
-    ///
-    /// - exactly the requested height, display-order hash
-    /// - each pool `""` below its upgrade, its tree from it on (`000000` while empty: pepper-sync
-    ///   rejects `""` there)
-    /// - below Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
+    /// Z#1622: each pool `""` below its upgrade, its tree from it on (`000000` while empty:
+    /// pepper-sync rejects `""` there); below Sapling never an error (Android asks Sapling − 1)
     #[tokio::test]
-    async fn tree_state_fields_follow_the_validators_activation_schedule() {
+    async fn get_tree_state_by_height_follows_the_activation_schedule_and_latest_is_the_tip() {
         use tower::Service as _;
 
-        // - Sapling at 1, NU5 (orchard) at 2, NU6.3 (ironwood) at 3
-        // - one sapling output per block
         let upgrades = LocalNetwork::from_activation_heights(|upgrade| match upgrade {
             NetworkUpgrade::Nu7 => None,
             NetworkUpgrade::Nu6_3 => Some(h(3)),
@@ -416,152 +402,107 @@ mod tests {
             chain.mine(|b| b.coinbase(|c| c.sapling_output(leaf)));
         }
         let tip = chain.tip();
-        let trees = indexed(IndexKind::TreeState, &chain, tip);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, tip, vec![trees]),
-            ..routes()
-        });
-
-        let mut ask = |method: Method, body: Vec<u8>| {
-            let request = framed_request(method, body.into());
-            let call = router.call(request);
-            async move {
-                use http_body_util::BodyExt as _;
-                let response = call.await.expect("router answers");
-                let code = Status::from_header_map(response.headers())
-                    .map(|status| status.code())
-                    .unwrap_or(tonic::Code::Ok);
-                let body = response.into_body().collect().await.expect("body").to_bytes();
-                assert_eq!(code, tonic::Code::Ok, "{method:?}");
-                let s = service::TreeState::decode(&body[FRAME_HEADER..]).expect("one message");
-                let sapling = match s.sapling_tree.as_str() {
-                    "" => "",
-                    "000000" => "000000",
-                    _ => "leaves",
-                };
-                (s.height, s.hash, sapling, s.orchard_tree, s.ironwood_tree)
-            }
+        let views = vec![indexed(IndexKind::TreeState, &chain, tip)];
+        let snapshots = fixed_snapshots(&chain, tip, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::TreeState], snapshots));
+        let mut ask = async |method: Method, message: Vec<u8>| {
+            let response = router.call(framed_request(method, message.into())).await;
+            let (chunks, status) = answer(response.expect("infallible")).await;
+            assert_eq!(status.code(), Code::Ok, "{method:?}: {status:?}");
+            let states = decode_frames::<service::TreeState>(&chunks.concat());
+            let [state] = <[service::TreeState; 1]>::try_from(states)
+                .unwrap_or_else(|states| panic!("{method:?}: one TreeState, got {states:?}"));
+            state
         };
-        let at = |height| service::BlockId { height, hash: Vec::new() }.encode_to_vec();
-        let display = |height: u32| chain.at(h(height)).hash.to_string();
+        // (time, display-order hash, sapling tree, orchard tree, ironwood tree) of block `at`
+        let tree_state = |at: u32, sapling: &str, orchard: &str, ironwood: &str| {
+            let header = chain.block(chain.at(h(at)).hash).header().clone();
+            (
+                u64::from(at),
+                header.time,
+                header.hash.to_string(),
+                sapling.to_owned(),
+                orchard.to_owned(),
+                ironwood.to_owned(),
+            )
+        };
+        let fields = |state: service::TreeState| {
+            let sapling = if state.sapling_tree.len() > "000000".len() {
+                "leaves"
+            } else {
+                &state.sapling_tree
+            };
+            let sapling = sapling.to_owned();
+            (state.height, state.time, state.hash, sapling, state.orchard_tree, state.ironwood_tree)
+        };
 
-        let (blank, empty) = (String::new, || "000000".to_owned());
-        let expected = [
-            (0, (0, display(0), "", blank(), blank())),
-            (1, (1, display(1), "leaves", blank(), blank())),
-            (2, (2, display(2), "leaves", empty(), blank())),
-            (3, (3, display(3), "leaves", empty(), empty())),
+        #[rustfmt::skip]
+        let schedule = [
+            ("below Sapling",          tree_state(0, "",       "",       "")),
+            ("Sapling from 1",         tree_state(1, "leaves", "",       "")),
+            ("Orchard (NU5) from 2",   tree_state(2, "leaves", "000000", "")),
+            ("Ironwood (NU6.3) from 3", tree_state(3, "leaves", "000000", "000000")),
         ];
-        for (height, state) in expected.clone() {
-            assert_eq!(ask(Method::GetTreeState, at(height)).await, state, "at {height}");
+        for (case, expected) in &schedule {
+            let at = service::BlockId { height: expected.0, hash: Vec::new() }.encode_to_vec();
+            assert_eq!(fields(ask(Method::GetTreeState, at).await), *expected, "{case}");
         }
+
         let latest = ask(Method::GetLatestTreeState, Vec::new()).await;
-        assert_eq!(latest, expected[3].1, "the tip's");
+        assert_eq!(fields(latest), schedule[3].1, "GetLatestTreeState: the tip's");
+        let mut rendered = async || {
+            let response =
+                router.call(framed_request(Method::GetLatestTreeState, bytes::Bytes::new())).await;
+            let (mut chunks, _) = answer(response.expect("infallible")).await;
+            chunks.remove(0)
+        };
+        let (first, second) = (rendered().await, rendered().await);
+        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per NFS publish, shared");
     }
 
-    /// - by height, at the tip, and by hash through the block-hash locator
-    /// - every pool its own hex tree (an absent field would read as `CommitmentTree::empty()`)
     #[tokio::test]
-    async fn a_populated_tree_state_index_answers_by_height_at_the_tip_and_by_hash() {
+    async fn get_tree_state_by_hash_answers_only_where_the_block_hash_index_holds_that_block() {
         use tower::Service as _;
 
-        // every upgrade from genesis: its one sapling output lands at 0
+        // every upgrade from genesis: its one sapling output (leaf → txid → hash) lands at 0
         let at_genesis = |leaf: u32| {
             MockChain::regtest()
                 .network(MAINNET)
                 .upgrades(all_at(h(0)))
                 .genesis_with(|b| b.coinbase(|c| c.sapling_output(leaf)))
         };
-        let chain = at_genesis(7);
+        let (chain, other) = (at_genesis(7), at_genesis(8));
         let genesis = chain.genesis();
-        let block = chain.block(genesis.hash);
-        let hash = genesis.hash.0;
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![trees.clone()]),
-            ..routes()
-        });
+        let indexes = [IndexKind::TreeState, IndexKind::BlockHash];
+        let located_by = |locator: Option<&MockChain>| {
+            let locator = locator.map(|at| indexed(IndexKind::BlockHash, at, at.genesis()));
+            let views = [Some(trees.clone()), locator].into_iter().flatten().collect();
+            let snapshots =
+                fixed_snapshots(&chain, genesis, views, TrustedValidatorSet::default(), &[]);
+            dispatch(routes_serving(MAINNET, &indexes, snapshots))
+        };
+        let get_tree_state = async |mut router: crate::service::Dispatch<_, _>, hash: Vec<u8>| {
+            let message = service::BlockId { height: 0, hash }.encode_to_vec();
+            let response = router.call(framed_request(Method::GetTreeState, message.into())).await;
+            answer(response.expect("infallible")).await
+        };
+        let (by_height, _) = get_tree_state(located_by(None), Vec::new()).await;
 
-        // A unary answer: data, then `OK` trailers (status in headers beside a body = malformed)
-        async fn tree_state_of(response: Response<Body>) -> service::TreeState {
-            use http_body_util::BodyExt as _;
-            assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
-            let body = response.into_body().collect().await.expect("body");
-            let status = body.trailers().and_then(|trailers| trailers.get("grpc-status").cloned());
-            assert_eq!(status, Some(HeaderValue::from_static("0")), "unary");
-            let body = body.to_bytes();
-            service::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
+        #[rustfmt::skip]
+        let cases = [
+            ("no block-hash locator",     located_by(None),         genesis.hash.0,         Code::Unimplemented),
+            ("located",                   located_by(Some(&chain)), genesis.hash.0,         Code::Ok),
+            ("unknown hash",              located_by(Some(&chain)), [0xee; 32],             Code::NotFound),
+            ("another block located at 0", located_by(Some(&other)), other.genesis().hash.0, Code::NotFound),
+        ];
+        for (case, router, hash, code) in cases {
+            let (answered, status) = get_tree_state(router, hash.to_vec()).await;
+
+            assert_eq!(status.code(), code, "{case}: {status:?}");
+            if code == Code::Ok {
+                assert_eq!(answered, by_height, "{case}: same record as by height");
+            }
         }
-
-        let response = router
-            .call(framed_request(
-                Method::GetTreeState,
-                service::BlockId { height: 0, hash: Vec::new() }.encode_to_vec().into(),
-            ))
-            .await
-            .expect("router answers");
-
-        let state = tree_state_of(response).await;
-        assert_eq!(state.height, 0);
-        assert_eq!(state.time, block.header().time);
-        // Display order (every hash-bearing string field on this wire)
-        assert_eq!(state.hash, block.header().hash.to_string());
-        assert_ne!(state.sapling_tree, "000000", "the one commitment landed in sapling");
-        assert_eq!(state.orchard_tree, "000000", "a real empty tree, not \"\"");
-        assert_eq!(state.ironwood_tree, "000000");
-
-        // Tip = same answer, framed once per NFS publish (second ask = same allocation)
-        let latest = || async {
-            use http_body_util::BodyExt as _;
-            let response = router
-                .clone()
-                .call(framed_request(Method::GetLatestTreeState, Vec::new().into()))
-                .await
-                .expect("router answers");
-            let mut body = std::pin::pin!(response.into_body());
-            body.frame().await.expect("a frame").expect("ok").into_data().expect("data")
-        };
-        let (first, second) = (latest().await, latest().await);
-        assert_eq!(service::TreeState::decode(&first[FRAME_HEADER..]).expect("decodes"), state);
-        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per NFS publish, shared");
-
-        // By hash: resolved through the block-hash index, so without it, unimplemented
-        let by_hash = |hash: [u8; 32]| {
-            framed_request(
-                Method::GetTreeState,
-                service::BlockId { height: 0, hash: hash.to_vec() }.encode_to_vec().into(),
-            )
-        };
-        let status = |response: &Response<Body>| {
-            Status::from_header_map(response.headers())
-                .map(|status| status.code())
-                .unwrap_or(tonic::Code::Ok)
-        };
-        let response = router.call(by_hash(hash)).await.expect("answers");
-        assert_eq!(status(&response), tonic::Code::Unimplemented);
-
-        // Block-hash index holding the same block at 0, and one holding another block there
-        let located_by = |locator: &MockChain| {
-            let views =
-                vec![trees.clone(), indexed(IndexKind::BlockHash, locator, locator.genesis())];
-            dispatch(RouteDeps {
-                grpc_snapshots: grpc_snapshots(&chain, genesis, views),
-                ..routes()
-            })
-        };
-        let mut linked = located_by(&chain);
-        let response = linked.call(by_hash(hash)).await.expect("answers");
-        assert_eq!(status(&response), tonic::Code::Ok);
-        assert_eq!(tree_state_of(response).await, state, "same answer as by height");
-        let response = linked.call(by_hash([0xee; 32])).await.expect("answers");
-        assert_eq!(status(&response), tonic::Code::NotFound, "a hash no index holds");
-
-        // another genesis (another leaf → another txid → another merkle root → another hash)
-        let other = at_genesis(8);
-        let other_hash = other.genesis().hash.0;
-        let mut forked = located_by(&other);
-        let response = forked.call(by_hash(other_hash)).await.expect("answers");
-        let located = status(&response);
-        assert_eq!(located, tonic::Code::NotFound, "located at 0, another block held there");
     }
 }

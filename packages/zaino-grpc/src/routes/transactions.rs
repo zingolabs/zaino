@@ -124,51 +124,54 @@ mod tests {
     use zaino_header_chain::HeaderChainSnapshot;
     use zaino_source::testing::MockChain;
 
-    use crate::testing::{grpc_snapshots_held, routes_over};
+    use crate::testing::{fixed_snapshots, routes_over, MAINNET};
 
-    /// `SendTransaction` through the router, one validator holding the verified tip:
-    /// - accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
-    /// - validator refusal = gRPC OK + its code + message verbatim (zingolib's
-    ///   `classify_rejection` texts intact, Android reconciles only on an OK reply)
-    /// - unparseable = gRPC OK + `-22`, no validator asked
+    /// One validator holding the verified tip:
+    /// - validator refusal = gRPC OK + its code + message verbatim (zingolib's `classify_rejection`
+    ///   texts intact, Android reconciles only on an OK reply)
     /// - unreachable = `UNAVAILABLE` (never a reply a wallet reads as the network's answer)
     #[tokio::test(start_paused = true)]
     async fn send_transaction_answers_like_lightwalletd() {
-        use http::HeaderValue;
         use prost::Message as _;
+        use tonic::Code;
         use tower::Service as _;
+        use zaino_source::testing::{raw_transaction, within};
         use zaino_source::SendRawTransactionError::Rejected;
 
         use crate::service::Method;
-        use crate::testing::{decode_frames, dispatch, drained, framed_request, rounds};
+        use crate::testing::{answer, decode_frames, dispatch, framed_request, until};
 
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
         let node = chain.validator(tip);
-        let (routes, balancing, merge) = routes_over(&node);
+        let (routes, balancing, merge) = routes_over(&node, MAINNET, &[]);
         let chain_view = Arc::clone(&routes.chain_view);
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(merge.run(cancel.child_token()));
         chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
         let reader = chain_view.subscriber();
-        rounds("tip held", || !reader.current().held_by().is_empty()).await;
+        within("tip 5 held", until(|| !reader.current().held_by().is_empty())).await;
         let mut router = dispatch(routes);
-        let request = |data: Vec<u8>| {
+        // (gRPC code, each SendResponse's (errorCode, errorMessage))
+        let mut send = async |data: Vec<u8>| {
             let message = service::RawTransaction { data: data.into(), height: 0 }.encode_to_vec();
-            framed_request(Method::SendTransaction, message.into())
-        };
-        let mut reply = async |data: Vec<u8>| {
-            let (chunks, trailing) =
-                drained(router.call(request(data)).await.expect("router answers")).await;
-            assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-            let [reply] = <[service::SendResponse; 1]>::try_from(decode_frames(&chunks.concat()))
-                .expect("one reply");
-            (reply.error_code, reply.error_message)
+            let response =
+                router.call(framed_request(Method::SendTransaction, message.into())).await;
+            let (chunks, status) = answer(response.expect("infallible")).await;
+            let replies = decode_frames::<service::SendResponse>(&chunks.concat());
+            let replies: Vec<_> =
+                replies.into_iter().map(|r| (r.error_code, r.error_message)).collect();
+            (status.code(), replies)
         };
 
-        let (txid, sent) = zaino_source::testing::raw_transaction(9, 0);
-        assert_eq!(reply(sent).await, (0, format!("\"{txid}\"")), "accepted");
+        let (txid, sent) = raw_transaction(9, 0);
+        let quoted = format!("\"{txid}\"");
+        assert_eq!(
+            send(sent).await,
+            (Code::Ok, vec![(0, quoted)]),
+            "accepted: quoted display txid"
+        );
 
         let verdicts = [
             (-1, "transaction already exists in mempool"),
@@ -178,28 +181,28 @@ mod tests {
         ];
         for (seed, (code, message)) in (10..).zip(verdicts) {
             node.relay(Err(Rejected { code, message: message.to_owned() }));
-            let refused = reply(zaino_source::testing::raw_transaction(seed, 0).1).await;
-            assert_eq!(refused, (code, message.to_owned()), "the validator's, verbatim");
+            let refused = send(raw_transaction(seed, 0).1).await;
+            assert_eq!(
+                refused,
+                (Code::Ok, vec![(code, message.to_owned())]),
+                "{message}: verbatim"
+            );
         }
 
-        let checks = node.calls("checkadmission");
-        let (code, _) = reply(vec![9u8; 8]).await;
-        let asked = node.calls("checkadmission");
-        assert_eq!((code, asked), (-22, checks), "unparseable: no validator asked");
+        let asked_before = node.calls("checkadmission");
+        let (code, replies) = send(vec![9u8; 8]).await;
+        let codes: Vec<_> = replies.iter().map(|(code, _)| *code).collect();
+        assert_eq!((code, codes), (Code::Ok, vec![-22]), "unparseable: {replies:?}");
+        assert_eq!(node.calls("checkadmission"), asked_before, "unparseable: no validator asked");
 
         node.lacks(&["checkadmission"]);
         node.reachable(&["sendrawtransaction"], false);
-        let unsent = router
-            .call(request(zaino_source::testing::raw_transaction(20, 0).1))
-            .await
-            .expect("router answers");
-        let status = unsent.headers().get("grpc-status");
-        assert_eq!(status, Some(&HeaderValue::from_static("14")), "unreachable: UNAVAILABLE");
+        let unsent = send(raw_transaction(20, 0).1).await;
+        assert_eq!(unsent, (Code::Unavailable, Vec::new()), "validator unreachable");
         cancel.cancel();
     }
 
-    /// No validator answering, `[p2p]` off: a transaction the served mempool holds = its bytes at
-    /// height 0, any other = `UNAVAILABLE` (the peers' block path:
+    /// No validator answering, `[p2p]` off (the peers' block path:
     /// `zaino_source::mined_transaction`'s fixture test)
     #[tokio::test(start_paused = true)]
     async fn with_no_validator_answering_the_served_mempool_answers_and_the_rest_is_unavailable() {
@@ -208,17 +211,25 @@ mod tests {
         let (txid, raw) = zaino_source::testing::raw_transaction(7, 0);
         let node = chain.validator(tip);
         node.down(true);
-        let (routes, balancing, _merge) = routes_over(&node);
+        let (routes, balancing, _never_merged) = routes_over(&node, MAINNET, &[]);
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(balancing.run(cancel.child_token()));
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
-        let held = TrustedValidatorSet::at([0]);
-        let held = grpc_snapshots_held(&chain, tip, Vec::new(), held, &ours).load();
-        let ask = |txid| fetch_raw_transaction(&routes.validators, &held, txid);
-        let served = ask(txid).await.map(|tx| (tx.data.to_vec(), tx.height));
-        let other = ask(TxId::from_bytes([9; 32])).await.map(|_| ());
-        let codes = (served.map_err(|s| s.code()), other.map_err(|s| s.code()));
-        assert_eq!(codes, (Ok((raw, 0)), Err(tonic::Code::Unavailable)));
+        let held = fixed_snapshots(&chain, tip, Vec::new(), TrustedValidatorSet::at([0]), &ours);
+        let held = held.load();
+
+        let served = fetch_raw_transaction(&routes.validators, &held, txid).await;
+        let other =
+            fetch_raw_transaction(&routes.validators, &held, TxId::from_bytes([9; 32])).await;
+
+        let served = served.map(|tx| (tx.data.to_vec(), tx.height));
+        assert_eq!(
+            served.as_ref().ok(),
+            Some(&(raw, 0)),
+            "served mempool's bytes, unmined: {served:?}"
+        );
+        let code = other.as_ref().map(|_| ()).map_err(Status::code);
+        assert_eq!(code, Err(tonic::Code::Unavailable), "held nowhere we can ask: {other:?}");
         cancel.cancel();
     }
 }

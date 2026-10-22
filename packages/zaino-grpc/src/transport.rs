@@ -419,18 +419,209 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::num::NonZeroUsize;
     use std::time::Duration;
 
-    use zaino_persistence::IndexKind;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio_util::sync::CancellationToken;
+    use tonic::Code;
+    use zaino_chainview::TrustedValidatorSet;
+    use zaino_persistence::{DiskView, IndexKind};
     use zaino_proto::proto::service;
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
     use zaino_source::testing::{p2pkh, MockChain};
+    use zaino_source::ZcashLegacyRpcClient;
 
-    use super::GrpcService;
+    use super::{GrpcServeError, GrpcService};
     use crate::service::{Method, RouteDeps};
-    use crate::testing::{grpc_snapshots, indexed, routes, MAINNET};
+    use crate::testing::{fixed_snapshots, indexed, routes_over, routes_serving, MAINNET};
+    use crate::{GrpcLimits, TrustedProxies};
 
     const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
+    /// Real-clock headroom past a deadline (loaded runner: wake-ups + loopback handshakes)
+    const SCHEDULING: Duration = Duration::from_secs(1);
+
+    /// Nothing served, chain view never polled: every `GetLightdInfo` = `UNAVAILABLE`
+    fn unserved() -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
+        let chain = MockChain::regtest();
+        routes_over(&chain.validator(chain.genesis()), MAINNET, &[]).0
+    }
+
+    const NOTHING_SERVED: &str = "the indexes are syncing: nothing served yet";
+
+    /// A wallet whose TCP connection opens with a PROXY v1 header naming `client`
+    async fn through_proxy(
+        bind: SocketAddr,
+        client: &str,
+    ) -> CompactTxStreamerClient<tonic::transport::Channel> {
+        let header = format!("PROXY TCP4 {client} 127.0.0.1 40000 8137\r\n");
+        let channel = tonic::transport::Endpoint::from_static("http://proxied")
+            .connect_with_connector(tower::service_fn(move |_| {
+                let header = header.clone();
+                async move {
+                    let mut stream = tokio::net::TcpStream::connect(bind).await?;
+                    stream.write_all(header.as_bytes()).await?;
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+                }
+            }))
+            .await
+            .expect("the proxy connects");
+        CompactTxStreamerClient::new(channel)
+    }
+
+    /// Bytes `stream` sends before it closes (`Err` = still open after `SCHEDULING`)
+    async fn read_until_closed(stream: &mut tokio::net::TcpStream) -> Result<usize, &'static str> {
+        let mut read = [0u8; 1];
+        match tokio::time::timeout(SCHEDULING, stream.read(&mut read)).await {
+            Ok(read) => Ok(read.expect("read")),
+            Err(_) => Err("held open, never closed"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_wallet_is_served_and_a_second_connection_from_its_address_is_closed_at_accept() {
+        let one = NonZeroUsize::MIN;
+        let limits = GrpcLimits { max_connections_per_ip: one, ..GrpcLimits::default() };
+        let server = GrpcService::new(ANY_PORT, limits).with_routes(unserved());
+        let bound = server.bind().await.expect("binds");
+        let bind = bound.local_addr().expect("bound");
+        let cancel = CancellationToken::new();
+        let serving = tokio::spawn(bound.run(cancel.clone()));
+
+        let mut wallet =
+            CompactTxStreamerClient::connect(format!("http://{bind}")).await.expect("connects");
+        let refusal = wallet.get_lightd_info(service::Empty {}).await.expect_err("nothing served");
+        assert_eq!(
+            (refusal.code(), refusal.message()),
+            (Code::Unavailable, NOTHING_SERVED),
+            "decoded over h2"
+        );
+
+        let mut second =
+            tokio::net::TcpStream::connect(bind).await.expect("kernel completes the handshake");
+        let sent = read_until_closed(&mut second).await;
+        assert_eq!(sent, Ok(0), "second connection from 127.0.0.1 over max_connections_per_ip 1");
+
+        cancel.cancel();
+        serving.await.expect("the serve task ran");
+    }
+
+    /// Behind a trusted proxy the per-address cap counts the PROXY header's client, never the
+    /// proxy's address
+    #[tokio::test]
+    async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
+        let loopback = vec!["127.0.0.0/8".parse().expect("loopback net")];
+        let limits = GrpcLimits {
+            max_connections_per_ip: NonZeroUsize::MIN,
+            trusted_proxies: TrustedProxies::new(loopback),
+            ..GrpcLimits::default()
+        };
+        let server = GrpcService::new(ANY_PORT, limits).with_routes(unserved());
+        let bound = server.bind().await.expect("binds");
+        let bind = bound.local_addr().expect("bound");
+        let cancel = CancellationToken::new();
+        let serving = tokio::spawn(bound.run(cancel.clone()));
+        let empty = service::Empty {};
+
+        let mut first = through_proxy(bind, "203.0.113.1").await;
+        let mut second = through_proxy(bind, "203.0.113.2").await;
+        for (client, wallet) in [("203.0.113.1", &mut first), ("203.0.113.2", &mut second)] {
+            let answered = wallet.get_lightd_info(empty).await.expect_err("nothing served");
+            assert_eq!(
+                answered.code(),
+                Code::Unavailable,
+                "{client}: served under its own cap: {answered:?}"
+            );
+        }
+
+        let mut repeat = through_proxy(bind, "203.0.113.1").await;
+        let closed = repeat.get_lightd_info(empty).await.expect_err("203.0.113.1 already held");
+        assert_eq!(closed.code(), Code::Unknown, "closed at accept, never answered: {closed:?}");
+
+        let mut headerless = tokio::net::TcpStream::connect(bind).await.expect("accepting");
+        headerless.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").await.expect("preface");
+        let sent = read_until_closed(&mut headerless).await;
+        assert_eq!(sent, Ok(0), "trusted peer speaking h2 with no PROXY header: closed unserved");
+
+        cancel.cancel();
+        serving.await.expect("the serve task ran");
+    }
+
+    /// Cancel closes the listener at once, then `run` drains: an idle wallet closes on its GOAWAY,
+    /// a never-finishing connection (trusted peer silent in its PROXY read) holds `run` exactly
+    /// `drain_timeout`
+    #[tokio::test]
+    async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_drain_timeout()
+    {
+        // case, a silent connection open, drain_timeout, run returns no sooner than
+        #[rustfmt::skip]
+        let cases = [
+            ("idle wallet only", false, Duration::from_secs(30), Duration::ZERO),
+            ("silent peer",      true,  Duration::from_secs(1),  Duration::from_secs(1)),
+        ];
+        for (case, silent, drain_timeout, earliest) in cases {
+            let loopback = vec!["127.0.0.0/8".parse().expect("loopback net")];
+            let limits = GrpcLimits {
+                drain_timeout,
+                trusted_proxies: TrustedProxies::new(loopback),
+                ..GrpcLimits::default()
+            };
+            let server = GrpcService::new(ANY_PORT, limits).with_routes(unserved());
+            let bound = server.bind().await.expect("binds");
+            let bind = bound.local_addr().expect("bound");
+            let cancel = CancellationToken::new();
+            let serving = tokio::spawn(bound.run(cancel.clone()));
+            // before the wallet (accept FIFO: the wallet's answer proves this one accepted)
+            let _silent = match silent {
+                true => Some(tokio::net::TcpStream::connect(bind).await.expect("accepting")),
+                false => None,
+            };
+            let mut wallet = through_proxy(bind, "203.0.113.1").await;
+            let answered =
+                wallet.get_lightd_info(service::Empty {}).await.expect_err("nothing served");
+            assert_eq!(answered.code(), Code::Unavailable, "{case}: served first: {answered:?}");
+
+            let cancelled = std::time::Instant::now();
+            cancel.cancel();
+            serving.await.expect("the serve task ran");
+            let took = cancelled.elapsed();
+
+            let window = earliest..earliest + SCHEDULING;
+            assert!(
+                window.contains(&took),
+                "{case}: run returned after {took:?}, not in {window:?}"
+            );
+            let refused =
+                tokio::net::TcpStream::connect(bind).await.map(drop).map_err(|e| e.kind());
+            assert_eq!(
+                refused,
+                Err(std::io::ErrorKind::ConnectionRefused),
+                "{case}: listener closed"
+            );
+            let after =
+                wallet.get_lightd_info(service::Empty {}).await.expect_err("connection closed");
+            let reconnect_refused = after.message().contains("Connection refused");
+            assert!(
+                reconnect_refused,
+                "{case}: old connection closed, reconnect refused: {after:?}"
+            );
+        }
+    }
+
+    /// EADDRINUSE never reaches a spawned serve loop
+    #[tokio::test]
+    async fn binding_a_held_port_fails_before_anything_is_served() {
+        let held = tokio::net::TcpListener::bind(ANY_PORT).await.expect("a free port");
+        let bind = held.local_addr().expect("local addr");
+
+        let outcome =
+            GrpcService::new(bind, GrpcLimits::default()).with_routes(unserved()).bind().await;
+
+        let error = outcome.err();
+        let kind = error.as_ref().map(|GrpcServeError::Bind(error)| error.kind());
+        assert_eq!(kind, Some(std::io::ErrorKind::AddrInUse), "{error:?}");
+    }
 
     /// Wallet on an h2 >= 0.4.16 client (charges every DATA frame < 256 B against a
     /// connection budget until read: `GOAWAY too_many_data_frames`, lightwalletd #593), reading
@@ -450,13 +641,12 @@ mod tests {
             chain.mine(|b| b.coinbase(|c| c.pay(&alice, 1_000)));
         }
         let tip = chain.tip();
-        let views = vec![
-            indexed(IndexKind::CompactBlock, &chain, tip),
-            indexed(IndexKind::TransparentAddress, &chain, tip),
-        ];
-        let routes = RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() };
+        let indexes = [IndexKind::CompactBlock, IndexKind::TransparentAddress];
+        let views = indexes.map(|kind| indexed(kind, &chain, tip)).to_vec();
+        let snapshots = fixed_snapshots(&chain, tip, views, TrustedValidatorSet::default(), &[]);
+        let routes = routes_serving(MAINNET, &indexes, snapshots);
 
-        let server = GrpcService::new(ANY_PORT, crate::GrpcLimits::default()).with_routes(routes);
+        let server = GrpcService::new(ANY_PORT, GrpcLimits::default()).with_routes(routes);
         let bound = server.bind().await.expect("binds");
         let bind = bound.local_addr().expect("bound");
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -477,6 +667,7 @@ mod tests {
             max_entries: 0,
         };
         let mut utxos = wallet.get_address_utxos_stream(request).await.expect("opens").into_inner();
+        // unread while the server fills the 64 KiB window (the frames h2 >= 0.4.16 charges)
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut heights = Vec::new();
         while let Some(utxo) = utxos.message().await.expect("no GOAWAY mid-stream") {
@@ -496,159 +687,136 @@ mod tests {
         cancel.cancel();
     }
 
-    /// gRPC A9 over a real socket, raw h2 client (sees the GOAWAY a tonic channel hides):
-    ///
-    /// - aged (1 s ±10%) with a `GetTaddressBalanceStream` in flight: GOAWAY (a new stream
-    ///   refused), the in-flight one still answered `OK` once its client ends it, then closed
-    /// - aged with a stream held past the grace (1 s): closed at age + grace, the stream reset
-    /// - no age, idle 1 s, never used: closed at ~1 s
-    /// - no age or idle, held (delay 0): open connection + one opened while held close at once
-    ///   (nothing in flight)
-    /// - after `resume`: new connection stays up
-    #[tokio::test(flavor = "multi_thread")]
-    async fn connections_retire_at_their_age_or_idleness_and_in_flight_streams_get_the_grace() {
-        use std::time::Instant;
-
-        use bytes::Bytes;
-        use prost::Message as _;
-
+    /// Lifetime test server: `limits` over a transparent-address index at genesis
+    async fn serving_lifetimes(limits: GrpcLimits) -> SocketAddr {
         let chain = MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
-        let serve = |limits: crate::GrpcLimits| {
-            let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-            let routes =
-                RouteDeps { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
-            async move {
-                let server = GrpcService::new(ANY_PORT, limits).with_routes(routes);
-                let bound = server.bind().await.expect("binds");
-                let bind = bound.local_addr().expect("bound");
-                tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
-                bind
-            }
-        };
-        // timed from before the connect (the server's clocks start at accept, before the handshake)
-        let connect = |bind| async move {
-            let opened = Instant::now();
-            let tcp = tokio::net::TcpStream::connect(bind).await.expect("connects");
-            let (client, connection) = h2::client::handshake(tcp).await.expect("h2 handshake");
-            let closed = tokio::spawn(async move { (connection.await, opened.elapsed()) });
-            (client, closed)
-        };
-        let balance_stream = |client: &mut h2::client::SendRequest<Bytes>, bind| {
-            let path = Method::GetTaddressBalanceStream.path();
-            let request = http::Request::post(format!("http://{bind}{path}"))
+        let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
+        let snapshots =
+            fixed_snapshots(&chain, genesis, views, TrustedValidatorSet::default(), &[]);
+        let routes = routes_serving(MAINNET, &[IndexKind::TransparentAddress], snapshots);
+        let bound =
+            GrpcService::new(ANY_PORT, limits).with_routes(routes).bind().await.expect("binds");
+        let bind = bound.local_addr().expect("bound");
+        tokio::spawn(bound.run(CancellationToken::new()));
+        bind
+    }
+
+    type Lifetime = tokio::task::JoinHandle<(Result<(), h2::Error>, Duration)>;
+
+    /// Raw h2 client (sees the GOAWAY a tonic channel hides) + its connection's lifetime, timed
+    /// from before the connect (the server's clocks start at accept, before the handshake)
+    async fn h2_client(bind: SocketAddr) -> (h2::client::SendRequest<bytes::Bytes>, Lifetime) {
+        let opened = std::time::Instant::now();
+        let tcp = tokio::net::TcpStream::connect(bind).await.expect("connects");
+        let (client, connection) = h2::client::handshake(tcp).await.expect("h2 handshake");
+        let lifetime = tokio::spawn(async move { (connection.await, opened.elapsed()) });
+        (client.ready().await.expect("ready"), lifetime)
+    }
+
+    /// `GetTaddressBalanceStream` opened, alice's address sent, request left open
+    fn open_balance_stream(
+        client: &mut h2::client::SendRequest<bytes::Bytes>,
+    ) -> Result<(h2::client::ResponseFuture, h2::SendStream<bytes::Bytes>), h2::Error> {
+        use prost::Message as _;
+
+        let request =
+            http::Request::post(format!("http://zaino{}", Method::GetTaddressBalanceStream.path()))
                 .header("content-type", "application/grpc")
                 .header("te", "trailers")
                 .body(())
                 .expect("request");
-            client.send_request(request, false)
-        };
+        let (response, mut sending) = client.send_request(request, false)?;
         let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();
         zaino_proto::frame::frame_into(&mut framed, |out| alice.encode_raw(out));
-        let second = Duration::from_secs(1);
-
-        let aged = crate::GrpcLimits {
-            max_connection_age: Some(second),
-            max_connection_age_grace: Duration::from_secs(5),
-            max_connection_idle: None,
-            ..crate::GrpcLimits::default()
-        };
-        let bind = serve(aged.clone()).await;
-        let (client, closed) = connect(bind).await;
-        let mut client = client.ready().await.expect("ready");
-        let (response, mut request) = balance_stream(&mut client, bind).expect("opens");
-        request.send_data(Bytes::from(framed.clone()), false).expect("first message");
-        tokio::time::sleep(second.mul_f64(1.5)).await;
-        let refused =
-            client.ready().await.and_then(|mut ready| balance_stream(&mut ready, bind).map(drop));
-        assert!(refused.is_err(), "past the age: GOAWAY, no new stream");
-        assert!(!closed.is_finished(), "the in-flight stream holds the connection open");
-        request.send_data(Bytes::new(), true).expect("request ended");
-        let response = response.await.expect("answered");
-        let mut body = response.into_body();
-        let balance = body.data().await.expect("one message").expect("readable");
-        assert!(!balance.is_empty(), "the balance");
-        let trailers = body.trailers().await.expect("trailers").expect("unary: status trails");
-        let status = trailers.get("grpc-status").map(|value| value.as_bytes());
-        assert_eq!(status, Some(&b"0"[..]), "answered OK");
-        let (_, lived) =
-            tokio::time::timeout(second, closed).await.expect("closed").expect("joins");
-        assert!(lived < Duration::from_secs(3), "closed once the stream ended: {lived:?}");
-
-        let short_grace = crate::GrpcLimits { max_connection_age_grace: second, ..aged };
-        let bind = serve(short_grace).await;
-        let (client, closed) = connect(bind).await;
-        let mut client = client.ready().await.expect("ready");
-        let (response, mut request) = balance_stream(&mut client, bind).expect("opens");
-        request.send_data(Bytes::from(framed.clone()), false).expect("first message");
-        let (_, lived) = tokio::time::timeout(Duration::from_secs(5), closed)
-            .await
-            .expect("closed at age + grace")
-            .expect("joins");
-        let window = Duration::from_millis(1_800)..Duration::from_millis(3_000);
-        assert!(window.contains(&lived), "age (0.9–1.1 s) + grace (1 s): {lived:?}");
-        assert!(response.await.is_err(), "the held stream reset with its connection");
-
-        let idle = crate::GrpcLimits {
-            max_connection_age: None,
-            max_connection_idle: Some(second),
-            ..crate::GrpcLimits::default()
-        };
-        let bind = serve(idle).await;
-        let (_client, closed) = connect(bind).await;
-        let (_, lived) = tokio::time::timeout(Duration::from_secs(5), closed)
-            .await
-            .expect("closed when idle")
-            .expect("joins");
-        let window = second..Duration::from_millis(2_000);
-        assert!(window.contains(&lived), "idle 1 s: {lived:?}");
-
-        let forever = crate::GrpcLimits {
-            max_connection_age: None,
-            max_connection_idle: None,
-            ..crate::GrpcLimits::default()
-        };
-        let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-        let routes =
-            RouteDeps { grpc_snapshots: grpc_snapshots(&chain, genesis, views), ..routes() };
-        let retire = crate::Retire::default();
-        let server = GrpcService::new(ANY_PORT, forever).with_routes(routes);
-        let bound = server.with_retire(retire.clone()).bind().await.expect("binds");
-        let bind = bound.local_addr().expect("bound");
-        tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
-        let (client, open) = connect(bind).await;
-        let mut client = client.ready().await.expect("ready");
-        let (response, mut request) = balance_stream(&mut client, bind).expect("opens");
-        request.send_data(Bytes::from(framed), true).expect("one message, ended");
-        response.await.expect("served before the hold");
-        retire.hold(Duration::ZERO);
-        let (_, lived) = tokio::time::timeout(Duration::from_secs(2), open)
-            .await
-            .expect("retired")
-            .expect("joins");
-        assert!(lived < Duration::from_secs(2), "GOAWAY'd at once: {lived:?}");
-        let (_held_client, during) = connect(bind).await;
-        let (_, lived) = tokio::time::timeout(Duration::from_secs(2), during)
-            .await
-            .expect("opened while held: retired too")
-            .expect("joins");
-        assert!(lived < Duration::from_secs(2), "GOAWAY'd at once: {lived:?}");
-        retire.resume();
-        let (client, later) = connect(bind).await;
-        let _ready = client.ready().await.expect("a new connection is served");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert!(!later.is_finished(), "opened after the resume: untouched");
+        sending.send_data(framed.into(), false).expect("first message");
+        Ok((response, sending))
     }
 
-    /// One TLS listener, as a load balancer's HTTPS/1.1 monitor and a wallet each see it:
-    ///
-    /// - bound before routed (an owner still booting): health answered, every method
-    ///   `UNAVAILABLE` [`crate::service::STARTING`]
-    /// - routed later = the routes' own answer
-    /// - ALPN `http/1.1`: `GET /readyz` = 200 + the health body, `/status` = 200, a gRPC path = 404
-    /// - ALPN `h2`: `GetLightdInfo` reaches the gRPC stack (`UNAVAILABLE`: nothing served)
-    /// - a monitor's `/readyz` never takes a work slot (`in_flight` stays 0)
+    /// gRPC A9: in flight at the age = GOAWAY + `max_connection_age_grace` to finish
+    #[tokio::test]
+    async fn an_aged_connection_refuses_new_streams_and_still_answers_the_one_in_flight() {
+        let age = Duration::from_secs(1);
+        let grace = Duration::from_secs(5);
+        let limits = GrpcLimits {
+            max_connection_age: Some(age),
+            max_connection_age_grace: grace,
+            max_connection_idle: None,
+            ..GrpcLimits::default()
+        };
+        let bind = serving_lifetimes(limits).await;
+        let (mut client, lifetime) = h2_client(bind).await;
+        let (response, mut request) = open_balance_stream(&mut client).expect("opens");
+
+        tokio::time::sleep(age.mul_f64(1.0 + crate::lifetime::JITTER) + SCHEDULING).await;
+
+        let refused = match client.ready().await {
+            Ok(mut ready) => open_balance_stream(&mut ready).map(drop),
+            Err(error) => Err(error),
+        };
+        let refused = refused.expect_err("past the age: no new stream");
+        assert!(refused.is_go_away(), "refused by the GOAWAY: {refused:?}");
+        request.send_data(bytes::Bytes::new(), true).expect("request ended");
+        let mut body = response.await.expect("in-flight stream answered").into_body();
+        let balance = body.data().await.expect("one message").expect("readable");
+        let trailers = body.trailers().await.expect("readable").expect("unary: status trails");
+        let status = tonic::Status::from_header_map(&trailers).expect("grpc-status");
+        assert_eq!(status.code(), Code::Ok, "in flight past the age, in its grace: {status:?}");
+        assert_ne!(balance.len(), 0, "the balance message");
+        let (closed, lived) =
+            tokio::time::timeout(grace, lifetime).await.expect("closed").expect("joins");
+        assert!(
+            lived < age.mul_f64(1.0 + crate::lifetime::JITTER) + SCHEDULING * 2,
+            "closed once the stream ended, not at the grace: {lived:?} ({closed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_held_past_the_age_grace_is_reset_with_its_connection() {
+        let (age, grace) = (Duration::from_secs(1), Duration::from_secs(1));
+        let limits = GrpcLimits {
+            max_connection_age: Some(age),
+            max_connection_age_grace: grace,
+            max_connection_idle: None,
+            ..GrpcLimits::default()
+        };
+        let bind = serving_lifetimes(limits).await;
+        let (mut client, lifetime) = h2_client(bind).await;
+        let (response, _held_open) = open_balance_stream(&mut client).expect("opens");
+
+        let (closed, lived) = lifetime.await.expect("joins");
+
+        let jitter = crate::lifetime::JITTER;
+        let window =
+            age.mul_f64(1.0 - jitter) + grace..age.mul_f64(1.0 + jitter) + grace + SCHEDULING;
+        assert!(
+            window.contains(&lived),
+            "closed after {lived:?}, not age ± 10% + grace {window:?} ({closed:?})"
+        );
+        let reset = response.await.expect_err("held stream outlived its connection");
+        assert!(reset.is_go_away() || reset.is_io() || reset.is_reset(), "{reset:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unused_connection_closes_after_max_connection_idle() {
+        let idle = Duration::from_secs(1);
+        let limits = GrpcLimits {
+            max_connection_age: None,
+            max_connection_idle: Some(idle),
+            ..GrpcLimits::default()
+        };
+        let bind = serving_lifetimes(limits).await;
+
+        let (_client, lifetime) = h2_client(bind).await;
+
+        let (closed, lived) = lifetime.await.expect("joins");
+        let window = idle..idle + SCHEDULING;
+        assert!(window.contains(&lived), "closed after {lived:?}, not in {window:?} ({closed:?})");
+    }
+
+    /// One TLS listener as a load balancer's HTTPS/1.1 monitor and a wallet each see it (health
+    /// routing itself: `health.rs`); bound before routed = an owner still booting
     #[tokio::test]
     async fn one_tls_listener_answers_health_from_bind_and_grpc_once_routed() {
         use std::sync::Arc;
@@ -707,10 +875,10 @@ mod tests {
                 stream
             }
         };
-        let get = |target: String| async move {
+        let readyz = || async move {
             let mut stream = tls(b"http/1.1").await;
             let request =
-                format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+                format!("GET /readyz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
             stream.write_all(request.as_bytes()).await.expect("request");
             let mut response = String::new();
             stream.read_to_string(&mut response).await.expect("response");
@@ -718,8 +886,7 @@ mod tests {
             let body = response.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned();
             (status, body)
         };
-
-        // (grpc-status, grpc-message) of one `GetLightdInfo` over its own h2 connection
+        // one `GetLightdInfo` over its own h2 connection
         let lightd_info = || async move {
             let (client, connection) = h2::client::handshake(tls(b"h2").await).await.expect("h2");
             tokio::spawn(connection);
@@ -733,26 +900,18 @@ mod tests {
             let (response, mut body) = client.send_request(request, false).expect("sent");
             body.send_data(Bytes::from_static(b"\0\0\0\0\0"), true).expect("empty Empty");
             let response = response.await.expect("answered");
-            let header = |name| {
-                let value = response.headers().get(name).map(|value| value.to_str());
-                value.and_then(Result::ok).unwrap_or_default().to_owned()
-            };
-            (header("grpc-status"), header("grpc-message"))
+            let status = tonic::Status::from_header_map(response.headers()).expect("Trailers-Only");
+            (status.code(), status.message().to_owned())
         };
 
-        let readyz = get("/readyz".to_owned()).await;
         let healthy = ("200".to_owned(), r#"{"state":"serving","detail":null}"#.to_owned());
-        assert_eq!(readyz, healthy, "monitor's /readyz, unrouted");
-        assert_eq!(get("/status".to_owned()).await.0, "200", "/status, unrouted");
-        assert_eq!(get(Method::GetLightdInfo.path()).await.0, "404", "gRPC needs h2");
-        assert_eq!(admission.report().in_flight, 0, "health never holds a work slot");
-        let (status, message) = lightd_info().await;
-        assert_eq!(status, "14", "unrouted: UNAVAILABLE");
-        assert!(message.starts_with("starting"), "unrouted: {message}");
+        assert_eq!(readyz().await, healthy, "ALPN http/1.1 /readyz, unrouted");
+        assert_eq!(admission.report().in_flight, 0, "a monitor's /readyz never holds a work slot");
+        let starting = (Code::Unavailable, crate::service::STARTING.to_owned());
+        assert_eq!(lightd_info().await, starting, "ALPN h2 → the gRPC stack, unrouted");
 
-        routing.route(routes());
-        let (status, message) = lightd_info().await;
-        assert_eq!(status, "14", "routed, nothing served: UNAVAILABLE");
-        assert!(!message.starts_with("starting"), "routed, still answered as unrouted");
+        routing.route(unserved());
+        let routed = (Code::Unavailable, NOTHING_SERVED.to_owned());
+        assert_eq!(lightd_info().await, routed, "routed after bind: the routes' own answer");
     }
 }

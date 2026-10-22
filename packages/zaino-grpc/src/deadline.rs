@@ -229,17 +229,28 @@ mod tests {
         frames
     }
 
-    /// Stream: one record every 100 s, `count` of them, then `OK` trailers (or silent after them)
-    fn every_100_s(count: u64, then_silent: bool) -> Response<Body> {
+    /// What the handler under test answers
+    #[derive(Clone, Copy, Debug)]
+    enum Handler {
+        /// Never returns a response
+        Pending,
+        /// `count` records, one every `period`, then `OK` trailers (`silent` = nothing after them)
+        Stream { count: u64, period: Duration, silent: bool },
+    }
+
+    async fn handle(handler: Handler) -> Response<Body> {
         use std::cmp::Ordering::{Equal, Greater, Less};
 
+        let Handler::Stream { count, period, silent } = handler else {
+            return std::future::pending().await;
+        };
         let frames = futures::stream::unfold(0, move |sent: u64| async move {
             let frame = match sent.cmp(&count) {
                 Less => {
-                    tokio::time::sleep(Duration::from_secs(100)).await;
+                    tokio::time::sleep(period).await;
                     Frame::data(Bytes::from_static(b"\0\0\0\0\0"))
                 }
-                Equal if then_silent => return std::future::pending().await,
+                Equal if silent => return std::future::pending().await,
                 Equal => Frame::trailers(trailers(&Status::ok(""))),
                 Greater => return None,
             };
@@ -248,50 +259,40 @@ mod tests {
         Response::new(Body::new(StreamBody::new(Box::pin(frames))))
     }
 
-    /// Z#1537 (paused clock, silent = 300 s):
-    ///
-    /// - no total cap: 1,000 s of a record every 100 s ends `OK`
-    /// - `grpc-timeout` 250 s cuts the same stream after two records, `DEADLINE_EXCEEDED`
-    /// - nothing to send for 300 s = `UNAVAILABLE`
-    /// - no silence bound (a subscription) = never cut
-    /// - a handler pending past its deadline / the silence bound = that status, in the headers
+    /// Z#1537 (paused clock): no total cap, only the client's deadline or the silence bound
     #[tokio::test(start_paused = true)]
     async fn a_stream_lives_while_it_delivers_until_the_clients_deadline_or_a_silence_bound() {
-        let silent = Some(Duration::from_secs(300));
+        const SILENT: Option<Duration> = Some(Duration::from_secs(300));
+        let s100 = Duration::from_secs(100);
         let data = |at: u64| (at, "data".to_owned());
         let ended = |at: u64, code: &str| (at, code.to_owned());
+        let every_100s_for_1000s: Vec<_> = (1..=10).map(|n| data(n * 100)).collect();
+        let delivering = Handler::Stream { count: 10, period: s100, silent: false };
 
-        let start = Instant::now();
-        let bounds = Bounds::of(&HeaderMap::new(), silent);
-        let long = drained(start, bounds.apply(async { every_100_s(10, false) }).await).await;
-        let all: Vec<_> = (1..=10).map(|n| data(n * 100)).chain([ended(1_000, "Ok")]).collect();
-        assert_eq!(long, all, "1,000 s, never cut");
-
-        let start = Instant::now();
-        let bounds = Bounds::of(&timeout("250S"), silent);
-        let cut = drained(start, bounds.apply(async { every_100_s(10, false) }).await).await;
-        assert_eq!(cut, [data(100), data(200), ended(250, "DeadlineExceeded")]);
-
-        let start = Instant::now();
-        let bounds = Bounds::of(&HeaderMap::new(), silent);
-        let quiet = drained(start, bounds.apply(async { every_100_s(1, true) }).await).await;
-        assert_eq!(quiet, [data(100), ended(400, "Unavailable")], "300 s after the last record");
-
-        let start = Instant::now();
-        let bounds = Bounds::of(&HeaderMap::new(), None);
-        let subscribed = bounds.apply(async { every_100_s(1, true) });
-        let subscribed = drained(start, subscribed.await);
-        let open = tokio::time::timeout(Duration::from_secs(3_000), subscribed).await;
-        assert!(open.is_err(), "no silence bound: open for as long as it takes");
-
-        for (headers, expected) in [
-            (timeout("2S"), ended(2, "DeadlineExceeded")),
-            (HeaderMap::new(), ended(300, "Unavailable")),
-            (timeout("1H"), ended(300, "Unavailable")),
-        ] {
+        // case, grpc-timeout, silence bound, handler, frames as (second, data / status)
+        #[rustfmt::skip]
+        let cases = [
+            ("delivering 1,000 s",       HeaderMap::new(), SILENT, delivering,
+                [every_100s_for_1000s, vec![ended(1_000, "Ok")]].concat()),
+            ("client deadline 250 s",    timeout("250S"),  SILENT, delivering,
+                vec![data(100), data(200), ended(250, "DeadlineExceeded")]),
+            ("silent after one record",  HeaderMap::new(), SILENT, Handler::Stream { count: 1, period: s100, silent: true },
+                vec![data(100), ended(400, "Unavailable")]),
+            ("subscription, 1,000 s gaps", HeaderMap::new(), None, Handler::Stream { count: 2, period: s100 * 10, silent: false },
+                vec![data(1_000), data(2_000), ended(2_000, "Ok")]),
+            ("handler pending, 2 s deadline", timeout("2S"), SILENT, Handler::Pending,
+                vec![ended(2, "DeadlineExceeded")]),
+            ("handler pending, no deadline", HeaderMap::new(), SILENT, Handler::Pending,
+                vec![ended(300, "Unavailable")]),
+            ("handler pending, 1 h deadline", timeout("1H"), SILENT, Handler::Pending,
+                vec![ended(300, "Unavailable")]),
+        ];
+        for (case, headers, silent, handler, expected) in cases {
             let start = Instant::now();
-            let pending = Bounds::of(&headers, silent).apply(std::future::pending());
-            assert_eq!(drained(start, pending.await).await, [expected]);
+
+            let response = Bounds::of(&headers, silent).apply(handle(handler)).await;
+
+            assert_eq!(drained(start, response).await, expected, "{case}: {handler:?}");
         }
     }
 
@@ -305,23 +306,24 @@ mod tests {
         use zaino_persistence::IndexKind;
         use zaino_proto::proto::service;
 
-        use crate::service::{Method, RouteDeps};
-        use crate::testing::{dispatch, grpc_snapshots, indexed, routes, MAINNET};
+        use crate::service::Method;
+        use crate::testing::{dispatch, fixed_snapshots, indexed, routes_serving, MAINNET};
 
         let chain = zaino_source::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, genesis, views),
-            ..routes()
-        });
+        let held_by = zaino_chainview::TrustedValidatorSet::default();
+        let snapshots = fixed_snapshots(&chain, genesis, views, held_by, &[]);
+        let indexes = [IndexKind::TransparentAddress];
+        let mut router = dispatch(routes_serving(MAINNET, &indexes, snapshots));
 
         let alice = service::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();
         zaino_proto::frame::frame_into(&mut framed, |out| alice.encode_raw(out));
-        for (header, expected) in [
-            (Some("500m"), (500, "grpc-timeout passed".to_owned())),
-            (None, (30_000, "request body not complete within 30s".to_owned())),
+        // grpc-timeout, cut after (ms), its message
+        for (header, cut_ms, message) in [
+            (Some("500m"), 500, "grpc-timeout passed"),
+            (None, 30_000, "request body not complete within 30s"),
         ] {
             let first = Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(framed.clone())));
             let unending = futures::StreamExt::chain(
@@ -337,10 +339,10 @@ mod tests {
             Method::resolve(&mut request);
             let start = Instant::now();
             let response = router.call(request).await.expect("router answers");
-            let status = Status::from_header_map(response.headers()).expect("a status");
-            let cut = (start.elapsed().as_millis(), status.message().to_owned());
-            assert_eq!(status.code(), tonic::Code::DeadlineExceeded, "{header:?}");
-            assert_eq!(cut, expected, "{header:?}");
+            let status = Status::from_header_map(response.headers()).expect("Trailers-Only status");
+            let cut = (status.code(), status.message(), start.elapsed().as_millis());
+            let expected = (tonic::Code::DeadlineExceeded, message, cut_ms);
+            assert_eq!(cut, expected, "grpc-timeout {header:?}: (code, message, cut after ms)");
         }
     }
 }

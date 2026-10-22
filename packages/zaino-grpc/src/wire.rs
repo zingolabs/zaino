@@ -165,25 +165,28 @@ pub(crate) fn messages(mut framed: &[u8]) -> Option<Vec<&[u8]>> {
 
 #[cfg(test)]
 mod tests {
-    use http::HeaderValue;
+    use tonic::Code;
+    use zaino_chainview::TrustedValidatorSet;
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::FRAME_HEADER;
 
     use super::request_limit;
-    use crate::service::{Method, RouteDeps};
-    use crate::testing::{dispatch, framed_request, grpc_snapshots, indexed, routes, MAINNET};
+    use crate::service::Method;
+    use crate::testing::{
+        answer, dispatch, fixed_snapshots, framed_request, indexed, routes_serving, MAINNET,
+    };
 
-    /// - body over its method's cap → `RESOURCE_EXHAUSTED` before any decode
-    /// - one byte under → decoded as usual (then refused for what it says: a hash = 32 bytes)
+    /// At the cap → decoded as usual, then refused for what it says (a hash = 32 bytes)
     #[tokio::test]
     async fn a_request_body_over_its_cap_is_refused_before_it_is_decoded() {
         use tower::Service as _;
 
         let chain = zaino_source::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
-        let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![compact]);
-        let mut router = dispatch(RouteDeps { grpc_snapshots, ..routes() });
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, genesis)];
+        let snapshots =
+            fixed_snapshots(&chain, genesis, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {
@@ -198,13 +201,17 @@ mod tests {
             bytes::Bytes::from(message)
         };
         let fits = request_limit::MESSAGE - FRAME_HEADER - 4;
-        for (payload, code) in [(fits, "3"), (fits + 1, "8")] {
-            let response = router
-                .call(framed_request(Method::GetBlock, block_id(payload)))
-                .await
-                .expect("router answers");
-            let status = response.headers().get("grpc-status");
-            assert_eq!(status, Some(&HeaderValue::from_static(code)), "{payload}-byte hash");
+        for (payload, code) in [(fits, Code::InvalidArgument), (fits + 1, Code::ResourceExhausted)]
+        {
+            let response = router.call(framed_request(Method::GetBlock, block_id(payload))).await;
+
+            let (_, status) = answer(response.expect("infallible")).await;
+            assert_eq!(
+                status.code(),
+                code,
+                "{payload}-byte hash, cap {}: {status:?}",
+                request_limit::MESSAGE
+            );
         }
     }
 }

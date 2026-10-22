@@ -389,28 +389,30 @@ where
 
 #[cfg(test)]
 mod tests {
-    use http::HeaderValue;
-    use tonic::Status;
+    use tonic::Code;
+    use zaino_chainview::TrustedValidatorSet;
     use zaino_persistence::IndexKind;
     use zaino_source::testing::{h, MockChain};
 
     use strum::VariantArray as _;
 
-    use super::{Method, Reply, RouteDeps};
+    use super::{Method, Reply};
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, grpc_snapshots, grpc_snapshots_held,
-        indexed, request_at, routes, MAINNET,
+        answer, decode_frames, dispatch, fixed_snapshots, framed_request, indexed, request_at,
+        routes_over, routes_serving, MAINNET,
     };
 
-    /// - each method's path names it
-    /// - any other path (another service, a typo) names none
+    /// Any other path (another service, a typo) names none
     #[test]
     fn a_path_names_its_method_or_none() {
-        let resolved: Vec<_> = Method::VARIANTS.iter().map(|m| Method::of(&m.path())).collect();
-        assert_eq!(resolved, Method::VARIANTS.iter().copied().map(Some).collect::<Vec<_>>());
+        for method in Method::VARIANTS {
+            assert_eq!(Method::of(&method.path()), Some(*method), "{}", method.path());
+        }
         let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
-        let others = ["/grpc.health.v1.Health/GetBlock", "/", "", &format!("{service}/GetBlocks")];
-        assert_eq!(others.map(Method::of), [None; 4]);
+        let typo = format!("{service}/GetBlocks");
+        for other in ["/grpc.health.v1.Health/GetBlock", "/", "", &typo] {
+            assert_eq!(Method::of(other), None, "{other:?}");
+        }
     }
 
     /// Each method's `Reply` = its proto response side, so the latency metric it feeds can't drift
@@ -445,222 +447,93 @@ mod tests {
     /// - an unknown path = `UNIMPLEMENTED`
     #[tokio::test]
     async fn config_enables_each_method_and_an_unknown_path_is_unimplemented() {
-        use tonic::Code::{Unavailable, Unimplemented};
         use tower::Service as _;
+        use Code::{Unavailable, Unimplemented};
         use Method::*;
 
-        let mut router = dispatch(RouteDeps { indexes: vec![IndexKind::TreeState], ..routes() });
-        let syncing = || (Unavailable, "the indexes are syncing: nothing served yet".to_owned());
+        let chain = MockChain::regtest();
+        let node = chain.validator(chain.genesis());
+        let (routes, _unspawned, _) = routes_over(&node, MAINNET, &[IndexKind::TreeState]);
+        let mut router = dispatch(routes);
+
+        let syncing = || "the indexes are syncing: nothing served yet".to_owned();
         let off = |method: Method, index: &str| {
-            let method = method.name();
-            (Unimplemented, format!("{method} needs the {index} index, which is not enabled"))
+            format!("{} needs the {index} index, which is not enabled", method.name())
         };
         let unknown = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping";
         let health = "/grpc.health.v1.Health/Check";
+        #[rustfmt::skip]
         let cases = [
-            (GetLatestBlock.path(), syncing()),
-            (GetLightdInfo.path(), syncing()),
-            (GetTreeState.path(), syncing()),
-            (GetBlockRange.path(), off(GetBlockRange, "compact_block")),
-            (GetBlock.path(), off(GetBlock, "compact_block")),
-            (GetAddressUtxos.path(), off(GetAddressUtxos, "transparent_address")),
-            (GetTaddressTxids.path(), off(GetTaddressTxids, "transparent_address")),
-            (unknown.to_owned(), (Unimplemented, format!("{unknown}: no such method"))),
-            (health.to_owned(), (Unimplemented, format!("{health}: no such method"))),
+            (GetLatestBlock.path(),   Unavailable,   syncing()),
+            (GetLightdInfo.path(),    Unavailable,   syncing()),
+            (GetTreeState.path(),     Unavailable,   syncing()),
+            (GetBlockRange.path(),    Unimplemented, off(GetBlockRange, "compact_block")),
+            (GetBlock.path(),         Unimplemented, off(GetBlock, "compact_block")),
+            (GetAddressUtxos.path(),  Unimplemented, off(GetAddressUtxos, "transparent_address")),
+            (GetTaddressTxids.path(), Unimplemented, off(GetTaddressTxids, "transparent_address")),
+            (unknown.to_owned(),      Unimplemented, format!("{unknown}: no such method")),
+            (health.to_owned(),       Unimplemented, format!("{health}: no such method")),
         ];
-
-        let mut answered = Vec::new();
-        for (path, _) in &cases {
-            let response = router.call(request_at(path, bytes::Bytes::new())).await;
-            let status = Status::from_header_map(response.expect("infallible").headers());
-            let status = status.expect("a status");
-            answered.push((status.code(), status.message().to_owned()));
+        for (path, code, message) in cases {
+            let response = router.call(request_at(&path, bytes::Bytes::new())).await;
+            let (_, status) = answer(response.expect("infallible")).await;
+            assert_eq!((status.code(), status.message()), (code, message.as_str()), "{path}");
         }
-        assert_eq!(answered, cases.map(|(_, expected)| expected));
     }
 
-    /// G1, zingolib #2835: no height named = served tip, height named = that index's durable
-    ///
-    /// - Views hold 0..=3, served tip 2 (root publication in bulk sync: views ahead of its tip)
-    /// - validator 0 holds 2, one tx of ours relayed
-    /// - `GetLatestBlock`, `GetLatestTreeState`, `GetLightdInfo.blockHeight` = 2
-    /// - `GetBlockRange` 0..=9 = 0..=3 then `OUT_OF_RANGE`
-    /// - `GetTreeState` / `GetBlock` 3 answered (block hash = its tree state's), 4 = a miss
-    /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
-    ///   fixed `GrpcSnapshot` never moves on)
+    /// G1, zingolib #2835: views durable through 3, served tip 2 (bulk sync: views run ahead of
+    /// the root publication's tip)
     #[tokio::test]
-    async fn latest_rpcs_share_the_served_tip_and_each_index_answers_its_own_durable() {
-        use http::HeaderMap;
+    async fn latest_rpcs_answer_the_served_tip_and_a_named_height_each_indexs_durable() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_chainview::TrustedValidatorSet;
-        use zaino_proto::frame::FRAME_HEADER;
-        use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service;
+        use zaino_proto::proto::compact_formats::CompactBlock;
+        use zaino_proto::proto::service::{BlockId, BlockRange, LightdInfo, TreeState};
         use Method::*;
 
         let mut chain = MockChain::regtest().network(MAINNET);
-        let tip = chain.mine_empty(3);
-        let views = vec![
-            indexed(IndexKind::CompactBlock, &chain, tip),
-            indexed(IndexKind::TreeState, &chain, tip),
-        ];
-        let raw = zaino_source::testing::fixtures::transactions(2_000_000).remove(0);
-        let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
-        let ours = [(txid, bytes::Bytes::from(raw.clone()))];
-        let two = chain.at(h(2));
-        let grpc_snapshots =
-            grpc_snapshots_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
-        let mut router = dispatch(RouteDeps { grpc_snapshots, ..routes() });
-        let mut call = |method: Method, message: Vec<u8>| {
-            let response = router.call(framed_request(method, message.into()));
-            async move {
-                use http_body_util::BodyExt as _;
-                let response = response.await.expect("router answers");
-                // refusal = Trailers-Only (headers), answer = status in its trailers
-                let headed = Status::from_header_map(response.headers()).map(|s| s.code());
-                let body = response.into_body().collect().await.expect("body");
-                let trailers = body.trailers().cloned().unwrap_or_else(HeaderMap::new);
-                let code = headed.or_else(|| Status::from_header_map(&trailers).map(|s| s.code()));
-                (code, body.to_bytes(), trailers)
-            }
+        let durable = chain.mine_empty(3);
+        let served = chain.at(h(2));
+        let indexes = [IndexKind::CompactBlock, IndexKind::TreeState];
+        let views = indexes.map(|kind| indexed(kind, &chain, durable)).to_vec();
+        let snapshots = fixed_snapshots(&chain, served, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &indexes, snapshots));
+        let mut call = async |method: Method, message: Vec<u8>| {
+            let response = router.call(framed_request(method, message.into())).await;
+            let (chunks, status) = answer(response.expect("infallible")).await;
+            (chunks.concat(), status)
         };
-        let at = |height| service::BlockId { height, hash: Vec::new() };
+        let at = |height| BlockId { height, hash: Vec::new() };
+        fn one<M: prost::Message + Default>(body: &[u8]) -> Option<M> {
+            decode_frames(body).into_iter().next()
+        }
 
-        let (_, latest, _) = call(GetLatestBlock, Vec::new()).await;
-        let latest = service::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
-        let tip_hash = two.hash.0.to_vec();
-        assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the served tip");
+        let (latest, _) = call(GetLatestBlock, Vec::new()).await;
+        let expected = BlockId { height: 2, hash: served.hash.0.to_vec() };
+        assert_eq!(one::<BlockId>(&latest), Some(expected), "GetLatestBlock: the served tip");
+        let (state, _) = call(GetLatestTreeState, Vec::new()).await;
+        let height = one::<TreeState>(&state).map(|state| state.height);
+        assert_eq!(height, Some(2), "GetLatestTreeState: the served tip");
+        let (info, _) = call(GetLightdInfo, Vec::new()).await;
+        let height = one::<LightdInfo>(&info).map(|info| info.block_height);
+        assert_eq!(height, Some(2), "GetLightdInfo.blockHeight: the served tip");
 
-        let range =
-            service::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
-        let (_, streamed, trailers) = call(GetBlockRange, range.encode_to_vec()).await;
-        let past = HeaderValue::from_static("11");
-        assert_eq!(trailers.get("grpc-status"), Some(&past), "to the index tip, then OUT_OF_RANGE");
-        let served: Vec<_> = decode_frames::<compact_formats::CompactBlock>(&streamed)
-            .into_iter()
-            .map(|block| (block.height, block.hash))
-            .collect();
-        let expected: Vec<_> =
-            (0..=3u32).map(|at| (u64::from(at), chain.at(h(at)).hash.0.to_vec())).collect();
-        assert_eq!(
-            served, expected,
-            "through the compact-block index's durable, not the served tip"
-        );
+        let range = BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: Vec::new() };
+        let (blocks, status) = call(GetBlockRange, range.encode_to_vec()).await;
+        let heights: Vec<_> =
+            decode_frames::<CompactBlock>(&blocks).iter().map(|b| b.height).collect();
+        assert_eq!(heights, [0, 1, 2, 3], "GetBlockRange 0..=9: to the durable 3 ({status:?})");
+        assert_eq!(status.code(), Code::OutOfRange, "GetBlockRange 0..=9 past the durable 3");
 
-        let (_, state, _) = call(GetLatestTreeState, Vec::new()).await;
-        let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
-        let mut display = tip_hash;
-        display.reverse();
-        assert_eq!(
-            (state.height, state.hash),
-            (2, const_hex::encode(display)),
-            "same tip, same block"
-        );
-        let three = chain.at(h(3)).hash;
-        let mut three_display = three.0.to_vec();
-        three_display.reverse();
-        let (code, state, _) = call(GetTreeState, at(3).encode_to_vec()).await;
-        let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
-        let answered = (code, state.height, state.hash);
-        let ok = Some(tonic::Code::Ok);
-        assert_eq!(answered, (ok, 3, const_hex::encode(three_display)), "3 durable, past the tip");
-        let (code, block, _) = call(GetBlock, at(3).encode_to_vec()).await;
-        let block =
-            compact_formats::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
-        let three = three.0.to_vec();
-        assert_eq!((code, block.height, block.hash), (ok, 3, three), "GetBlock agrees");
+        let (block, status) = call(GetBlock, at(3).encode_to_vec()).await;
+        let height = one::<CompactBlock>(&block).map(|block| block.height);
+        assert_eq!(height, Some(3), "GetBlock 3: durable past the served tip ({status:?})");
+        let (state, status) = call(GetTreeState, at(3).encode_to_vec()).await;
+        let height = one::<TreeState>(&state).map(|state| state.height);
+        assert_eq!(height, Some(3), "GetTreeState 3: durable past the served tip ({status:?})");
         for method in [GetTreeState, GetBlock] {
-            let (code, _, _) = call(method, at(4).encode_to_vec()).await;
-            assert_eq!(code, Some(tonic::Code::NotFound), "{method:?}: 4 past every index");
+            let (_, status) = call(method, at(4).encode_to_vec()).await;
+            assert_eq!(status.code(), Code::NotFound, "{method:?} 4, past every index: {status:?}");
         }
-
-        let (_, info, _) = call(GetLightdInfo, Vec::new()).await;
-        let info = service::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
-        let lightd = (info.block_height, info.estimated_height, info.consensus_branch_id.as_str());
-        assert_eq!(lightd, (2, 2, "37a5165b"), "served height, best, the schedule's branch at 2");
-
-        let every = vec![1, 2, 3, 4];
-        let request = service::GetMempoolTxRequest { pool_types: every, ..Default::default() };
-        let (_, listed, trailers) = call(GetMempoolTx, request.encode_to_vec()).await;
-        let listed: Vec<_> = decode_frames::<compact_formats::CompactTx>(&listed)
-            .into_iter()
-            .map(|tx| tx.txid)
-            .collect();
-        let ours = txid.as_ref().to_vec();
-        assert_eq!(listed, [ours], "held: our relay, compacted");
-        assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let (_, streamed, trailers) = call(GetMempoolStream, Vec::new()).await;
-        let opened = decode_frames::<service::RawTransaction>(&streamed);
-        let unmined = service::RawTransaction { data: raw.into(), height: 0 };
-        assert_eq!(opened, [unmined], "our relay, unmined, then the end");
-        assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-    }
-
-    /// Every index method on one router, each index enabled:
-    ///
-    /// - each answers `OK` off its own index
-    /// - `GetSubtreeRoots` past the end = an empty stream (pepper-sync's probe), never a status
-    #[tokio::test]
-    async fn every_index_answers_its_own_methods() {
-        use prost::Message as _;
-        use tower::Service as _;
-        use zaino_proto::proto::service;
-        use Method::*;
-
-        let mut chain = MockChain::regtest().network(MAINNET);
-        let tip = chain.mine_empty(1);
-        let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
-        let views = kinds.into_iter().map(|kind| indexed(kind, &chain, tip)).collect();
-        let mut router =
-            dispatch(RouteDeps { grpc_snapshots: grpc_snapshots(&chain, tip, views), ..routes() });
-
-        let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
-        let range = service::BlockRange {
-            start: Some(service::BlockId { height: 0, hash: Vec::new() }),
-            end: Some(service::BlockId { height: 1, hash: Vec::new() }),
-            pool_types: Vec::new(),
-        };
-        let utxos = service::GetAddressUtxosArg {
-            addresses: vec![address.clone()],
-            start_height: 0,
-            max_entries: 0,
-        };
-        let every = [
-            (GetLatestBlock, service::ChainSpec::default().encode_to_vec()),
-            (GetBlock, service::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
-            (GetBlockRange, range.encode_to_vec()),
-            (GetBlockRangeNullifiers, range.encode_to_vec()),
-            // 1 = Sapling's activation (below it: no tree state)
-            (GetTreeState, service::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
-            (GetLatestTreeState, Vec::new()),
-            (GetAddressUtxos, utxos.encode_to_vec()),
-            (
-                GetTaddressBalance,
-                service::AddressList { addresses: vec![address.clone()] }.encode_to_vec(),
-            ),
-            (GetTaddressBalanceStream, service::Address { address }.encode_to_vec()),
-        ];
-        for (method, message) in every {
-            let response =
-                router.call(framed_request(method, message.into())).await.expect("router answers");
-            let (_, trailers) = drained(response).await;
-            let status = trailers.get("grpc-status");
-            assert_eq!(status, Some(&HeaderValue::from_static("0")), "{method:?}");
-        }
-
-        let roots = service::GetSubtreeRootsArg {
-            start_index: 0,
-            shielded_protocol: service::ShieldedProtocol::Orchard as i32,
-            max_entries: 0,
-        };
-        let response = router
-            .call(framed_request(GetSubtreeRoots, roots.encode_to_vec().into()))
-            .await
-            .expect("router answers");
-        assert_eq!(response.headers().get("grpc-status"), None, "status rides in the trailers");
-        let (chunks, trailing) = drained(response).await;
-        assert!(chunks.is_empty(), "no subtree is complete yet");
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
     }
 }

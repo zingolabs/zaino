@@ -205,145 +205,162 @@ fn serve_error_status(error: ServeError) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderValue, Response};
-    use tonic::{body::Body, Status};
+    use tonic::Code;
+    use zaino_chainview::TrustedValidatorSet;
     use zaino_persistence::IndexKind;
-    use zaino_proto::frame::FRAME_HEADER;
     use zaino_source::testing::{h, MockChain};
 
-    use crate::service::{Method, RouteDeps};
+    use crate::service::Method;
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes, MAINNET,
+        answer, decode_frames, dispatch, fixed_snapshots, framed_request, indexed, routes_serving,
+        MAINNET,
     };
 
-    /// `GetBlock` by hash:
-    ///
-    /// - block-hash index locates, compact index answers only where it holds that same block
-    /// - no locator wired = `Unimplemented`
     #[tokio::test]
     async fn get_block_by_hash_answers_only_where_the_compact_index_holds_that_block() {
-        use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::service;
+        use zaino_proto::proto::service::BlockId;
 
-        // compact index over 0..=2, locator over 0, 1, then a sibling at 2
+        // compact index over 0..=2, block-hash locator over 0, 1, then a sibling at 2
         let mut chain = MockChain::regtest().network(MAINNET);
         let two = chain.mine_empty(2);
-        let other_2 = chain.fork(h(1)).mine_empty(1).tip();
-        let held = |at: u32| chain.at(h(at)).hash.0;
-        let locator = indexed(IndexKind::BlockHash, &chain, other_2);
-        let other_2 = other_2.hash.0;
-
+        let sibling_2 = chain.fork(h(1)).mine_empty(1).tip();
         let compact = indexed(IndexKind::CompactBlock, &chain, two);
-        let unlocated = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, two, vec![compact.clone()]),
-            ..routes()
-        });
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, two, vec![compact, locator]),
-            ..routes()
-        });
-        let request = |hash: Vec<u8>, height: u64| {
-            framed_request(
-                Method::GetBlock,
-                service::BlockId { height, hash }.encode_to_vec().into(),
-            )
+        let locator = indexed(IndexKind::BlockHash, &chain, sibling_2);
+        let indexes = [IndexKind::CompactBlock, IndexKind::BlockHash];
+        let serving = |views| {
+            let held_by = TrustedValidatorSet::default();
+            dispatch(routes_serving(
+                MAINNET,
+                &indexes,
+                fixed_snapshots(&chain, two, views, held_by, &[]),
+            ))
         };
-        let code = |response: &Response<Body>| {
-            Status::from_header_map(response.headers())
-                .map(|status| status.code())
-                .unwrap_or(tonic::Code::Ok)
-        };
+        let located = serving(vec![compact.clone(), locator]);
+        let unlocated = serving(vec![compact]);
+        let get_block =
+            async |mut router: crate::service::Dispatch<_, _>, hash: Vec<u8>, height| {
+                let message = BlockId { height, hash }.encode_to_vec();
+                answer(
+                    router
+                        .call(framed_request(Method::GetBlock, message.into()))
+                        .await
+                        .expect("infallible"),
+                )
+                .await
+            };
+        let block_1 = chain.at(h(1)).hash.0;
 
-        let response = router.call(request(held(1).to_vec(), 0)).await.expect("answers");
-        assert_eq!(code(&response), tonic::Code::Ok);
-        let by_hash = response.into_body().collect().await.expect("body").to_bytes();
-        let response = router.call(request(Vec::new(), 1)).await.expect("answers");
-        let by_height = response.into_body().collect().await.expect("body").to_bytes();
-        assert_eq!(by_hash, by_height, "same stored record as by height");
+        let (by_hash, status) = get_block(located.clone(), block_1.to_vec(), 0).await;
+        let (by_height, _) = get_block(located.clone(), Vec::new(), 1).await;
+        assert_eq!(status.code(), Code::Ok, "block 1 by hash: {status:?}");
+        assert_eq!(by_hash, by_height, "block 1 by hash = the stored record at 1");
 
-        let mut codes = Vec::new();
-        for (mut router, hash) in [
-            (router.clone(), vec![0xee; 32]),
-            (router.clone(), other_2.to_vec()),
-            (router.clone(), held(1)[..31].to_vec()),
-            (unlocated, held(1).to_vec()),
-        ] {
-            codes.push(code(&router.call(request(hash, 0)).await.expect("answers")));
+        #[rustfmt::skip]
+        let refused = [
+            ("unknown hash",          located.clone(), vec![0xee; 32],            Code::NotFound),
+            ("sibling's hash at 2",   located.clone(), sibling_2.hash.0.to_vec(), Code::NotFound),
+            ("31-byte hash",          located,         block_1[..31].to_vec(),    Code::InvalidArgument),
+            ("no block-hash locator", unlocated,       block_1.to_vec(),          Code::Unimplemented),
+        ];
+        for (case, router, hash, code) in refused {
+            let (_, status) = get_block(router, hash, 0).await;
+            assert_eq!(status.code(), code, "{case}: {status:?}");
         }
-        use tonic::Code::{InvalidArgument, NotFound, Unimplemented};
-        let expected = [NotFound, NotFound, InvalidArgument, Unimplemented];
-        assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
     }
 
-    /// GrpcSnapshot served at 5:
-    ///
-    /// - range reaching past the tip streams every block to the tip in walk order, then
-    ///   `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on one)
-    /// - first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
+    /// Never an early `OK` end past the tip (iOS hangs on one)
     #[tokio::test]
     async fn get_block_range_past_the_tip_streams_to_it_then_ends_out_of_range() {
-        use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service;
+        use zaino_proto::proto::compact_formats::CompactBlock;
+        use zaino_proto::proto::service::{BlockId, BlockRange};
+        use Method::{GetBlockRange, GetBlockRangeNullifiers};
 
         let mut chain = MockChain::regtest().network(MAINNET);
-        let tip = chain.mine_empty(5);
-        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
-            ..routes()
-        });
-        let past = |h: u32| format!("block%20{h}%20is%20above%20the%20compact-block%20tip%205");
-        let (range, nullifiers) = (Method::GetBlockRange, Method::GetBlockRangeNullifiers);
+        let tip_5 = chain.mine_empty(5);
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, tip_5)];
+        let snapshots = fixed_snapshots(&chain, tip_5, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
+        let above = |height: u32| format!("block {height} is above the compact-block tip 5");
+
+        // case, method, start, end, heights streamed, final code, its message
+        #[rustfmt::skip]
         let cases = [
-            (range, (1, 4), (vec![1, 2, 3, 4], "0", None)),
-            (range, (5, 1), (vec![5, 4, 3, 2, 1], "0", None)),
-            (range, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
-            (nullifiers, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
-            (range, (9, 3), (vec![], "11", Some(past(9)))),
-            (range, (7, 9), (vec![], "11", Some(past(7)))),
+            ("ascending to 4",      GetBlockRange,           1, 4, vec![1, 2, 3, 4],    Code::Ok,         String::new()),
+            ("descending from 5",   GetBlockRange,           5, 1, vec![5, 4, 3, 2, 1], Code::Ok,         String::new()),
+            ("reaching past 5",     GetBlockRange,           3, 9, vec![3, 4, 5],       Code::OutOfRange, above(6)),
+            ("alias reaching past", GetBlockRangeNullifiers, 3, 9, vec![3, 4, 5],       Code::OutOfRange, above(6)),
+            ("descending from 9",   GetBlockRange,           9, 3, vec![],              Code::OutOfRange, above(9)),
+            ("wholly past the tip", GetBlockRange,           7, 9, vec![],              Code::OutOfRange, above(7)),
         ];
-        for (method, (start, end), expected) in cases {
-            let range = service::BlockRange {
-                start: Some(service::BlockId { height: start, hash: Vec::new() }),
-                end: Some(service::BlockId { height: end, hash: Vec::new() }),
-                pool_types: Vec::new(),
-            };
-            let request = framed_request(method, range.encode_to_vec().into());
-            let response = router.call(request).await.expect("router answers");
-            let headers = response.headers().clone();
-            let body = response.into_body().collect().await.expect("body");
-            let status = body.trailers().cloned().unwrap_or(headers);
-            let text =
-                |name: &str| status.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let blocks = decode_frames::<compact_formats::CompactBlock>(&body.to_bytes());
-            let heights: Vec<_> = blocks.into_iter().map(|block| block.height).collect();
-            let code = text("grpc-status").expect("a status");
-            let got = (heights, code.as_str(), text("grpc-message"));
-            assert_eq!(got, (expected.0, expected.1, expected.2), "{method:?} {start}..={end}");
+        for (case, method, start, end, heights, code, message) in cases {
+            let at = |height| Some(BlockId { height, hash: Vec::new() });
+            let range = BlockRange { start: at(start), end: at(end), pool_types: Vec::new() };
+
+            let response = router.call(framed_request(method, range.encode_to_vec().into())).await;
+            let (chunks, status) = answer(response.expect("infallible")).await;
+
+            let blocks = decode_frames::<CompactBlock>(&chunks.concat());
+            let streamed: Vec<_> = blocks.iter().map(|block| block.height).collect();
+            assert_eq!(streamed, heights, "{case} ({start}..={end}): heights streamed");
+            assert_eq!((status.code(), status.message()), (code, message.as_str()), "{case}");
         }
     }
 
-    /// Blocks 1..=5: a coinbase paying alice, then one tx spending it into every pool (transparent
-    /// in + out, a sapling spend + output, one orchard, two ironwood actions):
-    ///
-    /// - body = stored bytes
-    /// - `GetBlock` 3: one unary record, transparent kept
-    /// - `GetBlockRange` 1..=4, no `poolTypes`: shielded only, one data frame, `OK` trailers
-    /// - `[TRANSPARENT]`: the coinbase kept, orchard dropped
+    /// Unary status in trailers too (a body + `grpc-status` in headers = malformed Trailers-Only:
+    /// grpc-go refuses)
     #[tokio::test]
-    async fn get_block_and_get_block_range_answer_stored_records_in_their_shapes() {
+    async fn get_block_answers_one_stored_record_with_every_pool() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::compact_formats;
-        use zaino_proto::proto::service;
-        use zaino_source::testing::p2pkh;
+        use zaino_proto::proto::compact_formats::CompactBlock;
+        use zaino_proto::proto::service::BlockId;
 
-        let alice = p2pkh([0xaa; 20]);
+        // 1..=5: a coinbase paying alice, then one tx spending it into transparent + sapling
+        let alice = zaino_source::testing::p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest().network(MAINNET);
+        for at in 1..=5u32 {
+            chain.mine(|b| {
+                b.coinbase(|c| c.pay(&alice, 17_345)).tx(|t| {
+                    let spend = t.spend_in_block(0, 0).pay(&alice, 12_345).fee(5_000);
+                    spend.sapling_spend(0x30 + at).sapling_output(at)
+                })
+            });
+        }
+        let tip = chain.tip();
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, tip)];
+        let snapshots = fixed_snapshots(&chain, tip, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
+
+        let id = BlockId { height: 3, hash: Vec::new() };
+        let response =
+            router.call(framed_request(Method::GetBlock, id.encode_to_vec().into())).await;
+
+        let response = response.expect("infallible");
+        assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
+        let (records, status) = answer(response).await;
+        assert_eq!(status.code(), Code::Ok, "{status:?}");
+        let blocks = decode_frames::<CompactBlock>(&records.concat());
+        let [block] = <[CompactBlock; 1]>::try_from(blocks)
+            .unwrap_or_else(|blocks| panic!("one framed record, got {}", blocks.len()));
+        let transparent_ins: Vec<_> = block.vtx.iter().map(|tx| tx.vin.len()).collect();
+        assert_eq!(block.height, 3, "{block:?}");
+        assert_eq!(transparent_ins, [0, 1], "coinbase + the spend, transparent kept");
+    }
+
+    #[tokio::test]
+    async fn get_block_range_streams_shielded_only_unless_transparent_is_named() {
+        use http::HeaderValue;
+        use prost::Message as _;
+        use tower::Service as _;
+        use zaino_proto::proto::compact_formats::CompactBlock;
+        use zaino_proto::proto::service::{BlockId, BlockRange, PoolType};
+
+        // 1..=5: a coinbase paying alice, then one tx spending it into transparent + orchard
+        let alice = zaino_source::testing::p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest().network(MAINNET);
         for at in 1..=5u32 {
             chain.mine(|b| {
@@ -351,119 +368,87 @@ mod tests {
                     t.spend_in_block(0, 0)
                         .pay(&alice, 12_345)
                         .fee(5_000)
-                        .sapling_spend(0x30 + at)
-                        .sapling_output(at)
                         .orchard_action(0x70 + at, at)
-                        .ironwood_action(0x80 + at, 2 * at)
-                        .ironwood_action(0x90 + at, 2 * at + 1)
                 })
             });
         }
         let tip = chain.tip();
-        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
-            ..routes()
-        });
-
-        let id = service::BlockId { height: 3, hash: Vec::new() };
-        let response = router
-            .call(framed_request(Method::GetBlock, id.encode_to_vec().into()))
-            .await
-            .expect("router answers");
-        // unary too: a body + `grpc-status` in headers = malformed Trailers-Only (grpc-go refuses)
-        assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
-        let (records, trailing) = drained(response).await;
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")), "unary");
-        let body = records.concat();
-        let decoded = compact_formats::CompactBlock::decode(&body[FRAME_HEADER..])
-            .expect("one framed message");
-        assert_eq!(decoded.height, 3);
-        assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
-
-        // one data frame per file window (<= 1 MiB), records still framed one by one
-        let range = service::BlockRange {
-            start: Some(service::BlockId { height: 1, hash: Vec::new() }),
-            end: Some(service::BlockId { height: 4, hash: Vec::new() }),
-            pool_types: Vec::new(),
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, tip)];
+        let snapshots = fixed_snapshots(&chain, tip, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
+        let mut range = async |start, end, pool_types| {
+            let at = |height| Some(BlockId { height, hash: Vec::new() });
+            let message = BlockRange { start: at(start), end: at(end), pool_types }.encode_to_vec();
+            router
+                .call(framed_request(Method::GetBlockRange, message.into()))
+                .await
+                .expect("infallible")
         };
-        let response = router
-            .call(framed_request(Method::GetBlockRange, range.encode_to_vec().into()))
-            .await
-            .expect("router answers");
-        let headers = response.headers();
+        // per block: (height, txs, the spend's transparent ins, its orchard actions)
+        let shapes = |blocks: Vec<CompactBlock>| -> Vec<_> {
+            let shape = |block: &CompactBlock| {
+                let spend = block.vtx.last().expect("the spend survives every selection");
+                (block.height, block.vtx.len(), spend.vin.len(), spend.actions.len())
+            };
+            blocks.iter().map(shape).collect()
+        };
+
+        let shielded = range(1, 4, Vec::new()).await;
         let grpc = HeaderValue::from_static("application/grpc");
-        let (status, content) =
-            (headers.get("grpc-status"), headers.get(http::header::CONTENT_TYPE));
-        assert_eq!((status, content), (None, Some(&grpc)), "stream status rides in the trailers");
-        let (chunks, trailing) = drained(response).await;
+        let content_type = shielded.headers().get(http::header::CONTENT_TYPE);
+        assert_eq!(content_type, Some(&grpc), "{:?}", shielded.headers());
+        assert_eq!(shielded.headers().get("grpc-status"), None, "stream status in the headers");
+        let (chunks, status) = answer(shielded).await;
+        assert_eq!(status.code(), Code::Ok, "no poolTypes: {status:?}");
         assert_eq!(chunks.len(), 1, "four durable records = one projected window");
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let blocks = decode_frames::<compact_formats::CompactBlock>(&chunks.concat());
-        let shapes: Vec<_> = blocks
-            .iter()
-            .map(|block| (block.height, block.vtx.len(), block.vtx[0].vin.len()))
-            .collect();
-        let shielded_only = vec![(1, 1, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0)];
-        assert_eq!(shapes, shielded_only, "(height, txs, transparent ins): coinbase pruned");
+        let blocks = shapes(decode_frames(&chunks.concat()));
+        assert_eq!(
+            blocks,
+            [(1, 1, 0, 1), (2, 1, 0, 1), (3, 1, 0, 1), (4, 1, 0, 1)],
+            "coinbase pruned"
+        );
 
-        let range = service::BlockRange {
-            start: Some(service::BlockId { height: 2, hash: Vec::new() }),
-            end: Some(service::BlockId { height: 2, hash: Vec::new() }),
-            pool_types: vec![service::PoolType::Transparent as i32],
-        };
-        let response = router
-            .call(framed_request(Method::GetBlockRange, range.encode_to_vec().into()))
-            .await
-            .expect("router answers");
-        let (chunks, trailing) = drained(response).await;
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let decoded = compact_formats::CompactBlock::decode(&chunks.concat()[FRAME_HEADER..])
-            .expect("framed message");
-        let spend = &decoded.vtx[1];
-        let shape = (decoded.vtx.len(), spend.vin.len(), spend.actions.len());
-        assert_eq!(shape, (2, 1, 0), "(txs, transparent ins, orchard actions): coinbase kept");
+        let (chunks, status) = answer(range(2, 2, vec![PoolType::Transparent as i32]).await).await;
+        assert_eq!(status.code(), Code::Ok, "[TRANSPARENT]: {status:?}");
+        let blocks = shapes(decode_frames(&chunks.concat()));
+        assert_eq!(blocks, [(2, 2, 1, 0)], "[TRANSPARENT]: coinbase kept, orchard dropped");
     }
 
-    /// - malformed ranges refused at the boundary (never reach the index's asserts)
-    /// - grpc-message percent-encoded
+    /// Refused at the boundary: never reaches the index's asserts
     #[tokio::test]
     async fn a_malformed_range_is_invalid_argument_before_any_read() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::service;
+        use zaino_proto::proto::service::{BlockId, BlockRange};
 
         let chain = MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
-        let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, genesis, vec![compact]),
-            ..routes()
-        });
-
-        let at = |height: u64| Some(service::BlockId { height, hash: Vec::new() });
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, genesis)];
+        let snapshots =
+            fixed_snapshots(&chain, genesis, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
+        let at = |height: u64| Some(BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {
-            format!("range%20{bound}%20{height}%20is%20above%20the%20protocol%20height%20ceiling")
+            format!("range {bound} {height} is above the protocol height ceiling")
         };
+
+        #[rustfmt::skip]
         let cases = [
-            (None, at(1), "range%20has%20no%20start".to_owned()),
-            (at(1), None, "range%20has%20no%20end".to_owned()),
-            (at(1), at(1 << 32), above_ceiling("end", 1 << 32)),
-            (at(u64::MAX), at(1), above_ceiling("start", u64::MAX)),
+            ("no start",           None,         at(1),       "range has no start".to_owned()),
+            ("no end",             at(1),        None,        "range has no end".to_owned()),
+            ("end past u32",       at(1),        at(1 << 32), above_ceiling("end", 1 << 32)),
+            ("start at u64::MAX",  at(u64::MAX), at(1),       above_ceiling("start", u64::MAX)),
         ];
-        let mut answered = Vec::new();
-        for (start, end, _) in &cases {
-            let bad =
-                service::BlockRange { start: start.clone(), end: end.clone(), pool_types: vec![] };
-            let request = framed_request(Method::GetBlockRange, bad.encode_to_vec().into());
-            let response = router.call(request).await.expect("router answers");
-            let header = |name| response.headers().get(name).and_then(|v| v.to_str().ok());
-            answered.push((
-                header("grpc-status").map(str::to_owned),
-                header("grpc-message").map(str::to_owned),
-            ));
+        for (case, start, end, message) in cases {
+            let bad = BlockRange { start, end, pool_types: Vec::new() };
+
+            let response = router
+                .call(framed_request(Method::GetBlockRange, bad.encode_to_vec().into()))
+                .await;
+
+            let (_, status) = answer(response.expect("infallible")).await;
+            let expected = (Code::InvalidArgument, message.as_str());
+            assert_eq!((status.code(), status.message()), expected, "{case}");
         }
-        let invalid = |(_, _, message): (_, _, String)| (Some("3".to_owned()), Some(message));
-        assert_eq!(answered, cases.map(invalid));
     }
 }

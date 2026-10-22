@@ -79,13 +79,14 @@ fn nullifiers_only(mut block: compact_formats::CompactBlock) -> compact_formats:
 
 #[cfg(test)]
 mod tests {
-    use http::HeaderValue;
+    use zaino_chainview::TrustedValidatorSet;
     use zaino_persistence::IndexKind;
     use zaino_source::testing::MockChain;
 
-    use crate::service::{Method, RouteDeps};
+    use crate::service::Method;
     use crate::testing::{
-        decode_frames, dispatch, drained, framed_request, grpc_snapshots, indexed, routes, MAINNET,
+        answer, decode_frames, dispatch, fixed_snapshots, framed_request, indexed, routes_serving,
+        MAINNET,
     };
 
     /// TODO: REMOVE with the deprecated alias. Blocks 1..=4, each one tx spending sapling
@@ -116,23 +117,18 @@ mod tests {
             });
         }
         let tip = chain.tip();
-        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut router = dispatch(RouteDeps {
-            grpc_snapshots: grpc_snapshots(&chain, tip, vec![compact]),
-            ..routes()
-        });
+        let views = vec![indexed(IndexKind::CompactBlock, &chain, tip)];
+        let snapshots = fixed_snapshots(&chain, tip, views, TrustedValidatorSet::default(), &[]);
+        let mut router = dispatch(routes_serving(MAINNET, &[IndexKind::CompactBlock], snapshots));
 
         let range = service::BlockRange {
             start: Some(service::BlockId { height: 1, hash: Vec::new() }),
             end: Some(service::BlockId { height: 4, hash: Vec::new() }),
             pool_types: vec![service::PoolType::Transparent as i32],
         };
-        let response = router
-            .call(framed_request(Method::GetBlockRangeNullifiers, range.encode_to_vec().into()))
-            .await
-            .expect("router answers");
-        let (chunks, trailing) = drained(response).await;
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
+        let request = framed_request(Method::GetBlockRangeNullifiers, range.encode_to_vec().into());
+        let (chunks, status) = answer(router.call(request).await.expect("infallible")).await;
+        assert_eq!(status.code(), tonic::Code::Ok, "{status:?}");
 
         // per tx: (sapling spends, sapling outputs, transparent in + out, orchard, ironwood)
         let projected: Vec<_> = decode_frames::<compact_formats::CompactBlock>(&chunks.concat())
@@ -162,6 +158,11 @@ mod tests {
                 (u64::from(at), Some(compact_formats::ChainMetadata::default()), vec![tx])
             })
             .collect();
-        assert_eq!(projected, expected);
+        let heights =
+            |blocks: &[(u64, _, _)]| blocks.iter().map(|block| block.0).collect::<Vec<_>>();
+        assert_eq!(heights(&projected), heights(&expected), "blocks streamed");
+        for (got, want) in projected.iter().zip(&expected) {
+            assert_eq!(got, want, "block {}: (height, metadata, per tx shape)", want.0);
+        }
     }
 }

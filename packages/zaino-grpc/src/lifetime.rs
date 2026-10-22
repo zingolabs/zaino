@@ -13,7 +13,7 @@ use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
 
 /// Share of `max_connection_age` one connection's age may differ by, either way
-const JITTER: f64 = 0.1;
+pub(crate) const JITTER: f64 = 0.1;
 
 /// One connection's age: uniform in `age` ± [`JITTER`]
 pub(crate) fn jittered(age: Duration) -> Duration {

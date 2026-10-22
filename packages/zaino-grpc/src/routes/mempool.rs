@@ -80,169 +80,193 @@ pub(super) fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
     use std::sync::Arc;
 
-    use http::HeaderValue;
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+    use tonic::{Code, Status};
+    use tower::Service as _;
     use zaino_header_chain::HeaderChainSnapshot;
-    use zaino_primitives::types::BlockRef;
-    use zaino_source::testing::{raw_transaction, MockChain};
+    use zaino_proto::proto::service;
+    use zaino_source::testing::{raw_transaction, within, MockChain};
     use zcash_protocol::TxId;
 
     use crate::service::Method;
     use crate::testing::{
-        decode_frames, dispatch, framed_request, indexed_at, published, rounds, routes_over,
+        answer, decode_frames, framed_request, indexed_at, until, LiveRoutes, MAINNET,
     };
 
-    /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:
-    ///
-    /// - refused without a verified tip
-    /// - mempool at the served tip, then each arrival once, in order, same bytes (a lone record
-    ///   shared by refcount, a ready burst joined per stream)
-    /// - late subscriber = same log
-    /// - new best block alone ends nothing
-    /// - served tip moving ends all in `OK` trailers, next load serves the new tip (G5)
-    /// - resubscribe opens on the mempool as it now stands
-    #[tokio::test(start_paused = true)]
-    async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
-        use http_body_util::BodyExt as _;
-        use tonic::Status;
-        use tower::Service as _;
-        use zaino_proto::proto::service;
+    type Stream = Pin<Box<tonic::body::Body>>;
 
-        const SUBSCRIBERS: usize = 1_000;
-        // (bytes, height 0 = unmined) per seed, in the view's (txid) order
-        let unmined = |seeds: &[u32]| {
-            let mut txs: Vec<_> = seeds.iter().map(|seed| raw_transaction(*seed, 0)).collect();
-            txs.sort_by_key(|(txid, _)| *txid);
-            txs.into_iter().map(|(_, raw)| (raw, 0)).collect::<Vec<_>>()
+    /// Seeds of `raw_transaction(seed, 0)` as streamed: unmined, in the view's (txid) order
+    fn unmined(seeds: &[u32]) -> Vec<(u32, u64)> {
+        let mut seeds = seeds.to_vec();
+        seeds.sort_by_key(|seed| raw_transaction(*seed, 0).0);
+        seeds.into_iter().map(|seed| (seed, 0)).collect()
+    }
+
+    /// Each streamed record as (its `raw_transaction` seed, height)
+    fn records(chunk: &Bytes) -> Vec<(u32, u64)> {
+        let seed_of = |raw: &[u8]| (1..=5).find(|seed| raw_transaction(*seed, 0).1 == raw);
+        let records = decode_frames::<service::RawTransaction>(chunk);
+        let seeded = |record: service::RawTransaction| {
+            (seed_of(&record.data).expect("a seeded tx"), record.height)
         };
+        records.into_iter().map(seeded).collect()
+    }
+
+    /// Every stream's next data frame: the same bytes, `true` = one buffer shared by all
+    async fn next_frame(streams: &mut [Stream]) -> (Bytes, bool) {
+        let mut first: Option<Bytes> = None;
+        let mut shared = true;
+        for (at, stream) in streams.iter_mut().enumerate() {
+            let frame = stream.frame().await.expect("a frame").expect("in-band");
+            let data = frame.into_data().unwrap_or_else(|end| panic!("stream {at} ended: {end:?}"));
+            let seen = first.get_or_insert_with(|| data.clone());
+            assert_eq!(records(&data), records(seen), "stream {at} vs stream 0: same records");
+            shared &= data.as_ptr() == seen.as_ptr();
+        }
+        (first.expect("streams"), shared)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mempool_stream_without_a_verified_tip_is_unavailable() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(3);
+        let node = chain.validator(tip);
+        let live = LiveRoutes::over(&node, MAINNET, &[]);
+
+        let response =
+            live.router.clone().call(framed_request(Method::GetMempoolStream, Bytes::new())).await;
+
+        let (chunks, status) = answer(response.expect("infallible")).await;
+        assert_eq!(status.code(), Code::Unavailable, "nothing verified: {status:?}");
+        assert_eq!(chunks, Vec::<Bytes>::new(), "refused before any record");
+    }
+
+    /// 1,000 subscribers on one thread (a block of wallets): each record encoded once, shared by
+    /// refcount (a ready burst joined per stream), a late subscriber served the same log
+    #[tokio::test(start_paused = true)]
+    async fn a_thousand_mempool_streams_share_one_encoded_log() {
+        const SUBSCRIBERS: usize = 1_000;
+        let mut chain = MockChain::regtest();
+        let tip_10 = chain.mine_empty(10);
+        let seeded: Vec<TxId> =
+            (1..=5).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
+        let node = chain.validator(tip_10);
+        let hear = |seeds: &[u32]| {
+            seeds.iter().for_each(|&seed| node.hear(&chain, seeded[seed as usize - 1]))
+        };
+        let live = LiveRoutes::over(&node, MAINNET, &[]);
+        let mut router = live.router.clone();
+        let stream = || framed_request(Method::GetMempoolStream, Bytes::new());
+        hear(&[1, 2]);
+        live.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip_10)));
+        let listed = || {
+            live.chain_view
+                .subscriber()
+                .current()
+                .mempool()
+                .is_some_and(|m| m.entries().count() == 2)
+        };
+        within("txs 1 + 2 listed at 10", until(listed)).await;
+        live.nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip_10, Vec::new()))));
+        within("10 served", until(|| live.grpc_snapshots.load().tips().served == Some(tip_10)))
+            .await;
+        let mut streams = Vec::with_capacity(SUBSCRIBERS);
+        for _ in 0..SUBSCRIBERS {
+            streams.push(Box::pin(router.call(stream()).await.expect("infallible").into_body()));
+        }
+
+        let (opening, shared) = next_frame(&mut streams).await;
+        assert_eq!(
+            (records(&opening), shared),
+            (unmined(&[1, 2]), true),
+            "opening at 10, encoded once"
+        );
+        hear(&[3, 4]);
+        let (burst, _) = next_frame(&mut streams).await;
+        assert_eq!(
+            records(&burst),
+            unmined(&[3, 4]),
+            "burst of two (one poll): one frame, txid order"
+        );
+        hear(&[5]);
+        let (fifth, shared) = next_frame(&mut streams).await;
+        assert_eq!((records(&fifth), shared), (unmined(&[5]), true), "lone arrival, encoded once");
+
+        let late = Box::pin(router.call(stream()).await.expect("infallible").into_body());
+        let (log, _) = next_frame(&mut [late]).await;
+        let opening_then_log = [unmined(&[1, 2]), unmined(&[3, 4]), unmined(&[5])].concat();
+        assert_eq!(records(&log), opening_then_log, "late: same opening + log, one frame");
+    }
+
+    /// G5: a stream's end ⇒ the next load serves the new tip
+    #[tokio::test(start_paused = true)]
+    async fn mempool_streams_end_when_the_served_tip_moves_not_when_only_the_best_does() {
         let mut chain = MockChain::regtest();
         let tip_10 = chain.mine_empty(10);
         let tip_11 = chain.mine_empty(1);
         let seeded: Vec<TxId> =
-            (1..=5).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
-        let node = chain.validator(chain.genesis());
-        let hear =
-            |seeds: &[usize]| seeds.iter().for_each(|seed| node.hear(&chain, seeded[seed - 1]));
-        node.down(true);
-        let (mut routes, balancing, merge) = routes_over(&node);
-        let (publisher, nfs) = published(&mut routes);
-        let (view, grpc_snapshots) =
-            (Arc::clone(&routes.chain_view), routes.grpc_snapshots.clone());
-        let reader = view.subscriber();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        tokio::spawn(publisher.run(cancel.child_token()));
-        tokio::spawn(balancing.run(cancel.child_token()));
-        tokio::spawn(merge.run(cancel.child_token()));
-        let mut router = dispatch(routes);
-        // the header chain's verdict + the NFS's served tip, standing in for both
-        let verified = |tip: BlockRef| view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
-        let serve = |tip: BlockRef| {
-            nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
-        };
-        let stream = || framed_request(Method::GetMempoolStream, bytes::Bytes::new());
-
-        let below = router.call(stream()).await.expect("router answers");
-        let status = below.headers().get("grpc-status");
-        assert_eq!(status, Some(&HeaderValue::from_static("14")), "no verified tip: UNAVAILABLE");
-
-        node.follow(&chain, tip_10);
-        hear(&[1, 2]);
-        node.down(false);
+            (1..=2).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
+        let node = chain.validator(tip_10);
+        let live = LiveRoutes::over(&node, MAINNET, &[]);
+        let mut router = live.router.clone();
+        let stream = || framed_request(Method::GetMempoolStream, Bytes::new());
+        let verified = |tip| live.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
+        let serve =
+            |tip| live.nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
+        let tips = || live.grpc_snapshots.load().tips();
+        node.hear(&chain, seeded[0]);
         verified(tip_10);
-        let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
-        rounds("both listed", listed).await;
+        within(
+            "tx 1 listed at 10",
+            until(|| live.chain_view.subscriber().current().mempool().is_some()),
+        )
+        .await;
         serve(tip_10);
-        rounds("10 served", || grpc_snapshots.load().tips().served == Some(tip_10)).await;
-
-        let decoded = |chunk: bytes::Bytes| {
-            let records = decode_frames::<service::RawTransaction>(&chunk);
-            let records = records.into_iter().map(|record| (record.data.to_vec(), record.height));
-            records.collect::<Vec<_>>()
-        };
-        let mut subscribers = Vec::with_capacity(SUBSCRIBERS);
-        for _ in 0..SUBSCRIBERS {
-            let response = router.call(stream()).await.expect("router answers");
-            subscribers.push(Box::pin(response.into_body()));
+        within("10 served", until(|| tips().served == Some(tip_10))).await;
+        let mut streams = Vec::new();
+        for _ in 0..3 {
+            streams.push(Box::pin(router.call(stream()).await.expect("infallible").into_body()));
         }
-        // - every subscriber's next data frame, the same bytes
-        // - `true` = one buffer shared by all
-        async fn next_frame<B>(subscribers: &mut [std::pin::Pin<Box<B>>]) -> (bytes::Bytes, bool)
-        where
-            B: http_body::Body<Data = bytes::Bytes, Error = Status>,
-        {
-            let mut first: Option<bytes::Bytes> = None;
-            let mut shared = true;
-            for body in subscribers {
-                let frame = body.frame().await.expect("a frame").expect("ok");
-                let data = frame.into_data().expect("a record, not the end");
-                let seen = first.get_or_insert_with(|| data.clone());
-                assert_eq!(data, *seen, "every subscriber, the same records");
-                shared &= data.as_ptr() == seen.as_ptr();
-            }
-            (first.expect("subscribers"), shared)
-        }
-        let (opening, shared) = next_frame(&mut subscribers).await;
-        let opened = (decoded(opening), shared);
-        assert_eq!(opened, (unmined(&[1, 2]), true), "the mempool at the block, encoded once");
+        assert_eq!(records(&next_frame(&mut streams).await.0), unmined(&[1]), "opening at 10");
 
-        // - burst of two (one poll: txid order) = one frame each (joined, `Coalesced`)
-        // - then one more = the shared record
-        hear(&[3, 4]);
-        let (burst, _) = next_frame(&mut subscribers).await;
-        assert_eq!(decoded(burst), unmined(&[3, 4]), "in order, once each");
-        hear(&[5]);
-        let (fifth, shared) = next_frame(&mut subscribers).await;
-        assert_eq!((decoded(fifth), shared), (unmined(&[5]), true), "encoded once");
-
-        // late subscriber: the same opening and the same log, all ready = one frame
-        let late = router.call(stream()).await.expect("router answers").into_body();
-        let mut late = [Box::pin(late)];
-        let (log, _) = next_frame(&mut late).await;
-        let opening_then_log = [unmined(&[1, 2]), unmined(&[3, 4]), unmined(&[5])].concat();
-        assert_eq!(decoded(log), opening_then_log, "same block, same opening, same log");
-
-        // block 11 verified and held, not yet served: every stream stays open
         node.follow(&chain, tip_11);
-        rounds("11 held", || reader.current().trusted_validators()[0].tip() == Some(tip_11)).await;
         verified(tip_11);
-        rounds("11 best", || grpc_snapshots.load().tips().best == Some(tip_11)).await;
-        subscribers.extend(late);
-        let open = tokio::time::timeout(std::time::Duration::from_millis(50), async {
-            subscribers[0].frame().await
-        });
-        assert!(open.await.is_err(), "best moved, served did not: still streaming");
+        within("11 best, 10 still served", until(|| tips().best == Some(tip_11))).await;
+        node.hear(&chain, seeded[1]);
+        let (arrival, _) = next_frame(&mut streams).await;
+        assert_eq!(
+            records(&arrival),
+            unmined(&[2]),
+            "best 11, served 10: still streaming arrivals"
+        );
 
-        // the NFS serves 11: every stream ends, and the next load serves 11
         serve(tip_11);
-        for body in &mut subscribers {
-            let ended = body.frame().await.expect("a frame").expect("ok");
-            let trailers = ended.into_trailers().expect("the tip ends the stream in trailers");
-            assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-            assert!(body.frame().await.is_none(), "nothing after the trailers");
+        for (at, stream) in streams.iter_mut().enumerate() {
+            let end = stream.frame().await.expect("a frame").expect("in-band").into_trailers();
+            let status = end.ok().and_then(|trailers| Status::from_header_map(&trailers));
+            assert_eq!(
+                status.as_ref().map(Status::code),
+                Some(Code::Ok),
+                "stream {at}: {status:?}"
+            );
+            assert!(stream.frame().await.is_none(), "stream {at}: a frame after its trailers");
         }
-        assert_eq!(grpc_snapshots.load().tips().served, Some(tip_11), "ended ⇒ the new tip served");
-        let again = router.call(stream()).await.expect("router answers").into_body();
-        let (reopened, _) = next_frame(&mut [Box::pin(again)]).await;
-        let now = unmined(&[1, 2, 3, 4, 5]);
-        assert_eq!(decoded(reopened), now, "the new tip opens on the mempool as it stands");
-        cancel.cancel();
+        assert_eq!(tips().served, Some(tip_11), "ended ⇒ the next load serves 11");
+        let reopened = Box::pin(router.call(stream()).await.expect("infallible").into_body());
+        let (opening, _) = next_frame(&mut [reopened]).await;
+        assert_eq!(records(&opening), unmined(&[1, 2]), "reopened at 11: the mempool as it stands");
     }
 
-    /// Mempool = 3 minted txs on Alice's coinbase: transparent only, + Sapling outputs, + an
-    /// Orchard action
-    ///
-    /// - each answer: own slots, own pools (tx left empty dropped), no gap for an excluded suffix
-    /// - each pool = what the consensus parse found
-    /// - each tx parsed once (projection cached)
+    /// Parsed once per entry (projection cached); each answer its own slots + pools, a tx the
+    /// selection empties dropped (as from a block), no gap for an excluded suffix
     #[tokio::test(start_paused = true)]
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
-        use http_body_util::BodyExt as _;
         use prost::Message as _;
-        use tower::Service as _;
-        use zaino_primitives::types::Transaction;
         use zaino_proto::proto::compact_formats::CompactTx;
-        use zaino_proto::proto::service;
         use zaino_source::testing::p2pkh;
         use zcash_protocol::ShieldedPool;
 
@@ -255,99 +279,92 @@ mod tests {
         let [a, b, c] = [0, 1, 2].map(|vout| chain.output(funded, 0, vout));
         let deposit = -(zec as i64) + 1_000;
         let submitted = [
-            chain.submit(|t| t.spend(a).pay(&alice, zec - 1_000)),
-            chain.submit(|t| {
-                t.spend(b)
-                    .sapling_output(1)
-                    .sapling_output(2)
-                    .value_balance(ShieldedPool::Sapling, deposit)
-            }),
-            chain.submit(|t| {
-                t.spend(c).orchard_action(1, 1).value_balance(ShieldedPool::Orchard, deposit)
-            }),
+            ("transparent", chain.submit(|t| t.spend(a).pay(&alice, zec - 1_000))),
+            (
+                "2 sapling outputs",
+                chain.submit(|t| {
+                    t.spend(b)
+                        .sapling_output(1)
+                        .sapling_output(2)
+                        .value_balance(ShieldedPool::Sapling, deposit)
+                }),
+            ),
+            (
+                "1 orchard action",
+                chain.submit(|t| {
+                    t.spend(c).orchard_action(1, 1).value_balance(ShieldedPool::Orchard, deposit)
+                }),
+            ),
         ];
-        for txid in submitted {
+        for (_, txid) in submitted {
             node.hear(&chain, txid);
         }
-        let mut chosen: Vec<(Transaction, Vec<u8>)> = chain
-            .mempool()
-            .iter()
-            .map(|unmined| (unmined.tx.clone(), unmined.bytes.clone()))
-            .collect();
-        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
-        let txid = |tx: &Transaction| *tx.txid.as_ref();
-        let (mut routes, balancing, merge) = routes_over(&node);
-        let (publisher, _nfs) = published(&mut routes);
-        let (reader, grpc_snapshots) =
-            (routes.chain_view.subscriber(), routes.grpc_snapshots.clone());
-        let cancel = tokio_util::sync::CancellationToken::new();
-        tokio::spawn(publisher.run(cancel.child_token()));
-        tokio::spawn(balancing.run(cancel.child_token()));
-        tokio::spawn(merge.run(cancel.child_token()));
-        routes.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
-        let mut router = dispatch(routes);
-        let three = || grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
-        rounds("three servable", three).await;
-
-        let mut ask = async |request: service::GetMempoolTxRequest| {
-            let request = framed_request(Method::GetMempoolTx, request.encode_to_vec().into());
-            let body = router.call(request).await.expect("router answers").into_body();
-            let chunk = body.collect().await.expect("ok").to_bytes();
-            let txs = decode_frames::<CompactTx>(&chunk).into_iter();
-            let row = |tx: CompactTx| {
-                let parts = (tx.vin.len(), tx.outputs.len(), tx.actions.len());
-                (tx.txid, tx.index, parts)
+        let mut in_view_order = submitted;
+        in_view_order.sort_by_key(|(_, txid)| *txid.as_ref());
+        let live = LiveRoutes::over(&node, MAINNET, &[]);
+        let mut router = live.router.clone();
+        live.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
+        let servable =
+            || live.grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
+        within("3 servable at the tip", until(servable)).await;
+        // per answered tx: (slot, which, (transparent ins, sapling outputs, orchard actions))
+        let mut ask = async |pool_types: Vec<i32>, exclude_txid_suffixes: Vec<Vec<u8>>| {
+            let request = service::GetMempoolTxRequest { exclude_txid_suffixes, pool_types };
+            let response = router
+                .call(framed_request(Method::GetMempoolTx, request.encode_to_vec().into()))
+                .await;
+            let (chunks, status) = answer(response.expect("infallible")).await;
+            assert_eq!(status.code(), Code::Ok, "{status:?}");
+            let which = |txid: &[u8]| {
+                in_view_order.iter().find(|(_, id)| id.as_ref() == txid).map(|(which, _)| *which)
             };
-            txs.map(row).collect::<Vec<_>>()
+            let row = |tx: CompactTx| {
+                (tx.index, which(&tx.txid), (tx.vin.len(), tx.outputs.len(), tx.actions.len()))
+            };
+            decode_frames::<CompactTx>(&chunks.concat()).into_iter().map(row).collect::<Vec<_>>()
         };
-        // (txid, slot, (transparent inputs, sapling outputs, orchard actions)) as parsed
-        let row = |slot: u64, tx: &Transaction, transparent: bool, sapling: bool, orchard: bool| {
-            let parts = (
-                if transparent { tx.transparent.inputs.len() } else { 0 },
-                if sapling { tx.sapling.outputs.len() } else { 0 },
-                if orchard { tx.orchard.actions.len() } else { 0 },
-            );
-            (txid(tx).to_vec(), slot, parts)
-        };
-        let all =
-            service::GetMempoolTxRequest { pool_types: vec![1, 2, 3, 4], ..Default::default() };
-        let every_pool: Vec<_> =
-            (0u64..).zip(&chosen).map(|(slot, (tx, _))| row(slot, tx, true, true, true)).collect();
-        assert_eq!(ask(all.clone()).await, every_pool, "every pool, slots 0..3, view order");
-
-        let cached = |reader: &zaino_chainview::ChainViewSubscriber| {
-            let pinned = reader.current();
+        let unrendered = || {
+            let pinned = live.chain_view.subscriber().current();
             let mempool = pinned.mempool().expect("tip held");
-            let rendered = mempool.entries().all(|entry| {
-                entry.projection.get_or_render(|| Err::<bytes::Bytes, ()>(())).is_ok()
-            });
-            rendered
+            let unrendered = mempool
+                .entries()
+                .filter(|e| e.projection.get_or_render(|| Err::<Bytes, ()>(())).is_err());
+            unrendered.map(|entry| entry.txid).collect::<Vec<_>>()
         };
-        assert!(cached(&reader), "every projection rendered by the first request");
-
-        let middle = txid(&chosen[1].0);
-        let without_middle = service::GetMempoolTxRequest {
-            exclude_txid_suffixes: vec![middle[28..].to_vec()],
-            pool_types: vec![1, 2, 3, 4],
+        let every_pool = vec![1, 2, 3, 4];
+        let parts = |which: &str| match which {
+            "transparent" => (1, 0, 0),
+            "2 sapling outputs" => (1, 2, 0),
+            _ => (1, 0, 1),
         };
-        let (first, last) = (&chosen[0].0, &chosen[2].0);
-        let expected = vec![row(0, first, true, true, true), row(1, last, true, true, true)];
-        assert_eq!(ask(without_middle).await, expected, "no gap at the excluded");
-
-        let orchard = service::GetMempoolTxRequest { pool_types: vec![3], ..Default::default() };
-        let with_actions: Vec<_> = (0u64..)
-            .zip(&chosen)
-            .filter(|(_, (tx, _))| !tx.orchard.actions.is_empty())
-            .map(|(slot, (tx, _))| row(slot, tx, false, false, true))
+        let all: Vec<_> = (0u64..)
+            .zip(in_view_order)
+            .map(|(slot, (which, _))| (slot, Some(which), parts(which)))
             .collect();
-        assert!(with_actions.len() < chosen.len(), "the fixture holds a tx with no Orchard action");
+
         assert_eq!(
-            ask(orchard).await,
-            with_actions,
-            "no component left = dropped, as from a block"
+            ask(every_pool.clone(), Vec::new()).await,
+            all,
+            "every pool, slots 0..3, view order"
         );
-        assert_eq!(ask(all).await, every_pool, "same answer from the cache");
-        assert!(cached(&reader), "still the first render (never re-parsed)");
-        cancel.cancel();
+        assert_eq!(unrendered(), Vec::new(), "every projection rendered by the first request");
+
+        let middle = in_view_order[1].1.as_ref()[28..].to_vec();
+        let without_middle = vec![(0, all[0].1, all[0].2), (1, all[2].1, all[2].2)];
+        assert_eq!(
+            ask(every_pool.clone(), vec![middle]).await,
+            without_middle,
+            "no gap at the excluded"
+        );
+
+        let orchard_slot =
+            all.iter().position(|row| row.1 == Some("1 orchard action")).expect("listed");
+        let orchard_only = vec![(orchard_slot as u64, Some("1 orchard action"), (0, 0, 1))];
+        assert_eq!(
+            ask(vec![3], Vec::new()).await,
+            orchard_only,
+            "[ORCHARD]: emptied txs dropped, slots kept"
+        );
+        assert_eq!(ask(every_pool, Vec::new()).await, all, "same answer from the cache");
     }
 }

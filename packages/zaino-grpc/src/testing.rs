@@ -1,6 +1,5 @@
 //! Shared route-test infra: `RouteDeps` over a `MockValidator`'s client, request builders, indexes
-//! folded
-//! from a `MockChain`'s genesis and served through one fixed `GrpcSnapshot`
+//! folded from a `MockChain`'s genesis, answers read back as data + `tonic::Status`
 
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -8,7 +7,7 @@ use bytes::Bytes;
 use http::{HeaderMap, Request, Response};
 use http_body_util::Full;
 use tokio::sync::watch;
-use tonic::body::Body;
+use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedValidatorSet};
 use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
 use zaino_header_chain::HeaderChainSnapshot;
@@ -20,13 +19,16 @@ use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_source::testing::{MockChain, MockValidator};
 use zaino_source::ZcashLegacyRpcClient;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
+use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;
 
 use crate::service::{Dispatch, Method, RouteDeps};
 
-/// Network the routes declare (the transparent tests' addresses are mainnet ones)
-pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
-    zcash_protocol::consensus::NetworkType::Main;
+/// Network the route tests declare (the transparent tests' addresses are mainnet encodings)
+pub(super) const MAINNET: NetworkType = NetworkType::Main;
+
+/// The routes' one trusted validator (balancer + chain view name it alike)
+const VALIDATOR: &str = "node:8232";
 
 /// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
 /// (compact-block's fees = the builder's: utxo-set's fold derives the same, in its tests)
@@ -60,44 +62,38 @@ pub(super) fn indexed_at(
     NfsPublication::fixed(Arc::new(HeaderChainSnapshot::of(chain, tip)), tip, params, views)
 }
 
-/// Fixed `GrpcSnapshot`: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
-pub(super) fn grpc_snapshots_held(
+/// Fixed `GrpcSnapshot`: [`indexed_at`] `tip`, `held_by` holding `tip`, `mempool` = our relays
+/// (servable while held)
+pub(super) fn fixed_snapshots(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
     held_by: TrustedValidatorSet,
-    ours: &[(TxId, bytes::Bytes)],
+    mempool: &[(TxId, Bytes)],
 ) -> GrpcSnapshots<DiskView> {
     let verified = Some(Arc::new(HeaderChainSnapshot::of(chain, tip)));
-    let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);
+    let view = ChainViewSnapshot::fixed(verified, held_by, &[VALIDATOR], mempool);
     GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
 
-/// [`grpc_snapshots_held`] by no validator, empty mempool (index methods only)
-pub(super) fn grpc_snapshots(
-    chain: &MockChain,
-    tip: BlockRef,
-    views: Vec<(IndexKind, DiskView)>,
-) -> GrpcSnapshots<DiskView> {
-    grpc_snapshots_held(chain, tip, views, TrustedValidatorSet::default(), &[])
-}
-
-/// `RouteDeps` over `node`, every index configured (the balancer's driver + the view's poll merge
-/// back, unspawned)
+/// `RouteDeps` over `node` on `network`, `indexes` enabled (the balancer's driver + the view's poll
+/// merge back, unspawned)
 ///
 /// - nothing verified, nothing served, never republished
 pub(super) fn routes_over(
     node: &MockValidator,
+    network: NetworkType,
+    indexes: &[IndexKind],
 ) -> (
     RouteDeps<ZcashLegacyRpcClient, DiskView>,
     TrafficDriver<ZcashLegacyRpcClient>,
     ObservationMerge<ZcashLegacyRpcClient>,
 ) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let (address, source) = ("node:8232".to_owned(), Arc::new(node.client()));
+    let (address, source) = (VALIDATOR.to_owned(), Arc::new(node.client()));
     let trusted = TrustedValidator { address, source, priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
-    let schedule = compiled_schedule(MAINNET).expect("mainnet compiled in");
+    let schedule = compiled_schedule(network).expect("network compiled in");
     let shutdown = tokio_util::sync::CancellationToken::new();
     let view = ChainView::new(validators.clone(), FinalityDepth::CONSENSUS, schedule, shutdown);
     let merge = view.observation_merge();
@@ -105,17 +101,24 @@ pub(super) fn routes_over(
         grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
         chain_view: Arc::new(view),
         validators,
-        network: MAINNET,
+        network,
         version: "0.11.0-test",
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
-        indexes: vec![
-            IndexKind::CompactBlock,
-            IndexKind::TreeState,
-            IndexKind::TransparentAddress,
-            IndexKind::BlockHash,
-        ],
+        indexes: indexes.to_vec(),
     };
     (routes, driver, merge)
+}
+
+/// [`routes_over`] a never-polled validator, serving `grpc_snapshots` (index methods only)
+pub(super) fn routes_serving(
+    network: NetworkType,
+    indexes: &[IndexKind],
+    grpc_snapshots: GrpcSnapshots<DiskView>,
+) -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
+    let chain = MockChain::regtest();
+    let (routes, _never_driven, _never_merged) =
+        routes_over(&chain.validator(chain.genesis()), network, indexes);
+    RouteDeps { grpc_snapshots, ..routes }
 }
 
 /// Stands in for the NFS's publication watch
@@ -133,10 +136,34 @@ pub(super) fn published(
     (publisher, nfs)
 }
 
-/// [`routes_over`] a never-polled node at a bare genesis, for tests that only serve indexes
-pub(super) fn routes() -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
-    let chain = MockChain::regtest();
-    routes_over(&chain.validator(chain.genesis())).0
+/// [`routes_over`] `node` behind a live publisher, its balancer + poll merge + publisher spawned
+/// (stopped on drop); `nfs` stands in for the NFS, `chain_view.set_chain` for header sync
+pub(super) struct LiveRoutes {
+    pub(super) router: Dispatch<ZcashLegacyRpcClient, DiskView>,
+    pub(super) chain_view: Arc<ChainView<ZcashLegacyRpcClient>>,
+    pub(super) grpc_snapshots: GrpcSnapshots<DiskView>,
+    pub(super) nfs: NfsPublishes,
+    stop: tokio_util::sync::CancellationToken,
+}
+
+impl LiveRoutes {
+    pub(super) fn over(node: &MockValidator, network: NetworkType, indexes: &[IndexKind]) -> Self {
+        let (mut routes, balancing, merge) = routes_over(node, network, indexes);
+        let (publisher, nfs) = published(&mut routes);
+        let stop = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(publisher.run(stop.child_token()));
+        tokio::spawn(balancing.run(stop.child_token()));
+        tokio::spawn(merge.run(stop.child_token()));
+        let (chain_view, grpc_snapshots) =
+            (Arc::clone(&routes.chain_view), routes.grpc_snapshots.clone());
+        Self { router: dispatch(routes), chain_view, grpc_snapshots, nfs, stop }
+    }
+}
+
+impl Drop for LiveRoutes {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
 }
 
 pub(super) fn dispatch(
@@ -185,19 +212,26 @@ pub(super) async fn drained(response: Response<Body>) -> (Vec<Bytes>, HeaderMap)
     (chunks, trailers.expect("a streaming body ends in trailers"))
 }
 
+/// `response` read to its end: data frames + its gRPC status (Trailers-Only headers, else the
+/// trailers; message percent-decoded)
+pub(super) async fn answer(response: Response<Body>) -> (Vec<Bytes>, Status) {
+    if let Some(refused) = Status::from_header_map(response.headers()) {
+        return (Vec::new(), refused);
+    }
+    let (chunks, trailers) = drained(response).await;
+    let status = Status::from_header_map(&trailers).expect("trailers carry grpc-status");
+    (chunks, status)
+}
+
 /// Each framed `M` of `framed`, in order
 pub(super) fn decode_frames<M: prost::Message + Default>(framed: &[u8]) -> Vec<M> {
     let messages = crate::wire::messages(framed).expect("whole frames");
     messages.into_iter().map(|message| M::decode(message).expect("decodes")).collect()
 }
 
-/// Up to 10 poll rounds (paused clock: instant) until `done`
-pub(super) async fn rounds(what: &str, done: impl Fn() -> bool) {
-    for _ in 0..10 {
-        if done() {
-            return;
-        }
+/// Resolves once `done` (checked each poll second; bound it with `zaino_source::testing::within`)
+pub(super) async fn until(done: impl Fn() -> bool) {
+    while !done() {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    panic!("never {what}");
 }
