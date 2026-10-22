@@ -1,21 +1,16 @@
 //! In-process librustzcash wallet (faucet + recipient) → zainod pod over gRPC
 //!
-//! - Sends to each pool, `send_to_all`, shielding, mining-reward receipt, `get_info` smoke
-//! - `get_transaction` (mined / mempool), finalisation-seam address txids
-//! - Mempool: `get_mempool_tx`, `get_mempool_stream`, unconfirmed-balance monitoring
-//! - Address queries: `get_address_utxos`, `get_taddress_*` (recipient + faucet coinbase)
-//! - Tree state: `get_tree_state`, `get_subtree_roots`
-//! - Block range: default / all pools, out-of-range bounds, compact-block transparent data
+//! - `send_to_all`, shielding, finalisation-seam address txids
+//! - `get_transaction` (mempool → mined), `get_mempool_tx`, `get_mempool_stream`, unmined sends
+//! - Address queries: `get_taddress_*` / `get_address_utxos*` (recipient + faucet coinbase)
+//! - Tree state: `get_tree_state`, `get_subtree_roots`; block range pool filters
 //! - Validator JSON-RPC = oracle (zainod serves gRPC only)
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::json;
-use zaino_testutils::wait_for_finalised;
 use ztest::prelude::*;
-
-use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
 const READY: Duration = Duration::from_secs(120);
 const SEND_AMOUNT: u64 = 250_000;
@@ -31,125 +26,23 @@ const SEAM_TIMEOUT: Duration = Duration::from_secs(300);
 mod wallet {
     use super::*;
 
-    /// Faucet's synced wallet holds a spendable shielded coinbase note
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn receives_mining_reward() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        // NU6.3 regtest: orchard coinbase -> Ironwood
-        let credited = Pool::Ironwood;
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let balances = faucet.balances().await?;
-        assert!(balances.get(credited.ztest()) > 0, "spendable {credited:?} note: {balances:?}");
-        Ok(())
-    }
-
-    /// Smoke: both wallets sync, indexer reports a chain name
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn connect_to_node_get_info() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let _faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        recipient.sync().await?;
-        assert!(!indexer.indexer_info().await?.chain_name.is_empty());
-        Ok(())
-    }
-
-    /// Unified address's Orchard receiver credits Ironwood (NU6.3: Orchard spend-locked)
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_unified() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let credited = Pool::Ironwood;
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(credited.ztest()).await?;
-        faucet.send(&addr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-        recipient.sync().await?;
-        let received = recipient.balances().await?.get(credited.ztest());
-        assert_eq!(received, SEND_AMOUNT, "recipient {credited:?} balance");
-        Ok(())
-    }
-
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_sapling() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Sapling.ztest()).await?;
-        faucet.send(&addr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-        recipient.sync().await?;
-        assert_eq!(recipient.balances().await?.sapling, SEND_AMOUNT);
-        Ok(())
-    }
-
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_transparent() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Transparent.ztest()).await?;
-        faucet.send(&addr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-        recipient.sync().await?;
-        assert_eq!(recipient.balances().await?.transparent, SEND_AMOUNT);
-        Ok(())
-    }
-
-    /// One faucet → all three pools, each recipient pool credited once
+    /// Faucet's coinbase notes → Ironwood; one faucet → all three pools, each credited once
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_all() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         // One note per send (no chaining of unconfirmed change)
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 3).await?;
+        let funded = faucet.balances().await?;
+        assert!(funded.ironwood > 0, "NU6.3 regtest: orchard coinbase → ironwood: {funded:?}");
         let recipient = wallet.recipient(&validator, &indexer).await?;
         for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
-            let addr = recipient.address(pool.ztest()).await?;
+            let addr = recipient.address(pool).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
         }
         let tip = validator.generate_blocks(1).await?;
@@ -170,15 +63,14 @@ mod wallet {
     async fn shield_for_validator() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let credited = Pool::Ironwood;
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -189,7 +81,7 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         recipient.sync().await?;
-        let shielded = recipient.balances().await?.get(credited.ztest());
+        let shielded = recipient.balances().await?.get(credited);
         assert_eq!(shielded, SEND_AMOUNT - SHIELD_FEE, "net of ZIP-317 fee, in {credited:?}");
         Ok(())
     }
@@ -197,22 +89,21 @@ mod wallet {
     /// Transparent send → same address txids from the non-finalized state and again once a
     /// seam-deep advance commits it to the durable compact-block index
     ///
-    /// - Shipped depth (1000): `SEAM_ADVANCE` buries nothing → vacuous compare
-    ///   (`wait_for_finalised` = the loud check against that)
+    /// - Shipped depth (1000): `SEAM_ADVANCE` buries nothing → vacuous compare (finalised poll =
+    ///   the loud check against that)
     /// - Advance mined to `FILLER_ADDRESS` (to `FUND` = `SEAM_ADVANCE` halo2 proofs, past the cap)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent_finalization() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -224,8 +115,21 @@ mod wallet {
         let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // Compact-block `finalized_height` = only proof of the durable commit
-        wait_for_finalised(&indexer, u32::from(height), SEAM_TIMEOUT).await?;
+        // - Compact-block `finalized_height` = only proof of the durable commit
+        // - Unpublished until the first commit → keep polling
+        let deadline = tokio::time::Instant::now() + SEAM_TIMEOUT;
+        loop {
+            let finalised = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
+            if finalised.is_some_and(|finalised| finalised >= u32::from(height)) {
+                break;
+            }
+            let expired = tokio::time::Instant::now() >= deadline;
+            anyhow::ensure!(
+                !expired,
+                "finalised {finalised:?}, never {height:?} in {SEAM_TIMEOUT:?}"
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
 
         let finalised_txs = indexer.get_taddress_txids(taddr, height, height).await?;
 
@@ -236,52 +140,20 @@ mod wallet {
         Ok(())
     }
 
-    /// Mined orchard send by txid → its block height + the validator's bytes
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_transaction_mined() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        let txid =
-            faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let served = indexer.get_transaction(txid).await?;
-        assert_eq!(served.height, u64::from(u32::from(tip)));
-        let raw = validator
-            .json_rpc()
-            .await?
-            .call_value("getrawtransaction", serde_json::json!([txid.to_string(), 0]))
-            .await?;
-        let raw = raw.as_str().context("getrawtransaction returns a hex string")?;
-        assert_eq!(zaino_testutils::hex::encode(&served.data), raw, "validator's bytes");
-        Ok(())
-    }
-
     /// Both unmined txs listed; an exclude-by-txid-suffix filter drops one
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_tx() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         let t_txid = faucet.send(&taddr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
         let u_txid = faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("txid");
 
@@ -347,16 +219,15 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         let t_txid = faucet
             .send(&taddr, SEND_AMOUNT)
             .await?
@@ -428,8 +299,7 @@ mod wallet {
         indexer.wait_for_block_num(tip, READY).await?;
 
         let txs = drain.await.expect("mempool-stream drain task joins")?;
-        let mut streamed: Vec<String> =
-            txs.iter().map(|tx| zaino_testutils::hex::encode(&tx.data)).collect();
+        let mut streamed: Vec<String> = txs.iter().map(|tx| hex::encode(&tx.data)).collect();
         streamed.sort();
         assert_eq!(streamed, expected, "validator's unmined txs, verbatim");
         assert!(txs.iter().all(|tx| tx.height == 0), "unmined = height-0 sentinel");
@@ -443,8 +313,7 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn monitor_unverified_mempool() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -452,8 +321,8 @@ mod wallet {
         // One shielded note per unmined send
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let ua = recipient.address(Pool::Ironwood.ztest()).await?;
-        let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
+        let ua = recipient.address(Pool::Ironwood).await?;
+        let zaddr = recipient.address(Pool::Sapling).await?;
         let ua_txid =
             faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let sapling_txid = faucet
@@ -517,19 +386,22 @@ mod wallet {
         Ok(())
     }
 
+    /// Transparent receipt through every address query
+    ///
+    /// - Txids over a span around the send = exactly the send, validator's bytes
+    /// - One utxo (the send's txid, address, value, height); streamed = unary; balance = the send
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_address_utxos() -> Result<()> {
+    async fn transparent_receipt_served_by_address_queries() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         let txid = faucet
             .send(&taddr, SEND_AMOUNT)
             .await?
@@ -539,151 +411,28 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        let utxos =
-            indexer.get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0).await?;
-        assert_eq!(utxos[0].txid, txid.as_ref().to_vec(), "utxo[0] txid must be the send");
-        Ok(())
-    }
-
-    /// Tip tree state → validator's best block hash + non-empty tree per shielded protocol
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_treestate() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        faucet.send(&addr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let tip = indexer.latest_block_height().await?;
-        let tree = indexer.get_tree_state(tip).await?;
-        assert_eq!(tree.height, u64::from(u32::from(tip)));
-        let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
-        let best = best.as_str().context("getbestblockhash returns a hex string")?;
-        assert_eq!(tree.hash.as_str(), best);
-        assert!(!tree.sapling_tree.is_empty(), "sapling tree must be served");
-        assert!(!tree.orchard_tree.is_empty(), "orchard tree must be served");
-        Ok(())
-    }
-
-    #[ztest::qos::wallet]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_subtrees_by_index() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        faucet.send(&addr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        // Subtree = 2^16 notes, never reached on regtest (a synthesised root fails this)
-        let roots = indexer.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?;
-        assert!(roots.is_empty(), "regtest completes no subtree: {roots:?}");
-        Ok(())
-    }
-
-    /// Span around the send → exactly the send, validator's bytes
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_taddress_txids() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        let txid = faucet
-            .send(&taddr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let tip = indexer.latest_block_height().await?;
         let start = BlockHeight::from(u32::from(tip).saturating_sub(2));
-        let txs = indexer.get_taddress_txids(taddr, start, tip).await?;
+        let txs = indexer.get_taddress_txids(taddr.clone(), start, tip).await?;
         assert_eq!(txs.len(), 1, "the span holds exactly the one send");
         let vrpc = validator.json_rpc().await?;
-        let raw = vrpc.call_value("getrawtransaction", serde_json::json!([txid.to_string(), 0]));
-        let raw = raw.await?;
+        let raw = vrpc.call_value("getrawtransaction", json!([txid.to_string(), 0])).await?;
         let raw = raw.as_str().context("getrawtransaction returns a hex string")?;
-        assert_eq!(zaino_testutils::hex::encode(&txs[0].data), raw);
-        Ok(())
-    }
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_taddress_utxos() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        faucet.send(&taddr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
+        assert_eq!(hex::encode(&txs[0].data), raw, "validator's bytes");
 
         let utxos =
             indexer.get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0).await?;
         assert_eq!(utxos.len(), 1, "the send leaves exactly one utxo");
+        assert_eq!(utxos[0].txid, txid.as_ref().to_vec(), "utxo = the send");
         assert_eq!(utxos[0].address, taddr);
         assert_eq!(utxos[0].value_zat, SEND_AMOUNT as i64);
         assert_eq!(utxos[0].height, u64::from(u32::from(tip)));
-        Ok(())
-    }
-
-    /// Streamed utxos = unary reply
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_taddress_utxos_stream() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-        let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        faucet.send(&taddr, SEND_AMOUNT).await?;
-        let tip = validator.generate_blocks(1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
         let streamed = indexer
             .get_address_utxos_stream(vec![taddr.clone()], BlockHeight::from(0u32), 0)
             .await?;
-        assert_eq!(streamed.len(), 1, "the send leaves exactly one utxo");
-        assert_eq!(streamed[0].address, taddr);
-        assert_eq!(streamed[0].value_zat, SEND_AMOUNT as i64);
-        let unary = indexer.get_address_utxos(vec![taddr], BlockHeight::from(0u32), 0).await?;
-        assert_eq!(streamed, unary, "stream = unary");
+        assert_eq!(streamed, utxos, "stream = unary");
+
+        let balance = indexer.get_taddress_balance(vec![taddr]).await?;
+        assert_eq!(i64::from(balance), SEND_AMOUNT as i64, "balance = the one utxo");
         Ok(())
     }
 
@@ -693,15 +442,14 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_mempool() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
         let txid = faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -713,7 +461,7 @@ mod wallet {
         let raw_hex = raw_hex
             .as_str()
             .context("getrawtransaction must return a hex string at verbosity 0")?;
-        let served = zaino_testutils::hex::encode(&unmined.data);
+        let served = hex::encode(&unmined.data);
         assert_eq!(served, raw_hex, "{txid}: validator's bytes");
 
         let tip = validator.generate_blocks(1).await?;
@@ -725,48 +473,57 @@ mod wallet {
         Ok(())
     }
 
-    #[ztest::qos::integration]
+    /// Orchard send mined → tip tree state = validator's best block, both trees served
+    ///
+    /// - Subtree = 2^16 notes, never reached on regtest (a synthesised root fails this)
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_taddress_balance() -> Result<()> {
+    async fn tree_state_and_subtree_roots() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        faucet.send(&taddr, SEND_AMOUNT).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        let bal = indexer.get_taddress_balance(vec![taddr]).await?;
-        assert_eq!(u64::try_from(i64::from(bal)).unwrap_or(0), SEND_AMOUNT);
+        let tree = indexer.get_tree_state(tip).await?;
+        assert_eq!(tree.height, u64::from(u32::from(tip)));
+        let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
+        let best = best.as_str().context("getbestblockhash returns a hex string")?;
+        assert_eq!(tree.hash.as_str(), best);
+        assert!(!tree.sapling_tree.is_empty(), "sapling tree must be served");
+        assert!(!tree.orchard_tree.is_empty(), "orchard tree must be served");
+
+        let roots = indexer.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?;
+        assert!(roots.is_empty(), "regtest completes no subtree: {roots:?}");
         Ok(())
     }
 }
 
-/// Block-range (pool filters, range edges) and faucet-coinbase taddr gRPC queries
+/// Block-range pool filters and faucet-coinbase taddr gRPC queries
 mod zebrad {
     use super::*;
 
     /// - `get_block_range` with no pools == explicit shielded pools
     /// - Tip block = shielded coinbase + the send, no transparent data
-    #[ztest::qos::integration]
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn block_range_returns_default_pools() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         faucet.send(&ua, SEND_AMOUNT).await?;
         let end = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(end, READY).await?;
@@ -792,12 +549,11 @@ mod zebrad {
 
     /// All pools requested → tip block carries the coinbase + all three sends with their
     /// pool data
-    #[ztest::qos::integration]
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn block_range_returns_all_pools() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -807,7 +563,7 @@ mod zebrad {
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let mut txids = Vec::new();
         for pool in [Pool::Transparent, Pool::Sapling, Pool::Ironwood] {
-            let addr = recipient.address(pool.ztest()).await?;
+            let addr = recipient.address(pool).await?;
             let txid = faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
             txids.push(txid);
         }
@@ -824,57 +580,40 @@ mod zebrad {
         assert_eq!(BlockHeight::from(compact_block.height as u32), end);
         assert_eq!(compact_block.vtx.len(), 4);
 
-        assert_pool_present(compact_block, &txids[0], Pool::Transparent);
-        assert_pool_present(compact_block, &txids[1], Pool::Sapling);
-        assert_pool_present(compact_block, &txids[2], Pool::Ironwood);
-        // NU6.3: unified-address send = Ironwood actions only
-        assert_pool_absent(compact_block, &txids[2], Pool::Orchard);
-        Ok(())
-    }
-
-    /// Transparent mining → every compact-block tx carries a transparent vout with a
-    /// non-empty `script_pub_key`
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn transparent_data_in_compact_block() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env
-            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let chain_height = validator.generate_blocks(5).await?;
-        indexer.wait_for_block_num(chain_height, READY).await?;
-
-        // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
-        let all_pools = vec![1, 2, 3, 4];
-        // From 1 (non-standard genesis coinbase script unservable: zingolabs/zaino#818)
-        let start = BlockHeight::from(1u32);
-        let range = indexer.get_block_range_with_pools(start, chain_height, all_pools).await?;
-        let heights = u32::from(chain_height) as usize;
-        assert_eq!(range.len(), heights, "every height in [1, {chain_height:?}]");
-        for cb in range {
-            for tx in cb.vtx {
-                let vout = tx.vout.first().expect("transparent vout present");
-                assert!(!vout.script_pub_key.is_empty(), "transparent output carries a script");
-            }
+        let mut sends = Vec::new();
+        for txid in &txids {
+            let tx = compact_block
+                .vtx
+                .iter()
+                .find(|tx| tx.txid == txid.as_ref().to_vec())
+                .with_context(|| format!("tip block carries send {txid}"))?;
+            sends.push(tx);
         }
+        let (transparent, sapling, ironwood) = (sends[0], sends[1], sends[2]);
+        assert!(!transparent.vout.is_empty(), "transparent send: vout served");
+        assert!(!sapling.outputs.is_empty(), "sapling send: outputs served");
+        let unified = (ironwood.ironwood_actions.len(), ironwood.actions.len());
+        // NU6.3: unified-address send = Ironwood actions only
+        assert!(unified.0 > 0 && unified.1 == 0, "unified send: ironwood only: {unified:?}");
         Ok(())
     }
 
-    /// Faucet coinbase taddr balance == Σ validator `getaddressutxos` (zero / truncated fails)
-    #[ztest::qos::integration]
+    /// Faucet coinbase taddr (miner paid every block)
+    ///
+    /// - Balance = Σ validator `getaddressutxos` (zero / truncated fails)
+    /// - `max_entries = 3` binds → exactly three utxos; streamed = unary over the same arguments
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_taddress_balance_faucet() -> Result<()> {
+    async fn faucet_coinbase_taddr_balance_and_utxos() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env
-            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()));
+        let validator =
+            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.faucet(&validator, &indexer).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
+        let faucet_taddr = faucet.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(5).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
@@ -890,28 +629,8 @@ mod zebrad {
             .filter_map(|u| u.get("satoshis").and_then(serde_json::Value::as_i64))
             .sum();
         assert!(utxo_total > 0, "faucet taddr must hold coinbase value");
-
-        let balance = indexer.get_taddress_balance(vec![faucet_taddr]).await?;
+        let balance = indexer.get_taddress_balance(vec![faucet_taddr.clone()]).await?;
         assert_eq!(i64::from(balance), utxo_total, "balance = Σ validator's utxos");
-        Ok(())
-    }
-
-    /// - Faucet coinbase taddr, `max_entries = 3` → exactly three utxos (miner paid every block)
-    /// - Streamed reply == unary reply over the same arguments
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_address_utxos_stream_faucet() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env
-            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        let wallet = env.add_wallet(Wallet::librustzcash());
-        env.build().await?;
-
-        let faucet = wallet.faucet(&validator, &indexer).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
-        let tip = validator.generate_blocks(5).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
 
         let start = BlockHeight::from(2u32);
         let streamed =
@@ -919,57 +638,6 @@ mod zebrad {
         assert_eq!(streamed.len(), 3, "`max_entries` binds (every block pays the miner)");
         let unary = indexer.get_address_utxos(vec![faucet_taddr], start, 3).await?;
         assert_eq!(streamed, unary, "stream = unary");
-        Ok(())
-    }
-
-    /// Drain 1 to 106 (both inclusive) on a 100-block chain → the 100 available blocks, then an
-    /// error (not a clean end)
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range_out_of_range_upper_bound() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env
-            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let height = u32::from(indexer.latest_block_height().await?);
-        let tip = validator.generate_blocks(100u32.saturating_sub(height)).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
-        let all_pools = vec![1, 2, 3, 4];
-        let (start, end) = (BlockHeight::from(1u32), BlockHeight::from(106u32));
-        let (blocks, errored) = indexer.drain_block_range(start, end, all_pools).await?;
-
-        let compact_block = blocks.last().expect("non-empty range");
-        assert_eq!(compact_block.height, 100, "drain stops at the tip, not the requested end");
-        assert_eq!(blocks.len(), 100);
-        assert!(errored, "stream should terminate with an error");
-        Ok(())
-    }
-
-    /// Drain inverted range 106 to 1 (both inclusive) → no blocks, then an error (not a clean end)
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range_out_of_range_lower_bound() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env
-            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()));
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let height = u32::from(indexer.latest_block_height().await?);
-        let tip = validator.generate_blocks(100u32.saturating_sub(height)).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
-        let all_pools = vec![1, 2, 3, 4];
-        let (start, end) = (BlockHeight::from(106u32), BlockHeight::from(1u32));
-        let (blocks, errored) = indexer.drain_block_range(start, end, all_pools).await?;
-
-        assert!(blocks.is_empty(), "descending from past the tip serves nothing: {blocks:?}");
-        assert!(errored, "stream should terminate with an error");
         Ok(())
     }
 }

@@ -2,15 +2,13 @@
 //!
 //! - Schedule pinned once (`TestEnv` activation heights); validator, zainod, wallet adopt it
 //! - Ironwood-era cells: `wallet_to_validator.rs`; served-chain era composition:
-//!   `compact_block_consistency.rs` + `compact_block_wire.rs`
+//!   `clientless/tests/compact_block_consistency.rs`
 //! - Hermetic only (public testnet: no pre-activation Orchard TAZ, cross-address restriction)
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ztest::prelude::*;
-
-use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
 const READY: Duration = Duration::from_secs(120);
 const SEND_AMOUNT: u64 = 250_000;
@@ -23,7 +21,7 @@ mod zebrad {
     use super::*;
 
     /// Below the boundary: coinbase note = Orchard, unified receipt = Orchard, Ironwood empty
-    /// (era-mirror of `wallet_to_validator.rs::send_to_unified`)
+    /// (era-mirror of `wallet_to_validator.rs::send_to_all`)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn unified_receipt_lands_in_orchard_before_boundary() -> Result<()> {
@@ -42,7 +40,7 @@ mod zebrad {
                 .build(),
         );
         let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
+            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -54,7 +52,7 @@ mod zebrad {
         assert_eq!(notes, (true, 0), "pre-boundary coinbase = orchard: {faucet_balance:?}");
 
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         faucet.send(&ua, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -87,7 +85,7 @@ mod zebrad {
                 .build(),
         );
         let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
+            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -134,8 +132,8 @@ mod zebrad {
 
         // Migration send: Orchard note → unified-address (Ironwood) receipt
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
-        faucet.send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
+        faucet.send_from(&[Pool::Orchard], &ua, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         let info = vrpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
@@ -184,7 +182,7 @@ mod zebrad {
                 .build(),
         );
         let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
+            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -201,7 +199,7 @@ mod zebrad {
         }
 
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         let last_orchard_txid =
             faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let tip = validator.generate_blocks(1).await?; // boundary − 1
@@ -233,13 +231,25 @@ mod zebrad {
             .iter()
             .find(|b| b.height == u64::from(NU6_3_TRANSITION_BOUNDARY))
             .expect("boundary block served");
-        assert_eq!(last_orchard_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY - 1));
-        assert_eq!(activation_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY));
-        assert_pool_present(last_orchard_block, &last_orchard_txid, Pool::Orchard);
-        assert_pool_absent(last_orchard_block, &last_orchard_txid, Pool::Ironwood);
-        assert_pool_present(activation_block, &first_ironwood_txid, Pool::Ironwood);
+        let last_orchard_tx = last_orchard_block
+            .vtx
+            .iter()
+            .find(|tx| tx.txid == last_orchard_txid.as_ref().to_vec())
+            .context("boundary-1 block carries the last Orchard-era send")?;
+        let first_ironwood_tx = activation_block
+            .vtx
+            .iter()
+            .find(|tx| tx.txid == first_ironwood_txid.as_ref().to_vec())
+            .context("boundary block carries the first Ironwood-era send")?;
+        let last_orchard = (last_orchard_tx.actions.len(), last_orchard_tx.ironwood_actions.len());
+        assert!(
+            last_orchard.0 > 0 && last_orchard.1 == 0,
+            "orchard actions only: {last_orchard:?}"
+        );
         // Migration-shaped: the Orchard spend's data rides along
-        assert_pool_present(activation_block, &first_ironwood_txid, Pool::Orchard);
+        let first_ironwood =
+            (first_ironwood_tx.actions.len(), first_ironwood_tx.ironwood_actions.len());
+        assert!(first_ironwood.0 > 0 && first_ironwood.1 > 0, "both pools: {first_ironwood:?}");
         Ok(())
     }
 
@@ -263,14 +273,14 @@ mod zebrad {
                 .build(),
         );
         let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
+            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
 
         // Transparent receipt confirmed at 4
@@ -279,7 +289,7 @@ mod zebrad {
         let tip = validator.generate_blocks(target.saturating_sub(cur).max(1)).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         recipient.sync().await?;
-        assert_eq!(recipient.balances().await?.get(Pool::Transparent.ztest()), SEND_AMOUNT);
+        assert_eq!(recipient.balances().await?.get(Pool::Transparent), SEND_AMOUNT);
 
         recipient.shield().await?;
         let tip = validator.generate_blocks(1).await?; // height 5, still Orchard era
