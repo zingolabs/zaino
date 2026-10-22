@@ -5,39 +5,51 @@ use serde_json::{json, Value};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
+/// `max_entries = 0` = no limit (lightwalletd protocol)
+const ALL_ENTRIES: u32 = 0;
+/// Repeats past the first stream (a stale-tip stream shows up on a later subscribe)
+const RESUBSCRIPTIONS: u32 = 5;
+/// Wallet-like gap between one stream's end and the next subscribe
+const RESUBSCRIBE_DELAY: Duration = Duration::from_millis(500);
+/// One block mined + served, many times over (past it = stream outlived the tip)
+const STREAM_END: Duration = Duration::from_secs(20);
+const FOLLOWED_BLOCKS: u32 = 5;
 
 mod chain_query_interface {
     use super::*;
 
-    fn validator_subtrees(reply: &Value) -> Result<Vec<(Vec<u8>, u64)>> {
+    /// `(root hex, end height)` per subtree in a `z_getsubtreesbyindex` reply
+    fn validator_subtrees(reply: &Value) -> Result<Vec<(String, u64)>> {
         reply
             .get("subtrees")
             .and_then(Value::as_array)
-            .context("z_getsubtreesbyindex reply missing `subtrees` array")?
+            .with_context(|| format!("z_getsubtreesbyindex reply missing `subtrees`: {reply}"))?
             .iter()
             .map(|subtree| {
-                let root_hex = subtree
+                let root = subtree
                     .get("root")
                     .and_then(Value::as_str)
-                    .context("subtree root from validator is not a string")?;
-                let bytes = hex::decode(root_hex)
-                    .with_context(|| format!("z_getsubtreesbyindex root `{root_hex}`"))?;
+                    .with_context(|| format!("subtree root not a string: {subtree}"))?;
+                let root = hex::decode(root).with_context(|| format!("subtree root `{root}`"))?;
                 let end_height = subtree
                     .get("end_height")
                     .and_then(Value::as_u64)
-                    .context("subtree missing end_height")?;
-                Ok((bytes, end_height))
+                    .with_context(|| format!("subtree missing end_height: {subtree}"))?;
+                Ok((hex::encode(root), end_height))
             })
             .collect()
     }
 
-    fn indexer_subtrees(roots: &[SubtreeRoot]) -> Vec<(Vec<u8>, u64)> {
-        roots.iter().map(|r| (r.root_hash.clone(), r.completing_block_height)).collect()
+    struct SubtreeQuery {
+        pool: &'static str,
+        protocol: ShieldedProtocol,
+        start: u32,
     }
 
+    /// Subtree = 2^16 notes, never reached on regtest → zebrad's answer = `[]` (premise asserted)
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_subtree_roots() -> Result<()> {
+    async fn no_subtree_roots_served_before_any_subtree_completes() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -45,47 +57,36 @@ mod chain_query_interface {
 
         let tip = validator.generate_blocks(5).await?;
         indexer.wait_for_block_num(tip, READY).await?;
-
         let vrpc = validator.json_rpc().await?;
 
-        let test_pools =
-            [("sapling", ShieldedProtocol::Sapling), ("orchard", ShieldedProtocol::Orchard)];
-        let valid_start_index: u32 = 0;
-        let max_entries: u32 = 0;
+        #[rustfmt::skip]
+        let queries = [
+            SubtreeQuery { pool: "sapling", protocol: ShieldedProtocol::Sapling, start: 0 },
+            SubtreeQuery { pool: "orchard", protocol: ShieldedProtocol::Orchard, start: 0 },
+            SubtreeQuery { pool: "orchard", protocol: ShieldedProtocol::Orchard, start: 10_000 },
+        ];
+        for SubtreeQuery { pool, protocol, start } in queries {
+            let reply =
+                vrpc.call_value("z_getsubtreesbyindex", json!([pool, start, ALL_ENTRIES])).await?;
+            let zebrad = validator_subtrees(&reply)?;
+            let tip = u32::from(tip);
+            assert!(zebrad.is_empty(), "premise: zebrad completes no {pool} subtree by {tip}");
 
-        // *** Test valid requests ***
-        for (pool_string, protocol) in test_pools {
-            let indexer_roots =
-                indexer.get_subtree_roots(valid_start_index, protocol, max_entries).await?;
-            let validator_reply = vrpc
-                .call_value(
-                    "z_getsubtreesbyindex",
-                    json!([pool_string, valid_start_index, max_entries]),
-                )
-                .await?;
-            let expected = validator_subtrees(&validator_reply)?;
-            assert_eq!(indexer_subtrees(&indexer_roots), expected, "pool {pool_string}");
+            let zaino: Vec<(String, u64)> = indexer
+                .get_subtree_roots(start, protocol, ALL_ENTRIES)
+                .await
+                .with_context(|| format!("GetSubtreeRoots {pool} from {start}"))?
+                .iter()
+                .map(|root| (hex::encode(&root.root_hash), root.completing_block_height))
+                .collect();
+            assert_eq!(zaino, zebrad, "{pool} subtrees from {start}: zaino vs zebrad");
         }
-
-        // *** Test invalid requests ***
-        let invalid_start_index: u32 = 10000;
-        let (orchard_string, orchard_protocol) = test_pools[1];
-        let indexer_roots =
-            indexer.get_subtree_roots(invalid_start_index, orchard_protocol, max_entries).await?;
-        let validator_reply = vrpc
-            .call_value(
-                "z_getsubtreesbyindex",
-                json!([orchard_string, invalid_start_index, max_entries]),
-            )
-            .await?;
-        let expected = validator_subtrees(&validator_reply)?;
-        assert_eq!(indexer_subtrees(&indexer_roots), expected, "invalid start index");
         Ok(())
     }
 
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_mempool_stream_fresh_snapshot_repeated() -> Result<()> {
+    async fn each_fresh_mempool_stream_ends_cleanly_at_the_next_block() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -94,31 +95,29 @@ mod chain_query_interface {
         let tip = validator.generate_blocks(5).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        for iteration in 0..5 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        for subscription in 0..RESUBSCRIPTIONS {
+            tokio::time::sleep(RESUBSCRIBE_DELAY).await;
 
             let stream = indexer.get_mempool_stream();
             let mine = async {
                 let tip = validator.generate_blocks(1).await?;
-                indexer.wait_for_block_num(tip, READY).await
+                indexer.wait_for_block_num(tip, READY).await.map(|()| tip)
             };
-
-            let joined =
-                tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(stream, mine) })
-                    .await;
-            let (stream_result, mine_result) = joined
-                .unwrap_or_else(|_| panic!("stream open past a tip change, iteration {iteration}"));
-            stream_result.with_context(|| {
-                format!("mempool stream yielded unexpected error on iteration {iteration}")
+            let joined = tokio::time::timeout(STREAM_END, async { tokio::join!(stream, mine) });
+            let (stream, mined) = joined.await.with_context(|| {
+                format!("subscription {subscription}: stream open {STREAM_END:?} past a block")
             })?;
-            mine_result?;
+            let mined = mined.with_context(|| format!("subscription {subscription}: mine 1"))?;
+            stream.with_context(|| {
+                format!("subscription {subscription}: stream ended in an error at tip {mined:?}")
+            })?;
         }
         Ok(())
     }
 
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn zallet_like_steady_state_loop() -> Result<()> {
+    async fn served_tip_and_block_range_follow_each_mined_block() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -127,24 +126,21 @@ mod chain_query_interface {
         let mut prev_tip = validator.generate_blocks(5).await?;
         indexer.wait_for_block_num(prev_tip, READY).await?;
 
-        for iteration in 0..5 {
+        for _ in 0..FOLLOWED_BLOCKS {
             let current_tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(current_tip, READY).await?;
 
             let latest = indexer.latest_block_height().await?;
-            assert_eq!(latest, current_tip, "tracks the tip, iteration {iteration}");
+            assert_eq!(latest, current_tip, "served tip: zaino vs zebrad, mined onto {prev_tip:?}");
 
-            let prev = u32::from(prev_tip);
-            let current = u32::from(current_tip);
+            let new = u32::from(prev_tip) + 1..=u32::from(current_tip);
             let applied = indexer
-                .get_block_range(BlockHeight::from(prev + 1), BlockHeight::from(current))
-                .await?;
-            let mined = (current - prev) as usize;
-            assert_eq!(applied.len(), mined, "new blocks, iteration {iteration}");
-            for (offset, block) in applied.iter().enumerate() {
-                let expected = (prev + 1 + offset as u32) as u64;
-                assert_eq!(block.height, expected, "contiguous, iteration {iteration}");
-            }
+                .get_block_range(BlockHeight::from(*new.start()), BlockHeight::from(*new.end()))
+                .await
+                .with_context(|| format!("GetBlockRange {new:?}"))?;
+            let served: Vec<u64> = applied.iter().map(|block| block.height).collect();
+            let expected: Vec<u64> = new.clone().map(u64::from).collect();
+            assert_eq!(served, expected, "heights served for the new blocks {new:?}");
 
             prev_tip = current_tip;
         }
