@@ -106,7 +106,9 @@ let checked = loop {
 ```
 
 - Bench = 60 s × 2^(times − 1), at most 1 h; even the last trusted member (finality pausing is
-  the right answer to a lying validator). Counted in `zaino_traffic_misanswers_total{member,class}`.
+  the right answer to a lying validator). Counted in
+  `zaino_traffic_misanswers_total{endpoint,class}` (`endpoint` = its address, `peers` for the
+  peer set).
 - Absent is never blame: a lagging validator lacks a fresh block. A header from the future (H7)
   or an orphan run is not a misanswer either.
 

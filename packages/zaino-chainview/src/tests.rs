@@ -1202,7 +1202,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 
     let blamed_peers = |key: &metrics_util::CompositeKey| {
         key.key().name() == "zaino.traffic.misanswers_total"
-            && key.key().labels().any(|l| l.key() == "member" && l.value() == "peers")
+            && key.key().labels().any(|l| l.key() == "endpoint" && l.value() == "peers")
     };
 
     type PathEnd = fn(&mut MockChain) -> BlockRef;

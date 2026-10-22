@@ -38,7 +38,8 @@ const MISANSWERS_TOTAL: &str = "zaino.traffic.misanswers_total";
 /// Every metric this crate emits
 pub const METRICS: &[Metric] = &[Metric::counter(
     MISANSWERS_TOTAL,
-    "Answers that failed the caller's check (sender benched), by member and class",
+    "Answers that failed the caller's check (sender benched), by endpoint (peers = the peer set) \
+     and class",
 )];
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …, `address` = its name in
@@ -380,13 +381,13 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// `ticket`'s value failed the caller's check: a trusted sender benched, and only it (the peer
     /// set never: its transport already dropped what it could check)
     pub fn report(&self, ticket: Ticket, why: &(dyn std::error::Error + 'static)) {
-        let member = match ticket.member {
-            MemberId::TrustedValidator(validator) => validator.get().to_string(),
+        let endpoint = match ticket.member {
+            MemberId::TrustedValidator(validator) => self.shared.addresses[validator.get()].clone(),
             MemberId::Peers => "peers".to_owned(),
         };
-        warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer");
         let class = ticket.class.label();
-        let labels = [("member", member), ("class", class.to_owned())];
+        warn!(endpoint, class, %why, "Misanswer");
+        let labels = [("endpoint", endpoint), ("class", class.to_owned())];
         metrics::counter!(MISANSWERS_TOTAL, &labels).increment(1);
         self.shared.step(Input::Report(ticket));
     }
