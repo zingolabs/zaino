@@ -1,93 +1,53 @@
-############################
-# Global build args
-############################
-ARG UID=1000
-ARG GID=1000
-ARG USER=container_user
-ARG HOME=/home/container_user
+# zainod: static musl binary (jemalloc) on Alpine, uid 1000, no build args needed
+#
+# - docker run -p 8137:8137 -v ./zainod.toml:/etc/zaino/zainod.toml:ro -v zaino:/var/lib/zaino <image>
+# - bases pinned by digest (frozen apk index = reproducible; dependabot bumps), apk unpinned
 
-############################
-# Builder
-############################
 # Same toolchain as rust-toolchain.toml (else rustup downloads that one at build)
-FROM docker.io/library/rust:1.96.0-bookworm AS builder
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-WORKDIR /app
+FROM docker.io/library/rust:1.96.0-alpine3.24@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41 AS builder
+WORKDIR /src
 
-# `release` or `profiling` (adds line tables + frame pointers, set below)
+# `release` or `profiling` (line tables + frame pointers)
 ARG CARGO_PROFILE=release
 
-# Build deps incl. protoc for prost-build
-# - versions pinned (DL3008, reproducibility / supply-chain hygiene)
-# - pins = candidate versions in docker.io/library/rust:1.96.0-bookworm
-# - bump together with the base image (query with `apt-cache policy <pkg>`)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config=1.8.1-1 \
-      make=4.3-4.1 \
-      ca-certificates=20250419~deb12u1 \
-      protobuf-compiler=3.21.12-3+deb12u1 \
-  && rm -rf /var/lib/apt/lists/*
+# C toolchain (jemalloc, zstd, secp256k1) + protoc + its well-known types (google/protobuf/*.proto)
+RUN apk add --no-cache build-base protoc protobuf-dev
 
-# Copy entire workspace (prevents missing members)
 COPY . .
 
-# Efficient caches + install to a known prefix (/out)
-# This avoids relying on target/release/<bin> paths.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    if [ "${CARGO_PROFILE}" = "profiling" ]; then \
-      export RUSTFLAGS="-C force-frame-pointers=yes"; \
-    fi; \
-    cargo install --locked --path packages/zainod --bin zainod --root /out \
-      --profile "${CARGO_PROFILE}"
+    --mount=type=cache,target=/src/target \
+    if [ "${CARGO_PROFILE}" = "profiling" ]; then export RUSTFLAGS="-C force-frame-pointers=yes"; fi; \
+    cargo install --locked --path packages/zainod --bin zainod --root /out --profile "${CARGO_PROFILE}"
 
-############################
-# Runtime
-############################
-FROM docker.io/library/debian:bookworm-slim AS runtime
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+FROM docker.io/library/alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
 
-ARG UID
-ARG GID
-ARG USER
-ARG HOME
+# aria2c = the `[snapshot]` bootstrap's downloader
+RUN apk add --no-cache ca-certificates aria2 && \
+    addgroup -S -g 1000 zaino && \
+    adduser -S -D -H -u 1000 -G zaino -h /var/lib/zaino zaino && \
+    install -d -o zaino -g zaino /var/lib/zaino && \
+    install -d /etc/zaino/tls
 
-# Runtime deps (aria2c = the `[snapshot]` bootstrap's downloader)
-# - versions pinned (DL3008) to the candidates in docker.io/library/debian:bookworm-slim
-# - bump together with the base image
-RUN apt-get -qq update && \
-    apt-get -qq install -y --no-install-recommends \
-      ca-certificates=20250419~deb12u1 \
-      libgcc-s1=12.2.0-14+deb12u1 \
-      aria2=1.36.0-1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN addgroup --gid "${GID}" "${USER}" && \
-    adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
-             --disabled-password --gecos "" "${USER}"
-
-ENV HOME=${HOME}
-
-WORKDIR ${HOME}
-
-# Create ergonomic mount points with symlinks to XDG defaults
-# Users mount to /app/config and /app/data, zaino uses ~/.config/zaino and ~/.cache/zaino
-RUN mkdir -p /app/config /app/data && \
-    mkdir -p ${HOME}/.config ${HOME}/.cache && \
-    ln -s /app/config ${HOME}/.config/zaino && \
-    ln -s /app/data ${HOME}/.cache/zaino && \
-    chown -R ${UID}:${GID} /app ${HOME}/.config ${HOME}/.cache
+# - zainod's XDG defaults → /etc/zaino/zainod.toml + /var/lib/zaino/{indexes,state,peers}
+# - gRPC on every interface (127.0.0.1 default = unreachable through a published port)
+ENV XDG_CONFIG_HOME=/etc \
+    XDG_CACHE_HOME=/var/lib \
+    XDG_DATA_HOME=/var/lib \
+    ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS=0.0.0.0:8137
 
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
 
-# Default port
-ARG ZAINO_GRPC_PORT=8137
-EXPOSE ${ZAINO_GRPC_PORT}
+USER zaino
+EXPOSE 8137
 
-USER ${USER}
+# Public /readyz: 200 = serving | degraded (wget: non-2xx = exit 1)
+# - plaintext, else [serve.tls] (own loopback listener: certificate unchecked)
+# - another port = override (`--health-cmd`, compose `healthcheck:`)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=5s \
+    CMD wget -q -O /dev/null http://127.0.0.1:8137/readyz || \
+        wget -q -O /dev/null --no-check-certificate https://127.0.0.1:8137/readyz
 
-# Config at /app/config/zainod.toml (zainod's default path), data under /app/data
 ENTRYPOINT ["zainod"]
 CMD ["start"]

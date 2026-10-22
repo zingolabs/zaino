@@ -98,6 +98,10 @@
             kubectl
           ];
 
+          # Debug builds = -O0 + nixpkgs' _FORTIFY_SOURCE = glibc warning; jemalloc's configure
+          # probes run -Werror (tikv-jemalloc-sys fails to configure)
+          hardeningDisable = [ "fortify" ];
+
           env = commonArgs.env;
         };
 

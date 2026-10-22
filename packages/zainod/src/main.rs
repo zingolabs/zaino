@@ -25,6 +25,10 @@ mod error;
 mod health;
 mod telemetry;
 
+// Every build, not musl only (profiles + benchmarks measure the shipped allocator)
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn main() -> ExitCode {
     // a panic anywhere = a violated invariant: print it, then die (never unwound into a task
     // boundary that keeps serving)

@@ -15,7 +15,7 @@ directory, set by `[index.<name>] path`:
 | `tree_state` | `<cache dir>/zaino/indexes/tree_state` | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` |
 | `transparent_address` | `<cache dir>/zaino/indexes/transparent_address` | `GetAddressUtxos(Stream)`, `GetTaddressBalance(Stream)`, `GetTaddressTransactions` |
 
-In the container image `<cache dir>/zaino` is `/app/data`.
+In the container image `<cache dir>/zaino` is `/var/lib/zaino`.
 
 - Every index commits atomically through a manifest, and checks a CRC on every 4 KiB page when it
   first reads it. A crash or power loss leaves the last commit.

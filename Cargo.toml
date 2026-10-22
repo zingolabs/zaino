@@ -54,6 +54,8 @@ tokio = { version = "1.38", features = ["full"] }
 tokio-util = "0.7"
 # Data-parallel commitment hashing (a fold runs on every core, not one blocking thread)
 rayon = "1.12"
+# zainod's allocator (musl's malloc serializes threads; image = Alpine)
+tikv-jemallocator = "0.7"
 
 # CLI
 clap = "4.0"

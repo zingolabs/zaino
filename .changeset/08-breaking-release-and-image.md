@@ -15,14 +15,15 @@ default: major
   Metrics, the admin listener, the transparent-address index and the `[snapshot]` bootstrap are
   always built. Building needs `protoc` (on `PATH` or named by `PROTOC`).
 
-Container image:
+Container image ([docs/docker.md](../docs/docker.md)):
 
-- Entrypoint `zainod`, default command `start`; `entrypoint.sh` is gone. Configure through
-  `/app/config/zainod.toml` or `ZAINO_CONFIG_*` variables. `ZAINO_STORAGE__DATABASE__PATH` and
-  `ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR` are no longer read.
-- Indexes live under `/app/data/indexes`. The hold marker's `[serve] state_dir` defaults outside
-  `/app`: point it at a mounted path for a hold to outlive the container.
+- Alpine base, static musl `zainod` with jemalloc as its allocator (was Debian bookworm-slim).
+- Runs as `zaino` (uid 1000). Entrypoint `zainod`, default command `start`; `entrypoint.sh` is gone.
+- Config at `/etc/zaino/zainod.toml` (was `/app/config`), data under `/var/lib/zaino` (was
+  `/app/data`): `indexes/`, `state/` (the hold marker), `peers/`. TLS files by convention in
+  `/etc/zaino/tls/`.
+- gRPC listens on `0.0.0.0:8137` by default in the image (`ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS`).
+  `ZAINO_STORAGE__DATABASE__PATH` and `ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR` are no longer read.
 - Exposes only the gRPC port, 8137 (no JSON-RPC port).
-- No `HEALTHCHECK`: probe `/livez` and `/readyz` on the admin listener, or `/readyz` on the gRPC
-  port.
+- Built-in `HEALTHCHECK`: the public `/readyz` on 8137, plaintext or `[serve.tls]`.
 - Ships `aria2c` for the `[snapshot]` bootstrap. The `CARGO_FEATURES` build argument is gone.
