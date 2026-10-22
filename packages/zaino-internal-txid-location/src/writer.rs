@@ -78,8 +78,8 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_source::testing::MockChain;
-    use zaino_sync::testing::{open, step, Writer, QUEUE};
+    use zaino_source::testing::{h, MockChain};
+    use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::TxId;
 
@@ -125,7 +125,7 @@ mod tests {
     ///
     /// - each state reopens to an acknowledged or the attempted commit
     /// - locates every tx it holds at its block + position, none past it
-    /// - a writer on it skips the resent held blocks and commits the next one
+    /// - a writer on it skips the resent held blocks and commits the next at `FinalizedTip`
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_durable_prefix_that_skips_what_it_holds() {
         let mut chain = MockChain::regtest();
@@ -165,17 +165,19 @@ mod tests {
         let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
-            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
             let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
             let label = format!("{}: recovered {count} blocks, next height {count}", state.label);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5));
             assert!(acked.contains(&u64::from(count)), "{label}: acknowledged {acked:?}");
             assert_eq!(located(store.durable()), expected(count), "{label}: held txs only");
 
-            let writer = start(store);
-            for block in &blocks[..=count as usize] {
+            let mut writer = start(store);
+            for block in &blocks[..count as usize] {
                 writer.send(step(block)).await;
             }
+            writer.send(finalized(&blocks[count as usize])).await;
+            writer.durable_at(h(count)).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             assert_eq!(located(handle.durable_view()), expected(count + 1), "{label}: next held");
         }
