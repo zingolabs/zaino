@@ -67,30 +67,35 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
             .map(|entry| fs::metadata(entry.path()).expect("segment").len())
             .sum()
     };
-    let (dropped, cached) = (segments("dropped"), segments("cached"));
-    assert!(dropped > 0 && dropped == cached, "same rows, same segment bytes");
-    let variable: u64 = (0..20_000u64).map(|n| 100 + n % 200).sum::<u64>() + 20_000 * 8;
-    let footprint = store.durable().footprint();
-    let opened = footprint.iter().find(|table| table.table == "dropped").and_then(|t| t.cached);
-    assert!(opened.is_some_and(|bytes| bytes < dropped / 10), "dropped: {footprint:?}");
-    let tables = [
-        ("fixed", 20_000 * 32, None),
-        ("variable", variable, Some(0)),
-        ("dropped", dropped, opened),
-        ("cached", cached, None),
-    ];
-    let expected: Vec<TableFootprint> = tables
-        .iter()
-        .map(|&(table, bytes, cached)| TableFootprint {
-            table,
-            bytes,
-            cached: cached.or(Some(bytes)),
-        })
-        .collect();
-    assert_eq!(footprint, expected);
+    let segment = segments("dropped");
+    assert_eq!(
+        segments("cached"),
+        segment,
+        "cached map's segment bytes = dropped map's (same rows)"
+    );
 
+    let footprint = store.durable().footprint();
     let simulated = sim.durable().footprint();
-    let unknowable: Vec<TableFootprint> =
-        expected.iter().map(|table| TableFootprint { cached: None, ..*table }).collect();
-    assert_eq!(simulated, unknowable);
+
+    let opened = footprint.iter().find(|table| table.table == "dropped").and_then(|t| t.cached);
+    let what = format!("dropped map cached {opened:?} of {segment} B: summary + filters only");
+    assert!(opened.is_some_and(|bytes| bytes < segment / 10), "{what}");
+    // - fixed: 20 000 × 32 B
+    // - variable: records of 100 + n % 200 B (100 × 1 990 000 B) + an 8-byte end each
+    #[rustfmt::skip]
+    let real = [
+        TableFootprint { table: "fixed",    bytes: 640_000,   cached: Some(640_000) },
+        TableFootprint { table: "variable", bytes: 4_150_000, cached: Some(0) },
+        TableFootprint { table: "dropped",  bytes: segment,   cached: opened },
+        TableFootprint { table: "cached",   bytes: segment,   cached: Some(segment) },
+    ];
+    assert_eq!(footprint, real, "RealFs");
+    #[rustfmt::skip]
+    let unknowable = [
+        TableFootprint { table: "fixed",    bytes: 640_000,   cached: None },
+        TableFootprint { table: "variable", bytes: 4_150_000, cached: None },
+        TableFootprint { table: "dropped",  bytes: segment,   cached: None },
+        TableFootprint { table: "cached",   bytes: segment,   cached: None },
+    ];
+    assert_eq!(simulated, unknowable, "SimFs: same bytes, page cache unknowable");
 }

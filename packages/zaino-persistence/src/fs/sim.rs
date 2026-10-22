@@ -882,8 +882,20 @@ mod tests {
             failed.to_string().contains("injected EIO at op 2: write 2B at 0 /d/a"),
             "{failed}"
         );
-        assert!(file.sync_data().is_err() && fs.sync_dir(dir).is_err(), "later ops fail too");
-        assert_eq!((fs.contents(&dir.join("a")), fs.mutations()), (Some(Vec::new()), 5));
+        let later = [
+            file.sync_data().map_err(|e| e.to_string()),
+            fs.sync_dir(dir).map_err(|e| e.to_string()),
+        ];
+        assert_eq!(
+            later,
+            [
+                Err("sim: injected EIO at op 3: sync_data /d/a".to_owned()),
+                Err("sim: injected EIO at op 4: sync_dir /d".to_owned()),
+            ],
+            "ops 3 + 4 fail too"
+        );
+        let state = (fs.contents(&dir.join("a")), fs.mutations());
+        assert_eq!(state, (Some(Vec::new()), 5), "(a's bytes, ops counted): nothing applied");
 
         let healed = fs.restarted();
         let reopened = healed.open(&dir.join("a")).expect("open");

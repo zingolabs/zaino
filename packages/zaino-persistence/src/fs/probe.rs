@@ -293,13 +293,28 @@ mod tests {
         }
     }
 
-    /// - file in this host's temp dir: probing never fails loudly, whatever the filesystem
-    /// - no files = nothing a barrier covers
+    /// Real probe end to end: `statx` mount id → this process's mountinfo → `tmpfs` (not ext4 /
+    /// XFS)
     #[test]
-    fn probing_real_files_answers() {
-        let file = tempfile::NamedTempFile::new().expect("temp file");
+    fn a_file_on_tmpfs_commits_per_file() {
+        let file = tempfile::NamedTempFile::new_in("/dev/shm").expect("temp file on /dev/shm");
+
         let probed = durability(&[file.path().to_path_buf()]);
-        assert!(matches!(probed, Durability::Barrier | Durability::PerFile));
-        assert_eq!(durability(&[]), Durability::PerFile);
+
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").expect("mountinfo");
+        let at = stat(file.path()).expect("statx");
+        let fstype = at.mount.and_then(|id| mount(&mountinfo, id)).map(|mount| mount.fstype);
+        assert_eq!(fstype.as_deref(), Some("tmpfs"), "statx mount id → its mountinfo line");
+        assert_eq!(probed, Durability::PerFile, "{} on tmpfs", file.path().display());
+    }
+
+    /// - no files = nothing a barrier covers
+    /// - failed probe (`statx` on a missing file) = `PerFile`, never an error
+    #[test]
+    fn no_files_or_a_failed_probe_commit_per_file() {
+        let missing = PathBuf::from("/nonexistent/zaino-probe/file");
+
+        assert_eq!(durability(&[]), Durability::PerFile, "no files");
+        assert_eq!(durability(&[missing]), Durability::PerFile, "a missing file");
     }
 }

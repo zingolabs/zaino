@@ -45,18 +45,19 @@ impl Bandwidth {
     }
 
     fn charge(&self, bytes: usize) {
-        let debt = {
-            let mut bucket = self.bucket.lock().expect("bandwidth never held across a panic");
-            let (tokens, at) = &mut *bucket;
-            let now = Instant::now();
-            let refill = now.duration_since(*at).as_secs_f64() * self.per_sec;
-            *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
-            *at = now;
-            (*tokens < 0.0).then(|| Duration::from_secs_f64(-*tokens / self.per_sec))
-        };
-        if let Some(debt) = debt {
+        if let Some(debt) = self.debt(bytes, Instant::now()) {
             thread::sleep(debt);
         }
+    }
+
+    /// `bytes` charged at `now`: the wait it owes (`None` = within the burst)
+    fn debt(&self, bytes: usize, now: Instant) -> Option<Duration> {
+        let mut bucket = self.bucket.lock().expect("bandwidth never held across a panic");
+        let (tokens, at) = &mut *bucket;
+        let refill = now.saturating_duration_since(*at).as_secs_f64() * self.per_sec;
+        *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
+        *at = now.max(*at);
+        (*tokens < 0.0).then(|| Duration::from_secs_f64(-*tokens / self.per_sec))
     }
 }
 
@@ -165,27 +166,29 @@ mod tests {
             waiter.join().expect("waiter");
         }
         assert_eq!(*order.lock().expect("order"), [2, 4, 7], "lowest tier first");
-        assert_eq!(slots.lock().running, 0);
+        assert_eq!(slots.lock().running, 0, "slots running once every waiter finished");
     }
 
-    /// One second's worth free, the rest paced: 30 MB at 20 MB/s ≈ 0.5 s, whoever charges it
+    /// 20 MB/s: one second's worth (20 MB) free, every byte past it owed at the rate, idle time
+    /// refilling at most one second's worth
     #[test]
-    fn bandwidth_lets_one_seconds_burst_through_then_paces_every_charger_to_the_rate() {
-        let bandwidth = Arc::new(Bandwidth::new(20_000_000));
-        let started = Instant::now();
-        let chargers: Vec<_> = (0..3)
-            .map(|_| {
-                let bandwidth = Arc::clone(&bandwidth);
-                thread::spawn(move || (0..10).for_each(|_| bandwidth.charge(1_000_000)))
-            })
-            .collect();
-        for charger in chargers {
-            charger.join().expect("charger");
+    fn bandwidth_lets_one_second_s_burst_through_then_paces_to_the_rate() {
+        const MB: usize = 1_000_000;
+        let bandwidth = Bandwidth::new(20_000_000);
+        let created = bandwidth.bucket.lock().expect("bucket").1;
+        let at = |secs: f64| created + Duration::from_secs_f64(secs);
+        #[rustfmt::skip]
+        let charges = [
+            ("the whole burst",              at(0.0),  20 * MB, None),
+            ("1 MB past it",                 at(0.0),  MB,      Some(50)),
+            ("1 MB as the 50 ms debt clears", at(0.05), MB,     Some(50)),
+            ("30 MB after 10 s idle",        at(10.0), 30 * MB, Some(500)),
+        ];
+        for (case, now, bytes, owed_ms) in charges {
+            let owed = bandwidth.debt(bytes, now);
+
+            let owed = owed.map(|owed| (owed.as_secs_f64() * 1e3).round() as u64);
+            assert_eq!(owed, owed_ms, "{case}: ms owed");
         }
-        let took = started.elapsed();
-        assert!(
-            (0.4..1.5).contains(&took.as_secs_f64()),
-            "30 MB at 20 MB/s, 20 MB burst: {took:?}"
-        );
     }
 }
