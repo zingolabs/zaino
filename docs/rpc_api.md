@@ -1,20 +1,14 @@
 # Zaino's RPC surface
 
-`zainod` serves the lightwalletd-compatible `CompactTxStreamer` gRPC service
-defined by the
+`zainod` serves the lightwalletd-compatible `CompactTxStreamer` gRPC service defined by the
 [LightWallet Protocol](https://github.com/zcash/lightwallet-protocol/blob/main/walletrpc/service.proto)
-(message types in
-[compact_formats.proto](https://github.com/zcash/lightwallet-protocol/blob/main/walletrpc/compact_formats.proto)),
-on `serve.grpc_listen_address` (default `127.0.0.1:8137`) over HTTP/2, plaintext
-unless `[serve.tls]` is set.
-Zaino serves no JSON-RPC. Node queries go to the validator's own JSON-RPC.
+on `serve.grpc_listen_address` (default `127.0.0.1:8137`), HTTP/2, plaintext unless
+`[serve.tls]` is set. Zaino serves no JSON-RPC: node queries go to the validator's own.
 
 ## Where each method is answered
 
-Which side a method falls on is not a per-method judgement. It follows from
-[architecture §1](./architecture.md#1-who-owns-what): derived answers come from a
-Zaino index (never the validator), and writes and point lookups of primary
-consensus objects are forwarded to the validator.
+Derived answers come from a Zaino index, never the validator; consensus objects a validator
+already stores are asked of it ([architecture §1](./architecture.md#1-who-owns-what)).
 
 | Method                                                  | Answered by                                                                                                                                    |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -32,85 +26,60 @@ consensus objects are forwarded to the validator.
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                                                                                |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)*         | as `GetTaddressTransactions`                                                                                                                   |
 
-"The validator" here is the traffic balancer over every `[[trusted_validators]]`
-entry ([architecture §9](./architecture.md#9-talking-to-validators-and-peers)). An
-absent answer is asked of the next validator (a lagging one may lack a just-mined
-transaction): `NOT_FOUND` only when every one asked said absent. Why the two
-deprecated rows exist:
-[client-requirements.md](./client-requirements.md#two-deprecated-methods-served-until-pepper-sync-moves-off-them).
-
-A `BlockID` that carries a hash, in `GetBlock` or `GetTreeState`, is resolved to
-a height through the block-hash index. A hash wins over a height when both are
-given, because a hash names one block across a reorg and a height does not.
-
-Every index can be disabled (at least one stays on); compact-block's fee index,
-utxo-set (every `CompactTx.fee`), runs with it and has no switch of its
-own. A disabled index answers as
-[architecture §1](./architecture.md#1-who-owns-what) says; for the block-hash index
-that is only the by-hash form of `GetBlock` and `GetTreeState`.
-
-Every index method reads one `GrpcSnapshot` of every index, pinned for the request or
-stream. A method naming no height answers at the served tip, which every
-enabled index holds: `GetLatestBlock`, `GetLatestTreeState`, `GetSubtreeRoots`,
-`GetLightdInfo.blockHeight`, and the address methods (a `GetTaddressTxids` range
-included). While Zaino syncs, the served tip is the lowest tip across the
-enabled indexes, so a wallet gating on `GetLatestBlock` or
-`GetLightdInfo.blockHeight` never asks past what every index holds. A block or
-tree-state method naming a height (`GetBlock`, `GetBlockRange`, `GetTreeState`)
-answers up to its own index's tip, which during sync may be above the served
-tip. Before the first `GrpcSnapshot` (indexes opening at boot) every index
-method is `UNAVAILABLE`.
+- "The validator" is the traffic balancer over every `[[trusted_validators]]` entry. An absent
+  answer is asked of the next validator (a lagging one may lack a just-mined transaction):
+  `NOT_FOUND` only when every one asked said absent.
+- Why the deprecated rows exist:
+  [client-requirements.md](./client-requirements.md#two-deprecated-methods-served-until-pepper-sync-moves-off-them).
+- Every index can be disabled (at least one stays on); utxo-set, which fills every
+  `CompactTx.fee`, runs with compact-block. A disabled index's methods are `UNIMPLEMENTED`; for
+  block-hash that is only the by-hash form of `GetBlock` and `GetTreeState`.
+- A method naming no height (`GetLatestBlock`, `GetLatestTreeState`, `GetSubtreeRoots`,
+  `GetLightdInfo.blockHeight`, the address methods) answers at the served tip, which every
+  enabled index holds, so a wallet gating on `GetLatestBlock` never asks past what every index
+  holds. A method naming a height (`GetBlock`, `GetBlockRange`, `GetTreeState`) answers up to its
+  own index's tip, which during sync may be above the served tip.
+- A `BlockID` carrying a hash is resolved through the block-hash index. A hash wins over a
+  height when both are given: a hash names one block across a reorg.
+- No stream has a total-duration cap ([stream time limits](./running.md#stream-time-limits)).
 
 `GetLightdInfo` never calls a validator, so it answers while no trusted validator vouches too.
 `blockHeight` is the served tip, `estimatedHeight` the verified best, `chainName` the configured
-network, and the branch and next upgrade come from the upgrade schedule at the served tip
-(compiled in for mainnet and testnet, the validator's for regtest). `version` is zainod's.
+network; the branch and next upgrade come from the upgrade schedule at the served tip.
 `lightwalletProtocolVersion` is the vendored protos' release (the newest heading of
-`packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`); pepper-sync refuses one below `v0.5.0`
-([client-requirements.md](./client-requirements.md)). Before anything is served the call is
-`UNAVAILABLE`.
+`packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`).
 
-`GetTransaction` answers a mined transaction with its height, and an unmined or
-orphaned one with height 0, the wire's only "no height" value.
+`GetTransaction` answers a mined transaction with its height, and an unmined or orphaned one
+with height 0, the wire's only "no height" value.
 
-`SendTransaction` reports a rejection in the `SendResponse` itself, as
-lightwalletd does: gRPC `OK`, `errorCode` = the validator's own JSON-RPC code
-and `errorMessage` = its message verbatim (`-22` for bytes that do not parse,
-`-25` for the expiry and consensus-branch prechecks Zaino runs itself, as zebrad
-would answer them). A wallet has to tell "the network said no" from "the network
-is unreachable", and zingolib matches the message text ("transaction already
-exists in mempool", "transaction already in block chain", "already queued for
-download"). zebrad's `-1` answers that judge the transaction itself count as
-rejections; its other `-1`s (queue full, mempool disabled) do not. The call only
-fails with a status when no validator accepted and at least one could not be
-reached. An accepted transaction answers `errorCode` 0 and the quoted
-display-order txid.
+`SendTransaction` reports a rejection in the `SendResponse` itself, as lightwalletd does: gRPC
+`OK`, `errorCode` = the validator's own JSON-RPC code and `errorMessage` = its message verbatim
+(`-22` for bytes that do not parse, `-25` for the expiry and consensus-branch prechecks Zaino
+runs itself, as zebrad would answer them). A wallet has to tell "the network said no" from "the
+network is unreachable", and zingolib matches the message text ("transaction already exists in
+mempool", …). zebrad's `-1` answers that judge the transaction count as rejections; its other
+`-1`s (queue full, mempool disabled) do not. The call fails with a status only when no validator
+accepted and at least one could not be reached. An accepted transaction answers `errorCode` 0
+and the quoted display-order txid.
 
-`GetBlockRange` reaching past the compact-block index's tip streams every block
-up to it, then ends with `OUT_OF_RANGE` in its trailers, never an early `OK`
-(the iOS downloader waits forever after one). A range whose first height is
-past it is `OUT_OF_RANGE` before any block.
+`GetBlockRange` reaching past the compact-block index's tip streams every block up to it, then
+ends with `OUT_OF_RANGE` in its trailers, never an early `OK` (the iOS downloader waits forever
+after one). A range whose first height is past it is `OUT_OF_RANGE` before any block.
 
-`GetTreeState` answers exactly the height asked for, with the block hash in
-display order. Each tree is `""` below its pool's activation and the serialized
-tree from activation on, `000000` while empty (pepper-sync rejects `""` for an
-active pool). Below Sapling activation every tree is `""`.
+`GetTreeState` answers exactly the height asked for, with the block hash in display order. Each
+tree is `""` below its pool's activation and the serialized tree from activation on, `000000`
+while empty (pepper-sync rejects `""` for an active pool).
 
-`GetSubtreeRoots` answers each request whole or refuses it before the first
-byte. A `startIndex` past the last root is an empty `OK` stream, which
-pepper-sync reads as the end, and `maxEntries` 0 means every root. A
-`shieldedProtocol` Zaino does not know is `UNIMPLEMENTED`, the one refusal the
-Android SDK survives without dropping its fast sync.
-
-No stream has a total-duration cap. The client's `grpc-timeout` is its
-deadline, and `[grpc] unread_timeout_secs` / `silent_timeout_secs` bound a stream that makes
-no progress (see [running.md](./running.md#stream-time-limits)).
+`GetSubtreeRoots` answers each request whole or refuses it before the first byte. A `startIndex`
+past the last root is an empty `OK` stream, and `maxEntries` 0 means every root. An unknown
+`shieldedProtocol` is `UNIMPLEMENTED`, the one refusal the Android SDK survives without dropping
+its fast sync.
 
 ## Status codes a client must distinguish
 
 | Condition                                                                                           | Code                 | Read it as                                                             |
 | --------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
-| nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
+| nothing served yet (booting, indexes opening)                                                       | `UNAVAILABLE`        | back off and retry                                                     |
 | work-stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                | `UNAVAILABLE`        | retry after the hint                                                   |
 | no verified tip, or neither a trusted validator holding it nor a peer quorum (mempool methods)      | `UNAVAILABLE`        | back off and retry                                                     |
 | no validator answering, txid neither in the served mempool nor in a peer's block (tx bytes methods) | `UNAVAILABLE`        | back off and retry (absence unprovable without a validator)            |
@@ -128,30 +97,23 @@ no progress (see [running.md](./running.md#stream-time-limits)).
 
 ## Pool filtering
 
-`BlockRange.poolTypes` selects which pools the returned `CompactBlock`s carry.
-An empty list means every shielded pool (`SAPLING`, `ORCHARD`, `IRONWOOD`,
-defined once by `Pools::default`), and a non-empty list is served exactly. A
-value that names no pool (`POOL_TYPE_INVALID` or an unknown number) is
-`INVALID_ARGUMENT`, never silently dropped. `GetMempoolTx` applies the same
-rules. `GetBlock` differs: `BlockID` has no `poolTypes`, so a single block comes
-back with every pool, including `vin` and `vout`. lightwalletd makes the same
-split. `GetBlockRangeNullifiers` ignores a `TRANSPARENT` member, as the proto
-requires.
-
-Zaino never silently prunes a requested pool. Records are stored with every pool
-and pruned on read, so any requested subset is answerable.
+`BlockRange.poolTypes` selects which pools the returned `CompactBlock`s carry. An empty list
+means the [unfiltered pool set](../CONTEXT.md#chains-and-pools); a non-empty list is served
+exactly. A value that names no pool (`POOL_TYPE_INVALID` or an unknown number) is
+`INVALID_ARGUMENT`, never silently dropped. `GetMempoolTx` applies the same rules. `GetBlock`
+has no `poolTypes`, so a single block comes back with every pool, `vin` and `vout` included, as
+lightwalletd does. `GetBlockRangeNullifiers` ignores a `TRANSPARENT` member, as the proto
+requires. Records are stored with every pool and pruned on read, so any requested subset is
+answerable and none is silently pruned.
 
 ## Known gaps
 
-- `GetTransaction` answers only `TxFilter`'s `hash` arm. The `(block, index)`
-  positional arm is `INVALID_ARGUMENT`.
-- `GetBlockNullifiers` (deprecated) and `Ping` (testing only) are not in the
-  vendored `service.proto`, so both are `UNIMPLEMENTED`. `zingo-netutils` wraps
-  both, but nothing in zingolib (pepper-sync included) calls them, and neither
-  does the Android SDK ([client requirements](./client-requirements.md)).
-- `CompactTx.fee` is filled, unlike lightwalletd. In a mined block the
-  utxo-set index resolves the values of the outputs each transaction
-  spends. In `GetMempoolTx` it is the fee a trusted validator listed, or the one
-  Zaino computed for a peer-quorum admission. It is 0 for a coinbase, for our
-  own send before anything lists it, and for a fee of 2^32 zatoshis or more,
-  since the field is a `uint32` with no presence bit.
+- `GetTransaction` answers only `TxFilter`'s `hash` arm; the `(block, index)` arm is
+  `INVALID_ARGUMENT`.
+- `GetBlockNullifiers` (deprecated) and `Ping` (testing only) are not in the vendored
+  `service.proto`, so both are `UNIMPLEMENTED`; no client calls them
+  ([client requirements](./client-requirements.md)).
+- `CompactTx.fee` is filled, unlike lightwalletd: in a mined block from the utxo-set index, in
+  `GetMempoolTx` the fee a trusted validator listed or the one Zaino computed for a peer-quorum
+  admission. It is 0 for a coinbase, for our own send before anything lists it, and for a fee of
+  2^32 zatoshis or more (the field is a `uint32` with no presence bit).

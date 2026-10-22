@@ -1,9 +1,10 @@
 # Zaino architecture
 
 How `zainod` turns a Zcash chain into the lightwalletd gRPC service, and why it is built this way.
-Crate APIs live in each crate's `usage.md` (also its rustdoc); the per-method RPC table is
-[rpc_api.md](./rpc_api.md); storage is the
-[`zaino-persistence` guide](../packages/zaino-persistence/usage.md).
+Crate APIs live in each crate's `usage.md`, the per-method RPC table in
+[rpc_api.md](./rpc_api.md), storage in the
+[`zaino-persistence` guide](../packages/zaino-persistence/usage.md), operating zainod in
+[running.md](./running.md).
 
 ## 1. Who owns what
 
@@ -19,7 +20,8 @@ index and never falls back to a validator. So:
 - `GetTransaction` goes to a validator: raw transaction bytes are consensus data it already stores
   ([why](../packages/zaino-grpc/usage.md#why-gettransaction-forwards)). With no validator
   answering, the txid-location index names the transaction's block, fetched from p2p peers and
-  checked against the hash our indexes hold. `GetTaddressTransactions` works the same way: the
+  checked against the hash our indexes hold (which does not cover v5 proofs and signatures).
+  `GetTaddressTransactions` works the same way: the
   index names the txids, `GetTransaction`'s path supplies the bytes.
 - Zaino does not validate transactions. That would be a second mempool verifier (proofs,
   nullifiers, scripts, conflicts) tracking every network upgrade. Validators decide; Zaino checks
@@ -176,8 +178,6 @@ peers, once, so silence means nothing.
 - **Gate.** `GetMempoolTx` / `GetMempoolStream` answer only while a `Live` trusted validator holds
   the verified best, or the polled peers span > 5 netgroups. Otherwise `UNAVAILABLE`, never an
   unverified mempool.
-- **Fee**: a trusted listing's, or computed from the UTXO set for a quorum admission; none for an
-  `ours` nothing has listed yet.
 
 ## 6. Submission
 
@@ -202,18 +202,16 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 ```
 
 - `checkadmission` (Zaino's zebra fork) runs `sendrawtransaction`'s checks, the fee policy and
-  mempool conflicts included, without admitting or relaying: a refusal reaches the wallet in one
-  call. It goes to a holder of the verified best only (a validator behind it refuses what spends a
-  fresh output). A refusal's wire shape: [rpc_api.md](./rpc_api.md#where-each-method-is-answered).
-- A validator without `checkadmission` (zcashd, stock zebrad) answers `-32601`: taken as its
-  answer, never a failure (it stays `Live`), and the next holder is asked.
+  mempool conflicts included, without admitting or relaying. It goes to a holder of the verified
+  best only (a validator behind it refuses what spends a fresh output). A validator without it
+  (zcashd, stock zebrad) answers `-32601`: never a failure, the next holder is asked. A refusal's
+  wire shape: [rpc_api.md](./rpc_api.md#where-each-method-is-answered).
 - A peer relay gets no reply and zebra names no recipient. **Spread** = a trusted validator never
-  pushed to lists it, or a peer quorum admits it (> 2/3 of fresh listings: past the ~⅓ one relay
-  reaches). The job ends at spread, when nothing outside its trusted entries can be watched, or
-  when attempts run out (`unconfirmed`).
+  pushed to lists it, or a peer quorum admits it (past the ~⅓ one relay reaches). The job ends at
+  spread, when nothing outside its trusted entries can be watched, or when attempts run out.
 - Relays ride the peer set's existing connections: a zebrad peer drops a second connection from
-  our IP, so a fresh connection per push would never deliver.
-- `[p2p]` off: every attempt is a trusted `sendrawtransaction`.
+  our IP, so a fresh connection per push would never deliver. With `[p2p]` off every attempt is a
+  trusted `sendrawtransaction`.
 - `[submission]` sets `propagation_threshold_secs` and `max_attempts`
   ([`SubmitPolicy`](../packages/zaino-chainview/usage.md#submission)).
 
@@ -260,48 +258,34 @@ one and reads only it, so no answer mixes two moments.
   does not count, one not polled since best moved does), and stays while it is on the best chain
   within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
   stays shut until the header chain reaches that claim and the NFS has fetched the window.
-- `GrpcSnapshot::serving_status` judges serving from the same load, from the header chain's
-  witnesses alone: `Down` when the best block runs more than one past the last vouched block,
-  `Degraded` for that cause while synced to a fresh best (peers carry the tip). One block past is
-  the race a validator's next poll closes. Every trusted validator down under a stale best (no
-  peers to move it) is `Down` too. States and readiness: [the admin listener](../packages/zainod/usage.md#the-admin-listener);
-  what each method answers meanwhile: [rpc_api.md](./rpc_api.md).
+- The daemon's state (`serving`, `degraded`, `down`, …) is judged from the same load:
+  [running.md: States](./running.md#states).
 
 ### `GetMempoolStream`
 
-The protocol says "close the stream when a new block is mined"; Zaino makes that exact:
-
-| ID | Rule |
-| -- | ---- |
-| S1 | Bound to the served tip's hash; ends `OK` once it moves (extend or reorg), never on an empty mempool |
-| S2 | Never a transaction mined in a block the served tip extends above the root |
-| S3 | Opens with the servable mempool, then each new transaction once |
-| S4 | Every message `height: 0` |
-
-The stream ends only after the `GrpcSnapshot` already serves the new tip, so the `GetLatestBlock` a
-wallet sends next sees it. One append-only log per served tip is shared by every subscriber, so
-per-transaction work never scales with subscribers.
+The protocol says "close the stream when a new block is mined"; Zaino makes that exact. A stream
+is bound to the served tip's hash: it opens with the servable mempool, sends each new transaction
+once (every message `height: 0`, never one mined in a block the served tip extends), and ends `OK`
+once the served tip moves, never on an empty mempool. It ends only after the `GrpcSnapshot`
+already serves the new tip, so the `GetLatestBlock` a wallet sends next sees it. One append-only
+log per served tip is shared by every subscriber, so per-transaction work never scales with
+subscribers.
 
 ## 9. Talking to validators and peers
 
-Every request goes through one `TrafficBalancer` (`zaino-traffic`); intervals, hedge delays,
-bench times and the API are in [its guide](../packages/zaino-traffic/usage.md).
+Every request goes through one `TrafficBalancer` (`zaino-traffic`); lanes, intervals, hedge
+delays and bench times are in [its guide](../packages/zaino-traffic/usage.md).
 
 - **Members.** Each trusted validator, in `priority` tiers (0 first); then the whole peer set as
   one member below every tier (zebra picks the peer). Peers answer headers and blocks only.
-- **Lanes.** Per member, one permit is the poll's alone, so nothing delays tip following. Then
-  `Control` (submit, headers), `Interactive` (tip blocks, tx lookups, mempool bytes) and `Bulk`
-  (bulk blocks), each with one reserved permit; the rest is shared, control first.
-- **Pick.** Best tier with room, then the preferred member, then the least loaded.
-- **Failure.** A round asks each member once; slow answers are hedged to another member. Blocks
-  are retried until answered; everything else ends unanswered after one round.
+- **Failure.** A round asks each member once, best tier first; slow answers are hedged to another
+  member. Blocks are retried until answered; everything else ends unanswered after one round.
 - **Blame.** The balancer cannot judge a value; the caller checks it and `report`s a bad one,
-  which benches that member for a doubling interval. Absent is never blame. The peer set is never
-  benched: zebra scores the lying peer instead.
-- **Polling.** Each trusted validator is polled on an interval, sooner on a zebrad push event:
-  `getblockchaininfo`, `getrawmempool true`, `getblockhash` at our best, and periodically peers,
-  version and end-of-service height. Consecutive failures make it `Down`, probed until it
-  answers. A failing validator never stops the process.
+  which benches that member. Absent is never blame. The peer set is never benched: zebra scores
+  the lying peer instead.
+- **Polling.** Each trusted validator is polled on its own permit, so no request delays tip
+  following, and sooner on a zebrad push event. Consecutive failures make it `Down`, probed until
+  it answers. A failing validator never stops the process.
 - **Load on a zebrad** = `max_connections`. There is no request-rate or byte-rate limit.
 
 ## 10. When things fail
@@ -330,15 +314,15 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 ## 12. Seams
 
 A trait exists only at a seam: a boundary with a second implementation (a real one or a test
-double), or one that keeps a dependency out of the crates above it:
+double), or one that keeps a dependency out of the crates above it.
 
-| Trait                               | Implementations                                | Why                                      |
-| ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient` (tests: the legacy client over a `MockValidator`'s JSON-RPC) | JSON-RPC or indexer gRPC; tests control the data, never the client |
-| `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets                  |
-| `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
-| `zaino_chainview::UnspentOutputs`   | `GrpcSnapshots`, a `MockChain` `Ledger`        | the chain view sits below the indexes    |
-| `zaino_persistence::PersistenceEngine`, `fs::Fs` | `DiskEngine`; `RealFs`, `SimFs`   | indexes see the port, never the engine; crash testing |
+- `zaino_source::ChainDataSource`: JSON-RPC or indexer gRPC; tests drive the real client against
+  a `MockValidator`.
+- `zaino_chainview::PeerSource`, `zaino_traffic::PeerTransport`: zainod's `ZebraPeers`, which
+  keeps zebra-network out of both crates.
+- `zaino_chainview::UnspentOutputs`: the chain view sits below the indexes.
+- `zaino_persistence::PersistenceEngine` and `fs::Fs`: indexes see the port, never the engine;
+  `SimFs` tests crashes.
 
 Not seams: the gRPC service, each index, and the validator set (`TrafficBalancer` is not a
 `ChainDataSource`, so a pool is never mistaken for one validator).

@@ -1,19 +1,14 @@
 # What the clients actually call
 
-This is an audit, read at the source, of the two wallet sync engines that
-matter:
+What the two wallet sync engines ask for, how often, and where answering slightly wrong is worse
+than not answering. Read at the source; references name a function or file, not a line.
 
-- **librustzcash**: `zcash_client_backend/src/sync.rs`, the only RPC caller in
-  that workspace. It backs Zashi and zallet.
-- **pepper-sync**: `zingolib/pepper-sync`, with all traffic going through
-  `client/fetch.rs`. It backs zingolib and Zingo mobile.
+- **librustzcash**: `zcash_client_backend/src/sync.rs`, the only RPC caller in that workspace.
+  It backs Zashi and zallet.
+- **pepper-sync**: `zingolib/pepper-sync`, all traffic through `client/fetch.rs`. It backs
+  zingolib and Zingo mobile.
 
-References name a function or file, not a line.
-
-[rpc_api.md](./rpc_api.md) and [architecture §1](./architecture.md#1-who-owns-what)
-say where Zaino answers each method from. This document is the other half: what
-clients ask for, how often, and where answering slightly wrong is worse than not
-answering.
+Where Zaino answers each method from: [rpc_api.md](./rpc_api.md).
 
 ## The call matrix
 
@@ -33,126 +28,76 @@ answering.
 | `SendTransaction`                              | the embedder's job                                                            | zingolib                                     |
 | `GetLightdInfo`                                | **never called**                                                              | zingolib server selection only               |
 
-The most important row is `GetTreeState`. It is 1:1 with `GetBlockRange`, which
-makes it the highest-volume method after block fetch itself, and a librustzcash
-wallet cannot complete a single sync batch without it.
+`GetTreeState` is 1:1 with `GetBlockRange`, the highest-volume method after block fetch itself:
+a librustzcash wallet cannot complete a single sync batch without it.
 
 ### Two deprecated methods, served until pepper-sync moves off them
 
-We serve `GetBlockRangeNullifiers` and `GetTaddressTxids` as deprecated aliases,
-**marked TODO: REMOVE** at every site. pepper-sync calls both on every sync and
-treats any non-OK status as a fatal `SyncError`, so without them no pepper-sync
-wallet syncs against Zaino. They go when pepper-sync calls the replacements, and
-should not outlive that.
+`GetBlockRangeNullifiers` and `GetTaddressTxids` are deprecated aliases, **marked TODO: REMOVE**
+at every site. pepper-sync calls both on every sync and treats any non-OK status as a fatal
+`SyncError`, so without them no pepper-sync wallet syncs against Zaino. They go when pepper-sync
+calls the replacements.
 
-`GetBlockRangeNullifiers` is superseded by `GetBlockRange` with shielded
-`poolTypes`, which returns a superset: sapling outputs and full action data as
-well as nullifiers. For pepper-sync that is a bandwidth increase on a re-scan
-path, not a behaviour change. The nullifier shape is also **not** expressible as
-a `poolTypes` subset. It drops `chainMetadata`, drops sapling *outputs* while
-keeping sapling *spends*, and descends **inside** each action to keep only the
-nullifier, a third nesting level the pool walk deliberately does not do. We
-serve it by re-projecting the stored compact blocks rather than maintaining a
-second projection of the same records, because two projections of one truth can
-disagree.
-
-`GetTaddressTxids` is misnamed and deprecated by the proto itself: *"this
-function is misnamed, it returns complete `RawTransaction` values, not TxIds"*,
-and *"please use GetTaddressTransactions instead"*.
+- `GetBlockRangeNullifiers` is superseded by `GetBlockRange` with shielded `poolTypes`, a
+  superset. Its shape is not a `poolTypes` subset (it drops `chainMetadata` and sapling outputs,
+  and keeps only each action's nullifier), so Zaino re-projects the stored compact blocks rather
+  than keep a second projection that could disagree.
+- `GetTaddressTxids` is misnamed and deprecated by the proto itself ("please use
+  GetTaddressTransactions instead").
 
 ## Correctness landmines
 
-**Ironwood tree state must be served correctly or wallets silently mis-sync.**
-Both clients map an empty `TreeState.{orchard,ironwood}_tree` to an empty
-commitment tree with no error and no warning
+**Ironwood tree state must be served correctly or wallets silently mis-sync.** Both clients map
+an empty `TreeState.{orchard,ironwood}_tree` to an empty commitment tree with no error
 (`TreeState::orchard_tree` / `ironwood_tree` in `zcash_client_backend/src/proto.rs`;
-`pepper-sync/src/witness.rs`), which is indistinguishable from a genuinely
-pre-activation height. A post-NU6.3 server that omits the field therefore
-produces a *wrong* ironwood tree in the wallet rather than a diagnosable failure.
-`GetSubtreeRoots` has the same tolerance on ironwood, where the result is
-swallowed into `Vec::new()`. For this reason Zaino serves each pool from its
-activation on as the serialization of the real tree, which is `000000` for an
-empty one, and never `""` for an active pool; `""` means only a height below the
-pool's activation
+`pepper-sync/src/witness.rs`), indistinguishable from a pre-activation height; `GetSubtreeRoots`
+is swallowed into `Vec::new()` the same way. So Zaino serves each pool from its activation on as
+the real tree (`000000` when empty), and `""` only below activation
 ([tree-state guide](../packages/zaino-index-tree-state/usage.md#serving)).
 
-**The wire format is a `CommitmentTree`, not a frontier.**
-`TreeState.{sapling,orchard,ironwood}_tree` is the hex of
-`zcash_primitives::merkle_tree::write_commitment_tree`. Both clients parse it
-with `read_commitment_tree` and then call `.to_frontier()`.
+**The wire format is a `CommitmentTree`, not a frontier.** `TreeState.*_tree` is the hex of
+`zcash_primitives::merkle_tree::write_commitment_tree`; both clients parse it with
+`read_commitment_tree`, then `.to_frontier()`.
 
-**Neither client sends a block hash.** Both pass `hash: vec![]` to
-`GetTreeState`, so `BlockID::Hash` is a completeness nicety, not a load path.
+**Neither client sends a block hash.** Both pass `hash: vec![]` to `GetTreeState`.
 
-**`GetSubtreeRoots` costs one extra empty round trip.** For an unbounded
-request, pepper-sync does not trust a clean end of stream. It re-requests from
-the current index and stops only when a pass returns zero roots, so a session
-makes six calls, not three.
+**`GetSubtreeRoots` costs one extra empty round trip.** pepper-sync re-requests until a pass
+returns zero roots, so a session makes six calls, not three.
 
-**`GetBlockRange` has no client-side size limit.** pepper-sync requests an
-entire scan range in one call, and scan ranges are derived from subtree
-boundaries. A subtree is 2^16 *notes*, not blocks, so in a quiet stretch of the
-chain one range spans any number of blocks: a mainnet wallet sync asked for
-158,853 in one call. Its flow control is client-side and mid-stream: it counts
-outputs and splits the scan *task* without cancelling the RPC. Any server-side
-maximum breaks zingolib for some birthday, and because the client retries
-unboundedly on a stream error, it presents as a hang rather than a failure. So
-Zaino has no range cap (the stream is bounded per 1 MiB window instead), and a
-short answer is never an option: a wallet given fewer blocks than it asked for
-reads that as the end of the chain.
+**`GetBlockRange` has no client-side size limit.** pepper-sync requests a whole scan range in
+one call, and scan ranges follow subtree boundaries (2^16 *notes*, not blocks): a mainnet wallet
+sync asked for 158,853 blocks in one call. Any server-side maximum breaks zingolib for some
+birthday, and because it retries a stream error unboundedly, it presents as a hang. So Zaino has
+no range cap, and never answers short: a wallet given fewer blocks than it asked for reads that
+as the end of the chain.
 
-**Do not implement `GetAddressUtxos` paging naively.** lightwallet-protocol
-issue #33 records that `startHeight` is not a unique resume key, so paging can
-stall. It is latent only because no current client pages.
+**Do not implement `GetAddressUtxos` paging naively.** `startHeight` is not a unique resume key
+(lightwallet-protocol issue #33), so paging can stall. No current client pages.
 
-**pepper-sync refuses a server below protocol v0.5.0.** Before syncing it
-calls `GetLightdInfo` and rejects any `lightwalletProtocolVersion` below
-`v0.5.0`, an empty one included (`check_lightwallet_protocol_version` in
-`pepper-sync/src/client.rs`). It needs transparent and Ironwood data in compact
-blocks. Zaino reports the release of its vendored protos
-(`zaino_proto::LIGHTWALLET_PROTOCOL_VERSION`, read from
-`packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`), so moving to a new
-upstream release moves the reported version with it.
+**pepper-sync refuses a server below protocol v0.5.0.** It rejects any
+`lightwalletProtocolVersion` below `v0.5.0`, an empty one included
+(`check_lightwallet_protocol_version` in `pepper-sync/src/client.rs`). Zaino reports its vendored
+protos' release (`zaino_proto::LIGHTWALLET_PROTOCOL_VERSION`), so a new upstream release moves
+the reported version with it.
 
 ## Transparent: address queries and the private path
 
-Address-by-address transparent sync leaks the wallet. pepper-sync discovers transparent funds
-by walking the BIP-44 derivation path and sending **each derived address to the
-server**, one per round trip, until `gap_limit` consecutive addresses come back
-empty (`address_discovery` in `pepper-sync/src/sync/transparent.rs`). That is 20 round trips at
-minimum for a default single-account wallet and 60 in recovery, strictly serial,
-and re-paid **every session**, because the trailing gap addresses are truncated
-rather than persisted. The server therefore learns every address a wallet
-derives, including the unused ones past the last used one, which of them are
-used, and the derivation order that links them all to one wallet.
+pepper-sync discovers transparent funds by sending **each derived address to the server**, one
+per round trip, until `gap_limit` consecutive addresses come back empty (`address_discovery` in
+`pepper-sync/src/sync/transparent.rs`), and re-pays it every session. The server learns every
+address a wallet derives, which are used, and the order that links them to one wallet.
 
-The protocol defines the private alternative: request the `TRANSPARENT` pool in
-`BlockRange.poolTypes` and match scripts locally, disclosing nothing
-(lightwallet-protocol v0.4.0, PR #1; lightwalletd PR #534).
+The private alternative: request the `TRANSPARENT` pool in `BlockRange.poolTypes` and match
+scripts locally (lightwallet-protocol v0.4.0). Zaino serves it. `CompactTxIn` carries no prevout
+value, so compact blocks alone cannot yield a transparent *balance*: the address RPCs stay even
+once clients move to the private path. As lightwalletd does, a coinbase's `vin` is omitted (a
+client detects it by `CompactTx.index == 0`).
 
-Zaino serves the private path, and it is cheap for us to do so. `CompactTxIn` is
-`{prevoutTxid, prevoutIndex}` with **no prevout value**, a deliberate omission
-so that servers need no UTXO-value lookup. The consequence is that compact
-blocks alone cannot yield a transparent *balance*, which needs the prior
-outputs, and that is why the address RPCs will not go away even once clients
-move to the private path.
-
-Two details are copied from lightwalletd's behaviour rather than its schema. A
-coinbase's `vin` is omitted, since a client detects a coinbase by
-`CompactTx.index == 0`, and a coinbase's `fee` is left unset. Unlike
-lightwalletd, we fill the `fee` of every other mined transaction.
-
-One hard operational rule falls out of all this:
-
-> **Never silently prune a requested `TRANSPARENT`.** If Zaino cannot serve it,
-> return an error. Silent pruning costs a user their privacy with nothing in the
-> logs.
+> **Never silently prune a requested `TRANSPARENT`.** If Zaino cannot serve it, return an
+> error. Silent pruning costs a user their privacy with nothing in the logs.
 
 ## The contract is the proto, not a ZIP
 
-ZIP-307 is the only light-client sync ZIP, and it covers Sapling only. It never
-mentions transparent and was never extended even to Orchard. ZIP-314, "Privacy
-upgrades to the Zcash light client protocol", is `Reserved` with an empty body.
-So the `.proto` comments and CHANGELOG in `zcash/lightwallet-protocol` are the
-normative source, and `LightdInfo.lightwalletProtocolVersion` is how a server
-states what it supports.
+ZIP-307 covers Sapling only and ZIP-314 is `Reserved` with an empty body, so the `.proto`
+comments and CHANGELOG in `zcash/lightwallet-protocol` are the normative source, and
+`LightdInfo.lightwalletProtocolVersion` is how a server states what it supports.

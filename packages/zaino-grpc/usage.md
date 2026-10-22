@@ -1,10 +1,8 @@
 # zaino-grpc
 
-The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
-dispatched by path over [`RouteDeps`]. Every method that reads chain, index, mempool or
-validator state loads one `zaino_grpc_snapshot::GrpcSnapshot` and reads it for the life of its
-request or stream. The per-method table and the status codes a client must distinguish
-live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
+The wallet-facing `CompactTxStreamer` endpoint: one `GrpcService`, every method dispatched by
+path over `RouteDeps`. What answers each method, and the status codes a client must tell apart:
+[`docs/rpc_api.md`](../../docs/rpc_api.md).
 
 ## RouteDeps
 
@@ -28,9 +26,9 @@ tokio::spawn(bound.run(cancel.child_token()));
 ```
 
 A server can bind and run before its routes exist (an owner still booting or downloading an
-index snapshot): `GrpcService::new` alone answers health from the start and every method
-`UNAVAILABLE` (`starting: not routed yet`). Take its `routing()` handle before `bind()` and
-call `route(routes)` once they exist. Routing twice panics.
+index snapshot): it answers health from the start and every method `UNAVAILABLE`
+(`starting: not routed yet`). Take its `routing()` handle before `bind()` and call
+`route(routes)` once they exist. Routing twice panics.
 
 ```rust
 let server = GrpcService::new(grpc_listen_address, limits).with_health(health);
@@ -40,110 +38,60 @@ tokio::spawn(server.bind().await?.run(cancel.child_token()));
 routing.route(routes);
 ```
 
-What answers each method: [`docs/rpc_api.md`](../../docs/rpc_api.md). Each handler reads off
-one `GrpcSnapshot` (`served()?`, `indexed()` for tree states, `mempool()?`, `lightd()?`), except
-`SendTransaction` (`chain_view.validate_transaction` → `broadcast_transaction`) and
-`GetTransaction` (`validators.lookup`, then the served mempool's bytes, else the peers' block the
-txid-location index names).
-
-- **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
-  the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
-  index holds: `GetLatestBlock`, `GetLatestTreeState`,
-  `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
-  transparent reader `.as_of(tip)`. A height named (`GetBlock`, `GetBlockRange`,
-  `GetTreeState`, by height or hash) = up to `IndexesAtBlock::answers_through(kind)`, the
-  index's own durable tip when past the served one. A point read past it =
-  `NOT_FOUND`; a range streams to it, then `OUT_OF_RANGE`.
-- `zaino_grpc_snapshot::Unavailable` → `UNAVAILABLE` with its message
-  ([messages](../zaino-grpc-snapshot/usage.md#readers-grpcsnapshots--grpcsnapshot)).
-- An index missing from `RouteDeps::indexes` = disabled: its methods are
-  `UNIMPLEMENTED` from routing on, served or not, naming the index
-  (`GetTreeState needs the tree_state index, which is not enabled`). An NFS publication
-  lacking a configured index's view answers the same. Compact-block is optional
-  like the rest. An unknown path is `UNIMPLEMENTED`.
-- `S` = the validators' `ChainDataSource`.
-- `V` = the indexes' `zaino_persistence::PinnedView` (zainod: `DiskView`): every read = an
-  index's reader over its durable view + the NFS's layers, on a read lane (any thread).
-  Any engine's durable view serves end to end: `RouteDeps<S, V>`, `GrpcService<S, V>`.
-- `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
-  `GrpcSnapshot`'s `block_hash` view: `height_of(hash)` names the height (past
-  `IndexesAtBlock::answers_through` = `NOT_FOUND`), and the answering index must hold the same hash there
-  (else `NOT_FOUND`). With block-hash disabled, a hash request is
-  `UNIMPLEMENTED`.
-- Route tests build a `GrpcSnapshot` with `zaino_grpc_snapshot::GrpcSnapshots::fixed` over
-  `NfsPublication::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
-  `Publisher` over a test-fed NFS watch.
-- `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
-  `compact_tx`, cached on the entry's `Projection`); each request only renumbers
-  slots and prunes pools.
-- A t-address encoded for a network other than the transparent index's is
-  `INVALID_ARGUMENT`.
-- `chainName`, the tree state's `network` and the t-address mismatch message spell the
-  network as lightwalletd does (`main` / `test` / `regtest`), from one match
-  (`routes::info::chain_name`).
-- `limits: GrpcLimits` (see [Serve stack](#serve-stack)) is zainod's `[grpc]` table as
-  parsed: it derives `Deserialize`/`Serialize` (unknown keys refused, omitted ones at
-  `Default`), durations as whole-second `*_secs` keys (`unread_timeout_secs`,
-  `silent_timeout_secs` non-zero; `max_connection_age_secs`, `max_connection_idle_secs` 0 =
-  never; `drain_timeout` = `shutdown_grace_secs`).
-- `bind().await` takes the socket and returns a `BoundGrpcService`; await it at
-  boot so a bind failure is a boot failure (`GrpcServeError::Bind`, the
-  `io::Error` as its source); `local_addr()` names the bound address (bind
-  port `0` to let the kernel pick), then
-  `tokio::spawn(bound.run(cancel))`. Once `cancel` fires, `run` closes the
-  listener, sends every open connection an HTTP/2 GOAWAY, and returns
-  when they have all closed or `GrpcLimits::drain_timeout` has passed,
-  whichever is first. `run` returns `()`: a bound server has no failure of its
-  own (accept errors back off and retry). Connections still open then are
-  dropped with the runtime. A zero `drain_timeout` returns at once.
+- **One `GrpcSnapshot` per request** (G1): each handler loads one and reads only it for the
+  request or the whole stream (`served()?`, `indexed()` for tree states, `mempool()?`,
+  `lightd()?`). Exceptions: `SendTransaction` (`chain_view.validate_transaction` →
+  `broadcast_transaction`) and `GetTransaction` (`validators.lookup`, then the served mempool's
+  bytes, else the peers' block the txid-location index names).
+- No height named = the served tip. A height named = up to `IndexesAtBlock::answers_through(kind)`:
+  a point read past it is `NOT_FOUND`, a range streams to it, then `OUT_OF_RANGE`.
+- By `BlockID.hash`: `height_of(hash)` in the `block_hash` view names the height, and the
+  answering index must hold the same hash there (else `NOT_FOUND`). Block-hash disabled = a hash
+  request is `UNIMPLEMENTED`.
+- An index missing from `RouteDeps::indexes` = disabled: its methods are `UNIMPLEMENTED` naming
+  it, served or not. An unknown path is `UNIMPLEMENTED`.
+- `zaino_grpc_snapshot::Unavailable` → `UNAVAILABLE` with its message.
+- `S` = the validators' `ChainDataSource`; `V` = the indexes' `zaino_persistence::PinnedView`
+  (zainod: `DiskView`).
+- `limits: GrpcLimits` is zainod's `[grpc]` table as parsed (unknown keys refused).
+- `bind().await` takes the socket (a failure = `GrpcServeError::Bind`, so a boot failure);
+  `local_addr()` names it (bind port `0` to let the kernel pick). Once `cancel` fires, `run`
+  closes the listener, sends every connection a GOAWAY, and returns when they have all closed or
+  `drain_timeout` has passed. `run` has no failure of its own: accept errors back off and retry.
+- `chainName`, the tree state's `network` and the t-address mismatch message spell the network
+  as lightwalletd does (`main` / `test` / `regtest`), from `routes::info::chain_name`.
 
 ### Adding a method
 
-Every method is one `Method` variant in `service.rs`. Its name is its wire
-name and its `method` metric label. A new RPC is:
+Every method is one `Method` variant in `service.rs`; its name is its wire name and its `method`
+metric label. A new RPC is:
 
 1. a `Method` variant,
-2. its arm in `Method::route`: its admission `Class` (`Work`, or
-   `Subscription` for a stream that idles between arrivals: own pool, never cut
-   for silence, no latency recorded) and the index whose view its handler reads
-   (`None` = reads none, so never disabled),
-3. its arm in `Wired::handle`, which hands the handler its decoded request
-   message (`wire::decode`, or `wire::decode_each` for a client stream); the
-   handler returns `Result<Response<Body>, Status>` (built with
-   `wire::unary_response`, `wire::streamed_response` or `wire::streaming`, never
-   by hand: `streaming` joins ready records into full DATA frames).
+2. its arm in `Method::route`: its admission `Class` (`Work`, or `Subscription` for a stream
+   that idles between arrivals: own pool, never cut for silence, no latency recorded) and the
+   index whose view its handler reads (`None` = reads none, so never disabled),
+3. its arm in `Wired::handle`, which hands the handler its decoded request (`wire::decode`, or
+   `wire::decode_each` for a client stream); the handler returns `Result<Response<Body>, Status>`
+   built with `wire::unary_response`, `wire::streamed_response` or `wire::streaming`, never by
+   hand (`streaming` joins ready records into full DATA frames).
 
-Both matches are exhaustive, so the compiler names the two arms a new variant
-still needs. The path is resolved to its `Method` once per request
-(`Method::resolve`, in the outermost layer). Admission, the silence bound,
-metrics labels and the disabled-index answer all read it. An `Err` becomes its
-status in one place (`Wired::answer`).
+Both matches are exhaustive, so the compiler names the arms a new variant still needs. An `Err`
+becomes its status in one place (`Wired::answer`).
 
 ### Why `GetTransaction` forwards
 
-Raw transaction bytes are consensus data the validator already stores. Indexing
-them would be a second copy of the chain, far larger than the compact store
-(compact blocks drop proofs, signatures and 528 of each 580-byte note
-ciphertext), to serve a read that happens only for transactions a wallet already
-trial-decrypted. `GetAddressUtxos` and the other address methods are the
-opposite case: they are *derived*, so forwarding them would mean a second
-implementation that can disagree, or a dependency on a validator index Zebra
-need not have.
-
-With no validator answering, the bytes come from the network instead: the
-[txid-location index](../zaino-internal-txid-location/usage.md) names the
-transaction's block (Zaino stores its location, never its bytes), a peer serves
-that block, and the transaction is cut out once the block's hash, height and
-merkle root check. v5 proofs and signatures are not covered by that check.
-
-What it answers, and when `NOT_FOUND`: [`docs/rpc_api.md`](../../docs/rpc_api.md).
+Raw transaction bytes are consensus data the validator already stores. Indexing them would be a
+second copy of the chain, far larger than the compact store (compact blocks drop proofs,
+signatures and 528 of each 580-byte note ciphertext), to serve a read that happens only for
+transactions a wallet already trial-decrypted. The address methods are the opposite case: they
+are *derived*, so forwarding them would mean a second implementation that can disagree, or a
+dependency on a validator index Zebra need not have. The path with no validator answering:
+[architecture §1](../../docs/architecture.md#1-who-owns-what).
 
 ## Serve stack
 
-hyper-util's HTTP/2 server around the path dispatch, not
-`tonic::transport::Server`, so the accept loop is zaino's:
-
-Outermost first, per connection after the first three:
+hyper-util's HTTP/2 server around the path dispatch, not `tonic::transport::Server`, so the
+accept loop is zaino's. Outermost first, per connection after the first three:
 
 ```text
 accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS ─ h2 / HTTP/1.1
@@ -151,133 +99,64 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   ─ dispatch (grpc-timeout, silence, request body) ─ handler
 ```
 
-The guard (`guard.rs`) wraps each response body once: the body owns its
-admission slot, its stall-watch ticket and its close-out metrics, so all three
-end together when hyper drops it.
+The guard (`guard.rs`) wraps each response body once: the body owns its admission slot, its
+stall-watch ticket and its close-out metrics, so all three end together when hyper drops it (a
+stream ending or its client disconnecting). What each `[grpc]` cap bounds:
+[the example config](../../docs/example_configs/zainod.toml).
 
-- **Health** (`with_health(Arc<dyn Health>)`): `GET /readyz` (`Health::readyz` → `200` / `503`)
-  and `GET /status` (`Health::status`, always `200`) are answered on this listener over
-  HTTP/1.1 or h2, before admission, so they never take a work slot.
-  - TLS offers ALPN `h2` then `http/1.1`, so load-balancer monitors connect over HTTPS/1.1.
-  - Each connection may send 10 at once and regains one per second; past that the answer is `429`.
-  - A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`.
-  - Without `with_health`, those paths are like any other: `404` over HTTP/1.1, `UNIMPLEMENTED`
-    over h2.
+- **Health** (`with_health(Arc<dyn Health>)`): `GET /readyz` (`200` / `503`) and `GET /status`
+  (always `200`), answered before admission over HTTP/1.1 or h2, so they never take a work slot.
+  Each connection may send 10 at once and regains one per second; past that `429`. A non-`GET`
+  is `405`, any other path over HTTP/1.x `404`.
 - **TLS** (`with_tls(Tls::load(files)?)`): rustls with the ring provider, ALPN `h2` then
-  `http/1.1`. A missing or mismatched pair fails `Tls::load`, never plaintext. The files are
-  checked every 60 s; a changed pair serves new connections, and one that fails to load is
-  logged while the previous pair keeps serving. A handshake not done within 10 s closes the
-  connection. A PROXY header, when required, precedes the handshake.
-- An HTTP/1.1 connection must send its request headers within 10 s.
-
-Every cap refuses; none queues except the read lanes. Defaults:
-[`[grpc]` in the example config](../../docs/example_configs/zainod.toml).
-
-| `GrpcLimits` field | Enforced at | Over it |
-|---|---|---|
-| `max_connections` | accept | socket closed |
-| `max_connections_per_ip` | once the client is named | socket closed |
-| `max_streams_per_connection` | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
-| `max_work_streams` | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
-| `adaptive_work_streams` | admission, same methods: the latency-adaptive limit (below) | same |
-| `max_subscriptions` | admission, `GetMempoolStream` | same |
-| `max_point_reads` | one block / tree state / root list off the files | bounded wait |
-| `max_range_reads` | one `GetBlockRange` window off the files | bounded wait |
-| `max_scan_reads` | one address-history scan | bounded wait |
-| `unread_timeout` | per stream: data handed over, unread by the client | connection closed |
-| `silent_timeout` | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
-| `drain_timeout` | `run`, after `cancel` | still-open connections dropped |
-| `max_connection_age` | per connection (±10%) | GOAWAY, then the grace |
-| `max_connection_idle` | per connection, no open stream | GOAWAY |
-| `max_connection_age_grace` | a GOAWAY'd connection's in-flight streams | connection dropped |
-
-- **Connection age and idleness** (gRPC A9). Wallets hold one connection for
-  hours, so without an age limit they never re-resolve DNS: neither a load
-  balancer nor a replaced node moves them. At its age (drawn per connection
-  within ±10%, so connections opened together do not cycle together) or after
-  `max_connection_idle` with no open stream, a connection gets an HTTP/2 GOAWAY.
-  Its in-flight streams then have `max_connection_age_grace` to finish before it
-  closes. `None` turns either off.
-- **Operator hold** (`Retire`, the owner's, handed in with `with_retire`, so a
-  hold may start before the server exists). `Retire::hold(delay)`: once `delay`
-  has passed, every connection gets the same GOAWAY + grace, both those open
-  then and every one accepted while still held (GOAWAY'd at once).
-  `Retire::resume()` lifts it; a later `hold` counts its own delay. A repeated
-  `hold` keeps the first deadline. `Retire::state()` = `Hold::Off`, `Draining`
-  (held, deadline not reached) or `Drained`.
-  `zaino_grpc_retired_connections_total{reason="age"|"idle"|"retired"}` counts
-  all three reasons.
-- **Adaptive limit.** Work streams admitted at once follow measured latency,
-  using Netflix concurrency-limits' Gradient2:
-  - A sample is the time the server spent producing one message: from admission
-    to the first DATA frame, then from each poll to the next. A client's
-    backpressure never counts.
-  - Each window (≥ 500 ms and ≥ 10 samples) compares its mean against a
-    long-term baseline averaged over 600 windows:
-    `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`, smoothed at 0.2.
-  - The limit stays between 32 and `max_work_streams`, starting at 256, and
-    admission holds work streams to it exactly.
-  - A window that peaked below half the limit is app-limited and changes nothing.
-  - Refusal is the same `UNAVAILABLE` + pushback. `adaptive_work_streams = false`
-    keeps the limit at `max_work_streams`.
-  - `zaino_grpc_adaptive_stream_limit` exports the limit.
+  `http/1.1` (load-balancer monitors connect over HTTPS/1.1). A missing or mismatched pair fails
+  `Tls::load`, never plaintext. The files are checked every 60 s; a changed pair serves new
+  connections, one that fails to load is logged while the previous pair keeps serving.
+- **Connection age and idleness** (gRPC A9). Wallets hold one connection for hours, so without
+  an age limit they never re-resolve DNS. At its age (drawn per connection within ±10%, so
+  connections opened together do not cycle together) or once idle, a connection gets a GOAWAY;
+  its in-flight streams then have `max_connection_age_grace`.
+- **Operator hold** (`Retire`, the owner's, handed in with `with_retire`, so a hold may start
+  before the server exists). `Retire::hold(delay)`: once `delay` has passed, every connection
+  gets the same GOAWAY + grace, those open then and each one accepted while held. A repeated
+  `hold` keeps the first deadline; `resume()` lifts it. `Retire::state()` = `Hold::Off`,
+  `Draining` or `Drained`.
+- **Adaptive limit.** Work streams admitted at once follow measured latency (Netflix
+  concurrency-limits' Gradient2). A sample is the server's time to produce one message (admission
+  to the first DATA frame, then poll to poll), so a client's backpressure never counts. Each
+  window (≥ 500 ms, ≥ 10 samples) sets `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`,
+  smoothed at 0.2, between 32 and `max_work_streams`; a window that peaked below half the limit
+  changes nothing.
 - **Load report.** `GrpcService::admission()` → `AdmissionState::report()` gives
-  `{limit, in_flight, refused_per_s, overload}`, moved once a minute at the
-  serving summary ([Overload](#overload)).
-- A stream's slot is owned by the response body, so it returns when the stream
-  ends or the client disconnects.
-- A mempool subscription idles until the next block, one per connected wallet,
-  so it never holds a work slot.
-- `GrpcLimits::trusted_proxies` (`TrustedProxies::new(cidrs)`, a list of CIDRs in
-  config; empty = no proxy): a peer inside one of the
-  networks must open with a PROXY header (v1 or v2, read under 5 s, ≤ 4 KiB), and
-  the per-client cap counts the address it names. `LOCAL`/`UNKNOWN` headers
-  count the proxy itself. A malformed or missing header closes the connection.
-- Each accepted socket gets `TCP_NODELAY` and, on Linux, `TCP_NOTSENT_LOWAT` =
-  128 KiB. Unsent bytes then wait in h2, not the kernel, so a unary reply is not
-  stuck behind a range already queued on the same connection.
-- An `accept()` error never ends `run`: a peer-side error is skipped, anything
-  else (`EMFILE`, `ENOBUFS`, ...) backs off 10 ms doubling to 1 s.
-- Request bodies are capped before decode: 64 KiB, or `MAX_BLOCK_BYTES` + 1 KiB for
-  `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
-  within 30 s is `DEADLINE_EXCEEDED`.
-- **No total cap.** A stream lives as long as it makes progress. Its bounds are
-  the client's `grpc-timeout`, `unread_timeout` (client side) and
-  `silent_timeout` (server side), below.
-- **Deadline.** `grpc-timeout` (at most 8 digits plus `H`, `M`, `S`, `m`, `u` or
-  `n`; a malformed value is ignored, as tonic ignores it) is read at arrival. Past
-  it, a handler still pending answers `DEADLINE_EXCEEDED`, and a stream ends
-  with `DEADLINE_EXCEEDED` trailers. The stream's body is dropped with it, so its
-  reads and slot go too.
-- **Unread.** A body that handed hyper a frame and is not polled again, because
-  flow control stalled on a client that stopped reading, owes that frame. Once
-  any stream on a connection has owed for `unread_timeout`, the connection is
-  closed and `zaino_grpc_stalled_connections_total` counts it. An idle stream
-  (a quiet mempool subscription, a read waiting for its lane) never owes.
-- **Silence.** A handler or stream body with nothing to send for `silent_timeout`
-  while hyper waits on it ends with `UNAVAILABLE` (`nothing to send for …`). The
-  clock restarts at every frame. `GetMempoolStream` is exempt, because it is
-  silent until the next block by design.
-- **Frames.** Records that are ready back to back (`GetAddressUtxosStream`,
-  `GetMempoolTx`, `GetBlockRange`'s in-memory blocks) are joined into DATA
-  chunks of up to 16 KiB. A record of 16 KiB or more passes through uncopied,
-  and nothing waits for more data. Sending one small frame per record makes an
-  h2 0.4.16+ client that reads late answer `GOAWAY too_many_data_frames`
-  (lightwalletd #593). `GetMempoolStream` keeps one frame per arrival, shared by
-  every subscriber.
+  `{limit, in_flight, refused_per_s, overload}`, moved once a minute.
+- **Trusted proxies.** A peer inside `trusted_proxies` must open with a PROXY header (v1 or v2,
+  read under 5 s, ≤ 4 KiB), and the per-client cap counts the address it names; `LOCAL` /
+  `UNKNOWN` count the proxy itself.
+- Each accepted socket gets `TCP_NODELAY` and, on Linux, `TCP_NOTSENT_LOWAT` = 128 KiB: unsent
+  bytes wait in h2, not the kernel, so a unary reply is not stuck behind a range already queued
+  on the same connection.
+- Request bodies are capped before decode ([sizes](../../docs/rpc_api.md#status-codes-a-client-must-distinguish)).
+- **Deadline.** `grpc-timeout` is read at arrival (a malformed value is ignored, as tonic
+  ignores it). Past it a pending handler answers `DEADLINE_EXCEEDED` and a stream ends with
+  `DEADLINE_EXCEEDED` trailers; its reads and slot go with it.
+- **Unread.** A body that handed hyper a frame and is not polled again (flow control stalled on
+  a client that stopped reading) owes that frame. Once any stream on a connection has owed for
+  `unread_timeout`, the connection is closed. An idle stream (a quiet mempool subscription, a
+  read waiting for its lane) never owes.
+- **Silence.** A handler or stream body with nothing to send for `silent_timeout` ends with
+  `UNAVAILABLE`; the clock restarts at every frame. `GetMempoolStream` is exempt.
+- **Frames.** Records ready back to back are joined into DATA chunks of up to 16 KiB, and a
+  record of 16 KiB or more passes through uncopied. One small frame per record makes an h2
+  0.4.16+ client that reads late answer `GOAWAY too_many_data_frames` (lightwalletd #593).
+- `method` and `code` metric labels come from fixed sets, so a misbehaving client cannot grow
+  the series count.
 
 ### Read lanes
 
-`ReadLanes` (owned by the `GrpcService`) runs every read that
-touches index files on the blocking pool, under a permit of its lane, never on
-a runtime worker:
-
-- **point**: block by height or hash, tree state, subtree roots
-- **range**: each `GetBlockRange` window below the NFS layer/durable seam
-- **scan**: address UTXOs, balances and transactions
-
-A heavy scan queues behind the other scans, never behind or ahead of a tip read.
-`zaino_grpc_disk_read_wait_seconds{lane}` is each lane's wait.
+`ReadLanes` runs every read that touches index files on the blocking pool, under a permit of its
+lane, never on a runtime worker: **point** (block, tree state, subtree roots), **range** (each
+`GetBlockRange` window below the NFS layer), **scan** (address UTXOs, balances, transactions). A
+heavy scan queues behind the other scans, never behind or ahead of a tip read.
 
 ### Answered without a read
 
@@ -292,17 +171,10 @@ The answers every synced wallet asks for right after each block never queue:
 | `GetTreeState` (layer heights), `GetLatestTreeState` | framed once per NFS publish |
 | `GetSubtreeRoots` | each pool's list framed once per NFS publish; a request = one slice |
 
-The tree-state memos (`memo::PerView`) are keyed on the NFS publish (the
-`NfsPublication` `Arc`), not the `GrpcSnapshot`, which moves on every chain-view fold.
-A new publish starts empty, so there is no invalidation rule. The first ask per
-publish computes on the point lane, single-flight: the rest of the herd waits
-for that one computation, then every later ask is answered inline.
-
-- Per connection: 64 KiB per-stream send buffer, 30 s keepalive ping (20 s
-  timeout), rapid-reset limit of 128.
-- Metrics: `method` and `code` labels come from fixed sets (every
-  `CompactTxStreamer` method plus `unknown`; the 17 gRPC codes), so a misbehaving
-  client cannot grow the series count.
+The tree-state memos (`memo::PerView`) are keyed on the NFS publish (the `NfsPublication` `Arc`),
+not the `GrpcSnapshot`, which moves on every chain-view fold. A new publish starts empty, so
+there is no invalidation rule. The first ask per publish computes on the point lane,
+single-flight; every later ask is answered inline.
 
 ### Overload
 
@@ -319,50 +191,28 @@ thresholds live.
 
 ### Serving log
 
-`run` logs a summary of each minute's traffic under the caller's span (connection
-tasks inherit it too), built from the same close-outs the metrics count:
+`run` logs one `Serving` summary a minute under the caller's span, from the same close-outs the
+metrics count: `rps` = streams finished per second, `conns` = connections held. It is WARN once
+the window holds a failure, a refusal, a request slower than 1 s to its first message (`slow`),
+a stalled connection closed (`stalled`) or a connection refused at a cap (`conns_refused`); those
+fields appear only when non-zero. Nothing served and nothing held = no line.
 
-```text
-INFO  … Grpc:  Serving    rps=42.13 conns=17
-WARN  … Grpc:  Serving    rps=14.7 conns=9 failed=2 refused=31 at_capacity=29 slow=3
-ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
-```
-
-- **rps** = streams finished in the window, per second. **conns** = connections
-  held at the summary. Per-method detail is the metrics', by each `Method`'s
-  `Reply` (the proto's response side; a test holds every method to `service.proto`):
-  - one reply: `zaino.grpc.duration_seconds` (admission through trailers, `OK` answers only: a
-    refusal is microseconds of no work, counted by `requests_total{code}`)
-  - a server stream: `zaino.grpc.first_message_seconds` (its latency)
-  - both: `zaino.grpc.sent_bytes_total`, `zaino.grpc.requests_total{method, code}`
-- Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
-  (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
-  nothing served yet, validator unreachable; `at_capacity` = the admission share);
-  everything else = the client's (bad argument, not found, cancelled), left to
-  `requests_total{code}`.
-- The summary is WARN once the window holds a failure, a refusal, a request
-  slower than 1 s to its first message (`slow`), a stalled connection closed
-  (`stalled`) or a connection refused at a cap (`conns_refused`); problem fields
-  appear only when non-zero. Nothing served and nothing held = no line.
-- The window's first failure is logged as it happens (ERROR `Request failed`:
-  `method`, `code`, the `error` message the client got), and its first
-  refusal other than admission (WARN `Request unavailable`); the rest are only
-  counted, so an outage costs two lines a minute, not one per request.
-- Cost: one or two relaxed atomic adds per request, swapped to zero once a
-  minute on the accept loop; no lock, no allocation per request.
+- Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed** (this server);
+  `Unavailable`, `ResourceExhausted` = **refused** (`at_capacity` = the admission share);
+  everything else = the client's, left to `requests_total{code}`.
+- The window's first failure is logged as it happens (ERROR `Request failed`: `method`, `code`,
+  the client's `error`), and its first refusal other than admission (WARN `Request unavailable`);
+  the rest are only counted, so an outage costs two lines a minute.
+- Latency metrics by each `Method`'s `Reply` (a test holds every method to `service.proto`): a
+  unary reply records `duration_seconds` (`OK` answers only), a server stream
+  `first_message_seconds`.
 
 ## Stored bytes on the wire
 
-Compact-block records are stored gRPC-framed (`[0x00][len:be32][message]`), so
-`GetBlock` and `GetBlockRange` write the index's bytes (pool-pruned by its
-`RangeCursor`) straight into the response body: a unary response is one
-record, a stream is records concatenated. Range steps below the seam run on the
-blocking pool under a range-lane permit. Only `GetLatestBlock` (a two-field `BlockId`) and
-the deprecated `GetBlockRangeNullifiers` re-projection encode messages.
-Tree-state, transparent-address and chain-view answers are domain values; their
-dispatch builds the proto message and frames it.
-
-`GetMempoolStream` opens with its epoch's whole opening as one DATA chunk. The
-chunk is framed once per served-tip epoch and shared by refcount, so the
-per-block reconnect of every wallet costs one render. Each later arrival is
-its own record. With no held verified tip the stream is `UNAVAILABLE`, never opened silent.
+Compact-block records are stored gRPC-framed (`[0x00][len:be32][message]`), so `GetBlock` and
+`GetBlockRange` write the index's bytes (pool-pruned by its `RangeCursor`) straight into the
+response body. Only `GetLatestBlock` and the deprecated `GetBlockRangeNullifiers` re-projection
+encode messages. Tree-state, transparent-address and chain-view answers are domain values,
+framed by their dispatch. `GetMempoolStream`'s opening is one DATA chunk, framed once per
+served-tip epoch and shared by refcount, so the per-block reconnect of every wallet costs one
+render; each later arrival is its own record.

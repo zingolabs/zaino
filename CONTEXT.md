@@ -17,7 +17,8 @@ One word per concept; names, docs and logs use these. System design: [docs/archi
 | **Fold** | One block → one index's changes (`fold(parent, block, out)`) | the chain view's poll **merge** (`ObservationMerge`) |
 | **Best tip** | Most-work tip of the header chain | "chain tip" alone |
 | **Served tip** | What gRPC answers at: deepest folded best-chain block, else the NFS root | best tip (they differ while folding) |
-| **Finalized tip** | min(highest vouched, best − depth), or best − depth on peers' word | final tip |
+| **Finalized tip** | min(highest settled best-chain block, best − depth) (`HeaderChain::finalizable`) | final tip |
+| **Vouched / settled** | Vouched = a trusted validator once had the block on its best chain. Settled = vouched, or witnessed by outbound peers in > 5 netgroups with no difficulty collapse since the last vouch | "confirmed" |
 | **GrpcSnapshot** | What gRPC serves: one atomic publication of chain view + NFS, one load per request (`zaino-grpc-snapshot`) | bare "snapshot" |
 | **IndexSnapshot** | Index archive downloaded to fill empty indexes (`[snapshot]` config, `IndexSnapshotConfig`) | bare "snapshot" |
 | **HeaderChainSnapshot** | The header chain's published state: every branch above the finalized tip, the best tip, each block's witnesses (`zaino-header-chain`) | "verified chain" (trusted headers enter unchecked; no block body is checked) |

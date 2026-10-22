@@ -64,11 +64,3 @@ The live suites run on a Kubernetes cluster through `ztest`, never in GitHub CI;
 
 The reference platform is Debian 12 (Bookworm) on `x86_64-unknown-linux-gnu`;
 the container image builds on it.
-
-## Software philosophy
-
-Zaino is Free Software. We hold that FOSS, with its freedoms to run, study,
-redistribute and improve a program, is the best path to individual and social
-freedom in computing, and that building on shared work reduces duplicated
-effort and improves quality. See
-[FOSS: A General Introduction](https://en.wikibooks.org/wiki/FOSS_A_General_Introduction/Preface).

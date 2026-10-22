@@ -129,12 +129,15 @@ say so when you do.
 ## Docs: one home per fact
 
 System design (how crates fit together, what each source is trusted for, why) lives
-in `docs/architecture.md` only. Each crate's `packages/<crate>/usage.md` (also its
-rustdoc) holds crate-specific detail only: wiring, API contract, constants,
-invariant tables (`T1`, `G5`, … that code cites), tests. A guide links to an
-architecture section instead of restating it; never copy a fact into a second
-file. No status tables, phase lists, migration history or "before/after" prose:
-the code is the current shape, history goes in commit messages.
+in `docs/architecture.md` only; operating `zainod` lives in `docs/running.md`. Each
+crate's `packages/<crate>/usage.md` (the crate's rustdoc too, where its `lib.rs`
+has `#![doc = include_str!("../usage.md")]`) holds crate-specific detail only:
+wiring, API contract, invariant tables, tests. An invariant code (`T1`, `G5`, …)
+exists only while an assert, test or panic message cites it; architecture carries
+none. A guide links to an architecture section instead of restating it; never copy
+a fact into a second file, nor restate what code, `--help`, rustdoc or a metric's
+HELP text already carries. No status tables, phase lists, migration history or
+"before/after" prose: the code is the current shape, history goes in commit messages.
 
 Each guide is indexed from the root `README.md`'s "Crate usage guides" section.
 
