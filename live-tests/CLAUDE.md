@@ -31,6 +31,34 @@ let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest(
 env.build().await?;
 ```
 
+A file-local poll-until wait (e.g. `mirrored_mempool` in `e2e`) is infrastructure,
+not an assertion helper: it may be shared within its file. Its timeout error names
+both sides and what was still missing.
+
+## A failing test says what broke
+
+The reader has only the failure output. Write every check for that reader.
+
+- Name = scenario + guarantee in plain words (`unmined_sends_are_mirrored_but_credited_only_once_mined`),
+  never a bare RPC name (`get_mempool_tx`) or a pattern (`*_loop`, `*_repeated`).
+- Every assert carries a message with its operands and keys (height, txid, pool, round).
+  No bare `assert!(bool)`, `is_ok()`, `is_err()`, `all(..)`: collect the offenders and
+  print them.
+- Parity messages label both sides: `"{height} hash: zaino vs zebrad"`.
+- Collection parity asserts a non-empty premise on the validator side, or the name says
+  empty is the expected answer (`no_subtree_roots_served_before_any_subtree_completes`).
+- Big values compare per element with the key in the message, through
+  `pretty_assertions::assert_eq` (diff, not dump). Never `assert!(a == b)` on blocks or
+  `Vec<CompactBlock>`.
+- Bytes print decoded: hashes as hex, txids in display order, raw transactions keyed by
+  the validator's txid for the same bytes, never as a hex blob.
+- `?` on a harness call whose error lacks the inputs gets `.with_context(|| ..)` naming the
+  step and inputs (`"GetTransaction {txid}"`). No `.expect("txid")`.
+- No bare sleep racing a condition: poll the condition. A sleep that stays is a named
+  const with a one-line reason; so is every timeout, count and magic height.
+- An activation schedule is written out in the test, bound to a name saying what differs
+  from `regtest_default` (`nu6_3_at_boundary`).
+
 ## Parameterize the axes, don't copy the test
 
 Two tests differing only in one input (typically the pool) are one `#[rstest]`.
