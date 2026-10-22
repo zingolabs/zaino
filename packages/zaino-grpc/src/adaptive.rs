@@ -8,7 +8,7 @@
 //! - window whose peak in flight < limit / 2 = app-limited: no change (a quiet node never inflates)
 //! - refusal unchanged: `UNAVAILABLE` + pushback (`admission.rs`)
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -34,13 +34,28 @@ const FLOOR: usize = 32;
 const INITIAL: usize = 256;
 
 /// `adaptive` off = the limit stays the ceiling
+///
+/// - `sample` = relaxed atomics only; the one sample that closes a window takes `gradient`
 #[derive(Debug)]
 pub(crate) struct Limiter {
     limit: AtomicUsize,
     floor: usize,
     ceiling: usize,
     adaptive: bool,
+    window: OpenWindow,
     gradient: Mutex<Gradient>,
+}
+
+/// Samples since the last close (`opened_us` = that close, since `epoch`)
+///
+/// - a sample racing the close may land in either window (±1 of ≥ [`WINDOW_SAMPLES`])
+#[derive(Debug)]
+struct OpenWindow {
+    epoch: Instant,
+    opened_us: AtomicU64,
+    sum_us: AtomicU64,
+    samples: AtomicU32,
+    peak: AtomicUsize,
 }
 
 /// `long` = baseline RTT (seconds, `None` before the first window)
@@ -48,34 +63,31 @@ pub(crate) struct Limiter {
 struct Gradient {
     estimated: f64,
     long: Option<f64>,
-    window: GradientWindow,
-}
-
-#[derive(Debug, Default)]
-struct GradientWindow {
-    opened: Option<Instant>,
-    sum: f64,
-    samples: u32,
-    peak: usize,
 }
 
 impl Limiter {
     pub(crate) fn new(ceiling: usize, adaptive: bool) -> Self {
         let floor = FLOOR.min(ceiling);
         let initial = if adaptive { INITIAL.clamp(floor, ceiling) } else { ceiling };
-        let gradient =
-            Gradient { estimated: initial as f64, long: None, window: GradientWindow::default() };
+        let window = OpenWindow {
+            epoch: Instant::now(),
+            opened_us: AtomicU64::new(0),
+            sum_us: AtomicU64::new(0),
+            samples: AtomicU32::new(0),
+            peak: AtomicUsize::new(0),
+        };
         Self {
             limit: AtomicUsize::new(initial),
             floor,
             ceiling,
             adaptive,
-            gradient: Mutex::new(gradient),
+            window,
+            gradient: Mutex::new(Gradient { estimated: initial as f64, long: None }),
         }
     }
 
     pub(crate) fn limit(&self) -> usize {
-        self.limit.load(Ordering::Relaxed)
+        self.limit.load(Relaxed)
     }
 
     /// One message's production time, `in_flight` work streams as it landed
@@ -83,20 +95,26 @@ impl Limiter {
         if !self.adaptive {
             return;
         }
-        let now = Instant::now();
-        let mut gradient = self.gradient.lock().expect("adaptive limiter poisoned");
-        let window = &mut gradient.window;
-        let opened = *window.opened.get_or_insert(now);
-        window.sum += took.as_secs_f64();
-        window.samples += 1;
-        window.peak = window.peak.max(in_flight);
-        if now - opened < WINDOW || window.samples < WINDOW_SAMPLES {
+        let window = &self.window;
+        let micros = |duration: Duration| u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        window.sum_us.fetch_add(micros(took), Relaxed);
+        let samples = window.samples.fetch_add(1, Relaxed) + 1;
+        window.peak.fetch_max(in_flight, Relaxed);
+        let (now, opened) = (micros(window.epoch.elapsed()), window.opened_us.load(Relaxed));
+        // saturating: a racing closer may have stamped a later `now` than ours
+        if now.saturating_sub(opened) < micros(WINDOW) || samples < WINDOW_SAMPLES {
             return;
         }
-        let closed = std::mem::take(&mut gradient.window);
-        let short = closed.sum / f64::from(closed.samples);
-        let limit = gradient.update(short, closed.peak, self.floor, self.ceiling);
-        self.limit.store(limit, Ordering::Relaxed);
+        // one closer per window
+        if window.opened_us.compare_exchange(opened, now, Relaxed, Relaxed).is_err() {
+            return;
+        }
+        let sum = window.sum_us.swap(0, Relaxed) as f64 / 1e6;
+        let (samples, peak) = (window.samples.swap(0, Relaxed), window.peak.swap(0, Relaxed));
+        let mut gradient = self.gradient.lock().expect("adaptive limiter poisoned");
+        let limit =
+            gradient.update(sum / f64::from(samples.max(1)), peak, self.floor, self.ceiling);
+        self.limit.store(limit, Relaxed);
     }
 }
 
