@@ -9,13 +9,12 @@ use bytes::Bytes;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
-use zaino_header_chain::testing::{insert, insert_unwitnessed, HeaderViews};
-use zaino_header_chain::HeaderChainSnapshot;
+use zaino_header_chain::testing::{insert, insert_unwitnessed};
+use zaino_header_chain::{HeaderChain, HeaderChainSnapshot};
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
-use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
-use zaino_source::testing::{within, ValidatorViews};
+use zaino_source::testing::{h, within, MockChain};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, Limits, TrafficBalancer, TrustedValidator};
 use zcash_protocol::consensus::BlockHeight;
@@ -26,8 +25,8 @@ use crate::invariants::check;
 use crate::mempool_feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots,
-    Publisher, ServingStatus, Tips,
+    emit_gauges, notes, GrpcSnapshot, GrpcSnapshotError, GrpcSnapshots, Publisher, ServingStatus,
+    Tips, METRICS,
 };
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -43,7 +42,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let a3 = builder.mine_empty(3);
     let path = builder.blocks(a3);
     let params = ChainParams::of(&builder);
-    let source = Arc::new(builder.validator(a3));
+    let source = Arc::new(builder.validator(a3).client());
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let address = "10.0.0.1:8232".to_owned();
     let trusted = TrustedValidator { address, source, priority: 0, limits };
@@ -58,7 +57,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
 
     let cancel = CancellationToken::new();
     let running = tokio::spawn(publisher.run(cancel.clone()));
-    let chain = builder.snapshot(a3);
+    let chain = HeaderChainSnapshot::of(&builder, a3);
     view.set_chain(Some(chain.clone()));
     within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
     let grpc_snapshot = grpc_snapshots.load();
@@ -100,7 +99,7 @@ fn one_snapshot_renders_every_gauge() {
     let mut builder = MockChain::regtest();
     let a5 = builder.mine_empty(5);
     let a = builder.blocks(a5);
-    let mut headers = builder.header_chain(DEPTH);
+    let mut headers = HeaderChain::anchored(&builder, DEPTH);
     insert(&mut headers, &a).expect("A verifies");
     headers.finalize(a[2].block_ref());
     let chain = Arc::new(headers.snapshot().expect("verified"));
@@ -134,7 +133,7 @@ fn one_snapshot_renders_every_gauge() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let render = recorder.handle();
     metrics::with_local_recorder(&recorder, || {
-        describe_metrics();
+        METRICS.iter().for_each(|metric| metric.describe());
         emit_gauges(&grpc_snapshot, &progress);
     });
     let rendered = render.render();
@@ -169,7 +168,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
     let served_at = |tip: &Block| {
-        let chain = Arc::new(builder.snapshot(tip.block_ref()));
+        let chain = Arc::new(HeaderChainSnapshot::of(&builder, tip.block_ref()));
         let params = ChainParams::of(&builder);
         let indexed =
             NfsPublication::fixed(Arc::clone(&chain), tip.block_ref(), params, none.clone());
@@ -214,7 +213,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
     let now = i64::from(builder.blocks(a12)[12].header().time);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
-    let chain = Arc::new(builder.snapshot(a12));
+    let chain = Arc::new(HeaderChainSnapshot::of(&builder, a12));
     let indexed =
         Arc::new(NfsPublication::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
     let cases = [
@@ -275,7 +274,7 @@ fn a_tip_two_blocks_past_the_last_vouch_is_degraded_while_fresh_and_down_once_st
         (12, 12, Health::Down, (serving, serving, down)),
     ];
     for (vouched, served, health, expected) in cases {
-        let mut headers = builder.header_chain(DEPTH);
+        let mut headers = HeaderChain::anchored(&builder, DEPTH);
         insert(&mut headers, &a[1..=vouched]).expect("trusted run links");
         insert_unwitnessed(&mut headers, &a[vouched + 1..]).expect("peers' headers link");
         let chain = Arc::new(headers.snapshot().expect("anchored"));
@@ -312,17 +311,18 @@ impl Drill {
     fn new() -> Self {
         let mut builder = MockChain::regtest();
         builder.mine_empty(5);
-        let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
+        let a6 = builder.mine(|block| block.tx(|tx| tx));
         let a = builder.blocks(a6);
         let s5 = builder.fork(h(4)).mine_empty(1).tip();
-        let chain = Arc::new(builder.snapshot(a6));
+        let chain = Arc::new(HeaderChainSnapshot::of(&builder, a6));
         let params = ChainParams::of(&builder);
         let view = Arc::new(view(&chain, &[]));
         let core = Core::new(served(&chain, params, a[3].block_ref()), Arc::clone(&view), DEPTH);
         let prev = core.handle().load();
         core.publish(served(&chain, params, a[6].block_ref()), view);
         let next = core.handle().load();
-        Self { a, s5, mined: TxId::from_bytes([0x66; 32]), chain, params, prev, next }
+        let mined = builder.tx(a6, 1).txid;
+        Self { a, s5, mined, chain, params, prev, next }
     }
 
     /// `next`, serving `block`

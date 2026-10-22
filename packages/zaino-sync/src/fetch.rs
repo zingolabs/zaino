@@ -107,9 +107,8 @@ fn check_blocks_at(blocks: Vec<Block>, heights: &[BlockHeight]) -> Result<Vec<Ch
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::Transaction;
-    use zaino_source::testing::{Lie, ValidatorViews};
+    use zaino_source::testing::{h, Lie, MockChain};
     use zaino_source::ChainDataSource;
 
     use super::*;
@@ -126,7 +125,7 @@ mod tests {
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
-        let two = chain.mine(|b| b.tx(|t| t.txid([1; 32])).tx(|t| t.txid([2; 32])));
+        let two = chain.mine(|b| b.tx(|t| t).tx(|t| t));
         let tip = chain.mine_empty(1);
         let side = chain.fork(h(1)).mine_empty(1).tip();
         let h2 = h(2);
@@ -175,12 +174,13 @@ mod tests {
     async fn every_lie_a_mock_validator_tells_fails_the_body_check() {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
-        let two = chain.mine(|b| b.tx(|t| t.txid([0x21; 32])).tx(|t| t.txid([0x22; 32])));
+        let two = chain.mine(|b| b.tx(|t| t).tx(|t| t));
         let validator = chain.validator(two);
-        let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
+        let client = validator.client();
+        let honest = client.get_block_by_hash(two.hash).await.expect("on its best");
         let passed = check_block(honest, two).map(|checked| checked.block_ref());
         assert_eq!(passed, Ok(two));
-        let honest = validator.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
+        let honest = client.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
         assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.block_ref()), Ok(two));
 
         type Expected = fn(&Block) -> Option<Misanswer>;
@@ -197,11 +197,11 @@ mod tests {
         ];
         for (lie, by_hash, by_height) in lies {
             validator.lie(Some(lie));
-            let served = validator.get_block_by_hash(two.hash).await.expect("answers");
+            let served = client.get_block_by_hash(two.hash).await.expect("answers");
             let expected = by_hash(&served);
             let checked = check_block(served, two).err();
             assert_eq!(checked, expected, "{lie:?} by hash");
-            let served = validator.get_blocks_by_height(&[h(2)]).await.expect("answers").remove(0);
+            let served = client.get_blocks_by_height(&[h(2)]).await.expect("answers").remove(0);
             let expected = by_height(&served);
             assert_eq!(check_block_at(served, h(2)).err(), expected, "{lie:?} by height");
         }

@@ -37,6 +37,6 @@ pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
 pub use ports::{PeerSource, UnspentOutputs};
 pub use submit::{SubmitPolicy, ValidatedTransaction};
-pub use telemetry::{describe_metrics, Alarms};
+pub use telemetry::{Alarm, Alarms, METRICS};
 pub use trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
 pub use view::{ChainView, ChainViewSubscriber};

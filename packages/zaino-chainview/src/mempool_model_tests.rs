@@ -21,10 +21,9 @@ use bytes::Bytes;
 use imbl::Vector;
 use proptest::prelude::*;
 use tokio::time::Instant;
-use zaino_header_chain::testing::HeaderViews;
-use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{BlockRef, FinalityDepth, Netgroup, PeerTxId, ECLIPSE_NETGROUPS};
-use zaino_source::testing::{raw_transparent, ValidatorViews};
+use zaino_source::testing::{p2pkh, raw_transparent, Ledger, MockChain};
 use zaino_traffic::TrustedValidatorId;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
@@ -187,8 +186,7 @@ impl Run {
         Reading {
             block_at_best: Some(self.tip),
             info,
-            peers: None,
-            release: None,
+            telemetry: zaino_source::Telemetry::default(),
             streaming: false,
         }
     }
@@ -247,7 +245,8 @@ impl Run {
             Move::Round { ref answers, wait } => self.round(answers, wait),
             Move::Block => {
                 self.tip = self.chain.mine_empty(1);
-                self.core.apply_headers(Some(Arc::new(self.chain.snapshot(self.tip))));
+                let snapshot = HeaderChainSnapshot::of(&self.chain, self.tip);
+                self.core.apply_headers(Some(Arc::new(snapshot)));
                 self.oracle.polled_since_block.iter_mut().for_each(|polled| *polled = false);
                 self.oracle.settle(true);
             }
@@ -360,10 +359,11 @@ impl Run {
 fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move>) {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
-    for (n, zats) in [(1u8, 10_000), (2, 10_000), (3, 5_000)] {
-        chain.mine(|b| b.coinbase(|c| c.txid([n; 32]).pay(&alice, zats)));
-    }
-    let funding = |n: u8| OutPoint::new([n; 32], 0);
+    let funded = [10_000, 10_000, 5_000].map(|zats| {
+        let block = chain.mine(|b| b.coinbase(|c| c.pay(&alice, zats)));
+        chain.output(block, 0, 0)
+    });
+    let funding = |n: usize| funded[n - 1].clone();
     let unknown = OutPoint::new([9; 32], 0);
     let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
     let txs = [
@@ -385,7 +385,7 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
     let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
     let core = ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS);
-    core.apply_headers(Some(Arc::new(chain.snapshot(tip))));
+    core.apply_headers(Some(Arc::new(HeaderChainSnapshot::of(&chain, tip))));
     let oracle = Oracle {
         health: vec![Health::Pending; validators],
         listed: vec![BTreeSet::new(); validators],

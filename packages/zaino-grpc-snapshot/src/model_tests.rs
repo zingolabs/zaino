@@ -18,13 +18,12 @@ use bytes::Bytes;
 use futures::FutureExt;
 use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
-use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::testing::insert;
 use zaino_header_chain::{HeaderChain, HeaderChainSnapshot};
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{BlockRef, FinalityDepth};
-use zaino_source::testing::{decoded, raw_transaction};
+use zaino_source::testing::{h, raw_transaction, MockChain};
 use zcash_protocol::TxId;
 
 use crate::publisher::Core;
@@ -189,7 +188,7 @@ impl Model {
                 let branch = self.builder.branch(best);
                 let tip = match on_path {
                     true => branch.mine_empty(1).tip(),
-                    false => branch.mine(|block| block.raw_tx(decoded(raw))).tip(),
+                    false => branch.mine(|block| block.raw_tx(raw)).tip(),
                 };
                 let above = u32::from(best.height) as usize + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
@@ -242,7 +241,7 @@ impl Model {
 
 fn run(moves: Vec<(Input, bool)>) {
     let builder = MockChain::regtest().varied_work();
-    let headers = builder.header_chain(DEPTH);
+    let headers = HeaderChain::anchored(&builder, DEPTH);
     let mut model = Model {
         builder,
         headers,

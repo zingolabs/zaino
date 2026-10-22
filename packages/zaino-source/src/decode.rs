@@ -369,7 +369,7 @@ mod tests {
             let got = (
                 decoded.header().hash,
                 decoded.header().prev_hash,
-                zaino_primitives::testing::encode_header(decoded.header()),
+                crate::testing::encode_header(decoded.header()),
                 decoded.check_body(),
             );
             let hash = BlockHash(zaino_primitives::sha256d(header));

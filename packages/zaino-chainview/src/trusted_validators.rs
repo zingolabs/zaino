@@ -2,7 +2,7 @@
 
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::BlockRef;
-use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
+use zaino_source::{BlockchainInfo, EndOfService, Telemetry};
 use zaino_traffic::{Health, TrustedValidatorId};
 
 /// Which trusted validators, by [`TrustedValidatorId`]: a bitset, never a count
@@ -104,15 +104,14 @@ impl Agreement {
     }
 }
 
-/// One configured validator as of its last poll (`peers` = telemetry only, never gates serving)
+/// One configured validator as of its last poll (`telemetry` never gates serving)
 ///
 /// - `block_at_best` = last `getblockhash` answer, at the best its poll started under
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrustedValidatorMeta {
     pub address: String,
     pub health: Health,
-    pub peers: imbl::Vector<PeerInfo>,
-    pub release: Option<NodeRelease>,
+    pub telemetry: Telemetry,
     pub streaming: bool,
     pub(crate) info: Option<BlockchainInfo>,
     pub(crate) block_at_best: Option<BlockRef>,
@@ -123,8 +122,7 @@ impl TrustedValidatorMeta {
         Self {
             address,
             health: Health::Pending,
-            peers: imbl::Vector::new(),
-            release: None,
+            telemetry: Telemetry::default(),
             streaming: false,
             info: None,
             block_at_best: None,
@@ -179,7 +177,8 @@ impl TrustedValidatorMeta {
 
     /// Blocks its own tip has left before its release halts (`None` = no halt known, or no tip)
     pub fn blocks_to_end_of_service(&self) -> Option<u32> {
-        let EndOfService::At { height, .. } = self.release.as_ref()?.end_of_service else {
+        let EndOfService::At { height, .. } = self.telemetry.release.as_ref()?.end_of_service
+        else {
             return None;
         };
         Some(u32::from(height).saturating_sub(u32::from(self.tip()?.height)))

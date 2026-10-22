@@ -78,7 +78,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_source::testing::{h, MockChain};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::TxId;
@@ -102,7 +102,7 @@ mod tests {
         let fs = SimFs::new();
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
-        chain.mine(|b| b.tx(|t| t.txid([1; 32])).tx(|t| t.txid([2; 32])));
+        chain.mine(|b| b.tx(|t| t).tx(|t| t));
         let tip = chain.mine_empty(2);
         let blocks = chain.blocks(tip);
 

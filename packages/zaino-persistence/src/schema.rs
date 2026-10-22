@@ -22,7 +22,6 @@ pub enum IndexKind {
 }
 
 impl IndexKind {
-    /// One spelling everywhere (metric label, `/status`, task, default dir, index-snapshot entry)
     /// Fold order (utxo-set before compact-block: its fees)
     pub const ALL: [Self; 6] = [
         Self::UtxoSet,
@@ -33,6 +32,7 @@ impl IndexKind {
         Self::TxidLocation,
     ];
 
+    /// One spelling everywhere (metric label, `/status`, task, default dir, index-snapshot entry)
     pub const fn name(self) -> &'static str {
         match self {
             Self::CompactBlock => "compact_block",

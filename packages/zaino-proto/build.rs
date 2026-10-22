@@ -54,13 +54,18 @@ fn main() -> io::Result<()> {
 
     // - client only (zaino-grpc dispatches by path, no tonic server)
     // - `Bytes`: one tx to many streams = refcount bump, not a copy per client
+    // - `LightdInfo` as lightwalletd's JSON names it (zainod's `/status` `info`)
     COMPACT_FORMAT_TYPES
         .iter()
         .fold(
             configure()
                 .build_server(false)
                 .out_dir(module_dir("service")?)
-                .bytes(".cash.z.wallet.sdk.rpc.RawTransaction.data"),
+                .bytes(".cash.z.wallet.sdk.rpc.RawTransaction.data")
+                .type_attribute(
+                    ".cash.z.wallet.sdk.rpc.LightdInfo",
+                    "#[derive(serde::Serialize)] #[serde(rename_all = \"camelCase\")]",
+                ),
             |builder, name| {
                 builder.extern_path(
                     format!(".cash.z.wallet.sdk.rpc.{name}"),

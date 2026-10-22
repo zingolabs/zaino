@@ -1,10 +1,10 @@
 //! [`PeerSource`], [`UnspentOutputs`], and what this crate asks a validator through the
 //! balancer (`zaino-traffic`: cadence, retries, blame)
 //!
-//! - poll (the balancer's, merged here): `getblockchaininfo` (its claim, the estimate and schedule
-//!   `GetLightdInfo` serves) + `getrawmempool true` (the listing the diff runs over, fees
-//!   included) + `getblockhash` at the view's best as the poll starts (whether it holds it)
-//! - every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
+//! - poll (the balancer's, merged here; its calls: `ChainDataSource::get_poll_reading`): its
+//!   claim, the estimate and schedule `GetLightdInfo` serves, the listing the diff runs over,
+//!   whether it holds the view's best as the poll starts
+//! - every 60 s, also its `Telemetry`
 //! - `bytes(..)`: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
 //! - `headers(Pinned)`: `getblockheader <h> false` batches (its headers)
 //! - `check_admission(..)`: `checkadmission`, a submission's verdict before any push

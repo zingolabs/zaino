@@ -10,10 +10,11 @@
 
 use bytes::Bytes;
 use prost::Message as _;
-use zaino_primitives::types::{TreeSize, TreeSizes};
+use zaino_primitives::types::TreeSizes;
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
 
+use crate::encode::decode_chain_metadata;
 use crate::HASH;
 
 /// `CompactBlock.vtx`, the only block-level field rewritten
@@ -109,11 +110,7 @@ pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
 pub(crate) fn record_sizes(record: &[u8]) -> Option<TreeSizes> {
     let metadata =
         compact_formats::ChainMetadata::decode(block_field(record, BLOCK_CHAIN_METADATA)?).ok()?;
-    Some(TreeSizes {
-        sapling: TreeSize::from(metadata.sapling_commitment_tree_size),
-        orchard: TreeSize::from(metadata.orchard_commitment_tree_size),
-        ironwood: TreeSize::from(metadata.ironwood_commitment_tree_size),
-    })
+    Some(decode_chain_metadata(&metadata))
 }
 
 /// Value of the first `field` of one framed record's `CompactBlock` (stops there)
@@ -244,10 +241,10 @@ fn put_varint(mut value: u64, out: &mut Vec<u8>) {
 mod tests {
     use std::slice;
 
-    use zaino_primitives::testing::{p2pkh, MockChain};
+    use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
+    use zaino_source::testing::{p2pkh, MockChain};
     use zcash_protocol::value::Zatoshis;
-    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
     use crate::{compact_tx, encode_compact_block};
@@ -257,7 +254,7 @@ mod tests {
     #[test]
     fn single_field_reads_walk_to_the_proto_fields_or_none() {
         let mut chain = MockChain::regtest();
-        let one = chain.mine(|b| b.tx(|t| t.sapling_output(1).orchard_action([1; 32], 1)));
+        let one = chain.mine(|b| b.tx(|t| t.sapling_output(1).orchard_action(1, 1)));
         let sizes = TreeSizes {
             sapling: TreeSize::from(10),
             orchard: TreeSize::from(20),
@@ -278,15 +275,16 @@ mod tests {
         // coinbase pays (transparent only), tx carries every pool
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 17_345)));
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 17_345)));
+        let paid = chain.output(one, 0, 0);
         let two = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 625)).tx(|t| {
-                t.spend(OutPoint::new([0x22; 32], 0))
+                t.spend(paid)
                     .pay(&alice, 12_345)
-                    .sapling_spend([0x33; 32])
+                    .sapling_spend(0x33)
                     .sapling_output(0x44)
-                    .orchard_action([0x77; 32], 0x78)
-                    .ironwood_action([0x88; 32], 0x89)
+                    .orchard_action(0x77, 0x78)
+                    .ironwood_action(0x88, 0x89)
             })
         });
         let stored =
@@ -331,15 +329,14 @@ mod tests {
         // slots: coinbase (transparent), component-less, sapling only, orchard only, transparent
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 1).pay(&alice, 1_100)));
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 1).pay(&alice, 1_100)));
+        let paid = chain.output(one, 0, 1);
         let two = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 625))
-                .tx(|t| t.txid([1; 32]))
-                .tx(|t| t.txid([2; 32]).sapling_output(0x44))
-                .tx(|t| t.txid([3; 32]).orchard_action([0x77; 32], 0x78))
-                .tx(|t| {
-                    t.txid([4; 32]).spend(OutPoint::new([0x22; 32], 1)).pay(&alice, 100).fee(1_000)
-                })
+                .tx(|t| t)
+                .tx(|t| t.sapling_output(0x44))
+                .tx(|t| t.orchard_action(0x77, 0x78))
+                .tx(|t| t.spend(paid).pay(&alice, 100).fee(1_000))
         });
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
         let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));

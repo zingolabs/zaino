@@ -163,12 +163,12 @@ debug = true
 incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "d5e07689456e0be0154934aa39d347a9e5f18765" }
 orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "426f5c77a7e1eab302f1088db6ac7679865d7ee4" }
 sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "3c14da616116271fdf48ec032bbf31195e5f6c7f" }
-zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
-zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
-zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
-zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
-zcash_encoding = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
-equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "9d1d4286673a6034610733c651d7f2df5c6ebd73" }
+zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
+zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
+zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
+zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
+zcash_encoding = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
+equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "700969fda3ef70ec9f617e62634c43bbb97f9a72" }
 
 # Release codegen a profiler can attribute to source lines (`release` stays lean)
 # - Frame pointers = other half, no Cargo key for them: pass

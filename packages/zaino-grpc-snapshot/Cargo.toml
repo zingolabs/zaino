@@ -45,6 +45,5 @@ zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-internal-block-hash-to-height.workspace = true
 zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }

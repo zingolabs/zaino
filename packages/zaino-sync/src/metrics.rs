@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use metrics::Unit;
+use zaino_primitives::metric::Metric;
 use zaino_primitives::types::{Block, Transaction};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -24,54 +26,81 @@ mod names {
     pub(super) const INDEX_WRITE_SECONDS: &str = "zaino.index.write_seconds";
 }
 
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    for (name, what) in [
-        (names::FETCH_BLOCKS_TOTAL, "Blocks"),
-        (names::FETCH_TRANSACTIONS_TOTAL, "Transactions"),
-        (names::FETCH_TRANSPARENT_INPUTS_TOTAL, "Transparent inputs"),
-        (names::FETCH_TRANSPARENT_OUTPUTS_TOTAL, "Transparent outputs"),
-        (names::FETCH_SAPLING_SPENDS_TOTAL, "Sapling spends"),
-        (names::FETCH_SAPLING_OUTPUTS_TOTAL, "Sapling outputs"),
-        (names::FETCH_ORCHARD_ACTIONS_TOTAL, "Orchard actions"),
-        (names::FETCH_IRONWOOD_ACTIONS_TOTAL, "Ironwood actions"),
-    ] {
-        metrics::describe_counter!(
-            name,
-            format!(
-                "{what} sent to the index writers on the finalized stream; a restart counts again"
-            )
-        );
-    }
-    metrics::describe_gauge!(
-        names::INDEX_APPLIED_HEIGHT,
-        "Highest height the index has folded and applied to its store (committed or not), by index"
-    );
-    metrics::describe_counter!(
-        names::INDEX_APPLIED_BLOCKS_TOTAL,
-        "Blocks the index has folded and applied to its store, by index; a restart counts again"
-    );
-    metrics::describe_counter!(
-        names::INDEX_APPLIED_ROWS_TOTAL,
-        "Records and rows the index has written into its store, by index; a restart counts again"
-    );
-    metrics::describe_histogram!(
-        names::INDEX_RUN_SECONDS,
-        metrics::Unit::Seconds,
-        "One run of finalized blocks through an index writer, taken off its queue → published \
-         (fold + write + any wait for input), by index"
-    );
-    metrics::describe_histogram!(
-        names::INDEX_WRITE_SECONDS,
-        metrics::Unit::Seconds,
-        "The store side of one run: applies + commits (buffering, segment writes, fsync), by index; \
-         run − write = fold + waits"
-    );
-    metrics::describe_gauge!(
-        names::INDEX_FINALIZED_HEIGHT,
-        "Highest height the index has durably written (its last commit), by index"
-    );
-}
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = {
+    use names::*;
+
+    &[
+        Metric::counter(
+            FETCH_BLOCKS_TOTAL,
+            "Blocks sent to the index writers on the finalized stream; a restart counts again",
+        ),
+        Metric::counter(
+            FETCH_TRANSACTIONS_TOTAL,
+            "Transactions sent to the index writers on the finalized stream; a restart counts again",
+        ),
+        Metric::counter(
+            FETCH_TRANSPARENT_INPUTS_TOTAL,
+            "Transparent inputs sent to the index writers on the finalized stream; a restart counts \
+             again",
+        ),
+        Metric::counter(
+            FETCH_TRANSPARENT_OUTPUTS_TOTAL,
+            "Transparent outputs sent to the index writers on the finalized stream; a restart \
+             counts again",
+        ),
+        Metric::counter(
+            FETCH_SAPLING_SPENDS_TOTAL,
+            "Sapling spends sent to the index writers on the finalized stream; a restart counts \
+             again",
+        ),
+        Metric::counter(
+            FETCH_SAPLING_OUTPUTS_TOTAL,
+            "Sapling outputs sent to the index writers on the finalized stream; a restart counts \
+             again",
+        ),
+        Metric::counter(
+            FETCH_ORCHARD_ACTIONS_TOTAL,
+            "Orchard actions sent to the index writers on the finalized stream; a restart counts \
+             again",
+        ),
+        Metric::counter(
+            FETCH_IRONWOOD_ACTIONS_TOTAL,
+            "Ironwood actions sent to the index writers on the finalized stream; a restart counts \
+             again",
+        ),
+        Metric::gauge(
+            INDEX_APPLIED_HEIGHT,
+            "Highest height the index has folded and applied to its store (committed or not), by \
+             index",
+        ),
+        Metric::counter(
+            INDEX_APPLIED_BLOCKS_TOTAL,
+            "Blocks the index has folded and applied to its store, by index; a restart counts again",
+        ),
+        Metric::counter(
+            INDEX_APPLIED_ROWS_TOTAL,
+            "Records and rows the index has written into its store, by index; a restart counts \
+             again",
+        ),
+        Metric::histogram(
+            INDEX_RUN_SECONDS,
+            "One run of finalized blocks through an index writer, taken off its queue → published \
+             (fold + write + any wait for input), by index",
+        )
+        .unit(Unit::Seconds),
+        Metric::histogram(
+            INDEX_WRITE_SECONDS,
+            "The store side of one run: applies + commits (buffering, segment writes, fsync), by \
+             index; run − write = fold + waits",
+        )
+        .unit(Unit::Seconds),
+        Metric::gauge(
+            INDEX_FINALIZED_HEIGHT,
+            "Highest height the index has durably written (its last commit), by index",
+        ),
+    ]
+};
 
 /// One block's changes applied to `index`'s store
 pub(crate) fn applied_block(index: &'static str, rows: usize) {

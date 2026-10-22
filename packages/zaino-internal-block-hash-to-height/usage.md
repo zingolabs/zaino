@@ -24,17 +24,7 @@ by_hash   hash 32 (protocol byte order) → height u32 BE      point lookups onl
 
 ## Wiring
 
-```rust,ignore
-use zaino_internal_block_hash_to_height::{schema, BlockHashIndexWriter, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
-
-let schema = schema(network);
-let writer = BlockHashIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::BlockHash, handle.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::BlockHash, handle);
-tokio::spawn(writer.run(blocks));
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)).
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
   `S::View: MapRead`. zainod picks `DiskEngine`.

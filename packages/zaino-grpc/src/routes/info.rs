@@ -100,11 +100,10 @@ mod tests {
     use super::*;
     use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
     use zaino_grpc_snapshot::GrpcSnapshots;
-    use zaino_header_chain::testing::HeaderViews;
+    use zaino_header_chain::HeaderChainSnapshot;
     use zaino_persistence::DiskView;
     use zaino_primitives::protocol::compiled_schedule;
-    use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::ValidatorViews;
+    use zaino_source::testing::{h, MockChain};
     use zcash_protocol::consensus::BlockHeight;
 
     use crate::testing::{grpc_snapshots, indexed_at, published, rounds, routes_over};
@@ -174,7 +173,7 @@ mod tests {
     async fn lightd_info_answers_once_served_with_no_validator_holding_the_tip() {
         let mut chain = MockChain::regtest();
         let tip_7 = chain.mine_empty(7);
-        let node = Arc::new(chain.validator(tip_7));
+        let node = chain.validator(tip_7);
         let (mut routes, _balancing, _fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let grpc_snapshots = routes.grpc_snapshots.clone();
@@ -188,7 +187,7 @@ mod tests {
 
         let unserved = "the indexes are syncing: nothing served yet";
         assert!(refused(unserved), "no chain yet");
-        routes.chain_view.set_chain(Some(chain.snapshot(tip_7)));
+        routes.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip_7)));
         rounds("verified, nothing served", || refused(unserved)).await;
 
         nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));

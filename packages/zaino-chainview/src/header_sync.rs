@@ -31,7 +31,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use zaino_header_chain::{
-    decode_header, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected, Witness,
+    decode_header, Fault, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected,
+    Witness,
 };
 use zaino_primitives::types::{BlockRef, Netgroup};
 use zaino_source::{BlockLink, BlockLinks, ChainDataSource, GetAtHeightError};
@@ -399,20 +400,10 @@ impl<S: ChainDataSource> HeaderSync<S> {
             match self.chain.insert_untrusted(&header, &params, now_unix) {
                 Ok(Inserted::Known) => {}
                 Ok(Inserted::Side | Inserted::Best { .. }) => progressed = true,
-                // not the peer's fault: a clock behind, a fork we cannot place, too little held
-                Err(refused)
-                    if refused.is_deferred()
-                        || matches!(
-                            refused,
-                            Rejected::Orphan
-                                | Rejected::BelowFinalized
-                                | Rejected::ShortContext { .. }
-                        ) =>
-                {
-                    break
-                }
                 Err(refused) => {
-                    self.balancer.report(answered.ticket, &refused);
+                    if refused.fault() == Fault::Sender {
+                        self.balancer.report(answered.ticket, &refused);
+                    }
                     break;
                 }
             }

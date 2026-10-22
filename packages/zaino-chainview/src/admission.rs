@@ -95,8 +95,7 @@ mod tests {
     use std::slice;
 
     use zaino_primitives::protocol::compiled_schedule;
-    use zaino_primitives::testing::{h, p2pkh};
-    use zaino_source::testing::{raw_transaction, raw_transparent, raw_v5};
+    use zaino_source::testing::{h, p2pkh, raw_transaction, raw_transparent, raw_v5};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;

@@ -16,15 +16,15 @@ use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use zaino_primitives::metric::Metric;
 use zaino_primitives::types::Block;
 use zaino_source::{
-    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
-    GetBlockByHashError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    NonDomainError, PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError,
-    TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
+    GetRawMempoolTransactionError, MempoolListed, NonDomainError, PollReading, QueryError,
+    RawMempoolTransactions,
 };
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::{BlockHash, TxId};
+use zcash_protocol::BlockHash;
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
@@ -32,6 +32,14 @@ use crate::member::{Health, Limits, MemberId, Synced, TrustedValidatorId};
 
 /// Block ask open this long without an answer → warn, and again each period after
 const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+const MISANSWERS_TOTAL: &str = "zaino.traffic.misanswers_total";
+
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = &[Metric::counter(
+    MISANSWERS_TOTAL,
+    "Answers that failed the caller's check (sender benched), by member and class",
+)];
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …, `address` = its name in
 /// logs and status)
@@ -49,7 +57,10 @@ pub struct Answered<T> {
     pub ticket: Ticket,
 }
 
-/// First transport failure, else the last domain answer (`None` = no eligible member to ask)
+/// First transport failure, else the last domain answer, else `Unsupported` (every member asked
+/// lacks the method)
+///
+/// - `None` = no eligible member to ask
 #[derive(Debug)]
 pub struct Unanswered<E: fmt::Debug + fmt::Display> {
     pub last: Option<QueryError<E>>,
@@ -297,56 +308,39 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.ask(Class::Bytes, Route::Prefer(prefer), send).await
     }
 
-    /// Mined or in a mempool: absent → next trusted member
-    pub async fn transaction(
+    /// `Lookup` (interactive): `ask` of any trusted validator, hedged
+    ///
+    /// - The next validator on a domain answer or a missing method
+    ///
+    /// ```rust,ignore
+    /// balancer.lookup(move |source| async move { source.get_transaction(txid).await }).await
+    /// ```
+    pub async fn lookup<T, E, Ask>(
         &self,
-        txid: TxId,
-    ) -> Result<Answered<TransactionResponse>, Unanswered<GetTransactionError>> {
-        let shared = Arc::clone(&self.shared);
-        let send = move |member| {
-            let source = shared.trusted_only(member);
-            async move { source.get_transaction(txid).await }.boxed()
-        };
-        self.ask(Class::Lookup, Route::Any, send).await
-    }
-
-    /// `sendrawtransaction` on `validator` alone, one attempt (the caller's privacy choice)
-    pub async fn submit(
-        &self,
-        validator: TrustedValidatorId,
-        raw: Vec<u8>,
-    ) -> Result<Answered<TxId>, Unanswered<SendRawTransactionError>> {
-        self.on_alone(validator, move |source| {
-            let raw = raw.clone();
-            async move { source.send_raw_transaction(raw).await }.boxed()
-        })
-        .await
-    }
-
-    /// `checkadmission` on `validator` alone, one attempt (the send's verdict, nothing relayed)
-    pub async fn check_admission(
-        &self,
-        validator: TrustedValidatorId,
-        raw: Vec<u8>,
-    ) -> Result<Answered<TxId>, Unanswered<CheckAdmissionError>> {
-        self.on_alone(validator, move |source| {
-            let raw = raw.clone();
-            async move { source.check_admission(raw).await }.boxed()
-        })
-        .await
-    }
-
-    /// A `Submit`-class ask of `validator` alone
-    async fn on_alone<T, E>(
-        &self,
-        validator: TrustedValidatorId,
-        ask: impl Fn(Arc<S>) -> BoxFuture<'static, Result<T, QueryError<E>>>,
+        ask: impl Fn(Arc<S>) -> Ask,
     ) -> Result<Answered<T>, Unanswered<E>>
     where
+        Ask: Future<Output = Result<T, QueryError<E>>> + Send + 'static,
         E: fmt::Debug + fmt::Display,
     {
         let shared = Arc::clone(&self.shared);
-        let send = move |to| ask(shared.trusted_only(to));
+        let send = move |member| ask(shared.trusted_only(member)).boxed();
+        self.ask(Class::Lookup, Route::Any, send).await
+    }
+
+    /// `Submit` (control): `ask` of `validator` alone, one attempt (who learns of a transaction =
+    /// the caller's privacy choice)
+    pub async fn submit<T, E, Ask>(
+        &self,
+        validator: TrustedValidatorId,
+        ask: impl Fn(Arc<S>) -> Ask,
+    ) -> Result<Answered<T>, Unanswered<E>>
+    where
+        Ask: Future<Output = Result<T, QueryError<E>>> + Send + 'static,
+        E: fmt::Debug + fmt::Display,
+    {
+        let shared = Arc::clone(&self.shared);
+        let send = move |to| ask(shared.trusted_only(to)).boxed();
         self.ask(Class::Submit, Route::Only(MemberId::TrustedValidator(validator)), send).await
     }
 
@@ -393,7 +387,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer");
         let class = ticket.class.label();
         let labels = [("member", member), ("class", class.to_owned())];
-        metrics::counter!("zaino_traffic_misanswers_total", &labels).increment(1);
+        metrics::counter!(MISANSWERS_TOTAL, &labels).increment(1);
         self.shared.step(Input::Report(ticket));
     }
 
@@ -414,7 +408,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             ended: false,
         };
         let mut sends = FuturesUnordered::new();
-        let (mut value, mut failed, mut domain) = (None, None, None);
+        let (mut value, mut failed, mut domain, mut unsupported) = (None, None, None, false);
         let opened = Instant::now();
         // rounds retry forever (no block skipped): a block no member serves = a silent stall unwarned
         let mut stall_warn_at = class.retries_rounds().then(|| opened + STALL_WARN_EVERY);
@@ -446,6 +440,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                         open.ended = true;
                         let last = failed.take().map(QueryError::NonDomain);
                         let last = last.or(domain.take().map(QueryError::Domain));
+                        let last = last.or(unsupported.then_some(QueryError::Unsupported));
                         return Err(Unanswered { last });
                     }
                 },
@@ -458,6 +453,13 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                         Err(QueryError::Domain(said)) => {
                             latest_failure = Some((ticket.member, said.to_string()));
                             domain = Some(said);
+                            Reply::Domain
+                        }
+                        // an answer about the node (healthy, just older): the next member
+                        Err(QueryError::Unsupported) => {
+                            let lacked = QueryError::<E>::Unsupported.to_string();
+                            latest_failure = Some((ticket.member, lacked));
+                            unsupported = true;
                             Reply::Domain
                         }
                         Err(QueryError::NonDomain(cause)) => {

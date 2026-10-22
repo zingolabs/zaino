@@ -83,18 +83,18 @@ impl DaemonState {
     }
 }
 
-pub(crate) fn describe_metrics() {
-    metrics::describe_gauge!(
+pub(crate) const METRICS: &[zaino_primitives::metric::Metric] = &[
+    zaino_primitives::metric::Metric::gauge(
         STATE,
         "Daemon state, one-hot by state (= /readyz's: provisioning, syncing, serving, degraded, \
-         held, down)"
-    );
-    metrics::describe_gauge!(
+         held, down)",
+    ),
+    zaino_primitives::metric::Metric::gauge(
         REASON,
         "Why down, degraded or held, one-hot by reason (= /readyz's detail.reason; overloaded = \
-         its cause in zaino_grpc_overload_latched)"
-    );
-}
+         its cause in zaino_grpc_overload_latched)",
+    ),
+];
 
 /// `/readyz` body + head of `/status`: the state, `detail` its own measure (`null` = none yet)
 ///

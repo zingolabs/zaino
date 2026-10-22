@@ -37,19 +37,14 @@ use zaino_chainview::ChainView;
 use zaino_grpc::{AdmissionState, GrpcService, RouteDeps, Routing, Tls};
 use zaino_grpc_snapshot::Publisher;
 use zaino_header_chain::{HeaderChainSnapshot, Params, CONTEXT};
-use zaino_index_compact_block::CompactBlockIndexWriter;
-use zaino_index_transparent_address::TransparentAddressIndexWriter;
-use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
-use zaino_index_utxo_set::UtxoSetIndexWriter;
-use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
-use zaino_internal_txid_location::TxidLocationIndexWriter;
-use zaino_nfs::{ChainParams, Nfs};
+use zaino_index_tree_state::TreeStateReader;
+use zaino_nfs::{write_buffer, writer, ChainParams, FeeWiring, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View};
+use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
+use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::{BlockchainInfo, ChainDataSource};
-use zaino_sync::{FeeSink, FinalizedFollower, IndexHandle, Subscription};
+use zaino_sync::{FinalizedFollower, IndexHandle};
 use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
@@ -57,7 +52,6 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
 use crate::error::IndexerError;
 use crate::logging::component;
-use crate::schemas;
 use crate::status::DaemonStatus;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
@@ -323,54 +317,12 @@ fn open_indexes<S: ChainDataSource>(
         opened: Vec::new(),
         writers: Vec::new(),
     };
-    if let Some((cb, vb)) = config.compact_block()? {
-        // compact-block folds after utxo-set (its fees)
-        let mut fee_sink = FeeSink::new();
-        let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
-        let (vb_new, vb_handle) = (UtxoSetIndexWriter::new, UtxoSetIndexWriter::handle);
-        indexes.open(IndexKind::UtxoSet, &vb, vb_new, vb_handle, |writer, blocks| {
-            writer.run(blocks, fee_sink)
-        })?;
-        let (cb_new, cb_handle) = (CompactBlockIndexWriter::new, CompactBlockIndexWriter::handle);
-        indexes.open(IndexKind::CompactBlock, &cb, cb_new, cb_handle, |writer, blocks| {
-            writer.run(blocks, fees)
-        })?;
-    }
-    if let Some(bh) = config.enabled(IndexKind::BlockHash) {
-        indexes.open(
-            IndexKind::BlockHash,
-            &bh,
-            BlockHashIndexWriter::new,
-            BlockHashIndexWriter::handle,
-            BlockHashIndexWriter::run,
-        )?;
-    }
-    if let Some(ts) = config.enabled(IndexKind::TreeState) {
-        indexes.open(
-            IndexKind::TreeState,
-            &ts,
-            TreeStateIndexWriter::new,
-            TreeStateIndexWriter::handle,
-            TreeStateIndexWriter::run,
-        )?;
-    }
-    if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
-        indexes.open(
-            IndexKind::TransparentAddress,
-            &ta,
-            TransparentAddressIndexWriter::new,
-            TransparentAddressIndexWriter::handle,
-            TransparentAddressIndexWriter::run,
-        )?;
-    }
-    if let Some(tl) = config.enabled(IndexKind::TxidLocation) {
-        indexes.open(
-            IndexKind::TxidLocation,
-            &tl,
-            TxidLocationIndexWriter::new,
-            TxidLocationIndexWriter::handle,
-            TxidLocationIndexWriter::run,
-        )?;
+    let compact_block = config.compact_block()?;
+    let mut fees = FeeWiring::new(compact_block.map(|(cb, _)| cb.queue_bytes));
+    for kind in IndexKind::ALL {
+        if let Some(index) = config.enabled(kind) {
+            indexes.open(kind, &index, &mut fees)?;
+        }
     }
     Ok(indexes)
 }
@@ -460,29 +412,24 @@ pub(crate) struct OpenedIndex {
 }
 
 impl<S: ChainDataSource> Indexes<S> {
-    /// `config.path` opened as `kind`'s store (at its crate's write buffer) under its component
-    /// span → `writer`'s handle to the follower + NFS, its `run` over the finalized stream queued
-    fn open<W, F>(
+    /// `config.path` opened as `kind`'s store under its component span → its writer's handle to
+    /// the follower + NFS, its `run` over the finalized stream queued
+    fn open(
         &mut self,
         kind: IndexKind,
         config: &IndexConfig,
-        writer: impl FnOnce(DiskStore) -> W,
-        handle: impl FnOnce(&W) -> IndexHandle<DiskView>,
-        run: impl FnOnce(W, Subscription<Block>) -> F,
-    ) -> Result<(), IndexerError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let (schema, write_buffer) = schemas::schema(kind, self.network);
+        fees: &mut FeeWiring,
+    ) -> Result<(), IndexerError> {
+        let (schema, write_buffer) = (zaino_nfs::schema(kind, self.network), write_buffer(kind));
         let span = crate::logging::index_component(kind.name());
-        let writer = span.in_scope(|| {
+        let store = span.in_scope(|| {
             debug!("Opening from {}", crate::logging::shown_path(&config.path));
-            self.engine.open(&config.path, &schema, write_buffer).map(writer)
+            self.engine.open(&config.path, &schema, write_buffer)
         })?;
-        let handle = handle(&writer);
+        let (handle, run) = writer(kind, store, fees);
         let blocks = self.follower.subscribe(kind, handle.durable_view().tip(), config.queue_bytes);
         self.nfs.add(kind, handle.clone());
-        self.writers.push((kind, span.clone(), Box::pin(run(writer, blocks))));
+        self.writers.push((kind, span.clone(), run(blocks)));
         self.opened.push(OpenedIndex { kind, span, dir: config.path.clone(), handle });
         Ok(())
     }
@@ -757,14 +704,14 @@ mod tests {
         use std::num::NonZeroU32;
         use std::time::Duration;
 
-        use zaino_header_chain::testing::{insert, HeaderViews};
-        use zaino_primitives::testing::{h, MockChain};
+        use zaino_header_chain::testing::insert;
+        use zaino_header_chain::HeaderChain;
         use zaino_primitives::types::Block;
         use zaino_proto::proto::service::{
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
-        use zaino_source::testing::ValidatorViews;
+        use zaino_source::testing::{h, MockChain};
         use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
@@ -780,14 +727,14 @@ mod tests {
         let hash = |block: &Block| block.header().hash;
 
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
-        let mut headers = blocks.header_chain(depth);
+        let mut headers = HeaderChain::anchored(&blocks, depth);
         let (verified, chain) = watch::channel(None);
-        let validator = Arc::new(blocks.validator(a8));
+        let validator = blocks.validator(a8);
         let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = zaino_traffic::TrustedValidator {
             address: "mock".to_owned(),
-            source: Arc::clone(&validator),
+            source: Arc::new(validator.client()),
             priority: 0,
             limits,
         };
@@ -901,7 +848,7 @@ mod tests {
         let text = text.expect("text exposition is UTF-8");
         let per_index = |family: &'static str| {
             let name = move |kind: IndexKind| format!("{family}{{index=\"{}\"}}", kind.name());
-            IndexKind::ALL.into_iter().map(name)
+            IndexKind::ALL.iter().copied().map(name)
         };
         let families = [
             "zaino_build_info{",

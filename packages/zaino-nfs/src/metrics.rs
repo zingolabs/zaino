@@ -3,17 +3,15 @@
 //! - State gauges (`zaino_best_tip`, `zaino_fetch_height`) = `zaino-grpc-snapshot`'s, at scrape
 //! - Fetch counters = the finalized path's (`zaino-sync`)
 
+use zaino_primitives::metric::Metric;
+
 const REORGS_TOTAL: &str = "zaino.reorgs_total";
 
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    metrics::describe_counter!(
-        REORGS_TOTAL,
-        "Served tips replaced by another branch rather than extended"
-    );
-    // published from boot (unregistered until first reorg = indistinguishable from unemitted)
-    metrics::counter!(REORGS_TOTAL).absolute(0);
-}
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = &[Metric::counter_from_zero(
+    REORGS_TOTAL,
+    "Served tips replaced by another branch rather than extended",
+)];
 
 pub(crate) fn reorg() {
     metrics::counter!(REORGS_TOTAL).increment(1);

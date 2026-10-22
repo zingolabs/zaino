@@ -50,7 +50,7 @@ possible, take everything else from as many peers as possible.**
   (zaino-sync)         tip overlay  │
        │ FinalizedStream     │ NfsPublication
        ▼                     ▼      ▼
-  5 index writers ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
+  index writers   ──▶ zaino-grpc-snapshot Publisher ──▶ one Arc<GrpcSnapshot> per request
   (disk)  durable views                                  → zaino-grpc, /status, /readyz, /metrics
 ```
 
@@ -324,7 +324,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 
 | Alarm             | Raised when                                                                         |
 | ----------------- | ----------------------------------------------------------------------------------- |
-| stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ 24 blocks |
+| stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ `STALE_TIP_BLOCKS` |
 | end of service    | a validator's release halts within 8,064 blocks (a week) of its tip                 |
 | partitioned       | two `Live` validators share no outbound peer                                        |
 | eclipsed          | `Live` validators reach 1–2 distinct outbound peers in total                        |
@@ -340,7 +340,7 @@ double), or one that keeps a dependency out of the crates above it:
 
 | Trait                               | Implementations                                | Why                                      |
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient`, `MockValidator` | JSON-RPC or indexer gRPC; tests control the data |
+| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient` (tests: the legacy client over a `MockValidator`'s JSON-RPC) | JSON-RPC or indexer gRPC; tests control the data, never the client |
 | `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets                  |
 | `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
 | `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, a `MockChain` `Ledger`   | the chain view sits below the indexes    |

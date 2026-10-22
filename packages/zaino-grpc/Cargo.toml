@@ -53,18 +53,17 @@ zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
 serde = { workspace = true, features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 
 [dev-dependencies]
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-chainview = { workspace = true, features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
-zaino-internal-block-hash-to-height.workspace = true
 zaino-grpc-snapshot = { workspace = true, features = ["testing"] }
 h2 = "0.4"
 zaino-internal-txid-location.workspace = true

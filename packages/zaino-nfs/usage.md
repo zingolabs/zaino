@@ -14,11 +14,15 @@ let params = ChainParams { network, schedule };                // activations() 
 let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth, lookahead);
 let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 
-// one per enabled index: its handle to both, its finalized stream out
-let utxo_set_writer = UtxoSetIndexWriter::new(utxo_set_store);
-let utxo_set = utxo_set_writer.handle();
-let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::UtxoSet, utxo_set);
+// every enabled index, in IndexKind::ALL order: its handle to both, its finalized stream out
+let mut fees = FeeWiring::new(compact_block_queue);     // None = compact-block off
+for &kind in IndexKind::ALL {
+    let store = engine.open(&path, &zaino_nfs::schema(kind, network), zaino_nfs::write_buffer(kind))?;
+    let (handle, run) = zaino_nfs::writer(kind, store, &mut fees);
+    let blocks = follower.subscribe(kind, handle.durable_view().tip(), queue_bytes);
+    nfs.add(kind, handle);
+    tasks.spawn(run(blocks));
+}
 
 let publisher = zaino_grpc_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
 tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone | IndexGone
@@ -32,8 +36,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
   what publications and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
   `IndexGone(index)` = an input dropped.
-- `schema(kind, network)`: `kind`'s store layout (its index crate's `schema(network)`), what
-  `zainod` opens and verifies each store by.
+- Every index by kind, one match per question (`indexes.rs`): `schema`, `write_buffer`, `fold`,
+  `writer`. A new index = one arm in each + its `Views` reader.
+- `FeeWiring`: utxo-set's fees → compact-block's writer, paired inside `writer`.
 
 ## Readers: `NfsPublication` → `IndexesAtBlock`
 

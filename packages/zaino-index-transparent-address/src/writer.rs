@@ -99,7 +99,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
+    use zaino_source::testing::{h, p2pkh, BlockBuilder, MockChain};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalizedStreamFixture, Move, Writer, QUEUE,
     };
@@ -131,16 +131,11 @@ mod tests {
         let opaque = Script(Code(vec![0x6a]));
         let mut chain = MockChain::regtest().genesis_with(|b| {
             b.coinbase(|c| {
-                c.txid([0x10; 32])
-                    .pay(&p2pkh([0xa1; 20]), 500)
-                    .pay(&p2pkh([0xb0; 20]), 70)
-                    .pay(&opaque, 1)
+                c.pay(&p2pkh([0xa1; 20]), 500).pay(&p2pkh([0xb0; 20]), 70).pay(&opaque, 1)
             })
         });
-        let paid = OutPoint::new([0x10; 32], 0);
-        let one = chain.mine(|b| {
-            b.tx(|t| t.txid([0x20; 32]).spend(paid.clone()).pay(&p2pkh([0xb0; 20]), 490))
-        });
+        let paid = chain.output(chain.genesis(), 0, 0);
+        let one = chain.mine(|b| b.tx(|t| t.spend(paid.clone()).pay(&p2pkh([0xb0; 20]), 490)));
         let blocks = chain.blocks(one);
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
@@ -151,7 +146,7 @@ mod tests {
         let mut changes = store.changes(blocks[1].block_ref());
         fold(&TransparentAddressReader::new(store.applied()), &blocks[1], &mut changes);
 
-        let spender = TxId::from_bytes([0x20; 32]);
+        let spender = chain.tx(one, 1).txid;
         let spend = encode_spend(&Spend { height: 1, spender });
         let spent: Vec<_> = changes.inserts(SPENT).map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
         let spent_key = encode_spent_key(paid.txid(), paid.n());
@@ -186,14 +181,12 @@ mod tests {
     async fn every_crash_state_of_commits_and_a_merge_reopens_to_a_durable_prefix() {
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
         let pays_alice = p2pkh([0xa1; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([1; 32]).pay(&pays_alice, 1)));
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&pays_alice, 1)));
         for height in 1u8..=10 {
             let paid = u64::from(height) + 1;
-            chain.mine(|b| {
-                b.coinbase(|c| c.txid([height + 1; 32]).pay(&pays_alice, paid))
-                    .tx(|t| t.spend(OutPoint::new([height; 32], 0)))
-            });
+            let previous = chain.output(chain.tip(), 0, 0);
+            chain.mine(|b| b.coinbase(|c| c.pay(&pays_alice, paid)).tx(|t| t.spend(previous)));
         }
         let blocks = chain.blocks(chain.tip());
         let (fs, recording) = SimFs::recording();
@@ -209,7 +202,7 @@ mod tests {
         let expected = |count: u8| {
             let balance = Zatoshis::from_u64(u64::from(count)).expect("in supply");
             let unspent = (count > 0).then(|| AddressUtxo {
-                outpoint: OutPoint::new([count; 32], 0),
+                outpoint: chain.output(chain.at(h(u32::from(count) - 1)), 0, 0),
                 height: h(u32::from(count) - 1),
                 value: balance,
             });
@@ -250,19 +243,14 @@ mod tests {
         let (pays_alice, pays_bob) = (p2pkh([0xa1; 20]), p2pkh([0xb0; 20]));
         let mut chain = MockChain::regtest().genesis_with(|b| {
             b.coinbase(|c| {
-                c.txid([0x10; 32])
-                    .pay(&pays_alice, 500)
-                    .pay(&pays_bob, 70)
-                    .pay(&Script(Code(vec![0x6a, 1])), 1)
+                c.pay(&pays_alice, 500).pay(&pays_bob, 70).pay(&Script(Code(vec![0x6a, 1])), 1)
             })
         });
-        chain.mine(|b| b.coinbase(|c| c.txid([0x11; 32]).pay(&pays_alice, 300)));
-        chain.mine(|b| {
-            b.tx(|t| t.txid([0x20; 32]).spend(OutPoint::new([0x10; 32], 0)).pay(&pays_bob, 490))
-        });
-        let tip = chain.mine(|b| {
-            b.tx(|t| t.txid([0x30; 32]).spend(OutPoint::new([0x11; 32], 0)).pay(&pays_alice, 290))
-        });
+        let genesis = chain.genesis();
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&pays_alice, 300)));
+        let (alice_at_0, alice_at_1) = (chain.output(genesis, 0, 0), chain.output(one, 0, 0));
+        let two = chain.mine(|b| b.tx(|t| t.spend(alice_at_0).pay(&pays_bob, 490)));
+        let tip = chain.mine(|b| b.tx(|t| t.spend(alice_at_1.clone()).pay(&pays_alice, 290)));
         let blocks = chain.blocks(tip);
         let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
         let reader = |writer: &Writer<DiskView>| {
@@ -280,16 +268,13 @@ mod tests {
         let at_two = reader(&writer);
         let balances = at_two.balances(&[alice, bob]);
         assert_eq!(balances, Ok(vec![zats(300), zats(560)]), "2's spend retires 0's receive");
-        let unspent =
-            AddressUtxo { outpoint: OutPoint::new([0x11; 32], 0), height: h(1), value: zats(300) };
+        let unspent = AddressUtxo { outpoint: alice_at_1, height: h(1), value: zats(300) };
         let utxos = at_two.utxos_of(&[alice], h(0));
         assert_eq!(utxos, Ok(vec![vec![unspent]]), "only the unspent receive");
         // paying and spending transactions both alice's, each once
         let touching = at_two.transactions(&alice, h(0), h(2)).expect("transactions");
-        let expected = [(0, 0x10), (1, 0x11), (2, 0x20)].map(|(height, tag)| TransactionRef {
-            height: h(height),
-            txid: TxId::from_bytes([tag; 32]),
-        });
+        let expected = [(genesis, 0), (one, 0), (two, 1)]
+            .map(|(at, slot)| TransactionRef { height: at.height, txid: chain.tx(at, slot).txid });
         assert_eq!(touching, expected);
         // opaque outputs stored, not dropped (same fold answers for them)
         assert_eq!(at_two.balances_of(&[AddressKey::opaque()]), Ok(vec![zats(1)]));
@@ -307,7 +292,7 @@ mod tests {
         let balances = at_three.balances(&[alice, bob]);
         assert_eq!(balances, Ok(vec![zats(290), zats(560)]), "resent 2 not applied twice");
         let unspent =
-            AddressUtxo { outpoint: OutPoint::new([0x30; 32], 0), height: h(3), value: zats(290) };
+            AddressUtxo { outpoint: chain.output(tip, 1, 0), height: h(3), value: zats(290) };
         let recent = at_three.utxos_of(&[alice], h(3));
         assert_eq!(recent, Ok(vec![vec![unspent]]), "start filters the reply, not spends");
         writer.stop().await.expect("stops at Shutdown");
@@ -342,60 +327,65 @@ mod tests {
     /// Outpoint → (address, zats, height received, height spent)
     type Ledger = Vec<((TxId, u32), (u8, u64, u32, Option<(u32, TxId)>))>;
 
-    /// One block's tx: spends, pays `(address, zats)`
-    type Planned = (Vec<OutPoint>, Vec<(u8, u64)>);
-
     async fn random_history(plans: Vec<BlockPlan>, moves: Vec<Move>) {
-        let txid = |height: u32| {
-            let mut bytes = [0u8; 32];
-            bytes[..4].copy_from_slice(&(height + 1).to_le_bytes());
-            TxId::from_bytes(bytes)
-        };
         let address = |tag: u8| TransparentAddress::PublicKeyHash([0xa0 + tag; 20]);
 
-        // - ledger first (spends pick from what is unspent then)
-        // - block h = one tx `txid(h)`, its inputs + outputs, value balanced through a faucet
-        //   output (untracked address 3, vout last)
+        // - ledger kept as mined (spends pick from what is unspent then)
+        // - block h = one tx (slot 1), value balanced through a faucet output (untracked address
+        //   3, vout last)
+        // - genesis's tx spends its own coinbase's faucet
         const FAUCET: u8 = 3;
         let scripts = [0u8, 1, 2, 0x5f].map(|tag| p2pkh([0xa0 + tag; 20]));
+        let block = |b: BlockBuilder, spends: &[OutPoint], pays: &[(u8, u64)]| {
+            b.tx(|t| {
+                let t = spends.iter().fold(t, |t, prevout| t.spend(prevout.clone()));
+                let t = if spends.is_empty() { t.spend_in_block(0, 0) } else { t };
+                pays.iter().fold(t, |t, &(tag, zats)| t.pay(&scripts[usize::from(tag)], zats))
+            })
+        };
         let mut ledger: Ledger = Vec::new();
-        let mut planned: Vec<Planned> = Vec::new();
-        let mut faucet = (OutPoint::new([0xfa; 32], 0), 1_000_000_000u64);
+        let mut chain: Option<MockChain> = None;
+        let mut faucet: Option<(OutPoint, u64)> = None;
         for (height, (outputs, picks)) in (0u32..).zip(&plans) {
-            let mut spends = vec![faucet.0.clone()];
-            let mut change = faucet.1;
+            let (mut spends, mut change) = match &faucet {
+                Some((prevout, zats)) => (vec![prevout.clone()], *zats),
+                None => (Vec::new(), 1_000_000_000u64),
+            };
+            let mut spent = Vec::new();
             for pick in picks {
                 let unspent: Vec<usize> =
                     (0..ledger.len()).filter(|&at| ledger[at].1 .3.is_none()).collect();
                 if let Some(&at) = unspent.get(pick % unspent.len().max(1)) {
-                    ledger[at].1 .3 = Some((height, txid(height)));
+                    // spender's txid filled in once mined
+                    ledger[at].1 .3 = Some((height, TxId::from_bytes([0; 32])));
                     let (txid, vout) = ledger[at].0;
                     spends.push(OutPoint::new(txid.into(), vout));
                     change += ledger[at].1 .1;
+                    spent.push(at);
                 }
             }
-            for (vout, &(tag, zats)) in (0u32..).zip(outputs) {
-                ledger.push(((txid(height), vout), (tag, zats, height, None)));
-                change -= zats;
+            change -= outputs.iter().map(|&(_, zats)| zats).sum::<u64>();
+            let pays = [&outputs[..], &[(FAUCET, change)]].concat();
+            let mined = match &mut chain {
+                Some(chain) => chain.mine(|b| block(b, &spends, &pays)),
+                None => {
+                    let genesis = MockChain::regtest().genesis_with(|b| {
+                        let b = b.coinbase(|c| c.pay(&scripts[3], 1_000_000_000));
+                        block(b, &spends, &pays)
+                    });
+                    chain.insert(genesis).genesis()
+                }
+            };
+            let txid = chain.as_ref().expect("mined").tx(mined, 1).txid;
+            for at in spent {
+                ledger[at].1 .3 = Some((height, txid));
             }
-            let vout = outputs.len() as u32;
-            faucet = (OutPoint::new(txid(height).into(), vout), change);
-            planned.push((spends, [&outputs[..], &[(FAUCET, change)]].concat()));
+            for (vout, &(tag, zats)) in (0u32..).zip(outputs) {
+                ledger.push(((txid, vout), (tag, zats, height, None)));
+            }
+            faucet = Some((OutPoint::new(txid.into(), outputs.len() as u32), change));
         }
-        let block = |b: BlockBuilder, height: u32, (spends, pays): &Planned| {
-            b.tx(|t| {
-                let t = t.txid(*txid(height).as_ref());
-                let t = spends.iter().fold(t, |t, prevout| t.spend(prevout.clone()));
-                pays.iter().fold(t, |t, &(tag, zats)| t.pay(&scripts[usize::from(tag)], zats))
-            })
-        };
-        let mut chain = MockChain::regtest().genesis_with(|b| {
-            let b = b.coinbase(|c| c.txid([0xfa; 32]).pay(&scripts[3], 1_000_000_000));
-            block(b, 0, &planned[0])
-        });
-        for (height, plan) in (1u32..).zip(&planned[1..]) {
-            chain.mine(|b| block(b, height, plan));
-        }
+        let chain = chain.expect("at least one block planned");
         let blocks = chain.blocks(chain.tip());
 
         // the model's answers once `held` blocks are indexed

@@ -4,7 +4,7 @@ use zcash_protocol::value::{ZatBalance, Zatoshis};
 
 use super::{Block, Transaction};
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::BlockHash;
+use zcash_protocol::{BlockHash, ShieldedPool};
 
 /// Left in the transparent value pool for the miner (protocol.pdf §3.4)
 ///
@@ -40,23 +40,14 @@ impl Transaction {
 
     /// `spent` − Σ outputs + each pool's value balance, negative = overspent (`None`: outputs past
     /// the supply)
-    pub(crate) fn value_left(&self, spent: Zatoshis) -> Option<i64> {
+    pub fn value_left(&self, spent: Zatoshis) -> Option<i64> {
         let outputs = self.transparent.outputs.iter().map(|out| out.value);
         let paid = outputs.sum::<Option<Zatoshis>>()?;
         let signed = |zats: Zatoshis| i64::from(ZatBalance::from(zats));
+        let shielded = ShieldedPool::ALL.map(|pool| i64::from(self.value_balance(pool)));
         // every term within ±MAX_MONEY (ZIP 209) → Σ of six fits i64
-        Some(signed(spent) - signed(paid) + self.pool_balances().iter().sum::<i64>())
-    }
-
-    /// Sprout, Sapling, Orchard, Ironwood (+ = out of that pool)
-    pub(crate) fn pool_balances(&self) -> [i64; 4] {
-        [
-            self.sprout.value_balance,
-            self.sapling.value_balance,
-            self.orchard.value_balance,
-            self.ironwood.value_balance,
-        ]
-        .map(i64::from)
+        let pools = i64::from(self.sprout.value_balance) + shielded.iter().sum::<i64>();
+        Some(signed(spent) - signed(paid) + pools)
     }
 }
 

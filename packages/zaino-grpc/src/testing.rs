@@ -1,4 +1,5 @@
-//! Shared route-test infra: `RouteDeps` over a `MockValidator`, request builders, indexes folded
+//! Shared route-test infra: `RouteDeps` over a `MockValidator`'s client, request builders, indexes
+//! folded
 //! from a `MockChain`'s genesis and served through one fixed `GrpcSnapshot`
 
 use std::{num::NonZeroUsize, sync::Arc};
@@ -10,14 +11,14 @@ use tokio::sync::watch;
 use tonic::body::Body;
 use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedValidatorSet};
 use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
-use zaino_header_chain::testing::HeaderViews;
+use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{ChainParams, NfsPublication};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
-use zaino_source::testing::{MockValidator, ValidatorViews};
+use zaino_source::testing::{MockChain, MockValidator};
+use zaino_source::ZcashLegacyRpcClient;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
 use zcash_protocol::TxId;
 
@@ -39,33 +40,10 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
     let mut index =
         engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {
-        let parent = index.applied();
+        let fees = chain.fees(block.header().hash);
         let mut out = index.changes(block.block_ref());
-        match kind {
-            IndexKind::CompactBlock => {
-                let parent = zaino_index_compact_block::CompactBlockReader::new(parent);
-                let fees = chain.fees(block.header().hash);
-                zaino_index_compact_block::fold(&parent, &block, &fees, &mut out);
-            }
-            IndexKind::TreeState => {
-                let parent = zaino_index_tree_state::TreeStateReader::new(parent);
-                zaino_index_tree_state::fold(&parent, &block, &mut out)
-                    .expect("canonical commitments");
-            }
-            IndexKind::TransparentAddress => {
-                let parent = zaino_index_transparent_address::TransparentAddressReader::new(parent);
-                zaino_index_transparent_address::fold(&parent, &block, &mut out);
-            }
-            IndexKind::BlockHash => {
-                let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
-                zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
-            }
-            IndexKind::TxidLocation => {
-                let parent = zaino_internal_txid_location::TxidLocationReader::new(parent);
-                zaino_internal_txid_location::fold(&parent, &block, &mut out);
-            }
-            IndexKind::UtxoSet => unreachable!("asserted above"),
-        }
+        let folded = zaino_nfs::fold(kind, index.applied(), &block, Some(&fees), &mut out);
+        folded.expect("canonical block");
         index.apply(out);
     }
     index.commit().expect("SimFs commit");
@@ -79,7 +57,7 @@ pub(super) fn indexed_at(
     views: Vec<(IndexKind, DiskView)>,
 ) -> NfsPublication<DiskView> {
     let params = ChainParams::of(chain);
-    NfsPublication::fixed(Arc::new(chain.snapshot(tip)), tip, params, views)
+    NfsPublication::fixed(Arc::new(HeaderChainSnapshot::of(chain, tip)), tip, params, views)
 }
 
 /// Fixed `GrpcSnapshot`: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
@@ -90,7 +68,7 @@ pub(super) fn grpc_snapshots_held(
     held_by: TrustedValidatorSet,
     ours: &[(TxId, bytes::Bytes)],
 ) -> GrpcSnapshots<DiskView> {
-    let verified = Some(Arc::new(chain.snapshot(tip)));
+    let verified = Some(Arc::new(HeaderChainSnapshot::of(chain, tip)));
     let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);
     GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
@@ -109,15 +87,15 @@ pub(super) fn grpc_snapshots(
 ///
 /// - nothing verified, nothing served, never republished
 pub(super) fn routes_over(
-    node: &Arc<MockValidator>,
+    node: &MockValidator,
 ) -> (
-    RouteDeps<MockValidator, DiskView>,
-    TrafficDriver<MockValidator>,
-    ObservationMerge<MockValidator>,
+    RouteDeps<ZcashLegacyRpcClient, DiskView>,
+    TrafficDriver<ZcashLegacyRpcClient>,
+    ObservationMerge<ZcashLegacyRpcClient>,
 ) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let address = "node:8232".to_owned();
-    let trusted = TrustedValidator { address, source: Arc::clone(node), priority: 0, limits };
+    let (address, source) = ("node:8232".to_owned(), Arc::new(node.client()));
+    let trusted = TrustedValidator { address, source, priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let schedule = compiled_schedule(MAINNET).expect("mainnet compiled in");
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -146,7 +124,7 @@ pub(super) type NfsPublishes = watch::Sender<Option<Arc<NfsPublication<DiskView>
 /// `routes` read a live publisher over their chain view and the returned NFS watch (the
 /// publisher back, unspawned)
 pub(super) fn published(
-    routes: &mut RouteDeps<MockValidator, DiskView>,
+    routes: &mut RouteDeps<ZcashLegacyRpcClient, DiskView>,
 ) -> (Publisher<DiskView>, NfsPublishes) {
     let (nfs, indexed) = watch::channel(None);
     let publisher =
@@ -156,14 +134,14 @@ pub(super) fn published(
 }
 
 /// [`routes_over`] a never-polled node at a bare genesis, for tests that only serve indexes
-pub(super) fn routes() -> RouteDeps<MockValidator, DiskView> {
+pub(super) fn routes() -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
     let chain = MockChain::regtest();
-    routes_over(&Arc::new(chain.validator(chain.genesis()))).0
+    routes_over(&chain.validator(chain.genesis())).0
 }
 
 pub(super) fn dispatch(
-    routes: RouteDeps<MockValidator, DiskView>,
-) -> Dispatch<MockValidator, DiskView> {
+    routes: RouteDeps<ZcashLegacyRpcClient, DiskView>,
+) -> Dispatch<ZcashLegacyRpcClient, DiskView> {
     let dispatch = Dispatch::new(&crate::GrpcLimits::default());
     dispatch.routing().route(routes);
     dispatch

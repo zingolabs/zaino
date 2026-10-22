@@ -56,17 +56,8 @@ fold(&parent, &block, &fees, &mut out);
 
 ## Building
 
-```rust,ignore
-use zaino_index_compact_block::{schema, CompactBlockIndexWriter, WRITE_BUFFER};
-
-let schema = schema(network);
-let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
-let writer = CompactBlockIndexWriter::new(store);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::CompactBlock, handle.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::CompactBlock, handle);
-tokio::spawn(writer.run(blocks, fees)); // fees: a subscription to utxo-set's `FeeSink`
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)), its fees
+a subscription to utxo-set's `FeeSink`.
 
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine` and enables it with
@@ -130,5 +121,5 @@ more both write 0, "not provided", rather than a wrong value.
 ## Testing
 
 There is no `testing` feature. Mine blocks with
-`zaino_primitives::testing::MockChain` and fold them with `fold` and
+`zaino_source::testing::MockChain` and fold them with `fold` and
 `chain.fees(hash)`.

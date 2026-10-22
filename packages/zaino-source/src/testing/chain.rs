@@ -1,11 +1,12 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! Every block handed out passes M1–M7 (else panic naming the rule, `usage.md` § Invariants)
+//! Every block handed out = `decode_block` of bytes minted here, and passes M1–M7 (else panic
+//! naming the rule, `usage.md` § Invariants)
 //!
 //! - M1: hash = SHA-256d(`encode_header`)
 //! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
-//! - M3: merkle root = `MerkleRoot::of_txids`, txids distinct per branch (`Ledger::apply`)
-//! - M4: one coinbase, slot 0, spends nothing, states no fee (`plan()`, `Ledger::apply`)
+//! - M3: merkle root = the minted txids', txids distinct per branch (`Ledger::apply`)
+//! - M4: one coinbase, slot 0, spends nothing, states no fee (`mint`, `Ledger::apply`)
 //! - M5: nBits = regtest limit, or `outweigh()` = least work that becomes best (`bits()`)
 //! - M6: spends unspent on own branch, nullifiers fresh, pools >= 0 (ZIP 209), fee = derived
 //! - M7: pool data only once its upgrade active (Sapling, NU5 = Orchard, NU6.3 = Ironwood)
@@ -14,20 +15,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zcash_protocol::consensus::{target_spacing, BlockHeight, NetworkType, Parameters, H0};
-use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::TxId;
-
-use super::builders::{BlockBuilder, Planned, TxBuilder};
-use super::ledger::{Ledger, Unmined};
-use super::upgrades::all_at;
-use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
-use crate::protocol::median_time_past;
-use crate::types::{
+use zaino_primitives::protocol::median_time_past;
+use zaino_primitives::types::{
     Block, BlockCommitments, BlockFees, BlockRef, CompactDifficulty, DecodedHeader,
     EquihashSolution, Fee, MerkleRoot, Transaction,
 };
-use zcash_protocol::BlockHash;
+use zcash_encoding::CompactSize;
+use zcash_protocol::consensus::{target_spacing, BlockHeight, NetworkType, Parameters, H0};
+use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::{BlockHash, TxId};
+use zcash_transparent::bundle::OutPoint;
+
+use super::build::{BlockBuilder, Planned, Spend, TxBuilder};
+use super::ledger::{Ledger, Unmined};
+use super::mint::{self, At};
+use super::upgrades::all_at;
+use super::{encode_header, h, header_hash, GENESIS_TIME, REGTEST_BITS};
 
 /// nBits source
 ///
@@ -55,15 +58,16 @@ pub struct MockChain {
     blocks: HashMap<BlockHash, Mined>,
     genesis: BlockHash,
     best: BlockHash,
-    bytes: HashMap<TxId, Vec<u8>>,
+    tx_bytes: HashMap<TxId, Vec<u8>>,
     mempool: Vec<Unmined>,
-    nonces: u64,
-    txids: u64,
+    header_nonces: u64,
+    tx_nonces: u32,
 }
 
 #[derive(Debug)]
 struct Mined {
     block: Arc<Block>,
+    raw: Vec<u8>,
     fees: BlockFees,
     cumulative_work: u128,
 }
@@ -165,6 +169,22 @@ impl MockChain {
         &self.mined(hash).block
     }
 
+    /// Consensus bytes, as `getblock <hash> 0` serves them
+    pub fn block_bytes(&self, hash: BlockHash) -> &[u8] {
+        &self.mined(hash).raw
+    }
+
+    /// Transaction `slot` of `block` (0 = its coinbase)
+    pub fn tx(&self, block: BlockRef, slot: usize) -> &Transaction {
+        let transactions = self.block(block.hash).transactions();
+        transactions.get(slot).unwrap_or_else(|| panic!("no transaction {slot} in {}", block.hash))
+    }
+
+    /// Output `vout` of transaction `slot` of `block`, as a later spend names it
+    pub fn output(&self, block: BlockRef, slot: usize, vout: u32) -> OutPoint {
+        OutPoint::new(self.tx(block, slot).txid.into(), vout)
+    }
+
     /// Genesis ..= `tip`
     pub fn blocks(&self, tip: BlockRef) -> Vec<Arc<Block>> {
         assert_eq!(self.reference(tip.hash), tip, "tip held at its height");
@@ -185,9 +205,9 @@ impl MockChain {
         self.mined(hash).fees.clone()
     }
 
-    /// Bytes of a `raw_tx` (`None` = built by `TxBuilder`: no bytes exist)
+    /// Bytes of any transaction this chain minted or was handed (`None` = never seen)
     pub fn tx_bytes(&self, txid: TxId) -> Option<&[u8]> {
-        self.bytes.get(&txid).map(Vec::as_slice)
+        self.tx_bytes.get(&txid).map(Vec::as_slice)
     }
 
     pub fn schedule(&self) -> Schedule {
@@ -206,13 +226,27 @@ impl MockChain {
         ledger
     }
 
+    /// Minted for the next block on the best, then held like [`submit_raw`](Self::submit_raw)
+    pub fn submit(&mut self, tx: impl FnOnce(TxBuilder) -> TxBuilder) -> TxId {
+        let tx = tx(TxBuilder::new());
+        let prevouts = tx.spends.iter().map(|spend| match spend {
+            Spend::Mined(prevout) => prevout.clone(),
+            Spend::InBlock { .. } => panic!("spend_in_block() outside a block"),
+        });
+        let height = self.tip().height + 1;
+        let raw = mint::transaction(&tx, prevouts.collect(), false, self.at_height(height));
+        self.submit_raw(raw)
+    }
+
     /// Held for the next block on the best: admitted after every entry before it (M6, M7), else
     /// panic naming the refusal
-    pub fn submit(&mut self, (tx, bytes): (Transaction, Vec<u8>)) -> TxId {
+    pub fn submit_raw(&mut self, raw: Vec<u8>) -> TxId {
+        let tx = crate::decode_transaction(&raw).expect("submit_raw takes transaction bytes");
         let mut pool = self.pool_ledger();
         let fee = pool.admit(&tx).unwrap_or_else(|refused| panic!("submit {}: {refused}", tx.txid));
         let txid = tx.txid;
-        self.mempool.push(Unmined { tx, bytes, fee });
+        self.tx_bytes.insert(txid, raw.clone());
+        self.mempool.push(Unmined { tx, bytes: raw, fee });
         txid
     }
 
@@ -232,7 +266,7 @@ impl MockChain {
     pub fn mine_mempool(&mut self) -> BlockRef {
         let held = self.mempool.clone();
         let carried = |block: BlockBuilder| {
-            held.into_iter().fold(block, |block, unmined| block.raw_tx((unmined.tx, unmined.bytes)))
+            held.into_iter().fold(block, |block, unmined| block.raw_tx(unmined.bytes))
         };
         self.mine(carried)
     }
@@ -244,10 +278,10 @@ impl MockChain {
             blocks: HashMap::new(),
             genesis: BlockHash([0; 32]),
             best: BlockHash([0; 32]),
-            bytes: HashMap::new(),
+            tx_bytes: HashMap::new(),
             mempool: Vec::new(),
-            nonces: 0,
-            txids: 0,
+            header_nonces: 0,
+            tx_nonces: 0,
         };
         let genesis = chain.insert(None, genesis_spec, false);
         (chain.genesis, chain.best) = (genesis.hash, genesis.hash);
@@ -268,7 +302,14 @@ impl MockChain {
         BlockRef { hash, height: self.block(hash).header().height }
     }
 
-    /// Child of `parent` (`None` = genesis) holding `spec`, checked (M1–M7), then held
+    /// Where the next transaction is minted (each one a fresh nonce)
+    fn at_height(&mut self, height: BlockHeight) -> At<'_> {
+        self.tx_nonces += 1;
+        At { height, upgrades: &self.schedule.upgrades, nonce: self.tx_nonces }
+    }
+
+    /// Child of `parent` (`None` = genesis) holding `spec`: minted, checked (M1–M7), decoded
+    /// back, then held
     fn insert(&mut self, parent: Option<BlockRef>, spec: BlockBuilder, outweigh: bool) -> BlockRef {
         let height = parent.map_or(H0, |parent| parent.height + 1);
         let time = self.time(parent, height, spec.time);
@@ -277,18 +318,45 @@ impl MockChain {
             (Some(parent), true) => self.ledger(parent),
             _ => Ledger::empty(self.schedule.upgrades, height),
         };
-        let planned = self.plan(spec);
-        let fees = planned.iter().map(|(tx, stated)| {
-            let fee = ledger.apply(tx, *stated);
-            fee.unwrap_or_else(|refused| panic!("{} at {height}: {refused}", tx.txid))
-        });
-        let fees: Vec<Fee> = fees.collect();
-        let transactions: Vec<Transaction> = planned.into_iter().map(|(tx, _)| tx).collect();
-        let txids: Vec<TxId> = transactions.iter().map(|tx| tx.txid).collect();
+
+        // each transaction minted in slot order (a spend_in_block names one minted before it)
+        let mut minted: Vec<(Transaction, Vec<u8>)> = Vec::new();
+        let mut fees: Vec<Fee> = Vec::new();
+        let planned = std::iter::once(Planned::Built(spec.coinbase)).chain(spec.txs);
+        for (slot, planned) in planned.enumerate() {
+            let (raw, stated) = match planned {
+                Planned::Built(tx) => {
+                    let prevouts = tx.spends.iter().map(|spend| match spend {
+                        Spend::Mined(prevout) => prevout.clone(),
+                        Spend::InBlock { slot: from, vout } => {
+                            let (earlier, _) = minted.get(*from).unwrap_or_else(|| {
+                                panic!("slot {slot} spends slot {from}: not minted before it")
+                            });
+                            OutPoint::new(earlier.txid.into(), *vout)
+                        }
+                    });
+                    let prevouts = prevouts.collect();
+                    let raw = mint::transaction(&tx, prevouts, slot == 0, self.at_height(height));
+                    (raw, tx.fee)
+                }
+                Planned::Raw(raw) => (raw, None),
+            };
+            let tx = crate::decode_transaction(&raw).expect("minted bytes decode");
+            assert_eq!(
+                tx.transparent.coinbase,
+                slot == 0,
+                "{}: a coinbase in slot 0, only there",
+                tx.txid
+            );
+            let fee = ledger.apply(&tx, stated);
+            fees.push(fee.unwrap_or_else(|refused| panic!("{} at {height}: {refused}", tx.txid)));
+            minted.push((tx, raw));
+        }
+        let txids: Vec<TxId> = minted.iter().map(|(tx, _)| tx.txid).collect();
 
         let mut nonce = [0u8; 32];
-        nonce[..8].copy_from_slice(&self.nonces.to_le_bytes());
-        self.nonces += 1;
+        nonce[..8].copy_from_slice(&self.header_nonces.to_le_bytes());
+        self.header_nonces += 1;
         let mut header = DecodedHeader {
             hash: BlockHash([0; 32]),
             version: 4,
@@ -302,20 +370,33 @@ impl MockChain {
             solution: EquihashSolution::Regtest([0u8; 36]),
         };
         header.hash = header_hash(&header);
+
+        // header ‖ CompactSize(count) ‖ each transaction (the block held = their decode)
+        let mut raw = encode_header(&header);
+        CompactSize::write(&mut raw, minted.len()).expect("a Vec takes every write");
+        for (tx, bytes) in &minted {
+            raw.extend_from_slice(bytes);
+            self.tx_bytes.insert(tx.txid, bytes.clone());
+        }
+        let block = crate::decode_block(&raw).expect("a minted block decodes");
+        assert_eq!(
+            (block.header().hash, block.header().height),
+            (header.hash, height),
+            "decoded = minted"
+        );
+
         let parent_work = parent.map_or(0, |parent| self.mined(parent.hash).cumulative_work);
         let cumulative_work =
             parent_work.checked_add(bits.work()).expect("cumulative work past u128");
-
-        let block = BlockRef { hash: header.hash, height };
-        let fees = BlockFees { height, hash: block.hash, fees };
-        let mined =
-            Mined { block: Arc::new(Block::new(header, transactions)), fees, cumulative_work };
-        assert!(self.blocks.insert(block.hash, mined).is_none(), "{} mined twice", block.hash);
+        let at = BlockRef { hash: header.hash, height };
+        let fees = BlockFees { height, hash: at.hash, fees };
+        let mined = Mined { block: Arc::new(block), raw, fees, cumulative_work };
+        assert!(self.blocks.insert(at.hash, mined).is_none(), "{} mined twice", at.hash);
         if parent.is_some() && cumulative_work > self.mined(self.best).cumulative_work {
-            let old = std::mem::replace(&mut self.best, block.hash);
+            let old = std::mem::replace(&mut self.best, at.hash);
             self.repool(old);
         }
-        block
+        at
     }
 
     /// Best ledger + every mempool entry
@@ -329,8 +410,7 @@ impl MockChain {
 
     /// Mempool re-admitted on the best after it left `old`
     ///
-    /// - `old`'s transactions above the fork come back first, block order (coinbases and
-    ///   `TxBuilder` ones never: no bytes)
+    /// - `old`'s transactions above the fork come back first, block order (coinbases never)
     /// - mined, conflicting or orphaned entries leave
     fn repool(&mut self, old: BlockHash) {
         let old = self.reference(old);
@@ -344,7 +424,7 @@ impl MockChain {
         }
         let unmined = above_fork.iter().rev().flat_map(|block| block.transactions().iter().skip(1));
         let returned =
-            unmined.filter_map(|tx| Some((tx.clone(), self.bytes.get(&tx.txid)?.clone())));
+            unmined.filter_map(|tx| Some((tx.clone(), self.tx_bytes.get(&tx.txid)?.clone())));
         let returned: Vec<(Transaction, Vec<u8>)> = returned.collect();
         if returned.is_empty() && self.mempool.is_empty() {
             return;
@@ -353,39 +433,6 @@ impl MockChain {
         let candidates =
             returned.into_iter().chain(held.map(|unmined| (unmined.tx, unmined.bytes)));
         self.mempool = self.ledger(self.tip()).readmit(candidates);
-    }
-
-    /// Coinbase first, each beside its stated fee, default txids minted
-    ///
-    /// - `raw_tx` bytes held at once (keyed by the txid they hash to: never wrong for any block)
-    fn plan(&mut self, spec: BlockBuilder) -> Vec<(Transaction, Option<u64>)> {
-        let coinbase_txid = self.txid(&spec.coinbase);
-        let coinbase_fee = spec.coinbase.fee;
-        let mut planned = vec![(spec.coinbase.into_transaction(coinbase_txid, true), coinbase_fee)];
-        for tx in spec.txs {
-            planned.push(match tx {
-                Planned::Built(tx) => {
-                    let (txid, stated) = (self.txid(&tx), tx.fee);
-                    (tx.into_transaction(txid, false), stated)
-                }
-                Planned::Raw(tx, raw) => {
-                    assert!(!tx.transparent.coinbase, "{}: raw_tx is never the coinbase", tx.txid);
-                    self.bytes.insert(tx.txid, raw);
-                    (tx, None)
-                }
-            });
-        }
-        planned
-    }
-
-    /// Stated, else SHA-256d(mint counter ‖ content)
-    fn txid(&mut self, tx: &TxBuilder) -> TxId {
-        if let Some(txid) = tx.txid {
-            return txid;
-        }
-        let minted = [&self.txids.to_le_bytes()[..], &tx.content()].concat();
-        self.txids += 1;
-        TxId::from_bytes(sha256d(&minted))
     }
 
     /// M2: stated or parent + target spacing, after the parent's median time past

@@ -82,8 +82,7 @@ a header, a witness, finality.
   reads tree-state's records). A mismatch or a short answer is asked again after 5 s.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
-  vouched. `FromTheFuture`, `Orphan`, `BelowFinalized` and `ShortContext` end the run unblamed; any
-  other refusal → `report`.
+  vouched. A refusal ends the run, and only `Fault::Sender` → `report`.
 - **Witnesses** after every view change, then finality: each answering validator's claim and
   `getblockhash` answer (`Witness::Trusted`), each live outbound peer's last block `inv`
   (`PeerSource::heard` via `PeerWatch`: `Witness::Peer` by its netgroup). A hash not held yet is
@@ -172,9 +171,9 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 
 - Precheck: undecodable → `Rejected` code −22; once a verified best exists, expired
   (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.
-- Check: `TrafficBalancer::check_admission` on `entries()` ∩ `held_by()`, shuffled; the first
-  `CheckAdmissionError::Refused` = `SubmitError::Rejected` at once (outcome `rejected`, 0
-  attempts), the first `Ok` = the answer; `Unsupported` / no answer = the next.
+- Check: `checkadmission` (a `submit` ask) on `entries()` ∩ `held_by()`, shuffled; the first
+  refusal = `SubmitError::Rejected` at once (outcome `rejected`, 0 attempts), the first `Ok` =
+  the answer; `Unsupported` / no answer = the next.
 - `SubmitError::Rejected` = the precheck's or the check's refusal, else the first trusted rejection;
   `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
   push failure).
@@ -189,8 +188,8 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 ## Ports
 
 - Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view merges
-  their polls (`ObservationMerge`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`;
-  header sync asks `headers(..)`.
+  their polls (`ObservationMerge`), asks `bytes(..)` and `submit(validator, ..)`
+  (`checkadmission`, `sendrawtransaction`); header sync asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
 - `PeerSource` (`dyn`, given by `with_peers`):
 
@@ -208,7 +207,7 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 
 ## Telemetry
 
-zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` gauges are
+zainod registers each from `METRICS` (help, unit). The `zaino.chainview.*` gauges are
 `zaino-grpc-snapshot`'s, set at scrape. This crate emits events only:
 
 | Metric | Kind | Labels |
@@ -219,14 +218,16 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 | `submission_attempts` | histogram | `outcome` |
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
-`alarms()` → `Alarms { stale, ending, partitioned, eclipsed, finality_paused }`, raised per merge
-(definitions and thresholds: [architecture §11](../../docs/architecture.md#11-telemetry); in
-`alarm_thresholds.rs`).
+`alarms()` → `Alarms`: each raised `Alarm` (`Partitioned`, `Eclipsed`, `FinalityPaused`, and
+per validator `Stale`, `Ending`), derived per merge (definitions and thresholds:
+[architecture §11](../../docs/architecture.md#11-telemetry); in `alarm_thresholds.rs`). A new
+alarm = an `Alarm` variant: the compiler then names its arms (raised in `telemetry::alarms`,
+noted and logged in `zaino-grpc-snapshot`'s report).
 
 ## Testing (feature `testing`)
 
-- `ChainView::set_chain(Some(chain.snapshot(tip)))` stands in for header sync
-  (`zaino_header_chain::testing::HeaderViews`).
+- `ChainView::set_chain(Some(HeaderChainSnapshot::of(&chain, tip)))` stands in for header sync
+  (`zaino-header-chain`'s `testing` feature).
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` at best); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).

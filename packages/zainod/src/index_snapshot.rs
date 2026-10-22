@@ -120,7 +120,8 @@ pub(crate) async fn install(
     status: &DaemonStatus,
 ) -> Result<(), IndexerError> {
     let empty: Vec<(IndexKind, PathBuf)> = IndexKind::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|kind| Some((kind, config.enabled(kind)?.path)))
         .filter(|(_, path)| is_empty(path))
         .collect();

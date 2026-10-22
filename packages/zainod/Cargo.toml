@@ -12,11 +12,7 @@ license = { workspace = true }
 [dependencies]
 # Runtime stack (config-agnostic, zainod translates its config into their typed params at boot)
 zaino-sync = { workspace = true }
-zaino-index-compact-block = { workspace = true }
-zaino-index-tree-state = { workspace = true }
 zaino-index-transparent-address = { workspace = true }
-zaino-internal-block-hash-to-height = { workspace = true }
-zaino-index-utxo-set = { workspace = true }
 zaino-grpc = { workspace = true }
 zaino-source = { workspace = true }
 
@@ -71,10 +67,10 @@ zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
 zcash_transparent.workspace = true
 zaino-internal-txid-location.workspace = true
+zaino-index-tree-state.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
-zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }

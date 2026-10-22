@@ -109,7 +109,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, IndexKind, Schema, Tables};
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_source::testing::{h, MockChain};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;

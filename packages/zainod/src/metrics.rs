@@ -3,9 +3,7 @@
 //! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
 //!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
 //!   ([`DaemonStatus::emit_gauges`])
-//! - Events emitted where they happen (`zaino-nfs` / `zaino-sync` / `zaino-grpc` /
-//!   `zaino-chainview` / `zaino-source` / `zaino-persistence`), described here via their
-//!   `describe_metrics`
+//! - Events emitted where they happen, registered here from each crate's `METRICS` ([`TABLES`])
 //! - Every histogram native (exponential buckets, range rescales itself) = protobuf scrapes only
 //! - zebra-network's series = a high-level few, no peer identity ([`ZebraNetworkSummary`])
 
@@ -17,12 +15,28 @@ use metrics::{
 use metrics_exporter_prometheus::{
     Matcher, NativeHistogramConfig, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
+use zaino_primitives::metric::Metric;
 
 use crate::error::IndexerError;
 use crate::status::DaemonStatus;
 
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
+
+/// Every emitting crate's table (a new crate = one row)
+const TABLES: &[&[Metric]] = &[
+    zaino_grpc::METRICS,
+    zaino_grpc_snapshot::METRICS,
+    zaino_chainview::METRICS,
+    zaino_traffic::METRICS,
+    zaino_source::METRICS,
+    zaino_nfs::METRICS,
+    zaino_sync::METRICS,
+    zaino_persistence::METRICS,
+    zaino_peers::METRICS,
+    crate::status::METRICS,
+    crate::disk_monitor::METRICS,
+];
 
 /// ~9% wide buckets (schema 3 = Prometheus' default native resolution)
 const BUCKET_FACTOR: f64 = 1.1;
@@ -167,16 +181,7 @@ fn collect_process_metrics() {
 
 /// Every crate's `# HELP` + the build-info gauge (into the current recorder)
 pub(crate) fn describe_all() {
-    zaino_grpc::describe_metrics();
-    zaino_chainview::describe_metrics();
-    zaino_source::describe_metrics();
-    zaino_nfs::describe_metrics();
-    zaino_grpc_snapshot::describe_metrics();
-    zaino_sync::describe_metrics();
-    zaino_persistence::describe_metrics();
-    zaino_peers::describe_metrics();
-    crate::status::describe_metrics();
-    crate::disk_monitor::describe_metrics();
+    TABLES.iter().copied().flatten().for_each(Metric::describe);
     metrics::describe_gauge!(BUILD_INFO, "Always 1; the zainod version rides the `version` label");
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 }

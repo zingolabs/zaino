@@ -13,8 +13,8 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use zaino_header_chain::HeaderChainSnapshot;
-use zaino_primitives::testing::Ledger;
 use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
+use zaino_source::testing::Ledger;
 use zaino_source::{BlockchainInfo, FailureMode, NonDomainError};
 use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
@@ -174,8 +174,8 @@ impl ChainViewSnapshot {
                 info.estimated_height = info.tip.height + behind;
             }
         }
-        self.alarms =
-            crate::telemetry::alarms(&self.trusted_validators, self.alarms.finality_paused());
+        let paused = self.alarms.raised(crate::telemetry::Alarm::FinalityPaused);
+        self.alarms = crate::telemetry::alarms(&self.trusted_validators, paused);
         self
     }
 

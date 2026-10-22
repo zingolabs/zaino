@@ -172,12 +172,11 @@ mod tests {
     use crate::{fold, reader::WINDOW_RECORDS};
     use prost::Message;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Overlay, Schema, Store};
-    use zaino_primitives::testing::{all_at, h, p2pkh, BlockBuilder, MockChain};
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats;
+    use zaino_source::testing::{all_at, h, p2pkh, BlockBuilder, MockChain};
     use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
-    use zcash_transparent::bundle::OutPoint;
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
@@ -188,24 +187,19 @@ mod tests {
     /// - `chain(n)` = a prefix of `chain(n + k)`
     fn chain(count: u32) -> MockChain {
         let alice = p2pkh([0xaa; 20]);
+        // nullifier tags: `at` per pool (Ironwood `2 at`, `2 at + 1`), fresh at every height
         let every_pool = |at: u32| {
-            let (seed, leaf) = (at.to_le_bytes(), at);
-            let id = move |kind: u8| {
-                let mut id = [kind; 32];
-                id[..4].copy_from_slice(&seed);
-                id
-            };
             let alice = alice.clone();
             move |b: BlockBuilder| {
-                b.coinbase(|c| c.txid(id(0xc0)).pay(&alice, 17_345)).tx(|t| {
-                    t.spend(OutPoint::new(id(0xc0), 0))
+                b.coinbase(|c| c.pay(&alice, 17_345)).tx(|t| {
+                    t.spend_in_block(0, 0)
                         .pay(&alice, 12_345)
                         .fee(5_000)
-                        .sapling_spend(id(0x33))
-                        .sapling_output(leaf)
-                        .orchard_action(id(0x77), leaf)
-                        .ironwood_action(id(0x88), 2 * leaf)
-                        .ironwood_action(id(0x99), 2 * leaf + 1)
+                        .sapling_spend(at)
+                        .sapling_output(at)
+                        .orchard_action(at, at)
+                        .ironwood_action(2 * at, 2 * at)
+                        .ironwood_action(2 * at + 1, 2 * at + 1)
                 })
             }
         };

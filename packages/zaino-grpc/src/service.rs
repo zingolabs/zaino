@@ -1,4 +1,4 @@
-//! `CompactTxStreamer` service: the method registry ([`ROUTES`]) and the one dispatch over it
+//! `CompactTxStreamer` service: the method registry ([`Method`]) and the one dispatch over it
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded, usage.md "Stored bytes on the wire")
@@ -6,7 +6,7 @@
 //!   pinned for its life
 //! - no height named = its served tip, height named = `IndexesAtBlock::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
-//! - a row whose index `RouteDeps::indexes` lacks = `UNIMPLEMENTED`, naming the index
+//! - a method whose index `RouteDeps::indexes` lacks = `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
 
 use std::{
@@ -35,11 +35,15 @@ use crate::routes::{
 use crate::wire;
 use crate::GrpcLimits;
 
-/// Every row's path prefix (`/{service}/{method}`)
+/// Every method's path prefix (`/{service}/{method}`)
 const SERVICE: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/";
 
-/// One served method: its [`ROUTES`] row at `self as usize`, its handler in [`Routed::handle`]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One served method (variant name = wire name = `method` metric label)
+///
+/// - new RPC = a variant, then its [`Method::route`] arm + its [`Routed::handle`] arm
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr, strum::VariantArray,
+)]
 pub(crate) enum Method {
     GetLatestBlock,
     GetBlock,
@@ -62,12 +66,10 @@ pub(crate) enum Method {
     GetStandardFee,
 }
 
-/// One registry row: wire name (= the `method` metric label), admission pool, reply shape (its
-/// latency metric), the index whose view its handler reads (`None` = reads none: always served)
+/// One method's policy: admission pool, reply shape (its latency metric), the index whose view
+/// its handler reads (`None` = reads none: always served)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Route {
-    pub(crate) method: Method,
-    pub(crate) name: &'static str,
     pub(crate) class: Class,
     pub(crate) reply: Reply,
     pub(crate) index: Option<IndexKind>,
@@ -81,78 +83,52 @@ pub(crate) enum Reply {
     Stream,
 }
 
-const fn row(
-    method: Method,
-    name: &'static str,
-    class: Class,
-    reply: Reply,
-    index: Option<IndexKind>,
-) -> Route {
-    Route { method, name, class, reply, index }
-}
-
-/// The registry: every served method (a new RPC = a [`Method`], its row, its `handle` arm)
-pub(crate) const ROUTES: [Route; 19] = {
-    use Class::{Subscription, Work};
-    use IndexKind::{CompactBlock, TransparentAddress, TreeState};
-    use Method::*;
-    use Reply::{One, Stream};
-
-    [
-        // served tip itself
-        row(GetLatestBlock, "GetLatestBlock", Work, One, None),
-        row(GetBlock, "GetBlock", Work, One, Some(CompactBlock)),
-        row(GetBlockRange, "GetBlockRange", Work, Stream, Some(CompactBlock)),
-        // TODO: REMOVE — deprecated alias of `GetBlockRange` (pepper-sync still calls it)
-        row(GetBlockRangeNullifiers, "GetBlockRangeNullifiers", Work, Stream, Some(CompactBlock)),
-        row(GetTreeState, "GetTreeState", Work, One, Some(TreeState)),
-        row(GetLatestTreeState, "GetLatestTreeState", Work, One, Some(TreeState)),
-        row(GetSubtreeRoots, "GetSubtreeRoots", Work, Stream, Some(TreeState)),
-        row(GetAddressUtxos, "GetAddressUtxos", Work, One, Some(TransparentAddress)),
-        row(GetAddressUtxosStream, "GetAddressUtxosStream", Work, Stream, Some(TransparentAddress)),
-        row(GetTaddressBalance, "GetTaddressBalance", Work, One, Some(TransparentAddress)),
-        row(
-            GetTaddressBalanceStream,
-            "GetTaddressBalanceStream",
-            Work,
-            One,
-            Some(TransparentAddress),
-        ),
-        // index names the txs, a validator holds the bytes (`docs/architecture.md` §1)
-        row(
-            GetTaddressTransactions,
-            "GetTaddressTransactions",
-            Work,
-            Stream,
-            Some(TransparentAddress),
-        ),
-        // TODO: REMOVE — deprecated alias of `GetTaddressTransactions` (pepper-sync calls it)
-        row(GetTaddressTxids, "GetTaddressTxids", Work, Stream, Some(TransparentAddress)),
-        // one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
-        row(SendTransaction, "SendTransaction", Work, One, None),
-        row(GetMempoolTx, "GetMempoolTx", Work, Stream, None),
-        // open until the served tip moves, silent between arrivals
-        row(GetMempoolStream, "GetMempoolStream", Subscription, Stream, None),
-        row(GetTransaction, "GetTransaction", Work, One, None),
-        row(GetLightdInfo, "GetLightdInfo", Work, One, None),
-        row(GetStandardFee, "GetStandardFee", Work, One, None),
-    ]
-};
-
-// row `at` = `Method` discriminant `at` (`Method::route` indexes by it)
-const _: () = {
-    let mut at = 0;
-    while at < ROUTES.len() {
-        assert!(ROUTES[at].method as usize == at, "ROUTES rows out of `Method` order");
-        at += 1;
-    }
-};
-
 impl Method {
-    /// `/{service}/{method}` → its row's method (`None` = no row)
+    /// The registry's policy columns: one arm per method
+    pub(crate) const fn route(self) -> Route {
+        use Class::{Subscription, Work};
+        use IndexKind::{CompactBlock, TransparentAddress, TreeState};
+        use Method::*;
+        use Reply::{One, Stream};
+
+        let (class, reply, index) = match self {
+            // served tip itself
+            GetLatestBlock => (Work, One, None),
+            GetBlock => (Work, One, Some(CompactBlock)),
+            GetBlockRange => (Work, Stream, Some(CompactBlock)),
+            // TODO: REMOVE — deprecated alias of `GetBlockRange` (pepper-sync still calls it)
+            GetBlockRangeNullifiers => (Work, Stream, Some(CompactBlock)),
+            GetTreeState => (Work, One, Some(TreeState)),
+            GetLatestTreeState => (Work, One, Some(TreeState)),
+            GetSubtreeRoots => (Work, Stream, Some(TreeState)),
+            GetAddressUtxos => (Work, One, Some(TransparentAddress)),
+            GetAddressUtxosStream => (Work, Stream, Some(TransparentAddress)),
+            GetTaddressBalance => (Work, One, Some(TransparentAddress)),
+            GetTaddressBalanceStream => (Work, One, Some(TransparentAddress)),
+            // index names the txs, a validator holds the bytes (`docs/architecture.md` §1)
+            GetTaddressTransactions => (Work, Stream, Some(TransparentAddress)),
+            // TODO: REMOVE — deprecated alias of `GetTaddressTransactions` (pepper-sync calls it)
+            GetTaddressTxids => (Work, Stream, Some(TransparentAddress)),
+            // one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
+            SendTransaction => (Work, One, None),
+            GetMempoolTx => (Work, Stream, None),
+            // open until the served tip moves, silent between arrivals
+            GetMempoolStream => (Subscription, Stream, None),
+            GetTransaction => (Work, One, None),
+            GetLightdInfo => (Work, One, None),
+            GetStandardFee => (Work, One, None),
+        };
+        Route { class, reply, index }
+    }
+
+    /// Wire name (= the `method` metric label)
+    pub(crate) fn name(self) -> &'static str {
+        self.into()
+    }
+
+    /// `/{service}/{method}` → its method (`None` = no such variant)
     fn of(path: &str) -> Option<Self> {
-        let name = path.strip_prefix(SERVICE)?;
-        ROUTES.iter().find(|route| route.name == name).map(|route| route.method)
+        path.strip_prefix(SERVICE)?.parse().ok()
     }
 
     /// Once per request, by the outermost layer (`HealthRoute`): every inner layer reads it back
@@ -162,18 +138,14 @@ impl Method {
         }
     }
 
-    /// What [`Self::resolve`] named (`None` = no row)
+    /// What [`Self::resolve`] named (`None` = no such method)
     pub(crate) fn of_request<B>(request: &Request<B>) -> Option<Self> {
         request.extensions().get::<Self>().copied()
     }
 
-    pub(crate) const fn route(self) -> Route {
-        ROUTES[self as usize]
-    }
-
     #[cfg(test)]
     pub(crate) fn path(self) -> String {
-        format!("{SERVICE}{}", self.route().name)
+        format!("{SERVICE}{}", self.name())
     }
 }
 
@@ -192,7 +164,7 @@ impl Route {
 /// - `network` = declared (zainod's `network` key), never read off a validator
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
-/// - `indexes` = the configured ones: a `ROUTES` row needing another = `UNIMPLEMENTED`
+/// - `indexes` = the configured ones: a method needing another = `UNIMPLEMENTED`
 pub struct RouteDeps<S: ChainDataSource, V> {
     pub grpc_snapshots: GrpcSnapshots<V>,
     pub chain_view: Arc<ChainView<S>>,
@@ -217,10 +189,9 @@ struct Wired<S: ChainDataSource, V> {
     silent_timeout: Duration,
 }
 
-/// [`RouteDeps`] + each row's unconfigured index, fixed at [`Routing::route`] (`None` = served)
+/// [`RouteDeps`], fixed at [`Routing::route`]
 struct Routed<S: ChainDataSource, V> {
     routes: RouteDeps<S, V>,
-    disabled_by: [Option<IndexKind>; ROUTES.len()],
 }
 
 /// Every `CompactTxStreamer` method, dispatched by path (the tower service each connection runs)
@@ -259,8 +230,7 @@ impl<S: ChainDataSource, V> Routing<S, V> {
     ///
     /// - once per server (twice = a bug, panics)
     pub fn route(&self, routes: RouteDeps<S, V>) {
-        let disabled_by = ROUTES.map(|row| row.index.filter(|kind| !routes.indexes.contains(kind)));
-        let routed = Routed { routes, disabled_by };
+        let routed = Routed { routes };
         assert!(self.0.routed.set(routed).is_ok(), "gRPC server routed twice");
     }
 }
@@ -275,9 +245,11 @@ impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
         let answered = match (self.routed.get(), method) {
             (None, _) => Err(Status::unavailable(STARTING)),
             (Some(_), None) => Err(Status::unimplemented(format!("{path}: no such method"))),
-            (Some(routed), Some(method)) => match routed.disabled_by[method as usize] {
-                Some(index) => Err(disabled(method, index)),
-                None => routed.handle(method, self, body).await,
+            (Some(routed), Some(method)) => match method.route().index {
+                Some(index) if !routed.routes.indexes.contains(&index) => {
+                    Err(disabled(method, index))
+                }
+                _ => routed.handle(method, self, body).await,
             },
         };
         answered.unwrap_or_else(Status::into_http)
@@ -303,22 +275,21 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
         let served = || grpc_snapshot.served().map_err(wire::unavailable);
         let compact_blocks = || {
             let served = served()?;
-            let reader = view(served.views().compact_block(), method, IndexKind::CompactBlock)?;
+            let reader = view(served.views().compact_block(), method)?;
             Ok::<_, Status>(blocks::CompactBlocks { served, reader })
         };
         let tree_states = || {
             // the NFS publish itself: memo identity (`served()` = its served tip)
             let nothing = || wire::unavailable(Unavailable::NothingServed);
             let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
-            let reader = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
+            let reader = view(indexed.served().views().tree_state(), method)?;
             let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
             let reads = reads.clone();
             Ok::<_, Status>(tree_state::TreeStateReads { indexed, reader, reads, memos })
         };
         let address_index = || {
             let served = served()?;
-            let index = served.views().transparent_address();
-            let reader = view(index, method, IndexKind::TransparentAddress)?;
+            let reader = view(served.views().transparent_address(), method)?;
             let reader = reader.as_of(served.tip().height).with_max_rows(routes.max_address_rows);
             let network = served.params().network;
             Ok::<_, Status>(transparent_address::AddressIndex { reader, network })
@@ -370,14 +341,15 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
     }
 }
 
-/// A configured index's view, absent = disabled (an NFS publish built without it)
-fn view<T>(view: Option<T>, method: Method, index: IndexKind) -> Result<T, Status> {
+/// `method`'s index view ([`Method::route`]), absent = disabled (an NFS publish built without it)
+fn view<T>(view: Option<T>, method: Method) -> Result<T, Status> {
+    let index = method.route().index.expect("a method reading a view names its index");
     view.ok_or_else(|| disabled(method, index))
 }
 
 /// `method` needs `index`, which the operator left off
 fn disabled(method: Method, index: IndexKind) -> Status {
-    let (method, index) = (method.route().name, index.name());
+    let (method, index) = (method.name(), index.name());
     Status::unimplemented(format!("{method} needs the {index} index, which is not enabled"))
 }
 
@@ -415,29 +387,31 @@ mod tests {
     use http::HeaderValue;
     use tonic::Status;
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{h, MockChain};
+    use zaino_source::testing::{h, MockChain};
 
-    use super::{Method, Reply, RouteDeps, ROUTES};
+    use strum::VariantArray as _;
+
+    use super::{Method, Reply, RouteDeps};
     use crate::testing::{
         decode_frames, dispatch, drained, framed_request, grpc_snapshots, grpc_snapshots_held,
         indexed, request_at, routes, MAINNET,
     };
 
-    /// - each row's path names its own method
+    /// - each method's path names it
     /// - any other path (another service, a typo) names none
     #[test]
-    fn a_path_names_its_row_or_no_method() {
-        let resolved: Vec<_> = ROUTES.iter().map(|row| Method::of(&row.method.path())).collect();
-        assert_eq!(resolved, ROUTES.map(|row| Some(row.method)));
+    fn a_path_names_its_method_or_none() {
+        let resolved: Vec<_> = Method::VARIANTS.iter().map(|m| Method::of(&m.path())).collect();
+        assert_eq!(resolved, Method::VARIANTS.iter().copied().map(Some).collect::<Vec<_>>());
         let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
         let others = ["/grpc.health.v1.Health/GetBlock", "/", "", &format!("{service}/GetBlocks")];
         assert_eq!(others.map(Method::of), [None; 4]);
     }
 
-    /// Each row's `Reply` = its proto response side, so the latency metric a row feeds can't drift
+    /// Each method's `Reply` = its proto response side, so the latency metric it feeds can't drift
     /// from the wire (`returns (stream …)` = `Stream`)
     #[test]
-    fn every_row_replies_as_the_proto_declares() {
+    fn every_method_replies_as_the_proto_declares() {
         let proto = include_str!("../../zaino-proto/lightwallet-protocol/walletrpc/service.proto");
         let declared: std::collections::HashMap<&str, Reply> = proto
             .lines()
@@ -449,12 +423,13 @@ mod tests {
                 Some((name.trim(), reply))
             })
             .collect();
-        let drifted: Vec<_> = ROUTES
+        let drifted: Vec<_> = Method::VARIANTS
             .iter()
-            .filter(|row| declared.get(row.name) != Some(&row.reply))
-            .map(|row| (row.name, row.reply, declared.get(row.name)))
+            .map(|method| (method.name(), method.route().reply))
+            .filter(|(name, reply)| declared.get(name) != Some(reply))
+            .map(|(name, reply)| (name, reply, declared.get(name)))
             .collect();
-        assert!(drifted.is_empty(), "rows vs service.proto (name, ours, proto's): {drifted:?}");
+        assert!(drifted.is_empty(), "methods vs service.proto (name, ours, proto's): {drifted:?}");
     }
 
     /// Routed with only tree_state configured, nothing served yet:
@@ -472,7 +447,7 @@ mod tests {
         let mut router = dispatch(RouteDeps { indexes: vec![IndexKind::TreeState], ..routes() });
         let syncing = || (Unavailable, "the indexes are syncing: nothing served yet".to_owned());
         let off = |method: Method, index: &str| {
-            let method = method.route().name;
+            let method = method.name();
             (Unimplemented, format!("{method} needs the {index} index, which is not enabled"))
         };
         let unknown = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping";

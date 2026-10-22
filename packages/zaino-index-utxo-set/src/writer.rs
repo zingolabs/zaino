@@ -183,8 +183,8 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{BlockRef, Fee, Transaction};
+    use zaino_source::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::ZatBalance;
@@ -198,37 +198,35 @@ mod tests {
     ///
     /// - each prevout resolves from the parent, its own block or an earlier run block
     /// - fees = the stated ones
-    /// - rows = golden bytes: block 1 inserts what it leaves unspent (0x21:1 created + spent in
-    ///   it: neither row), removes genesis's 0x10:0
-    /// - block 2 removes the run's 0x21:0
+    /// - rows = golden bytes: block 1 inserts what it leaves unspent (its tx 1's vout 1 created +
+    ///   spent in it: neither row), removes genesis's coinbase:0
+    /// - block 2 removes tx 1's vout 0
     /// - the run = the same blocks folded one at a time (rows + fees records) = their fees read
     ///   back once held
     #[test]
     fn fees_resolve_through_the_parent_and_the_run_and_a_run_folds_like_single_blocks() {
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000))
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let genesis_paid = chain.output(chain.genesis(), 0, 0);
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 50_000))
                 .tx(|t| {
-                    t.txid([0x21; 32])
-                        .spend(OutPoint::new([0x10; 32], 0))
-                        .pay(&alice, 60_000)
-                        .pay(&alice, 39_000)
-                        .fee(1_000)
+                    t.spend(genesis_paid.clone()).pay(&alice, 60_000).pay(&alice, 39_000).fee(1_000)
                 })
                 .tx(|t| {
-                    t.txid([0x22; 32])
-                        .spend(OutPoint::new([0x21; 32], 1))
+                    t.spend_in_block(1, 1)
                         .pay(&alice, 30_000)
+                        .sapling_output(1)
                         .value_balance(ShieldedPool::Sapling, -8_000)
                         .fee(1_000)
                 })
         });
+        let one_paid = chain.output(one, 1, 0);
         let two = chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)).tx(|t| {
-                t.txid([0x23; 32])
-                    .spend(OutPoint::new([0x21; 32], 0))
+            b.coinbase(|c| c.pay(&alice, 50_000)).tx(|t| {
+                t.spend(one_paid.clone())
+                    .orchard_action(1, 1)
                     .value_balance(ShieldedPool::Orchard, -59_000)
                     .fee(1_000)
             })
@@ -248,13 +246,13 @@ mod tests {
         let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
         assert_eq!(run_fees, expected);
         let rows: Vec<(&[u8], &[u8])> = out[0].inserts(OUTPUTS).collect();
-        let row = |tag: u8, vout: u8, value: [u8; 8]| {
-            ([[tag; 32].as_slice(), &[0, 0, 0, vout]].concat(), value)
-        };
+        let key =
+            |outpoint: &OutPoint| [&outpoint.hash()[..], &outpoint.n().to_be_bytes()].concat();
+        let row = |slot: usize, value: [u8; 8]| (key(&chain.output(one, slot, 0)), value);
         let golden = [
-            row(0x11, 0, [0x50, 0xc3, 0, 0, 0, 0, 0, 0]),
-            row(0x21, 0, [0x60, 0xea, 0, 0, 0, 0, 0, 0]),
-            row(0x22, 0, [0x30, 0x75, 0, 0, 0, 0, 0, 0]),
+            row(0, [0x50, 0xc3, 0, 0, 0, 0, 0, 0]),
+            row(1, [0x60, 0xea, 0, 0, 0, 0, 0, 0]),
+            row(2, [0x30, 0x75, 0, 0, 0, 0, 0, 0]),
         ];
         let golden: Vec<(&[u8], &[u8])> =
             golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
@@ -262,10 +260,8 @@ mod tests {
         let removed = |changes: &BlockChanges| -> Vec<Vec<u8>> {
             changes.removes(OUTPUTS).map(<[u8]>::to_vec).collect()
         };
-        let spent = [[[0x10; 32].as_slice(), &[0, 0, 0, 0]].concat()];
-        assert_eq!(removed(&out[0]), spent, "block 1 spends genesis's");
-        let spent = [[[0x21; 32].as_slice(), &[0, 0, 0, 0]].concat()];
-        assert_eq!(removed(&out[1]), spent, "block 2 spends block 1's");
+        assert_eq!(removed(&out[0]), [key(&genesis_paid)], "block 1 spends genesis's");
+        assert_eq!(removed(&out[1]), [key(&one_paid)], "block 2 spends block 1's");
 
         for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
             let mut changes = store.changes(block.block_ref());
@@ -297,19 +293,15 @@ mod tests {
     fn an_unrecorded_prevout_a_forward_spend_or_a_negative_fee_is_a_named_error() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
-        let one = chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        let two = chain.mine(|b| {
-            b.tx(|t| {
-                t.txid([0x20; 32])
-                    .spend(OutPoint::new([0x10; 32], 0))
-                    .pay(&alice, 99_000)
-                    .fee(1_000)
-            })
-        });
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let one_paid = chain.output(one, 0, 0);
+        let two =
+            chain.mine(|b| b.tx(|t| t.spend(one_paid.clone()).pay(&alice, 99_000).fee(1_000)));
+        let two_paid = chain.output(two, 1, 0);
         let three = chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x31; 32]).pay(&alice, 1_000)).tx(|t| {
-                t.txid([0x30; 32])
-                    .spend(OutPoint::new([0x20; 32], 0))
+            b.coinbase(|c| c.pay(&alice, 1_000)).tx(|t| {
+                t.spend(two_paid)
+                    .sapling_output(1)
                     .value_balance(ShieldedPool::Sapling, -99_000)
                     .fee(0)
             })
@@ -321,8 +313,8 @@ mod tests {
             Arc::new(Block::new(chain.block(at.hash).header().clone(), txs))
         };
         let spends = |spent: OutPoint| lie(two, &|tx| tx.transparent.inputs[0] = spent.clone());
-        let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(OutPoint::new([0x10; 32], 0)));
-        let respends = lie(three, &|tx| tx.transparent.inputs.push(OutPoint::new([0x10; 32], 0)));
+        let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(one_paid.clone()));
+        let respends = lie(three, &|tx| tx.transparent.inputs.push(one_paid.clone()));
         let overpaid = lie(two, &|tx| {
             tx.transparent.outputs[0].value = Zatoshis::from_u64(100_001).expect("in supply");
         });
@@ -330,44 +322,42 @@ mod tests {
             tx.sapling.value_balance = ZatBalance::from_i64(-99_001).expect("in supply");
         });
         let genesis = block(chain.genesis());
-        let id = |byte| TxId::from_bytes([byte; 32]);
-        let missing = |spent, vout| FoldError::MissingPrevout {
+        let (spender_at_2, spender_at_3) = (chain.tx(two, 1).txid, chain.tx(three, 1).txid);
+        let missing = |spent: &OutPoint| FoldError::MissingPrevout {
             height: h(2),
-            txid: id(0x20),
-            spent: id(spent),
-            vout,
+            txid: spender_at_2,
+            spent: TxId::from_bytes(*spent.hash()),
+            vout: spent.n(),
         };
+        let never_mined = OutPoint::new([0x99; 32], 3);
+        let later = chain.output(three, 0, 0);
         let cases = [
-            (
-                "never mined",
-                vec![block(one), spends(OutPoint::new([0x99; 32], 3))],
-                missing(0x99, 3),
-            ),
+            ("never mined", vec![block(one), spends(never_mined.clone())], missing(&never_mined)),
             (
                 "spends a later run block's output",
-                vec![block(one), spends(OutPoint::new([0x31; 32], 0)), block(three)],
-                missing(0x31, 0),
+                vec![block(one), spends(later.clone()), block(three)],
+                missing(&later),
             ),
-            ("one prevout twice in a tx", vec![block(one), spends_twice], missing(0x10, 0)),
+            ("one prevout twice in a tx", vec![block(one), spends_twice], missing(&one_paid)),
             (
                 "a prevout an earlier run block spent",
                 vec![block(one), block(two), respends],
                 FoldError::MissingPrevout {
                     height: h(3),
-                    txid: id(0x30),
-                    spent: id(0x10),
+                    txid: spender_at_3,
+                    spent: chain.tx(one, 0).txid,
                     vout: 0,
                 },
             ),
             (
                 "transparent outputs > inputs",
                 vec![block(one), overpaid],
-                FoldError::NegativeFee { height: h(2), txid: id(0x20) },
+                FoldError::NegativeFee { height: h(2), txid: spender_at_2 },
             ),
             (
                 "value into sapling past the inputs",
                 vec![block(one), block(two), overshielded],
-                FoldError::NegativeFee { height: h(3), txid: id(0x30) },
+                FoldError::NegativeFee { height: h(3), txid: spender_at_3 },
             ),
         ];
 
@@ -386,17 +376,14 @@ mod tests {
     #[test]
     fn stored_fees_read_back_and_a_missing_or_mismatched_record_is_a_named_error() {
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let genesis_paid = chain.output(chain.genesis(), 0, 0);
         let one = chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000)).tx(|t| {
-                t.txid([0x20; 32])
-                    .spend(OutPoint::new([0x10; 32], 0))
-                    .pay(&alice, 99_000)
-                    .fee(1_000)
-            })
+            b.coinbase(|c| c.pay(&alice, 50_000))
+                .tx(|t| t.spend(genesis_paid).pay(&alice, 99_000).fee(1_000))
         });
-        let two = chain.mine(|b| b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)));
+        let two = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
         let blocks = chain.blocks(one);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
@@ -444,24 +431,22 @@ mod tests {
         // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
         // recovered output
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        // (coinbase txid, txid, spends vout 0 of, pays), each coinbase 50 000
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        // - block h spends vout 0 of (height, slot), pays
+        // - each coinbase 50 000
         #[rustfmt::skip]
         let spends = [
-            (0x11, 0x20, 0x10, 90_000),
-            (0x12, 0x21, 0x20, 80_000),
-            (0x13, 0x22, 0x11, 40_000),
-            (0x14, 0x23, 0x21, 70_000),
+            ((0, 0), 90_000),
+            ((1, 1), 80_000),
+            ((1, 0), 40_000),
+            ((2, 1), 70_000),
         ];
-        for (coinbase, txid, spent, paid) in spends {
+        for ((height, slot), paid) in spends {
+            let spent = chain.output(chain.at(h(height)), slot, 0);
             chain.mine(|b| {
-                b.coinbase(|c| c.txid([coinbase; 32]).pay(&alice, 50_000)).tx(|t| {
-                    t.txid([txid; 32])
-                        .spend(OutPoint::new([spent; 32], 0))
-                        .pay(&alice, paid)
-                        .fee(10_000)
-                })
+                b.coinbase(|c| c.pay(&alice, 50_000))
+                    .tx(|t| t.spend(spent).pay(&alice, paid).fee(10_000))
             });
         }
         let blocks = chain.blocks(chain.tip());
@@ -508,7 +493,7 @@ mod tests {
     /// Every prevout resolves wherever it lives (durable, buffered, earlier in its own run)
     ///
     /// - 1: spends 0's output and one from earlier in its own block
-    /// - 2: enters orchard and sprout
+    /// - 2: enters orchard, then sprout from the change (two txs: no format carries both)
     /// - 3: spends 1's outputs with value leaving sprout
     /// - 4: spends 3's and enters ironwood
     ///
@@ -519,49 +504,48 @@ mod tests {
     #[tokio::test]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_held_heights_republish_them() {
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 625_000_000))
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let genesis_paid = chain.output(chain.genesis(), 0, 0);
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 625_000_000))
+                .tx(|t| t.spend(genesis_paid).pay(&alice, 60_000).pay(&alice, 39_000).fee(1_000))
                 .tx(|t| {
-                    t.txid([0x21; 32])
-                        .spend(OutPoint::new([0x10; 32], 0))
-                        .pay(&alice, 60_000)
-                        .pay(&alice, 39_000)
-                        .fee(1_000)
-                })
-                .tx(|t| {
-                    t.txid([0x22; 32])
-                        .spend(OutPoint::new([0x21; 32], 1))
+                    t.spend_in_block(1, 1)
                         .pay(&alice, 30_000)
+                        .sapling_output(1)
                         .value_balance(ShieldedPool::Sapling, -8_000)
                         .fee(1_000)
                 })
         });
+        let one_paid = chain.output(one, 1, 0);
         chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 625_000_000)).tx(|t| {
-                t.txid([0x23; 32])
-                    .spend(OutPoint::new([0x21; 32], 0))
-                    .value_balance(ShieldedPool::Orchard, -58_500)
-                    .sprout_balance(-500)
-                    .fee(1_000)
-            })
+            b.coinbase(|c| c.pay(&alice, 625_000_000))
+                .tx(|t| {
+                    t.spend(one_paid)
+                        .pay(&alice, 500)
+                        .orchard_action(1, 1)
+                        .value_balance(ShieldedPool::Orchard, -58_500)
+                        .fee(1_000)
+                })
+                .tx(|t| t.spend_in_block(1, 0).sprout_balance(-500).fee(0))
         });
-        chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x13; 32]).pay(&alice, 625_000_000)).tx(|t| {
-                t.txid([0x24; 32])
-                    .spend(OutPoint::new([0x22; 32], 0))
-                    .spend(OutPoint::new([0x11; 32], 0))
+        let (sapling_change, coinbase) = (chain.output(one, 2, 0), chain.output(one, 0, 0));
+        let three = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 625_000_000)).tx(|t| {
+                t.spend(sapling_change)
+                    .spend(coinbase)
                     .pay(&alice, 625_029_500)
                     .sprout_balance(500)
                     .fee(1_000)
             })
         });
+        let three_paid = chain.output(three, 1, 0);
         let tip = chain.mine(|b| {
-            b.coinbase(|c| c.txid([0x14; 32]).pay(&alice, 625_000_000)).tx(|t| {
-                t.txid([0x25; 32])
-                    .spend(OutPoint::new([0x24; 32], 0))
+            b.coinbase(|c| c.pay(&alice, 625_000_000)).tx(|t| {
+                t.spend(three_paid)
                     .pay(&alice, 625_000_000)
+                    .ironwood_action(1, 1)
                     .value_balance(ShieldedPool::Ironwood, -29_000)
                     .fee(500)
             })
@@ -596,12 +580,11 @@ mod tests {
     async fn a_fold_error_panics_the_writer_naming_the_index() {
         let (writer, _consumer) = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX), QUEUE);
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        let one = chain.mine(|b| {
-            b.tx(|t| t.txid([0x20; 32]).spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 1))
-        });
-        // lie: 0x20 spends an output never mined
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let genesis_paid = chain.output(chain.genesis(), 0, 0);
+        let one = chain.mine(|b| b.tx(|t| t.spend(genesis_paid).pay(&alice, 1)));
+        // lie: tx 1 spends an output never mined
         let mut txs = chain.block(one.hash).transactions().to_vec();
         txs[1].transparent.inputs[0] = OutPoint::new([0x99; 32], 3);
         let unrecorded = Arc::new(Block::new(chain.block(one.hash).header().clone(), txs));

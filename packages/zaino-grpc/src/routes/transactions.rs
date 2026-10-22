@@ -80,7 +80,8 @@ pub(super) async fn fetch_raw_transaction<S: ChainDataSource, V: MapRead>(
     grpc_snapshot: &GrpcSnapshot<V>,
     txid: TxId,
 ) -> Result<RawTransaction, Status> {
-    match validators.transaction(txid).await {
+    let found = validators.lookup(move |source| async move { source.get_transaction(txid).await });
+    match found.await {
         Ok(answered) => Ok(raw_transaction_message(answered.value)),
         Err(unanswered) => match &unanswered.last {
             Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
@@ -132,8 +133,8 @@ mod tests {
 
     use super::*;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_primitives::testing::MockChain;
-    use zaino_source::testing::{Port, ValidatorViews};
+    use zaino_header_chain::HeaderChainSnapshot;
+    use zaino_source::testing::MockChain;
 
     use crate::testing::{grpc_snapshots_held, routes_over};
 
@@ -148,7 +149,6 @@ mod tests {
         use http::HeaderValue;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_header_chain::testing::HeaderViews;
         use zaino_source::SendRawTransactionError::Rejected;
 
         use crate::service::Method;
@@ -156,13 +156,13 @@ mod tests {
 
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
-        let node = Arc::new(chain.validator(tip));
+        let node = chain.validator(tip);
         let (routes, balancing, merge) = routes_over(&node);
         let chain_view = Arc::clone(&routes.chain_view);
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(merge.run(cancel.child_token()));
-        chain_view.set_chain(Some(chain.snapshot(tip)));
+        chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
         let reader = chain_view.subscriber();
         rounds("tip held", || !reader.current().held_by().is_empty()).await;
         let mut router = dispatch(routes);
@@ -194,12 +194,13 @@ mod tests {
             assert_eq!(refused, (code, message.to_owned()), "the validator's, verbatim");
         }
 
-        let checks = node.calls().checks;
+        let checks = node.calls("checkadmission");
         let (code, _) = reply(vec![9u8; 8]).await;
-        assert_eq!((code, node.calls().checks), (-22, checks), "unparseable: no validator asked");
+        let asked = node.calls("checkadmission");
+        assert_eq!((code, asked), (-22, checks), "unparseable: no validator asked");
 
-        node.checks_admission(false);
-        node.reachable(&[Port::Send], false);
+        node.lacks(&["checkadmission"]);
+        node.reachable(&["sendrawtransaction"], false);
         let unsent = router
             .call(request(zaino_source::testing::raw_transaction(20, 0).1))
             .await
@@ -217,8 +218,8 @@ mod tests {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(3);
         let (txid, raw) = zaino_source::testing::raw_transaction(7, 0);
-        let node = Arc::new(chain.validator(tip));
-        node.reachable(&Port::ALL, false);
+        let node = chain.validator(tip);
+        node.down(true);
         let (routes, balancing, _merge) = routes_over(&node);
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(balancing.run(cancel.child_token()));

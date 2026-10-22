@@ -308,10 +308,9 @@ impl ChainViewSnapshot {
         added.collect()
     }
 
-    /// Partition / eclipse / stale-tip conditions as of the last merge (telemetry only, never
-    /// gates)
-    pub fn alarms(&self) -> Alarms {
-        self.alarms
+    /// Raised alarms as of the last merge (telemetry only, never gates)
+    pub fn alarms(&self) -> &Alarms {
+        &self.alarms
     }
 
     /// Per-validator metadata, in configured order

@@ -1,6 +1,6 @@
 //! lightwalletd-compatible `CompactTxStreamer` endpoint
 //!
-//! - [`GrpcService`] = every method in the one registry (`service.rs` `ROUTES`), dispatched by
+//! - [`GrpcService`] = every method in the one registry (`service.rs` `Method`), dispatched by
 //!   path over [`RouteDeps`] (`GrpcSnapshots`, the chain view, the validators)
 //! - compact blocks = stored bytes, never re-encoded
 //! - one `GrpcSnapshot` per request or stream (`service.rs`)
@@ -35,7 +35,7 @@ mod tls;
 mod transport;
 mod wire;
 
-pub use crate::metrics::{describe_metrics, sent_bytes_total};
+pub use crate::metrics::{sent_bytes_total, METRICS};
 pub use admission::{AdmissionReport, AdmissionState};
 pub use health::Health;
 pub use lifetime::{Hold, Retire};
@@ -47,7 +47,9 @@ pub use service::{RouteDeps, Routing};
 pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};
 
-/// RPCs unserved without `kind` (`ROUTES` order; none = an index no RPC reads directly)
+/// RPCs unserved without `kind` (`Method` order; none = an index no RPC reads directly)
 pub fn rpcs_gated_by(kind: zaino_persistence::IndexKind) -> impl Iterator<Item = &'static str> {
-    service::ROUTES.into_iter().filter(move |row| row.index == Some(kind)).map(|row| row.name)
+    use strum::VariantArray as _;
+    let methods = service::Method::VARIANTS.iter();
+    methods.filter(move |method| method.route().index == Some(kind)).map(|method| method.name())
 }

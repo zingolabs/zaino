@@ -18,45 +18,10 @@ Which index holds the pipeline back: the one whose `zaino_index_applied_height` 
 `zaino_fetch_height` waits. Why: its `zaino_index_run_seconds` against `zaino_index_write_seconds`
 (run ≈ write = the disk; run ≫ write = the fold, or compact-block waiting on utxo-set's fees).
 
-```rust,ignore
-use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
-
-pub struct MyIndexWriter<S: Store> { store: S, publisher: IndexPublisher<S::View> }
-
-impl<S: Store<View: MapRead>> MyIndexWriter<S> {
-    pub fn new(store: S) -> Self {                      // store opened with its WRITE_BUFFER
-        let publisher = IndexPublisher::new(&store);
-        Self { store, publisher }
-    }
-
-    pub fn handle(&self) -> IndexHandle<S::View> {      // → FinalizedFollower::subscribe + Nfs::add
-        self.publisher.handle()
-    }
-
-    pub async fn run(self, mut blocks: Subscription<Block>) {
-        let Self { mut store, publisher } = self;
-        while let Some(run) = blocks.next_run().await {
-            store = blocking(move || {
-                for block in &run.blocks {
-                    if !held(&store, block) {
-                        let mut changes = store.changes(block.block_ref());
-                        fold(&MyReader::new(store.applied()), block, &mut changes);
-                        apply(&mut store, changes);     // full buffer = the store commits
-                    }
-                }
-                if run.ends_at_finalized_tip {
-                    commit(&mut store);                 // caught up: durable now
-                }
-                store
-            })
-            .await;
-            publisher.publish(&store);
-        }
-        store = blocking(move || { commit(&mut store); store }).await;   // Shutdown
-        publisher.publish(&store);
-    }
-}
-```
+A writer = `new(store)`, `handle()` (→ `FinalizedFollower::subscribe` + `Nfs::add`) and
+`run(blocks)`: per run, skip `held` blocks, `fold` + `apply` the rest on `blocking`, `commit` once
+`run.ends_at_finalized_tip`, then `publish`; on `Shutdown`, commit and publish once more. The
+smallest one: `zaino-internal-block-hash-to-height/src/writer.rs`.
 
 ## `FinalizedFollower`
 
@@ -113,7 +78,7 @@ not), `changed()` (after each commit; `false` = writer gone).
 - `apply` / `commit` return the time spent in the store; `ran(&store, started, write)` after each
   run records `zaino_index_run_seconds` (taken off the queue → published, waits included) and
   `zaino_index_write_seconds` (that run's applies + commits), both `{index}`: run − write = the
-  fold + waits.
+  fold + waits. Help and units: `METRICS`.
 - `assert_dense(view, table)`: a writer's open check, one `table` record per durable height.
 - `assert_next(out, parent_tip, block)` / `assert_run(parent_tip, blocks, outs)`: a fold's
   preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one

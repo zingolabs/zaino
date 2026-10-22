@@ -10,8 +10,9 @@ mod nfs_core;
 mod per_index;
 mod publish;
 
-pub use crate::fold::FoldError;
-pub use crate::indexes::schema;
-pub use crate::metrics::describe_metrics;
+pub use crate::indexes::{
+    fold, schema, write_buffer, writer, FeeWiring, FoldError, RunFuture, WriterRun,
+};
+pub use crate::metrics::METRICS;
 pub use crate::nfs::{Nfs, NfsError};
 pub use crate::publish::{ChainParams, IndexesAtBlock, NfsPublication, Published, Views};

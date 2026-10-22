@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use zaino_primitives::testing::{encode_header, MockChain};
 use zaino_primitives::types::{Block, BlockRef};
+use zaino_source::testing::{encode_header, MockChain};
 use zaino_source::{FailureMode, NonDomainError};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;

@@ -245,7 +245,7 @@ impl ChainDataSource for ZebraIndexerGrpcClient {
     async fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TxId, QueryError<crate::CheckAdmissionError>> {
+    ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         self.rpc.check_admission(transaction).await
     }
 }

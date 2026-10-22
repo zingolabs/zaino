@@ -11,7 +11,7 @@ use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_persistence::{IndexKind, OverlayView, PinnedView};
-use zaino_primitives::types::{CommitmentTreeBytes, SubtreeRoot, Treestate};
+use zaino_primitives::types::{SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, ShieldedPool};
@@ -272,8 +272,8 @@ fn serve_error_status(error: ServeError) -> Status {
 fn tree_state_message(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     let activations = params.activations();
     let active = |pool| activations.get(pool).is_some_and(|from| from <= state.height);
-    let tree = |pool, tree: &CommitmentTreeBytes| match active(pool) {
-        true => const_hex::encode(tree.as_bytes()),
+    let tree = |pool| match active(pool) {
+        true => const_hex::encode(state.trees.get(pool).as_bytes()),
         false => String::new(),
     };
     wire::frame(&service::TreeState {
@@ -281,9 +281,9 @@ fn tree_state_message(state: &Treestate, params: zaino_nfs::ChainParams) -> Byte
         height: u64::from(state.height),
         hash: state.block_hash.to_string(),
         time: state.time,
-        sapling_tree: tree(ShieldedPool::Sapling, &state.sapling),
-        orchard_tree: tree(ShieldedPool::Orchard, &state.orchard),
-        ironwood_tree: tree(ShieldedPool::Ironwood, &state.ironwood),
+        sapling_tree: tree(ShieldedPool::Sapling),
+        orchard_tree: tree(ShieldedPool::Orchard),
+        ironwood_tree: tree(ShieldedPool::Ironwood),
     })
 }
 
@@ -305,10 +305,10 @@ mod tests {
     use prost::Message as _;
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{all_at, h, MockChain};
     use zaino_primitives::types::{BlockRef, SubtreeRoot, TreeRoot};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::service;
+    use zaino_source::testing::{all_at, h, MockChain};
     use zcash_protocol::consensus::NetworkUpgrade;
     use zcash_protocol::local_consensus::LocalNetwork;
     use zcash_protocol::BlockHash;

@@ -71,14 +71,30 @@ pub(crate) struct RpcClientConfig {
 }
 
 pub(crate) struct RpcClient {
-    url: String,
     name: String,
-    client: reqwest::Client,
-    auth: Option<(String, String)>,
+    wire: Wire,
     id_counter: AtomicI64,
     bytes: Option<DefaultDirectRateLimiter>,
     response_size_cap: ResponseSizeCap,
 }
+
+/// Where a request body goes
+enum Wire {
+    Http {
+        client: reqwest::Client,
+        url: String,
+        auth: Option<(String, String)>,
+    },
+    /// In-process server: the same bytes, no socket (paused-clock tests)
+    #[cfg(any(test, feature = "testing"))]
+    Served(Served),
+}
+
+/// Request body → response body, as an in-process JSON-RPC server answers it
+#[cfg(any(test, feature = "testing"))]
+pub(crate) type Served = std::sync::Arc<
+    dyn Fn(Vec<u8>) -> futures::future::BoxFuture<'static, Result<Vec<u8>, RpcError>> + Send + Sync,
+>;
 
 impl RpcClient {
     pub(crate) fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
@@ -91,17 +107,25 @@ impl RpcClient {
             // idle connections kept = the most ever open at once
             .pool_max_idle_per_host(limits.max_connections.get() as usize)
             .build()?;
-        let per_second = |rate: NonZeroU32| RateLimiter::direct(Quota::per_second(rate));
+        let wire = Wire::Http { client, url: config.url, auth: config.auth };
+        Ok(Self::over(config.name, wire, limits))
+    }
 
-        Ok(Self {
-            url: config.url,
-            name: config.name,
-            client,
-            auth: config.auth,
+    /// Every request answered by `serve` in-process (`MockValidator`)
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn served(name: String, serve: Served, limits: LinkLimits) -> Self {
+        Self::over(name, Wire::Served(serve), limits)
+    }
+
+    fn over(name: String, wire: Wire, limits: LinkLimits) -> Self {
+        let per_second = |rate: NonZeroU32| RateLimiter::direct(Quota::per_second(rate));
+        Self {
+            name,
+            wire,
             id_counter: AtomicI64::new(0),
             bytes: limits.max_bytes_per_sec.map(per_second),
             response_size_cap: limits.response_size_cap,
-        })
+        }
     }
 
     pub(crate) fn response_size_cap(&self) -> ResponseSizeCap {
@@ -162,12 +186,18 @@ impl RpcClient {
     }
 
     async fn send_http(&self, body: &Value) -> Result<Vec<u8>, RpcError> {
-        let mut request = self
-            .client
-            .post(&self.url)
+        let (client, url, auth) = match &self.wire {
+            Wire::Http { client, url, auth } => (client, url, auth),
+            #[cfg(any(test, feature = "testing"))]
+            Wire::Served(serve) => {
+                return self.read_served(serve(serde_json::to_vec(body)?).await?).await
+            }
+        };
+        let mut request = client
+            .post(url)
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(body)?);
-        if let Some((ref user, ref pass)) = self.auth {
+        if let Some((user, pass)) = auth {
             request = request.basic_auth(user, Some(pass));
         }
 
@@ -177,6 +207,17 @@ impl RpcClient {
             return Err(RpcError::Status(status));
         }
         self.read_body_capped(response).await
+    }
+
+    /// An in-process reply under the same cap, counted and paced as one chunk
+    #[cfg(any(test, feature = "testing"))]
+    async fn read_served(&self, body: Vec<u8>) -> Result<Vec<u8>, RpcError> {
+        let max = self.response_size_cap.bytes();
+        if body.len() > max {
+            return Err(RpcError::ResponseBodyTooLarge { max });
+        }
+        self.received(body.len()).await;
+        Ok(body)
     }
 
     /// Chunk-wise (never allocates an oversized body)

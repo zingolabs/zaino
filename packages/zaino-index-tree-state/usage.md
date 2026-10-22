@@ -48,18 +48,7 @@ hash comes from its completing height's `heights` record.
 
 ## Wiring
 
-```rust,ignore
-use zaino_index_tree_state::{schema, TreeStateIndexWriter, WRITE_BUFFER};
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
-
-let schema = schema(network);
-let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
-let writer = TreeStateIndexWriter::new(store);
-let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::TreeState, handle.durable_view().tip(), queue_bytes);
-nfs.add(IndexKind::TreeState, handle);
-tokio::spawn(writer.run(blocks));
-```
+Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nfs)).
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine`.
@@ -71,8 +60,8 @@ tokio::spawn(writer.run(blocks));
   record per durable height. `run` panics on a failed commit or an unfoldable
   block ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - `pool_activations(&LocalNetwork)` gives each pool's first height as a
-  `PerPool<Option<BlockHeight>>`: Sapling, NU5 (Orchard), NU6.3 (Ironwood), or `None` when
-  unscheduled.
+  `PerPool<Option<BlockHeight>>` (each pool's `ShieldedPool::activation_upgrade`), or `None`
+  when unscheduled.
 - zainod builds it only when `index.tree_state.enabled`. Disabled, the three
   methods answer `UNIMPLEMENTED`.
 

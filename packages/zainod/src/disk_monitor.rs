@@ -11,7 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use metrics::Unit;
 use zaino_persistence::IndexKind;
+use zaino_primitives::metric::Metric;
 
 use crate::boot::OpenedIndex;
 
@@ -25,33 +27,29 @@ mod names {
     pub(super) const WRITTEN_BYTES_TOTAL: &str = "zaino.disk.written_bytes_total";
 }
 
-pub(crate) fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, Unit};
+pub(crate) const METRICS: &[Metric] = {
+    use names::*;
 
-    describe_gauge!(
-        names::COMMITTED_BYTES,
-        Unit::Bytes,
-        "Committed data (records + rows as stored), by index"
-    );
-    describe_gauge!(
-        names::CACHED_BYTES,
-        Unit::Bytes,
-        "Committed bytes in page cache (rest = a disk read on first touch), by index"
-    );
-    describe_gauge!(
-        names::BYTES,
-        Unit::Bytes,
-        "Index directory on disk (preallocation + uncommitted merges included), by index"
-    );
-    describe_gauge!(names::FREE_BYTES, Unit::Bytes, "Free space on the index's filesystem");
-    describe_gauge!(names::CAPACITY_BYTES, Unit::Bytes, "Size of the index's filesystem");
-    describe_counter!(names::READ_BYTES_TOTAL, Unit::Bytes, "Block-device bytes zainod read");
-    describe_counter!(
-        names::WRITTEN_BYTES_TOTAL,
-        Unit::Bytes,
-        "Block-device bytes zainod caused to be written"
-    );
-}
+    &[
+        Metric::gauge(COMMITTED_BYTES, "Committed data (records + rows as stored), by index")
+            .unit(Unit::Bytes),
+        Metric::gauge(
+            CACHED_BYTES,
+            "Committed bytes in page cache (rest = a disk read on first touch), by index",
+        )
+        .unit(Unit::Bytes),
+        Metric::gauge(
+            BYTES,
+            "Index directory on disk (preallocation + uncommitted merges included), by index",
+        )
+        .unit(Unit::Bytes),
+        Metric::gauge(FREE_BYTES, "Free space on the index's filesystem").unit(Unit::Bytes),
+        Metric::gauge(CAPACITY_BYTES, "Size of the index's filesystem").unit(Unit::Bytes),
+        Metric::counter(READ_BYTES_TOTAL, "Block-device bytes zainod read").unit(Unit::Bytes),
+        Metric::counter(WRITTEN_BYTES_TOTAL, "Block-device bytes zainod caused to be written")
+            .unit(Unit::Bytes),
+    ]
+};
 
 /// One sample of every index + the process (blocking: `mincore` + `statvfs` + procfs reads)
 pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView)]) {

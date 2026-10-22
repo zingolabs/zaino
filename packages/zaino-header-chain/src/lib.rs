@@ -18,6 +18,6 @@ mod tests;
 pub use chain::{BestTip, HeaderChain, Inserted, Record};
 pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
-pub use rules::{Rejected, CONTEXT};
+pub use rules::{Fault, Rejected, CONTEXT};
 pub use snapshot::HeaderChainSnapshot;
 pub use witnesses::Witness;

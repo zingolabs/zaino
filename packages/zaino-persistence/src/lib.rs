@@ -21,7 +21,7 @@ mod sequence;
 mod thread;
 mod write_buffer;
 
-pub use self::metrics::describe_metrics;
+pub use self::metrics::METRICS;
 pub use changes::{BlockChanges, MapChanges, SequenceAppends};
 pub use disk::{manifest_fits, DiskEngine, DiskStore, DiskView, TableFootprint};
 pub use error::{CommitFailed, StoreError};

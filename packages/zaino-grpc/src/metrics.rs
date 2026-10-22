@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use metrics::Unit;
 use tonic::Code;
+use zaino_primitives::metric::Metric;
 
 use crate::admission::Class;
 use crate::labels::{label, slot, CODES, LABELS};
@@ -87,78 +89,76 @@ fn series(method: Option<Method>) -> &'static MethodSeries {
     })
 }
 
-/// `# HELP` registrations for every metric this crate emits
-pub fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
-
-    describe_counter!(REQUESTS_TOTAL, "Finished requests, by method and gRPC status code");
-    describe_histogram!(
+/// Every metric this crate emits
+pub const METRICS: &[Metric] = &[
+    Metric::counter(REQUESTS_TOTAL, "Finished requests, by method and gRPC status code"),
+    Metric::histogram(
         DURATION_SECONDS,
-        Unit::Seconds,
-        "One-reply RPC latency: admission through trailers, OK answers only, by method"
-    );
-    describe_histogram!(
+        "One-reply RPC latency: admission through trailers, OK answers only, by method",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
         FIRST_MESSAGE_SECONDS,
-        Unit::Seconds,
-        "Server-streaming RPC latency: admission to first message, by method"
-    );
-    describe_histogram!(
+        "Server-streaming RPC latency: admission to first message, by method",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(
         STREAM_DURATION_SECONDS,
-        Unit::Seconds,
-        "Server-streaming RPC lifetime: admission through trailers or the client leaving, by method"
-    );
-    describe_histogram!(STREAM_MESSAGES, "Messages sent per server stream, by method");
-    describe_counter!(SENT_BYTES_TOTAL, Unit::Bytes, "Response body bytes, by method");
-    describe_gauge!(ACTIVE_STREAMS, "Work streams holding an admission slot");
-    describe_counter!(
+        "Server-streaming RPC lifetime: admission through trailers or the client leaving, by method",
+    )
+    .unit(Unit::Seconds),
+    Metric::histogram(STREAM_MESSAGES, "Messages sent per server stream, by method"),
+    Metric::counter(SENT_BYTES_TOTAL, "Response body bytes, by method").unit(Unit::Bytes),
+    Metric::gauge(ACTIVE_STREAMS, "Work streams holding an admission slot"),
+    Metric::counter(
         ADMISSION_REJECTED_TOTAL,
-        "Work streams refused UNAVAILABLE at the adaptive work-stream limit"
-    );
-    describe_gauge!(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a slot");
-    describe_counter!(
+        "Work streams refused UNAVAILABLE at the adaptive work-stream limit",
+    ),
+    Metric::gauge(ACTIVE_SUBSCRIPTIONS, "GetMempoolStream subscriptions holding a slot"),
+    Metric::counter(
         SUBSCRIPTIONS_REJECTED_TOTAL,
-        "Subscriptions refused UNAVAILABLE at max_subscriptions"
-    );
-    describe_counter!(
+        "Subscriptions refused UNAVAILABLE at max_subscriptions",
+    ),
+    Metric::counter(
         ACCEPT_ERRORS_TOTAL,
-        "accept() failures the listener backed off from (EMFILE, ENFILE, ENOBUFS, ...)"
-    );
-    describe_histogram!(
+        "accept() failures the listener backed off from (EMFILE, ENFILE, ENOBUFS, ...)",
+    ),
+    Metric::histogram(
         DISK_READ_WAIT_SECONDS,
-        Unit::Seconds,
-        "Wait for an index-read permit, by lane (point, range, scan)"
-    );
-    describe_gauge!(CONNECTIONS_ACTIVE, "Open client connections");
-    describe_counter!(
+        "Wait for an index-read permit, by lane (point, range, scan)",
+    )
+    .unit(Unit::Seconds),
+    Metric::gauge(CONNECTIONS_ACTIVE, "Open client connections"),
+    Metric::counter(
         STALLED_CONNECTIONS_TOTAL,
-        "Connections closed for holding data their client did not read within unread_timeout"
-    );
-    describe_counter!(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps");
-    describe_counter!(
+        "Connections closed for holding data their client did not read within unread_timeout",
+    ),
+    Metric::counter(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps"),
+    Metric::counter(
         RETIRED_CONNECTIONS_TOTAL,
-        "Connections sent GOAWAY, by reason: age, idle (gRPC A9) or retired (an operator hold)"
-    );
-    describe_gauge!(
+        "Connections sent GOAWAY, by reason: age, idle (gRPC A9) or retired (an operator hold)",
+    ),
+    Metric::gauge(
         ADAPTIVE_STREAM_LIMIT,
-        "Work streams admitted at once now (latency-adaptive; max_work_streams when off)"
-    );
-    describe_histogram!(
+        "Work streams admitted at once now (latency-adaptive; max_work_streams when off)",
+    ),
+    Metric::histogram(
         QUEUE_DELAY_SECONDS,
-        Unit::Seconds,
         "Send queueing (RTT over the client network's 10 min base RTT), one per client network \
-         every 10 s (its sockets' median)"
-    );
-    describe_gauge!(
+         every 10 s (its sockets' median)",
+    )
+    .unit(Unit::Seconds),
+    Metric::gauge(
         OVERLOAD_LATCHED,
         "Overload causes latched, by cause (1 = latched, also while detection is off; /readyz names \
-         the first only while on)"
-    );
-    describe_histogram!(
+         the first only while on)",
+    ),
+    Metric::histogram(
         RETRANSMIT_RATIO,
         "Share of sent data segments retransmitted, one per client network sending >= 100 \
-         segments every 10 s"
-    );
-}
+         segments every 10 s",
+    ),
+];
 
 /// A connection sent GOAWAY (`reason` = `age` | `idle` | `retired`)
 pub(crate) fn connection_retired(reason: &'static str) {

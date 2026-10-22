@@ -21,18 +21,18 @@ mod node_release;
 mod peer_info;
 mod rpc;
 
-pub use self::metrics::describe_metrics;
+pub use self::metrics::METRICS;
 pub use blockchain_info::{BlockchainInfo, ScheduleError};
 pub use chain_data_source::{
-    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
-    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
+    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
+    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError, Telemetry,
+    TransactionResponse,
 };
 pub use decode::{
     decode_block, decode_transaction, mined_transaction, prepare_transaction, DecodeError, Prepared,
 };
-pub use endpoint::{EndpointError, LinkLimits, Timeouts};
+pub use endpoint::{Auth, Endpoint, EndpointError, LinkLimits, Timeouts};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use indexer_client::ZebraIndexerGrpcClient;
 pub use indexer_endpoint::ZebraIndexerTls;

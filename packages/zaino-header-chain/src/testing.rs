@@ -1,56 +1,41 @@
-//! Header views on a [`MockChain`]: its header chain (anchored at genesis) and its snapshots
+//! Header chains of a [`MockChain`]: anchored at its genesis, snapshotted as built
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_primitives::testing::{encode_header, MockChain, Work};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
+use zaino_source::testing::{encode_header, MockChain};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
-use crate::{decode_header, HeaderChain, HeaderChainSnapshot, Params, Rejected, Witness};
+use crate::{decode_header, HeaderChain, HeaderChainSnapshot, Rejected, Witness};
 
-pub trait HeaderViews {
-    /// Rules `validate` runs this chain's headers under (Blossom / NU7 at its schedule's heights)
-    fn header_params(&self) -> Params;
-    /// Anchored at genesis (its finalized tip), nothing above
-    fn header_chain(&self, depth: FinalityDepth) -> HeaderChain;
-    /// Genesis ..= `tip`, finalized at genesis
-    fn snapshot(&self, tip: BlockRef) -> HeaderChainSnapshot;
-    /// Genesis ..= `tip`, finalized through `finalized_at` (< `tip`)
-    fn snapshot_finalized(&self, tip: BlockRef, finalized_at: BlockHeight) -> HeaderChainSnapshot;
+impl HeaderChain {
+    /// `chain`'s genesis = its finalized tip, nothing above
+    pub fn anchored(chain: &MockChain, depth: FinalityDepth) -> Self {
+        let mut headers = Self::new(depth);
+        let genesis = decode_header(&chain.header_bytes(chain.genesis().hash));
+        headers.anchor(&genesis.expect("MockChain headers decode"), H0);
+        headers
+    }
 }
 
-impl HeaderViews for MockChain {
-    fn header_params(&self) -> Params {
-        let schedule = self.schedule();
-        let params = Params::regtest(schedule.upgrades).with_genesis(self.genesis().hash);
-        match schedule.work {
-            Work::Limit => params,
-            Work::Varied => params.any_bits(),
-        }
+impl HeaderChainSnapshot {
+    /// `chain`'s genesis ..= `tip`, finalized at genesis
+    pub fn of(chain: &MockChain, tip: BlockRef) -> Self {
+        let mut headers = HeaderChain::anchored(chain, FinalityDepth::CONSENSUS);
+        insert(&mut headers, &chain.blocks(tip)).expect("every MockChain path links (M8)");
+        headers.snapshot().expect("anchored")
     }
 
-    fn header_chain(&self, depth: FinalityDepth) -> HeaderChain {
-        let mut chain = HeaderChain::new(depth);
-        let genesis = decode_header(&self.header_bytes(self.genesis().hash));
-        chain.anchor(&genesis.expect("MockChain headers decode"), H0);
-        chain
-    }
-
-    fn snapshot(&self, tip: BlockRef) -> HeaderChainSnapshot {
-        let mut chain = self.header_chain(FinalityDepth::CONSENSUS);
-        insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");
-        chain.snapshot().expect("anchored")
-    }
-
-    fn snapshot_finalized(&self, tip: BlockRef, finalized_at: BlockHeight) -> HeaderChainSnapshot {
+    /// `chain`'s genesis ..= `tip`, finalized through `finalized_at` (< `tip`)
+    pub fn finalized(chain: &MockChain, tip: BlockRef, finalized_at: BlockHeight) -> Self {
         let deep =
             u32::from(tip.height).checked_sub(u32::from(finalized_at)).and_then(NonZeroU32::new);
-        let mut chain =
-            self.header_chain(FinalityDepth::new(deep.expect("finalized_at below tip")));
-        insert(&mut chain, &self.blocks(tip)).expect("every MockChain path links (M8)");
-        chain.finalize(chain.finalizable().expect("tip = finalized_at + depth"));
-        chain.snapshot().expect("anchored")
+        let depth = FinalityDepth::new(deep.expect("finalized_at below tip"));
+        let mut headers = HeaderChain::anchored(chain, depth);
+        insert(&mut headers, &chain.blocks(tip)).expect("every MockChain path links (M8)");
+        headers.finalize(headers.finalizable().expect("tip = finalized_at + depth"));
+        headers.snapshot().expect("anchored")
     }
 }
 
@@ -81,7 +66,7 @@ mod tests {
 
     use proptest::prelude::*;
     use proptest::sample::Index;
-    use zaino_primitives::testing::h;
+    use zaino_source::testing::h;
     use zcash_protocol::BlockHash;
 
     use super::*;
@@ -93,14 +78,14 @@ mod tests {
     fn a_mock_chain_verifies_as_built_and_its_header_chain_follows_the_work() {
         let mut chain = MockChain::regtest().varied_work();
         let twelve = chain.mine_empty(12);
-        let verified = chain.snapshot(twelve);
-        assert_eq!((verified.best(), verified.finalized_tip()), (twelve, chain.genesis()));
-        let pinned = chain.snapshot_finalized(twelve, h(9));
+        let snapshot = HeaderChainSnapshot::of(&chain, twelve);
+        assert_eq!((snapshot.best(), snapshot.finalized_tip()), (twelve, chain.genesis()));
+        let pinned = HeaderChainSnapshot::finalized(&chain, twelve, h(9));
         assert_eq!((pinned.best(), pinned.finalized_tip()), (twelve, chain.at(h(9))));
         assert_eq!(pinned.hash_at(h(5)), Some(chain.at(h(5)).hash));
 
         let retreat = chain.fork(h(10)).outweigh().mine_empty(1).tip();
-        let mut headers = chain.header_chain(FinalityDepth::CONSENSUS);
+        let mut headers = HeaderChain::anchored(&chain, FinalityDepth::CONSENSUS);
         insert(&mut headers, &chain.blocks(twelve)).expect("trunk links");
         let heavier = decode_header(&chain.header_bytes(retreat.hash)).expect("decodes");
         assert_eq!(headers.insert(&heavier), Ok(Inserted::Best { reorg: true }));
@@ -145,7 +130,7 @@ mod tests {
                 true => MockChain::regtest().varied_work(),
                 false => MockChain::regtest(),
             };
-            let mut headers = chain.header_chain(FinalityDepth::CONSENSUS);
+            let mut headers = HeaderChain::anchored(&chain, FinalityDepth::CONSENSUS);
             let mut inserted: HashSet<BlockHash> = HashSet::from([chain.genesis().hash]);
             let mut tips = vec![chain.genesis()];
             for shape in shapes {

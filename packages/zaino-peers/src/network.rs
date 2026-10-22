@@ -47,12 +47,12 @@ const ANNOUNCED_BUFFER: usize = 4_096;
 /// Outbound peers kept by default (each = one inbound slot on a public node: stay modest)
 pub const DEFAULT_PEER_TARGET: NonZeroUsize = NonZeroUsize::new(8).expect("8 is non-zero");
 
-/// - `initial_peers` `None` = the network's DNS seeders (regtest: loopback addresses only)
+/// - `initial_peers` empty = the network's DNS seeders (regtest: loopback addresses only)
 /// - `cache_dir` = zebra's peer address cache (`None` = every start re-seeds)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerConfig {
     pub network: NetworkType,
-    pub initial_peers: Option<Vec<String>>,
+    pub initial_peers: Vec<String>,
     pub peer_target: NonZeroUsize,
     pub request_timeout: Duration,
     pub cache_dir: Option<PathBuf>,
@@ -62,7 +62,7 @@ impl PeerConfig {
     pub fn new(network: NetworkType) -> Self {
         Self {
             network,
-            initial_peers: None,
+            initial_peers: Vec::new(),
             peer_target: DEFAULT_PEER_TARGET,
             request_timeout: Duration::from_secs(20),
             cache_dir: None,
@@ -126,9 +126,9 @@ impl PeerNetwork {
             peerset_initial_target_size: config.peer_target.get(),
             ..Config::default()
         };
-        if let Some(initial) = config.initial_peers {
-            zebra.initial_mainnet_peers = initial.iter().cloned().collect();
-            zebra.initial_testnet_peers = initial.into_iter().collect();
+        if !config.initial_peers.is_empty() {
+            zebra.initial_mainnet_peers = config.initial_peers.iter().cloned().collect();
+            zebra.initial_testnet_peers = config.initial_peers.into_iter().collect();
         }
         let (announced, _) = broadcast::channel(ANNOUNCED_BUFFER);
         let user_agent = format!("/Zaino:{}/", env!("CARGO_PKG_VERSION"));

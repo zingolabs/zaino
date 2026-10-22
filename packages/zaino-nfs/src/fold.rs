@@ -1,9 +1,8 @@
-//! [`fold_block`]: one block through each covered index, in dependency order (`usage.md`)
-//!
-//! - New index = its fold call here + its `schema` arm and `Views` reader (`indexes.rs`)
+//! [`fold_block`]: one block through each covered index, in [`IndexKind::ALL`] order (`usage.md`)
 
+use crate::indexes::{fold, FoldError};
 use crate::per_index::PerIndex;
-use zaino_persistence::{AppliedLayer, BlockChanges, IndexKind, MapRead, Overlay, SequenceRead};
+use zaino_persistence::{AppliedLayer, IndexKind, MapRead, Overlay, SequenceRead};
 use zaino_primitives::types::Block;
 
 use crate::publish::Views;
@@ -12,14 +11,6 @@ use crate::publish::Views;
 #[derive(Debug)]
 pub(crate) struct Folded {
     pub(crate) layers: PerIndex<Overlay>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum FoldError {
-    #[error("utxo_set: {0}")]
-    UtxoSet(#[from] zaino_index_utxo_set::FoldError),
-    #[error("tree_state: {0}")]
-    TreeState(#[from] zaino_index_tree_state::FoldError),
 }
 
 /// `block` folded by each index in `covers`: each into a delta its parent layer opens, each layer =
@@ -34,54 +25,17 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     covers: &[IndexKind],
 ) -> Result<Folded, FoldError> {
     let mut layers = PerIndex::default();
-    let open = |kind: IndexKind| parent.layer(kind).schema().changes(block.block_ref());
-    let mut push = |kind: IndexKind, changes: BlockChanges| {
-        layers.insert(kind, parent.layer(kind).with(&changes))
-    };
-    let covered = |kind: IndexKind| covers.contains(&kind);
-
     let mut fees = None;
-    if covered(IndexKind::UtxoSet) || covered(IndexKind::CompactBlock) {
-        let reader = present(IndexKind::UtxoSet, parent.utxo_set());
-        fees = Some(match covered(IndexKind::UtxoSet) {
-            true => {
-                let mut out = open(IndexKind::UtxoSet);
-                let fees = zaino_index_utxo_set::fold(&reader, block, &mut out)?;
-                push(IndexKind::UtxoSet, out);
-                fees
-            }
-            false => reader.block_fees(block)?,
-        });
-    }
-    if let Some(fees) = fees.filter(|_| covered(IndexKind::CompactBlock)) {
-        let reader = present(IndexKind::CompactBlock, parent.compact_block());
-        let mut out = open(IndexKind::CompactBlock);
-        zaino_index_compact_block::fold(&reader, block, &fees, &mut out);
-        push(IndexKind::CompactBlock, out);
-    }
-    if covered(IndexKind::BlockHash) {
-        let reader = present(IndexKind::BlockHash, parent.block_hash());
-        let mut out = open(IndexKind::BlockHash);
-        zaino_internal_block_hash_to_height::fold(&reader, block, &mut out);
-        push(IndexKind::BlockHash, out);
-    }
-    if covered(IndexKind::TreeState) {
-        let reader = present(IndexKind::TreeState, parent.tree_state());
-        let mut out = open(IndexKind::TreeState);
-        zaino_index_tree_state::fold(&reader, block, &mut out)?;
-        push(IndexKind::TreeState, out);
-    }
-    if covered(IndexKind::TransparentAddress) {
-        let reader = present(IndexKind::TransparentAddress, parent.transparent_address());
-        let mut out = open(IndexKind::TransparentAddress);
-        zaino_index_transparent_address::fold(&reader, block, &mut out);
-        push(IndexKind::TransparentAddress, out);
-    }
-    if covered(IndexKind::TxidLocation) {
-        let reader = present(IndexKind::TxidLocation, parent.txid_location());
-        let mut out = open(IndexKind::TxidLocation);
-        zaino_internal_txid_location::fold(&reader, block, &mut out);
-        push(IndexKind::TxidLocation, out);
+    for &kind in IndexKind::ALL.iter().filter(|kind| covers.contains(kind)) {
+        if kind == IndexKind::CompactBlock && fees.is_none() {
+            let utxo_set = present(IndexKind::UtxoSet, parent.utxo_set());
+            fees = Some(utxo_set.block_fees(block)?);
+        }
+        let layer = parent.layer(kind);
+        let mut out = layer.schema().changes(block.block_ref());
+        let folded = fold(kind, present(kind, parent.view(kind)), block, fees.as_ref(), &mut out)?;
+        fees = folded.or(fees);
+        layers.insert(kind, layer.with(&out));
     }
     Ok(Folded { layers })
 }
@@ -96,11 +50,10 @@ mod tests {
     use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{BlockFees, Fee, TreeSize, TreeSizes};
+    use zaino_source::testing::{h, p2pkh, MockChain};
     use zcash_protocol::consensus::H0;
     use zcash_protocol::value::Zatoshis;
-    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
 
@@ -114,15 +67,16 @@ mod tests {
     #[test]
     fn utxo_set_folds_first_and_disabled_indexes_fold_nothing() {
         let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest()
-            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
+        let funding = chain.output(chain.genesis(), 0, 0);
         let one = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 10_000)).tx(|t| {
-                t.spend(OutPoint::new([0x10; 32], 0))
+                t.spend(funding)
                     .pay(&alice, 49_000)
                     .fee(1_000)
                     .sapling_output(1)
-                    .orchard_action([0x04; 32], 1)
+                    .orchard_action(0x04, 1)
             })
         });
         let (genesis, block) = (chain.block(chain.genesis().hash), chain.block(one.hash));
@@ -140,8 +94,8 @@ mod tests {
         let record = zaino_index_compact_block::encode_compact_block(block, &fees, &sizes);
 
         use IndexKind::*;
-        let all = IndexKind::ALL;
-        for enabled in [&all[..], &[UtxoSet, CompactBlock, TreeState]] {
+        let all: &[IndexKind] = &IndexKind::ALL;
+        for enabled in [all, &[UtxoSet, CompactBlock, TreeState]] {
             let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());
@@ -165,7 +119,7 @@ mod tests {
                 Some(record.clone()),
                 "{enabled:?}: block 1 = its fees + sizes"
             );
-            for kind in all {
+            for &kind in all {
                 let tip = folded.layers.get(kind).map(Overlay::tip);
                 let expected = enabled.contains(&kind).then_some(Some(one));
                 assert_eq!(tip, expected, "{enabled:?}: {}", kind.name());

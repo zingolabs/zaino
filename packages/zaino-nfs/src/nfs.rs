@@ -20,10 +20,11 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-use crate::fold::{fold_block, FoldError, Folded};
+use crate::fold::{fold_block, Folded};
 use crate::nfs_core::{Indexes, Input, NfsCore, Output, Publication};
 use crate::per_index::PerIndex;
 use crate::publish::{ChainParams, NfsPublication, Published, Views};
+use crate::FoldError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {

@@ -88,10 +88,9 @@ mod tests {
     use std::sync::Arc;
 
     use http::HeaderValue;
-    use zaino_header_chain::testing::HeaderViews;
-    use zaino_primitives::testing::MockChain;
+    use zaino_header_chain::HeaderChainSnapshot;
     use zaino_primitives::types::BlockRef;
-    use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
+    use zaino_source::testing::{raw_transaction, MockChain};
     use zcash_protocol::TxId;
 
     use crate::service::Method;
@@ -126,11 +125,11 @@ mod tests {
         let tip_10 = chain.mine_empty(10);
         let tip_11 = chain.mine_empty(1);
         let seeded: Vec<TxId> =
-            (1..=5).map(|seed| chain.submit(decoded(raw_transaction(seed, 0).1))).collect();
-        let node = Arc::new(chain.validator(chain.genesis()));
+            (1..=5).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
+        let node = chain.validator(chain.genesis());
         let hear =
             |seeds: &[usize]| seeds.iter().for_each(|seed| node.hear(&chain, seeded[seed - 1]));
-        node.reachable(&Port::ALL, false);
+        node.down(true);
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let (view, grpc_snapshots) =
@@ -142,7 +141,7 @@ mod tests {
         tokio::spawn(merge.run(cancel.child_token()));
         let mut router = dispatch(routes);
         // the header chain's verdict + the NFS's served tip, standing in for both
-        let verified = |tip: BlockRef| view.set_chain(Some(chain.snapshot(tip)));
+        let verified = |tip: BlockRef| view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
         let serve = |tip: BlockRef| {
             nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
         };
@@ -154,7 +153,7 @@ mod tests {
 
         node.follow(&chain, tip_10);
         hear(&[1, 2]);
-        node.reachable(&Port::ALL, true);
+        node.down(false);
         verified(tip_10);
         let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
         rounds("both listed", listed).await;
@@ -235,7 +234,8 @@ mod tests {
         cancel.cancel();
     }
 
-    /// Mempool = 3 mainnet txs (block 2,000,000: Orchard, Sapling, transparent):
+    /// Mempool = 3 minted txs on Alice's coinbase: transparent only, + Sapling outputs, + an
+    /// Orchard action
     ///
     /// - each answer: own slots, own pools (tx left empty dropped), no gap for an excluded suffix
     /// - each pool = what the consensus parse found
@@ -244,60 +244,43 @@ mod tests {
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
-        use std::collections::BTreeMap;
         use tower::Service as _;
-        use zaino_primitives::testing::{p2pkh, TxBuilder};
         use zaino_primitives::types::Transaction;
         use zaino_proto::proto::compact_formats::CompactTx;
         use zaino_proto::proto::service;
+        use zaino_source::testing::p2pkh;
         use zcash_protocol::ShieldedPool;
 
-        let block: Vec<(Transaction, Vec<u8>)> =
-            zaino_source::testing::fixtures::transactions(2_000_000)
-                .into_iter()
-                .map(|raw| (zaino_source::decode_transaction(&raw).expect("decodes"), raw))
-                .collect();
-        let pools: [fn(&Transaction) -> bool; 3] = [
-            |tx| !tx.orchard.actions.is_empty(),
-            |tx| !tx.sapling.outputs.is_empty(),
-            |tx| !tx.transparent.inputs.is_empty(),
-        ];
-        let mut chosen: Vec<(Transaction, Vec<u8>)> = Vec::new();
-        for has in pools {
-            let fresh = |(tx, _): &&(Transaction, Vec<u8>)| {
-                has(tx) && !chosen.iter().any(|(held, _)| held.txid == tx.txid)
-            };
-            chosen.push(block.iter().find(fresh).expect("block 2,000,000 has one").clone());
-        }
-        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
-        let txid = |tx: &Transaction| *tx.txid.as_ref();
-
-        // their prevouts: one coinbase per spent txid (1,000 ZEC each vout), shielded pools funded
         let (alice, zec) = (p2pkh([0xaa; 20]), 100_000_000u64);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| {
-            let deposit = -100_000 * zec as i64;
-            b.coinbase(|c| {
-                c.value_balance(ShieldedPool::Sapling, deposit)
-                    .value_balance(ShieldedPool::Orchard, deposit)
-            })
-        });
-        let mut spent: BTreeMap<[u8; 32], u32> = BTreeMap::new();
-        for prevout in chosen.iter().flat_map(|(tx, _)| &tx.transparent.inputs) {
-            let last = spent.entry(*prevout.hash()).or_default();
-            *last = (*last).max(prevout.n());
-        }
-        for (txid, last) in spent {
-            let paid =
-                |c: TxBuilder| (0..=last).fold(c.txid(txid), |c, _| c.pay(&alice, 1_000 * zec));
-            chain.mine(|b| b.coinbase(paid));
-        }
+        let funded =
+            chain.mine(|b| b.coinbase(|c| c.pay(&alice, zec).pay(&alice, zec).pay(&alice, zec)));
         let tip = chain.mine_empty(1);
-        let node = Arc::new(chain.validator(tip));
-        for (tx, raw) in &chosen {
-            chain.submit((tx.clone(), raw.clone()));
-            node.hear(&chain, tx.txid);
+        let node = chain.validator(tip);
+        let [a, b, c] = [0, 1, 2].map(|vout| chain.output(funded, 0, vout));
+        let deposit = -(zec as i64) + 1_000;
+        let submitted = [
+            chain.submit(|t| t.spend(a).pay(&alice, zec - 1_000)),
+            chain.submit(|t| {
+                t.spend(b)
+                    .sapling_output(1)
+                    .sapling_output(2)
+                    .value_balance(ShieldedPool::Sapling, deposit)
+            }),
+            chain.submit(|t| {
+                t.spend(c).orchard_action(1, 1).value_balance(ShieldedPool::Orchard, deposit)
+            }),
+        ];
+        for txid in submitted {
+            node.hear(&chain, txid);
         }
+        let mut chosen: Vec<(Transaction, Vec<u8>)> = chain
+            .mempool()
+            .iter()
+            .map(|unmined| (unmined.tx.clone(), unmined.bytes.clone()))
+            .collect();
+        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
+        let txid = |tx: &Transaction| *tx.txid.as_ref();
         let (mut routes, balancing, merge) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);
         let (reader, grpc_snapshots) =
@@ -306,7 +289,7 @@ mod tests {
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(merge.run(cancel.child_token()));
-        routes.chain_view.set_chain(Some(chain.snapshot(tip)));
+        routes.chain_view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
         let mut router = dispatch(routes);
         let three = || grpc_snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
         rounds("three servable", three).await;

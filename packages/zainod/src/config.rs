@@ -21,7 +21,7 @@ use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
 use zaino_persistence::{manifest_fits, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zaino_primitives::serde_secs;
-use zaino_source::{LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
+use zaino_source::{Auth, Endpoint, LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
 use zaino_traffic::{Limits, TrustedValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
@@ -139,6 +139,29 @@ impl TrustedValidatorConfig {
 
     pub(crate) fn timeouts(&self) -> Timeouts {
         Timeouts { connect: self.connect_timeout, read: self.read_timeout }
+    }
+
+    /// `cookie_path`, or `user` + `password` together, or neither (`Err` = any other mix)
+    pub(crate) fn auth(&self) -> Result<Auth, IndexerError> {
+        let address = &self.jsonrpc_address;
+        match (&self.cookie_path, &self.user, &self.password) {
+            (None, None, None) => Ok(Auth::None),
+            (Some(path), None, None) => Ok(Auth::Cookie(path.clone())),
+            (None, Some(user), Some(password)) => {
+                Ok(Auth::Basic { user: user.clone(), password: password.clone() })
+            }
+            (Some(_), _, _) => Err(IndexerError::Config(format!(
+                "[[trusted_validators]] {address} sets cookie_path and user/password: pick one"
+            ))),
+            _ => Err(IndexerError::Config(format!(
+                "[[trusted_validators]] {address}: user and password go together"
+            ))),
+        }
+    }
+
+    pub(crate) fn endpoint(&self) -> Result<Endpoint, IndexerError> {
+        let (address, auth) = (self.jsonrpc_address.clone(), self.auth()?);
+        Ok(Endpoint { address, auth, timeouts: self.timeouts(), limits: self.link() })
     }
 }
 
@@ -292,7 +315,7 @@ impl P2pConfig {
     pub(crate) fn peers(&self, network: NetworkType) -> zaino_peers::PeerConfig {
         zaino_peers::PeerConfig {
             peer_target: self.peer_target,
-            initial_peers: (!self.initial_peers.is_empty()).then(|| self.initial_peers.clone()),
+            initial_peers: self.initial_peers.clone(),
             cache_dir: Some(self.cache_dir.clone()),
             ..zaino_peers::PeerConfig::new(network)
         }
@@ -427,14 +450,14 @@ impl DaemonConfig {
 
     fn validate_indexes(&self) -> Result<(), IndexerError> {
         self.compact_block()?;
-        if IndexKind::ALL.into_iter().all(|kind| self.enabled(kind).is_none()) {
+        if IndexKind::ALL.iter().all(|kind| self.enabled(*kind).is_none()) {
             return Err(IndexerError::Config(
                 "every [index.*] disabled: nothing to build or serve".to_string(),
             ));
         }
         let fanout = self.sync.lsm_store.fanout;
         for kind in IndexKind::ALL.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
-            if !manifest_fits(&crate::schemas::schema(kind, self.network).0, fanout) {
+            if !manifest_fits(&zaino_nfs::schema(kind, self.network), fanout) {
                 return Err(IndexerError::Config(format!(
                     "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
                      manifest (lower it)",
@@ -475,6 +498,7 @@ impl DaemonConfig {
                     "[[trusted_validators]] lists {address} twice: one validator counted as two"
                 )));
             }
+            validator.auth()?;
             if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
                 return Err(IndexerError::Config(format!(
                     "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
@@ -824,9 +848,9 @@ enabled = false
 
     /// - `generate-config` = every key at its default, parsing back to the defaults (indexes
     ///   under `<cache dir>/zaino/indexes/<name>`)
-    /// - Shipped example parses too
+    /// - Shipped example parses, its values = the defaults (beside its network, validator, paths)
     #[test]
-    fn generated_config_prints_every_key_at_its_default_and_the_example_parses() {
+    fn generated_config_prints_every_key_at_its_default_and_the_example_shows_them() {
         let generated = generate_default_config().expect("generate");
         let body = generated.strip_prefix(GENERATED_CONFIG_HEADER).expect("header first");
         let defaults = DaemonConfig::default();
@@ -854,6 +878,13 @@ enabled = false
         let example = include_str!("../../../docs/example_configs/zainod.toml");
         let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
         assert!(example.validate().is_ok());
+        let shown = DaemonConfig {
+            network: defaults.network,
+            trusted_validators: defaults.trusted_validators.clone(),
+            index: defaults.index.clone(),
+            ..example
+        };
+        assert_eq!(shown, defaults, "example's values drifted from DaemonConfig::default()");
     }
 
     /// `generate-config` into a missing directory: created, file = the defaults
@@ -1054,7 +1085,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             priority: 1,
             ..TrustedValidatorConfig::default()
         };
-        assert_eq!(config.trusted_validators, [local, eu.clone()]);
+        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
 
         let link = LinkLimits {
             max_connections: n(8),
@@ -1064,6 +1095,26 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         assert_eq!(eu.link(), link, "the transport's");
         let timeouts = Timeouts { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
         assert_eq!(eu.timeouts(), timeouts, "defaults");
+
+        let basic = Auth::Basic { user: "zaino".to_owned(), password: "secret".to_owned() };
+        assert_eq!(eu.auth().expect("a pair"), basic);
+        assert_eq!(local.auth().expect("neither"), Auth::None);
+        let cookie = |user: Option<&str>, password: Option<&str>| TrustedValidatorConfig {
+            cookie_path: Some("/zebra/.cookie".into()),
+            user: user.map(str::to_owned),
+            password: password.map(str::to_owned),
+            ..TrustedValidatorConfig::default()
+        };
+        assert_eq!(
+            cookie(None, None).auth().expect("a cookie"),
+            Auth::Cookie("/zebra/.cookie".into())
+        );
+        let half = TrustedValidatorConfig { password: None, ..eu.clone() };
+        for (case, config) in [("cookie + pair", cookie(Some("u"), Some("p"))), ("half pair", half)]
+        {
+            assert!(config.auth().is_err(), "{case} accepted");
+        }
+
         let refusals = [
             ("max_response_mib = 3", "must be 4 ..= 32"),
             ("max_response_mib = 33", "must be 4 ..= 32"),
@@ -1109,13 +1160,14 @@ cache_dir = "/var/cache/zaino/peers"
             (
                 NetworkType::Test,
                 12,
-                Some(vec!["203.0.113.7:18233".to_owned()]),
+                vec!["203.0.113.7:18233".to_owned()],
                 Some(PathBuf::from("/var/cache/zaino/peers")),
             )
         );
 
         let defaults = DaemonConfig::default();
         assert!(!defaults.p2p.enabled, "off unless asked");
-        assert_eq!(defaults.p2p.peers(NetworkType::Main).initial_peers, None, "DNS seeders");
+        let seeded = defaults.p2p.peers(NetworkType::Main).initial_peers;
+        assert!(seeded.is_empty(), "DNS seeders");
     }
 }

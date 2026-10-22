@@ -13,44 +13,14 @@ use zaino_primitives::display::{ByteSize, Human};
 
 use super::{segment_set::Landed, writer::Merged, SegmentMeta};
 
-mod metric_names {
-    pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
-    pub(super) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
-    pub(super) const MERGING: &str = "zaino.lsm.merging";
-    pub(super) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
-    pub(super) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
-    pub(super) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
-}
-
-/// `# HELP` registrations for every metric this module emits
-pub(crate) fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
-
-    describe_gauge!(
-        metric_names::SEGMENTS,
-        "Committed segments, summed over the index's maps (a read searches its map's)"
-    );
-    describe_gauge!(
-        metric_names::LIVE_ROWS,
-        "Keys the committed segments hold, summed over the index's maps (a `deletes()` map: \
-         values minus tombstones)"
-    );
-    describe_gauge!(metric_names::MERGING, "Background merges running, by index");
-    describe_counter!(
-        metric_names::MERGE_BYTES_TOTAL,
-        Unit::Bytes,
-        "Segment bytes written by finished background merges, by index"
-    );
-    describe_histogram!(
-        metric_names::MERGE_DURATION_SECONDS,
-        Unit::Seconds,
-        "One background merge, read through sealed and linked, by index"
-    );
-    describe_histogram!(
-        metric_names::STALL_DURATION_SECONDS,
-        Unit::Seconds,
-        "Commit time spent waiting on a merge that fell two windows behind, by index"
-    );
+/// Registered by `crate::METRICS`
+pub(crate) mod metric_names {
+    pub(crate) const SEGMENTS: &str = "zaino.lsm.segments";
+    pub(crate) const LIVE_ROWS: &str = "zaino.lsm.live_rows";
+    pub(crate) const MERGING: &str = "zaino.lsm.merging";
+    pub(crate) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
+    pub(crate) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
+    pub(crate) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
 }
 
 /// One map's names (`index` = the metric label; `table` = log lines only)

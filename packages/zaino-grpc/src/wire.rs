@@ -197,7 +197,7 @@ mod tests {
     async fn a_request_body_over_its_cap_is_refused_before_it_is_decoded() {
         use tower::Service as _;
 
-        let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
+        let chain = zaino_source::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
         let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
         let grpc_snapshots = grpc_snapshots(&chain, genesis, vec![compact]);

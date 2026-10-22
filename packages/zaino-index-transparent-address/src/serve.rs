@@ -147,7 +147,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, Schema, Store};
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
+    use zaino_source::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
 
@@ -164,12 +164,9 @@ mod tests {
     fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
         let (paid, stranger) = ([0x01; 20], [0xff; 20]);
         let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x77; 32]).pay(&p2pkh(paid), 42)));
-        let two = chain.mine(|b| {
-            b.tx(|t| {
-                t.txid([0x78; 32]).spend(OutPoint::new([0x77; 32], 0)).pay(&p2pkh([0x02; 20]), 41)
-            })
-        });
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&p2pkh(paid), 42)));
+        let paid_out = chain.output(one, 0, 0);
+        let two = chain.mine(|b| b.tx(|t| t.spend(paid_out.clone()).pay(&p2pkh([0x02; 20]), 41)));
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
@@ -184,12 +181,12 @@ mod tests {
         let at_two = TransparentAddressReader::new(store.applied());
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
-            outpoint: OutPoint::new([0x77; 32], 0),
+            outpoint: paid_out,
             height: h(1),
             value: Zatoshis::from_u64(42).expect("in supply"),
         };
-        let paying = TransactionRef { height: h(1), txid: TxId::from_bytes([0x77; 32]) };
-        let spending = TransactionRef { height: h(2), txid: TxId::from_bytes([0x78; 32]) };
+        let paying = TransactionRef { height: h(1), txid: chain.tx(one, 0).txid };
+        let spending = TransactionRef { height: h(2), txid: chain.tx(two, 1).txid };
         let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
 
         let balances = at_two.balances(&[paid, receiver]);

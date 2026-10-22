@@ -4,8 +4,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
-use zaino_primitives::testing::{all_at, MockChain};
 use zaino_primitives::types::{BlockRef, FinalityDepth, HeaderError};
+use zaino_source::testing::{all_at, MockChain};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
@@ -13,9 +13,9 @@ use zcash_protocol::BlockHash;
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
 use crate::rules::{validate, Ancestor};
-use crate::testing::{insert, HeaderViews};
+use crate::testing::insert;
 use crate::{decode_header, Header, HeaderChain, Inserted, Params, Witness};
-use crate::{DecodeError, Rejected};
+use crate::{DecodeError, Fault, Rejected};
 
 const HEADER_LEN: usize = 1487;
 const GENESIS_RANGE: &[u8] = include_bytes!("../tests/fixtures/mainnet_0.headers");
@@ -263,7 +263,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let skewed = now - 2 * 3600 - 1;
     let future = Rejected::FromTheFuture { time: real.time(), max: skewed + 2 * 3600 };
     assert_eq!(in_place(real, skewed), Err(future), "local clock 2 h + 1 s behind the header");
-    assert!(future.is_deferred() && !too_late.is_deferred(), "only the clock rule waits");
+    assert_eq!([future.fault(), too_late.fault()], [Fault::Deferred, Fault::Sender], "clock waits");
     assert_eq!(alone(&mutated(&set_u32(0, 3))), Err(Rejected::Version { version: 3 }));
     let high_bit = mutated(&set_u32(0, 0x8000_0004));
     let negative = Rejected::Version { version: i32::from_le_bytes(0x8000_0004u32.to_le_bytes()) };
@@ -326,7 +326,8 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let five = builder.mine_empty(5);
     let orphan = builder.mine_empty(2);
     let below = builder.fork(height(1)).mine_empty(1).tip();
-    let mut chain = builder.header_chain(FinalityDepth::new(NonZeroU32::new(2).expect("nz")));
+    let depth = FinalityDepth::new(NonZeroU32::new(2).expect("nz"));
+    let mut chain = HeaderChain::anchored(&builder, depth);
     let one = |mock: &MockChain, at: BlockRef| [Arc::clone(mock.block(at.hash))];
     insert(&mut chain, &builder.blocks(five)).expect("trunk");
     chain.finalize(chain.finalizable().expect("6 headers, depth 2"));

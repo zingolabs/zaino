@@ -40,18 +40,11 @@ tokio::spawn(server.bind().await?.run(cancel.child_token()));
 routing.route(routes);
 ```
 
-| Method | Answered by (one `GrpcSnapshot`) |
-|---|---|
-| `GetLatestBlock` | `served()?` tip itself (height + hash, no read) |
-| `GetBlock`, `GetBlockRange[Nullifiers]` | `served()?`'s `compact_block` (stored records, never re-encoded) |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | `indexed()`'s served `tree_state` (memos keyed on that publish) |
-| `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `served()?`'s `transparent_address` |
-| `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
-| `GetMempoolTx` | `mempool()?` (the servable mempool) |
-| `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
-| `GetLightdInfo` | `lightd()?` + `RouteDeps.network` / `version` |
-| `SendTransaction` | `chain_view.validate_transaction(raw)?` → `broadcast_transaction(validated)` (no `GrpcSnapshot`) |
-| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent); none answering → the served mempool's bytes, else `views().txid_location()?.mined(&txid)` → `validators.peer_block_bytes(hash)` → `zaino_source::mined_transaction` |
+What answers each method: [`docs/rpc_api.md`](../../docs/rpc_api.md). Each handler reads off
+one `GrpcSnapshot` (`served()?`, `indexed()` for tree states, `mempool()?`, `lightd()?`), except
+`SendTransaction` (`chain_view.validate_transaction` → `broadcast_transaction`) and
+`GetTransaction` (`validators.lookup`, then the served mempool's bytes, else the peers' block the
+txid-location index names).
 
 - **One `GrpcSnapshot` per request** (`grpc_snapshots.load()`, pinned for the request or
   the whole stream, [G1](../zaino-grpc-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
@@ -102,28 +95,28 @@ routing.route(routes);
   when they have all closed or `GrpcLimits::drain_timeout` has passed,
   whichever is first. `run` returns `()`: a bound server has no failure of its
   own (accept errors back off and retry). Connections still open then are
-  dropped with the runtime. The default `drain_timeout` is 10 s; zero returns
-  at once.
+  dropped with the runtime. A zero `drain_timeout` returns at once.
 
 ### Adding a method
 
-Every method lives in one registry, `ROUTES` in `service.rs`: one row per
-method with its wire name (also its `method` metric label), its admission
-`Class` (`Work`, or `Subscription` for a stream that idles between arrivals:
-own pool, never cut for silence, no latency recorded) and the index whose view
-its handler reads (`None` = reads none, so never disabled). A new RPC is:
+Every method is one `Method` variant in `service.rs`. Its name is its wire
+name and its `method` metric label. A new RPC is:
 
-1. a `Method` variant (rows stay in `Method` order: a const assertion checks it),
-2. its `ROUTES` row,
+1. a `Method` variant,
+2. its arm in `Method::route`: its admission `Class` (`Work`, or
+   `Subscription` for a stream that idles between arrivals: own pool, never cut
+   for silence, no latency recorded) and the index whose view its handler reads
+   (`None` = reads none, so never disabled),
 3. its arm in `Routed::handle`, returning `Result<Response<Body>, Status>`
    (built with `wire::unary_response`, `wire::streamed_response` or
    `wire::streaming`, never by hand: `streaming` joins ready records into full
    DATA frames).
 
-The path is resolved to its row once per request (`Method::resolve`, in the
-outermost layer); admission, the silence bound, metrics labels and the
-disabled-index answer all read that row; an `Err` becomes its status in one
-place (`Wired::answer`).
+Both matches are exhaustive, so the compiler names the two arms a new variant
+still needs. The path is resolved to its `Method` once per request
+(`Method::resolve`, in the outermost layer). Admission, the silence bound,
+metrics labels and the disabled-index answer all read it. An `Err` becomes its
+status in one place (`Wired::answer`).
 
 ### Why `GetTransaction` forwards
 
@@ -171,25 +164,26 @@ accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS
   connection. A PROXY header, when required, precedes the handshake.
 - An HTTP/1.1 connection must send its request headers within 10 s.
 
-Every cap refuses; none queues except the read lanes:
+Every cap refuses; none queues except the read lanes. Defaults:
+[`[grpc]` in the example config](../../docs/example_configs/zainod.toml).
 
-| `GrpcLimits` field | Default | Enforced at | Over it |
-|---|---|---|---|
-| `max_connections` | 4096 | accept | socket closed |
-| `max_connections_per_ip` | 32 | once the client is named | socket closed |
-| `max_streams_per_connection` | 8 | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
-| `max_work_streams` | 2048 | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
-| `adaptive_work_streams` | on | admission, same methods: the latency-adaptive limit (below) | same |
-| `max_subscriptions` | 4096 | admission, `GetMempoolStream` | same |
-| `max_point_reads` | 64 | one block / tree state / root list off the files | bounded wait |
-| `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
-| `max_scan_reads` | 4 | one address-history scan | bounded wait |
-| `unread_timeout` | 300 s | per stream: data handed over, unread by the client | connection closed |
-| `silent_timeout` | 300 s | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
-| `drain_timeout` | 10 s | `run`, after `cancel` | still-open connections dropped |
-| `max_connection_age` | 30 min ±10% | per connection | GOAWAY, then the grace |
-| `max_connection_idle` | 30 min | per connection, no open stream | GOAWAY |
-| `max_connection_age_grace` | 600 s | a GOAWAY'd connection's in-flight streams | connection dropped |
+| `GrpcLimits` field | Enforced at | Over it |
+|---|---|---|
+| `max_connections` | accept | socket closed |
+| `max_connections_per_ip` | once the client is named | socket closed |
+| `max_streams_per_connection` | h2 `SETTINGS`: every stream on the connection, any method | peer cannot open one |
+| `max_work_streams` | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
+| `adaptive_work_streams` | admission, same methods: the latency-adaptive limit (below) | same |
+| `max_subscriptions` | admission, `GetMempoolStream` | same |
+| `max_point_reads` | one block / tree state / root list off the files | bounded wait |
+| `max_range_reads` | one `GetBlockRange` window off the files | bounded wait |
+| `max_scan_reads` | one address-history scan | bounded wait |
+| `unread_timeout` | per stream: data handed over, unread by the client | connection closed |
+| `silent_timeout` | per stream: nothing to send (not `GetMempoolStream`) | stream `UNAVAILABLE` |
+| `drain_timeout` | `run`, after `cancel` | still-open connections dropped |
+| `max_connection_age` | per connection (±10%) | GOAWAY, then the grace |
+| `max_connection_idle` | per connection, no open stream | GOAWAY |
+| `max_connection_age_grace` | a GOAWAY'd connection's in-flight streams | connection dropped |
 
 - **Connection age and idleness** (gRPC A9). Wallets hold one connection for
   hours, so without an age limit they never re-resolve DNS: neither a load
@@ -238,7 +232,7 @@ Every cap refuses; none queues except the read lanes:
   stuck behind a range already queued on the same connection.
 - An `accept()` error never ends `run`: a peer-side error is skipped, anything
   else (`EMFILE`, `ENOBUFS`, ...) backs off 10 ms doubling to 1 s.
-- Request bodies are capped before decode: 64 KiB, or 2 MB + 1 KiB for
+- Request bodies are capped before decode: 64 KiB, or `MAX_BLOCK_BYTES` + 1 KiB for
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
 - **No total cap.** A stream lives as long as it makes progress. Its bounds are
@@ -331,8 +325,8 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 
 - **Rate** = streams finished in the window, per second. **conns** = connections
   held at the summary; **work** / **subs** (and **conns** as `used/max`) appear
-  only under `High load`. Latency and bytes out, by each `ROUTES` row's `Reply` (the proto's
-  response side; a test holds every row to `service.proto`):
+  only under `High load`. Latency and bytes out, by each `Method`'s `Reply` (the proto's
+  response side; a test holds every method to `service.proto`):
   - one reply: `zaino.grpc.duration_seconds` (admission through trailers, `OK` answers only: a
     refusal is microseconds of no work, counted by `requests_total{code}`)
   - a server stream: `zaino.grpc.first_message_seconds` (its latency),

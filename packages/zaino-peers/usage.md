@@ -33,7 +33,7 @@ multi-thread tokio runtime.
 `PeerNetwork::start(config)` wraps zebra-network's `init`:
 
 - zebra always opens a listener: `127.0.0.1:0`, since Zaino serves no peer. The inbound service answers every request with nothing (`Nil`)
-- `initial_peers = None` uses the network's DNS seeders; `Some(list)` replaces them
+- `initial_peers` empty uses the network's DNS seeders; a list replaces them
   (regtest keeps loopback addresses only, as zebrad does)
 - `peer_target` (`DEFAULT_PEER_TARGET`, 8) is zebra's initial outbound target. Each
   peer holds one inbound slot on a public node, so keep it modest; `request_timeout`
@@ -100,8 +100,8 @@ knows it missed some.
 
 ## Metrics
 
-Every request above passes one function, which times and counts it; `describe_metrics()`
-registers the descriptions (zainod calls it with every crate's).
+Every request above passes one function, which times and counts it; `METRICS` holds each one's
+help and unit (zainod registers it with every crate's).
 
 | Metric | Labels | Answers |
 |---|---|---|

@@ -15,7 +15,7 @@ use zaino_persistence::{
 };
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
-use crate::schemas::schema;
+use zaino_nfs::schema;
 
 /// - Disabled index = `None`
 /// - `clean` = every sealed file present with every page intact
@@ -56,12 +56,9 @@ fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
     for kind in IndexKind::ALL {
         let index = kind.name();
         let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
-            let (schema, _) = schema(kind, config.network);
-            engine.verify(&path, &schema).map_err(|source| VerifyError::Index {
-                index,
-                path,
-                source,
-            })
+            engine
+                .verify(&path, &schema(kind, config.network))
+                .map_err(|source| VerifyError::Index { index, path, source })
         });
         reports.insert(index, report.transpose()?);
     }
@@ -109,15 +106,11 @@ mod tests {
     use std::sync::Arc;
 
     use std::num::NonZeroUsize;
-    use zaino_index_compact_block::CompactBlockIndexWriter;
-    use zaino_index_transparent_address::TransparentAddressIndexWriter;
-    use zaino_index_tree_state::TreeStateIndexWriter;
-    use zaino_index_utxo_set::UtxoSetIndexWriter;
-    use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
+    use zaino_nfs::{writer, FeeWiring};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{all_at, h, p2pkh, MockChain};
+    use zaino_source::testing::{all_at, h, p2pkh, MockChain};
 
-    use zaino_sync::{FeeSink, FinalizedStream, Step};
+    use zaino_sync::{FinalizedStream, Step};
     use zcash_protocol::consensus::NetworkType;
 
     /// Five indexes from one chain, scrubbed through the daemon's own config
@@ -138,46 +131,23 @@ mod tests {
         }
         let blocks = chain.blocks(chain.tip());
 
-        let (cb, vb, bh, ts, ta) = (
-            root.path().join("cb"),
-            root.path().join(IndexKind::UtxoSet.name()),
-            root.path().join("bh"),
-            root.path().join("ts"),
-            root.path().join("ta"),
+        let dir = |kind: IndexKind| root.path().join(kind.name());
+        let (cb, bh, ts, ta) = (
+            dir(IndexKind::CompactBlock),
+            dir(IndexKind::BlockHash),
+            dir(IndexKind::TreeState),
+            dir(IndexKind::TransparentAddress),
         );
-        // the five index loops wired as the daemon wires them, the chain sent as bulk
-        let (engine, net) = (
-            DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default()),
-            NetworkType::Main,
-        );
+        // every index's writer wired as the daemon wires it, the chain sent as bulk
+        let engine = DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default());
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let (mut block_sink, mut fee_sink) = (FinalizedStream::new(), FeeSink::new());
-        let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
-        let (compact_blocks, fee_blocks) =
-            (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::UtxoSet));
-        let hash_blocks = subscribe(IndexKind::BlockHash);
-        let tree_blocks = subscribe(IndexKind::TreeState);
-        let transparent_blocks = subscribe(IndexKind::TransparentAddress);
-        let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
-        let open =
-            |path: &Path, kind| engine.open(path, &schema(kind, net).0, batch).expect("open");
-        let value_balance_store = open(&vb, IndexKind::UtxoSet);
-        let compact_block_store = open(&cb, IndexKind::CompactBlock);
-        let block_hash_store = open(&bh, IndexKind::BlockHash);
-        let tree_state_store = open(&ts, IndexKind::TreeState);
-        let transparent_address_store = open(&ta, IndexKind::TransparentAddress);
-        let value_balance = UtxoSetIndexWriter::new(value_balance_store);
-        let compact_block = CompactBlockIndexWriter::new(compact_block_store);
-        let block_hash = BlockHashIndexWriter::new(block_hash_store);
-        let tree_state = TreeStateIndexWriter::new(tree_state_store);
-        let transparent_address = TransparentAddressIndexWriter::new(transparent_address_store);
-
+        let (mut block_sink, mut fees) = (FinalizedStream::new(), FeeWiring::new(Some(batch)));
         let mut loops = tokio::task::JoinSet::new();
-        loops.spawn(compact_block.run(compact_blocks, compact_fees));
-        loops.spawn(value_balance.run(fee_blocks, fee_sink));
-        loops.spawn(block_hash.run(hash_blocks));
-        loops.spawn(tree_state.run(tree_blocks));
-        loops.spawn(transparent_address.run(transparent_blocks));
+        for kind in IndexKind::ALL {
+            let store = engine.open(&dir(kind), &schema(kind, NetworkType::Main), batch);
+            let (_, run) = writer(kind, store.expect("open"), &mut fees);
+            loops.spawn(run(block_sink.subscribe(kind.name(), batch)));
+        }
         for block in &blocks {
             block_sink.send(Step::Apply(Arc::clone(block))).await;
         }

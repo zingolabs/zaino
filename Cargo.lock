@@ -1093,7 +1093,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.2"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "blake2b_simd",
 ]
@@ -5056,6 +5056,7 @@ dependencies = [
  "metrics-util",
  "proptest",
  "serde",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5092,6 +5093,7 @@ dependencies = [
  "rustls",
  "serde",
  "socket2",
+ "strum",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5106,7 +5108,6 @@ dependencies = [
  "zaino-index-compact-block",
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
- "zaino-internal-block-hash-to-height",
  "zaino-internal-txid-location",
  "zaino-nfs",
  "zaino-persistence",
@@ -5158,6 +5159,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "zaino-primitives",
+ "zaino-source",
  "zcash_protocol",
 ]
 
@@ -5173,6 +5175,7 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-proto",
+ "zaino-source",
  "zaino-sync",
  "zcash_protocol",
  "zcash_transparent",
@@ -5187,6 +5190,7 @@ dependencies = [
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
  "zaino-sync",
  "zcash_protocol",
  "zcash_script",
@@ -5206,6 +5210,7 @@ dependencies = [
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
  "zaino-sync",
  "zcash_primitives",
  "zcash_protocol",
@@ -5219,6 +5224,7 @@ dependencies = [
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
  "zaino-sync",
  "zcash_protocol",
  "zcash_transparent",
@@ -5231,6 +5237,7 @@ dependencies = [
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
  "zaino-sync",
  "zcash_protocol",
 ]
@@ -5242,6 +5249,7 @@ dependencies = [
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
  "zaino-sync",
  "zcash_protocol",
 ]
@@ -5322,6 +5330,7 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.11.0-alpha.4"
 dependencies = [
+ "metrics",
  "serde",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -5338,6 +5347,7 @@ name = "zaino-proto"
 version = "0.11.0-alpha.4"
 dependencies = [
  "prost",
+ "serde",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -5352,10 +5362,13 @@ dependencies = [
  "governor",
  "metrics",
  "metrics-exporter-prometheus",
+ "nonempty",
  "orchard",
  "proptest",
  "rcgen",
+ "redjubjub",
  "reqwest",
+ "sapling-crypto",
  "serde",
  "serde_json",
  "tempfile",
@@ -5370,6 +5383,7 @@ dependencies = [
  "zcash_encoding 0.4.0",
  "zcash_primitives",
  "zcash_protocol",
+ "zcash_script",
  "zcash_transparent",
 ]
 
@@ -5447,11 +5461,8 @@ dependencies = [
  "zaino-grpc",
  "zaino-grpc-snapshot",
  "zaino-header-chain",
- "zaino-index-compact-block",
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
- "zaino-index-utxo-set",
- "zaino-internal-block-hash-to-height",
  "zaino-internal-txid-location",
  "zaino-nfs",
  "zaino-peers",
@@ -5469,7 +5480,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.14.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "bech32",
  "bs58",
@@ -5493,7 +5504,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.5.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "corez",
  "hex",
@@ -5527,7 +5538,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.31.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -5556,7 +5567,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "corez",
  "document-features",
@@ -5597,7 +5608,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.11.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=9d1d4286673a6034610733c651d7f2df5c6ebd73#9d1d4286673a6034610733c651d7f2df5c6ebd73"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
 dependencies = [
  "bip32",
  "bs58",

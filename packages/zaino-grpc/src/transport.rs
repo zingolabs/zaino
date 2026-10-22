@@ -432,9 +432,9 @@ mod tests {
     use std::time::Duration;
 
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{p2pkh, MockChain};
     use zaino_proto::proto::service;
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
+    use zaino_source::testing::{p2pkh, MockChain};
 
     use super::GrpcService;
     use crate::service::{Method, RouteDeps};

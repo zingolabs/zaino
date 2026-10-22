@@ -11,7 +11,7 @@ use zaino_primitives::types::{
     BlockRef, CommitmentTreeBytes, PerPool, SubtreeRoot, TreeSizes, Treestate,
 };
 use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
-use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
+use zcash_protocol::consensus::{BlockHeight, Parameters};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::ShieldedPool;
 
@@ -36,9 +36,11 @@ impl<V: SequenceRead> TreeStateReader<V> {
             block_hash: record.hash,
             height: at,
             time: record.time,
-            sapling: tree(ShieldedPool::Sapling)?,
-            orchard: tree(ShieldedPool::Orchard)?,
-            ironwood: tree(ShieldedPool::Ironwood)?,
+            trees: PerPool {
+                sapling: tree(ShieldedPool::Sapling)?,
+                orchard: tree(ShieldedPool::Orchard)?,
+                ironwood: tree(ShieldedPool::Ironwood)?,
+            },
         })
     }
 
@@ -99,15 +101,11 @@ fn serialize<H: Hashable + HashSer + Clone>(
     CommitmentTreeBytes::new(serialized)
 }
 
-/// Height each pool's tree begins: Sapling, NU5 (orchard), NU6.3 (ironwood), `None` = unscheduled
+/// Height each pool's tree begins (`None` = unscheduled)
 ///
 /// - zebra's `z_gettreestate` omits a pool below its upgrade (lightwalletd then answers `""`)
 pub fn pool_activations(schedule: &LocalNetwork) -> PerPool<Option<BlockHeight>> {
-    PerPool {
-        sapling: schedule.activation_height(NetworkUpgrade::Sapling),
-        orchard: schedule.activation_height(NetworkUpgrade::Nu5),
-        ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
-    }
+    PerPool::from_fn(|pool| schedule.activation_height(pool.activation_upgrade()))
 }
 
 /// Small (transport maps these onto gRPC codes)
@@ -132,7 +130,7 @@ mod tests {
     #[test]
     fn pool_activations_are_the_schedules_pool_upgrades() {
         use zaino_primitives::protocol::compiled_schedule;
-        use zaino_primitives::testing::{all_at, h};
+        use zaino_source::testing::{all_at, h};
         use zcash_protocol::consensus::NetworkType;
 
         let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");

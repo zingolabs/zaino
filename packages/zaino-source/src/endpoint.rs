@@ -1,8 +1,10 @@
-//! Transport-neutral validator link config: address → URL, [`Timeouts`], [`LinkLimits`], errors
+//! Transport-neutral validator link config: [`Endpoint`] (address, [`Auth`], [`Timeouts`],
+//! [`LinkLimits`]) → URL + credentials, errors
 //!
 //! - no probe: reachability = the caller's retry loop (validator down at boot ≠ fatal)
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::{ResponseSizeCap, RpcError};
@@ -18,11 +20,45 @@ pub enum EndpointError {
     #[error("cannot read indexer TLS {role} {path}: {source}")]
     TlsFile { role: &'static str, path: String, source: std::io::Error },
 
-    #[error("validator basic auth needs both user and password")]
-    UnpairedCredentials,
-
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
+}
+
+/// Validator JSON-RPC endpoint: `address` = `host:port`
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub address: String,
+    pub auth: Auth,
+    pub timeouts: Timeouts,
+    pub limits: LinkLimits,
+}
+
+/// Credentials a validator expects
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Auth {
+    None,
+    Cookie(PathBuf),
+    Basic { user: String, password: String },
+}
+
+impl Auth {
+    /// Basic-auth pair sent (`None` = no auth)
+    ///
+    /// - `__cookie__:` prefix stripped if present (older validators, some packagers omit it)
+    pub(crate) fn credentials(&self) -> Result<Option<(String, String)>, EndpointError> {
+        match self {
+            Self::None => Ok(None),
+            Self::Basic { user, password } => Ok(Some((user.clone(), password.clone()))),
+            Self::Cookie(path) => {
+                let contents = std::fs::read_to_string(path).map_err(|source| {
+                    EndpointError::Cookie { path: path.display().to_string(), source }
+                })?;
+                let token = contents.trim();
+                let token = token.strip_prefix("__cookie__:").unwrap_or(token);
+                Ok(Some(("__cookie__".to_string(), token.to_string())))
+            }
+        }
+    }
 }
 
 /// - `read` = silence, never total duration (multi-MB block over a slow link must finish)
@@ -47,6 +83,7 @@ pub struct LinkLimits {
     pub response_size_cap: ResponseSizeCap,
 }
 
+/// 32 connections (zebrad admits 100 across every client), unlimited bytes, full reply cap
 impl Default for LinkLimits {
     fn default() -> Self {
         Self {
@@ -79,6 +116,27 @@ pub(crate) fn validator_url(address: &str) -> Result<String, EndpointError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    /// - Cookie: user always `__cookie__`, token trimmed with or without its prefix (packagers
+    ///   write both), unreadable = error
+    /// - Basic = the pair, None = no auth
+    #[test]
+    fn credentials_come_from_the_cookie_or_the_pair() {
+        let token = Some(("__cookie__".to_owned(), "sekrit".to_owned()));
+        for contents in ["__cookie__:sekrit", "  sekrit  \n"] {
+            let mut file = tempfile::NamedTempFile::new().expect("temp file");
+            write!(file, "{contents}").expect("write cookie");
+            let auth = Auth::Cookie(file.path().to_owned()).credentials().expect("cookie reads");
+            assert_eq!(auth, token, "{contents:?}");
+        }
+        let basic = Auth::Basic { user: "user".to_owned(), password: "pass".to_owned() };
+        let pair = Some(("user".to_owned(), "pass".to_owned()));
+        assert_eq!(basic.credentials().expect("no file to read"), pair);
+        assert_eq!(Auth::None.credentials().expect("no file to read"), None);
+        let missing = Auth::Cookie(PathBuf::from("/nonexistent/cookie")).credentials();
+        assert!(matches!(missing, Err(EndpointError::Cookie { .. })));
+    }
 
     #[test]
     fn validator_url_keeps_the_host_and_rejects_non_host_port() {

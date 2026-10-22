@@ -217,7 +217,7 @@ newer manifest. `zainod verify` wraps this.
   Σ records, minus twice each segment's tombstones on a `deletes()` table (each tombstone and the
   older value it cancels). The manifest lists each segment's tombstone count beside its record
   count, written by the commit or merge that made it. Tiers and tables appear in the log lines only.
-  Register with `describe_metrics`.
+  Each one's help and unit: `METRICS`.
 - `DiskView::footprint()`: per table, durable bytes and how many are in page cache (`mincore`).
 - Logs: `Compacting segments` / `Compacted segments` (debug), `Commit waited on compaction` (warn).
 

@@ -1,18 +1,20 @@
-//! `method` + `code` label tables shared by `metrics` and `summary` (slots derive from `ROUTES`)
+//! `method` + `code` label tables shared by `metrics` and `summary` (slots = [`Method`] order)
 
-use crate::service::{Method, ROUTES};
+use strum::VariantArray as _;
 
-/// `method` label slots: one per [`ROUTES`] row, then `unknown` (any other path: the set stays
-/// fixed however clients misbehave)
-pub(crate) const LABELS: usize = ROUTES.len() + 1;
+use crate::service::Method;
+
+/// `method` label slots: one per [`Method`], then `unknown` (any other path: the set stays fixed
+/// however clients misbehave)
+pub(crate) const LABELS: usize = Method::VARIANTS.len() + 1;
 
 /// `method`'s label slot (`None` = `unknown`)
 pub(crate) fn slot(method: Option<Method>) -> usize {
-    method.map_or(ROUTES.len(), |method| method as usize)
+    method.map_or(Method::VARIANTS.len(), |method| method as usize)
 }
 
 pub(crate) fn label(slot: usize) -> &'static str {
-    ROUTES.get(slot).map_or("unknown", |row| row.name)
+    Method::VARIANTS.get(slot).map_or("unknown", |method| method.name())
 }
 
 /// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)

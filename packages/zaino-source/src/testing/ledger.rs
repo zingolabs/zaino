@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::value::Zatoshis;
+use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{Fee, Nullifier, Transaction};
+use zaino_primitives::types::{Fee, Nullifier, PerPool, Transaction};
 use zcash_protocol::ShieldedPool;
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
@@ -19,8 +19,9 @@ pub struct Ledger {
     unspent: HashMap<OutPoint, Zatoshis>,
     txids: HashSet<TxId>,
     nullifiers: HashSet<(ShieldedPool, Nullifier)>,
-    /// ZIP 209 chain value pools: sprout, sapling, orchard, ironwood
-    pools: [i64; 4],
+    /// `sprout` + `pools` = ZIP 209 chain value pools
+    sprout: i64,
+    pools: PerPool<i64>,
 }
 
 /// One mempool entry: real bytes, the fee they leave on its tip
@@ -67,7 +68,8 @@ impl Ledger {
             unspent: HashMap::new(),
             txids: HashSet::new(),
             nullifiers: HashSet::new(),
-            pools: [0; 4],
+            sprout: 0,
+            pools: PerPool::default(),
         }
     }
 
@@ -113,27 +115,28 @@ impl Ledger {
         if self.txids.contains(&txid) {
             return Err(Refused::Repeated);
         }
-        let balances = tx.pool_balances();
-        let pools = [
-            (NetworkUpgrade::Sapling, tx.sapling.spends.len() + tx.sapling.outputs.len()),
-            (NetworkUpgrade::Nu5, tx.orchard.actions.len()),
-            (NetworkUpgrade::Nu6_3, tx.ironwood.actions.len()),
-        ];
-        for ((upgrade, data), balance) in pools.into_iter().zip(&balances[1..]) {
-            let used = data > 0 || *balance != 0;
+        for pool in ShieldedPool::ALL {
+            let used = tx.nullifiers(pool).next().is_some()
+                || tx.note_commitments(pool).next().is_some()
+                || i64::from(tx.value_balance(pool)) != 0;
+            let upgrade = pool.activation_upgrade();
             if used && !self.upgrades.is_nu_active(upgrade, self.next) {
                 return Err(Refused::Inactive(upgrade));
             }
         }
         let mut revealed = HashSet::new();
-        for (pool, nullifier) in nullifiers(tx) {
-            if self.nullifiers.contains(&(pool, nullifier)) || !revealed.insert((pool, nullifier)) {
-                return Err(Refused::Revealed(pool));
+        for pool in ShieldedPool::ALL {
+            for nullifier in tx.nullifiers(pool) {
+                let key = (pool, nullifier);
+                if self.nullifiers.contains(&key) || !revealed.insert(key) {
+                    return Err(Refused::Revealed(pool));
+                }
             }
         }
 
         let coinbase = tx.transparent.coinbase;
-        let withdraws = balances.iter().any(|balance| *balance > 0);
+        let withdraws = i64::from(tx.sprout.value_balance) > 0
+            || ShieldedPool::ALL.into_iter().any(|pool| i64::from(tx.value_balance(pool)) > 0);
         let spends = !tx.transparent.inputs.is_empty() || !tx.sapling.spends.is_empty();
         if coinbase && (spends || withdraws) {
             return Err(Refused::CoinbaseSpends);
@@ -149,12 +152,14 @@ impl Ledger {
             let value = value.ok_or_else(|| Refused::Unspent(prevout.clone()))?;
             spent = (spent + *value).ok_or(Refused::PastSupply)?;
         }
+        let drain = |held: i64, balance: ZatBalance| {
+            let balance = i64::from(balance);
+            Some(held - balance).filter(|left| *left >= 0).ok_or(Refused::Drained(balance))
+        };
+        let sprout = drain(self.sprout, tx.sprout.value_balance)?;
         let mut pools = self.pools;
-        for (pool, balance) in pools.iter_mut().zip(balances) {
-            *pool -= balance;
-            if *pool < 0 {
-                return Err(Refused::Drained(balance));
-            }
+        for pool in ShieldedPool::ALL {
+            *pools.get_mut(pool) = drain(*pools.get(pool), tx.value_balance(pool))?;
         }
         let fee = match coinbase {
             true => Fee::Coinbase,
@@ -174,18 +179,11 @@ impl Ledger {
         for prevout in &tx.transparent.inputs {
             self.unspent.remove(prevout);
         }
+        self.sprout = sprout;
         self.pools = pools;
         for (vout, output) in (0..).zip(&tx.transparent.outputs) {
             self.unspent.insert(OutPoint::new(txid.into(), vout), output.value);
         }
         Ok(fee)
     }
-}
-
-fn nullifiers(tx: &Transaction) -> impl Iterator<Item = (ShieldedPool, Nullifier)> + '_ {
-    let sapling = tx.sapling.spends.iter().map(|spend| (ShieldedPool::Sapling, spend.nullifier));
-    let orchard = tx.orchard.actions.iter().map(|action| (ShieldedPool::Orchard, action.nullifier));
-    let ironwood =
-        tx.ironwood.actions.iter().map(|action| (ShieldedPool::Ironwood, action.nullifier));
-    sapling.chain(orchard).chain(ironwood)
 }

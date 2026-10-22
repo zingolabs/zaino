@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 zaino-persistence = { workspace = true, features = ["testing"] }
-zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 zaino-sync = { workspace = true, features = ["testing"] }

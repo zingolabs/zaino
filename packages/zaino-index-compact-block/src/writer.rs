@@ -109,17 +109,16 @@ mod tests {
 
     use prost::Message as _;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
+    use zaino_source::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
         Writer, QUEUE,
     };
     use zaino_sync::FeeSink;
     use zcash_protocol::consensus::{NetworkType, H0};
-    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
 
@@ -146,21 +145,20 @@ mod tests {
         };
         // coinbases commit (sapling, orchard, ironwood) = (2, 1, 0), (3, 0, 4), (0, 5, 1)
         let mut chain = MockChain::regtest();
-        let one = chain.mine(|b| {
-            b.coinbase(|c| c.sapling_output(1).sapling_output(2).orchard_action([1; 32], 1))
-        });
+        let one = chain
+            .mine(|b| b.coinbase(|c| c.sapling_output(1).sapling_output(2).orchard_action(1, 1)));
         let two = chain.mine(|b| {
             b.coinbase(|c| {
                 let c = c.sapling_output(3).sapling_output(4).sapling_output(5);
-                let c = c.ironwood_action([1; 32], 1).ironwood_action([2; 32], 2);
-                c.ironwood_action([3; 32], 3).ironwood_action([4; 32], 4)
+                let c = c.ironwood_action(1, 1).ironwood_action(2, 2);
+                c.ironwood_action(3, 3).ironwood_action(4, 4)
             })
         });
         let three = chain.mine(|b| {
             b.coinbase(|c| {
-                let c = c.orchard_action([2; 32], 2).orchard_action([3; 32], 3);
-                let c = c.orchard_action([4; 32], 4).orchard_action([5; 32], 5);
-                c.orchard_action([6; 32], 6).ironwood_action([5; 32], 5)
+                let c = c.orchard_action(2, 2).orchard_action(3, 3);
+                let c = c.orchard_action(4, 4).orchard_action(5, 5);
+                c.orchard_action(6, 6).ironwood_action(5, 5)
             })
         });
         let fees = |block: &Block| chain.fees(block.header().hash);
@@ -247,15 +245,15 @@ mod tests {
         // block h: coinbase pays 1 000 × h, spent whole by one tx (fee distinct per height: a
         // pairing slip = a wrong fee in the record) committing (sapling, orchard, ironwood)
         for (at, (sapling, orchard, ironwood)) in
-            (1u8..).zip([(2, 1, 0), (3, 2, 1), (0, 0, 4), (1, 1, 1)])
+            (1u32..).zip([(2, 1, 0), (3, 2, 1), (0, 0, 4), (1, 1, 1)])
         {
             let fee = 1_000 * u64::from(at);
             mock.mine(|b| {
-                b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
-                    let t = t.spend(OutPoint::new([0xc0 + at; 32], 0)).fee(fee);
-                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
-                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
-                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                b.coinbase(|c| c.pay(&miner, fee)).tx(|t| {
+                    let t = t.spend_in_block(0, 0).fee(fee);
+                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
+                    let t = (0..orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
+                    (0..ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
                 })
             });
         }
@@ -320,16 +318,16 @@ mod tests {
         // `counts[h - 1]` (sapling, orchard, ironwood)
         let miner = p2pkh([0xc0; 20]);
         let mut mock = MockChain::regtest();
-        for (at, &(sapling, orchard, ironwood)) in (1u8..).zip(&counts) {
+        for (at, &(sapling, orchard, ironwood)) in (1u32..).zip(&counts) {
             let fee = 1_000 * u64::from(at);
             let [sapling, orchard, ironwood] =
-                [sapling, orchard, ironwood].map(|count| u8::try_from(count).expect("≤ 3"));
+                [sapling, orchard, ironwood].map(|count| u32::try_from(count).expect("≤ 3"));
             mock.mine(|b| {
-                b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
-                    let t = t.spend(OutPoint::new([0xc0 + at; 32], 0)).fee(fee);
-                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
-                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
-                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                b.coinbase(|c| c.pay(&miner, fee)).tx(|t| {
+                    let t = t.spend_in_block(0, 0).fee(fee);
+                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
+                    let t = (0..orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
+                    (0..ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
                 })
             });
         }
@@ -390,12 +388,13 @@ mod tests {
         // (sapling, orchard, ironwood) per block from 1: cumulative sizes distinct at every height
         let counts = [(1u8, 0u8, 2u8), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
         let mut mock = MockChain::regtest();
-        for (at, (sapling, orchard, ironwood)) in (1u8..).zip(counts) {
+        for (at, (sapling, orchard, ironwood)) in (1u32..).zip(counts) {
             mock.mine(|b| {
                 b.tx(|t| {
-                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
-                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
-                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                    let t = (0..u32::from(sapling)).fold(t, |t, i| t.sapling_output(16 * at + i));
+                    let t =
+                        (0..u32::from(orchard)).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
+                    (0..u32::from(ironwood)).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
                 })
             });
         }

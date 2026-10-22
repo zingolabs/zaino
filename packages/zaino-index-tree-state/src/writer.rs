@@ -16,7 +16,7 @@ use std::{
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store};
-use zaino_primitives::types::{Block, NoteCommitment, PerPool, Transaction, TreeRoot, TreeSizes};
+use zaino_primitives::types::{Block, PerPool, TreeRoot, TreeSizes};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
@@ -28,7 +28,7 @@ use crate::{
     heights::{self, TreeStateHeight},
     nodes::{self, slot, Slot, MERKLE_DEPTH, NODE},
     subtrees::{self, SubtreeEntry},
-    tables::{level_table, subtree_table, HEIGHTS, POOLS},
+    tables::{level_table, subtree_table, HEIGHTS},
     TreeStateReader,
 };
 
@@ -174,7 +174,7 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
         for block in blocks {
             let height = block.header().height;
             let txs = block.transactions().iter();
-            for commitment in txs.flat_map(|tx| commitments(tx, pool)) {
+            for commitment in txs.flat_map(|tx| tx.note_commitments(pool)) {
                 let leaf = nodes::decode(&commitment.0);
                 leaves.push(leaf.ok_or(FoldError::Commitment { height })?);
             }
@@ -214,17 +214,6 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
     }
 }
 
-/// `tx`'s note commitments to `pool`'s tree, in order (sapling `cmu`s, orchard / ironwood `cmx`s)
-fn commitments(tx: &Transaction, pool: ShieldedPool) -> impl Iterator<Item = NoteCommitment> + '_ {
-    let (outputs, actions) = match pool {
-        ShieldedPool::Sapling => (&tx.sapling.outputs[..], &[][..]),
-        ShieldedPool::Orchard => (&[][..], &tx.orchard.actions[..]),
-        ShieldedPool::Ironwood => (&[][..], &tx.ironwood.actions[..]),
-    };
-    let actions = actions.iter().map(|action| action.cmx);
-    outputs.iter().map(|output| output.cmu).chain(actions)
-}
-
 /// `retained` per pool per block → each block's delta, every table appended at its end
 fn split<V: SequenceRead>(
     parent: &TreeStateReader<V>,
@@ -237,7 +226,7 @@ fn split<V: SequenceRead>(
         let levels = (0..MERKLE_DEPTH).map(|level| parent.len(level_table(pool, level)));
         (levels.collect::<Vec<u64>>(), parent.len(subtree_table(pool)))
     };
-    let mut ends = POOLS.map(|pool| (pool, ends_of(pool)));
+    let mut ends = ShieldedPool::ALL.map(|pool| (pool, ends_of(pool)));
     for (at, (block, out)) in blocks.iter().zip(out).enumerate() {
         let header = block.header();
         sizes = sizes.advance(block);
@@ -280,8 +269,8 @@ mod tests {
     use incrementalmerkletree::frontier::CommitmentTree;
     use proptest::prelude::*;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot};
+    use zaino_source::testing::{h, MockChain};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
         Writer, QUEUE,
@@ -434,7 +423,7 @@ mod tests {
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
         let mut mock = MockChain::regtest();
-        // (sapling, orchard, ironwood) leaves per block, nullifier = the leaf byte repeated
+        // (sapling, orchard, ironwood) leaves per block, nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -447,10 +436,8 @@ mod tests {
             mock.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
-                    let t = orchard
-                        .iter()
-                        .fold(t, |t, &leaf| t.orchard_action([leaf; 32], leaf.into()));
-                    ironwood.iter().fold(t, |t, &leaf| t.ironwood_action([leaf; 32], leaf.into()))
+                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action(n.into(), n.into()));
+                    ironwood.iter().fold(t, |t, &n| t.ironwood_action(n.into(), n.into()))
                 })
             });
         }
@@ -522,21 +509,18 @@ mod tests {
         assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
     }
 
-    type Trees = (CommitmentTreeBytes, CommitmentTreeBytes, CommitmentTreeBytes);
-
     /// Oracle: the three trees both clients parse, every commitment of `blocks` appended in order
-    fn naive_trees(blocks: &[Arc<Block>]) -> Trees {
+    fn naive_trees(blocks: &[Arc<Block>]) -> PerPool<CommitmentTreeBytes> {
         let txs = || blocks.iter().flat_map(|block| block.transactions());
         let sapling = txs().flat_map(|tx| &tx.sapling.outputs).map(|output| output.cmu);
         let orchard = txs().flat_map(|tx| &tx.orchard.actions).map(|action| action.cmx);
         let ironwood = txs().flat_map(|tx| &tx.ironwood.actions).map(|action| action.cmx);
         // ironwood reuses orchard's node
-        let sapling = naive_tree::<sapling_crypto::Node>(sapling);
-        (
-            sapling,
-            naive_tree::<MerkleHashOrchard>(orchard),
-            naive_tree::<MerkleHashOrchard>(ironwood),
-        )
+        PerPool {
+            sapling: naive_tree::<sapling_crypto::Node>(sapling),
+            orchard: naive_tree::<MerkleHashOrchard>(orchard),
+            ironwood: naive_tree::<MerkleHashOrchard>(ironwood),
+        }
     }
 
     fn naive_tree<H: Hashable + HashSer + Clone>(
@@ -563,7 +547,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         // - (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
         //   both parities (forces carries several levels up)
-        // - nullifier = the leaf byte repeated
+        // - nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             (&[1, 2, 3],         &[101],                &[]),
@@ -576,8 +560,8 @@ mod tests {
             chain.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
-                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action([n; 32], n.into()));
-                    ironwood.iter().fold(t, |t, &n| t.ironwood_action([n; 32], n.into()))
+                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action(n.into(), n.into()));
+                    ironwood.iter().fold(t, |t, &n| t.ironwood_action(n.into(), n.into()))
                 })
             });
         }
@@ -592,8 +576,7 @@ mod tests {
         writer.stop().await.expect("stops at Shutdown");
 
         let trees = |view: DiskView, at: u32| {
-            let trees = TreeStateReader::new(view).treestate(h(at)).expect("held");
-            (trees.sapling, trees.orchard, trees.ironwood)
+            TreeStateReader::new(view).treestate(h(at)).expect("held").trees
         };
         let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
@@ -634,7 +617,7 @@ mod tests {
     /// Genesis, then one block per `counts` entry
     ///
     /// - leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
-    /// - nullifier = the leaf, little-endian
+    /// - nullifier tag = the leaf
     async fn random_history(
         counts: Vec<(usize, usize, usize)>,
         moves: Vec<Move>,
@@ -646,11 +629,6 @@ mod tests {
             *from += count as u32;
             taken
         };
-        let nullifier = |leaf: u32| {
-            let mut nullifier = [0u8; 32];
-            nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
-            nullifier
-        };
         let mut mock = MockChain::regtest();
         for &(sapling, orchard, ironwood) in &counts {
             let (sapling, orchard) = (take(sapling, &mut next.0), take(orchard, &mut next.1));
@@ -658,8 +636,8 @@ mod tests {
             mock.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.fold(t, |t, leaf| t.sapling_output(leaf));
-                    let t = orchard.fold(t, |t, leaf| t.orchard_action(nullifier(leaf), leaf));
-                    ironwood.fold(t, |t, leaf| t.ironwood_action(nullifier(leaf), leaf))
+                    let t = orchard.fold(t, |t, leaf| t.orchard_action(leaf, leaf));
+                    ironwood.fold(t, |t, leaf| t.ironwood_action(leaf, leaf))
                 })
             });
         }
@@ -685,8 +663,8 @@ mod tests {
             for height in 0..sent {
                 let served = reader.treestate(h(height));
                 let served = served.unwrap_or_else(|error| panic!("{label}: {error}"));
-                let trees = (served.sapling, served.orchard, served.ironwood);
-                assert_eq!(trees, trees_through(height as usize), "{label}: trees at {height}");
+                let expected = trees_through(height as usize);
+                assert_eq!(served.trees, expected, "{label}: trees at {height}");
             }
             let absent = Err(ServeError::NotFound { height: h(sent) });
             assert_eq!(reader.treestate(h(sent)), absent, "{label}: past the tip");
@@ -706,7 +684,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         // - orchard leaves (first, count) per height 1..: subtree 0 completes at height 2,
         //   subtree 1 at 4, subtree 2 at 5 (sent after a reopen)
-        // - nullifier = the leaf, little-endian
+        // - nullifier tag = the leaf
         let orchard = [
             (1, HALF),
             (1 + HALF, HALF),
@@ -714,14 +692,13 @@ mod tests {
             (2 + 2 * HALF, 2 * HALF - 1),
             (1 + 4 * HALF, 2 * HALF),
         ];
+        // ≤ 8 192 actions per tx (a tx's proof length = a CompactSize, ≤ 32 MiB)
+        const PER_TX: u32 = 1 << 13;
         for (first, count) in orchard {
             chain.mine(|b| {
-                b.tx(|t| {
-                    (first..first + count).fold(t, |t, leaf| {
-                        let mut nullifier = [0u8; 32];
-                        nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
-                        t.orchard_action(nullifier, leaf)
-                    })
+                (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
+                    let to = (from + PER_TX).min(first + count);
+                    b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
                 })
             });
         }
@@ -731,7 +708,7 @@ mod tests {
             |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
         // level-16 root of the subtree holding the tip of the orchard tree served at `height`
         let tree_root = |view: &TreeStateReader<DiskView>, height: u32| {
-            let tree = view.treestate(h(height)).expect("served").orchard;
+            let tree = view.treestate(h(height)).expect("served").trees.orchard;
             let frontier = read_commitment_tree::<MerkleHashOrchard, _, 32>(tree.as_bytes())
                 .expect("parses")
                 .to_frontier();
@@ -781,18 +758,14 @@ mod tests {
         // ironwood-only block: sapling and orchard empty at this height
         let mut chain = MockChain::regtest();
         let one = chain.mine(|b| {
-            b.tx(|t| {
-                t.ironwood_action([1; 32], 201)
-                    .ironwood_action([2; 32], 202)
-                    .ironwood_action([3; 32], 203)
-            })
+            b.tx(|t| t.ironwood_action(1, 201).ironwood_action(2, 202).ironwood_action(3, 203))
         });
         for block in chain.blocks(one) {
             writer.send(step(&block)).await;
         }
         let handle = writer.stop().await.expect("stops at Shutdown");
         let reader = TreeStateReader::new(handle.durable_view());
-        let trees = reader.treestate(h(1)).expect("served");
+        let trees = reader.treestate(h(1)).expect("served").trees;
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())
             .expect("the clients' own parser accepts it");

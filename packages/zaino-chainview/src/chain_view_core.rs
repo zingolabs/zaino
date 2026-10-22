@@ -136,7 +136,7 @@ impl ChainViewCore {
                     meta.health = health;
                     if health == Health::Down {
                         (meta.info, meta.block_at_best) = (None, None);
-                        meta.peers = Vector::new();
+                        meta.telemetry.peers = None;
                         touched.extend(retract(&mut state.mempool, validator));
                     }
                 }
@@ -316,18 +316,12 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
-/// An answering poll: claim + block at best, clock estimate, peers (a failed peer read keeps the
-/// last)
+/// An answering poll: claim + block at best, clock estimate, telemetry
 fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.block_at_best = reading.block_at_best;
     meta.info = Some(reading.info);
     meta.streaming = reading.streaming;
-    if let Some(peers) = reading.peers {
-        meta.peers = peers.into_iter().collect();
-    }
-    if let Some(release) = reading.release {
-        meta.release = Some(release);
-    }
+    meta.telemetry.absorb(reading.telemetry);
 }
 
 /// `validator`'s bit cleared from every sighting → the txids it held

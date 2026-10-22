@@ -17,4 +17,4 @@ mod tests;
 pub use grpc_snapshot::{GrpcSnapshot, Lightd, ServingStatus, Tips, Unavailable};
 pub use mempool_feed::{Logged, MempoolTail};
 pub use publisher::{GrpcSnapshotError, GrpcSnapshots, Publisher};
-pub use report::{describe_metrics, emit_gauges, notes};
+pub use report::{emit_gauges, notes, METRICS};
