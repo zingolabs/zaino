@@ -14,8 +14,7 @@ use futures::future::BoxFuture;
 use http::{header, Method, Request, Response, StatusCode, Version};
 use http_body_util::{Either, Full};
 use tokio::time::Instant;
-
-use crate::layer::take_ready;
+use tower::ServiceExt as _;
 
 /// What the health paths answer (zainod: its `/readyz` + public `/status` projection)
 pub trait Health: Send + Sync + 'static {
@@ -114,8 +113,9 @@ where
     type Error = Inner::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
+    /// `inner` readied inside the call (`oneshot`)
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, mut request: Request<ReqBody>) -> Self::Future {
@@ -139,8 +139,8 @@ where
         }
 
         crate::service::Method::resolve(&mut request);
-        let mut inner = take_ready(&mut self.inner);
-        Box::pin(async move { Ok(inner.call(request).await?.map(Either::Right)) })
+        let inner = self.inner.clone();
+        Box::pin(async move { Ok(inner.oneshot(request).await?.map(Either::Right)) })
     }
 }
 

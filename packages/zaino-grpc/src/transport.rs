@@ -21,17 +21,17 @@ use tracing::{debug, info, warn, Instrument as _, Span};
 use zaino_persistence::PinnedView;
 use zaino_source::ChainDataSource;
 
-use crate::admission::{Admission, AdmissionState, Class};
+use crate::admission::AdmissionState;
 use crate::connections::{ConnectionCaps, Reserved};
+use crate::guard::Guard;
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::network;
-use crate::observe::Measured;
 use crate::overload::Signals;
 use crate::pressure::Pressure;
 use crate::proxy_protocol::{self, TrustedProxies};
 use crate::service::{Dispatch, RouteDeps, Routing};
-use crate::summary::{self, CapsInUse, INTERVAL};
+use crate::summary::{self, INTERVAL};
 use crate::{metrics, GrpcLimits};
 
 /// Per-stream send buffer (flow control paces from here: a slow wallet backs up itself, not the
@@ -164,7 +164,7 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
 }
 
 /// Per-connection service stack (usage.md "Serve stack")
-type Stack<S, V> = TowerToHyperService<HealthRoute<Measured<Admission<Dispatch<S, V>>>>>;
+type Stack<S, V> = TowerToHyperService<HealthRoute<Guard<Dispatch<S, V>>>>;
 
 /// What every connection task shares
 struct Shared<S: ChainDataSource, V> {
@@ -178,16 +178,6 @@ struct Shared<S: ChainDataSource, V> {
     admission: Arc<AdmissionState>,
     limits: GrpcLimits,
     cancel: CancellationToken,
-}
-
-impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
-    fn caps_in_use(&self) -> CapsInUse {
-        CapsInUse {
-            work_streams: self.admission.held(Class::Work),
-            subscriptions: self.admission.held(Class::Subscription),
-            connections: self.caps.held(),
-        }
-    }
 }
 
 impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
@@ -260,7 +250,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                         io: io.share(elapsed),
                     };
                     let at_capacity = shared.admission.tick(elapsed, signals);
-                    summary::summarise(elapsed, shared.caps_in_use(), at_capacity);
+                    summary::summarise(elapsed, shared.caps.held(), at_capacity);
                     window_opened = now;
                     continue;
                 }
@@ -385,11 +375,11 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
     {
         let stalls = Arc::new(crate::stall::Watch::default());
         let activity = Arc::new(Activity::default());
-        let admission =
-            Admission::new(self.dispatch.clone(), Arc::clone(&self.admission), Arc::clone(&stalls));
-        let measured = Measured::new(admission, Arc::clone(&activity));
+        let admission = Arc::clone(&self.admission);
+        let guard =
+            Guard::new(self.dispatch.clone(), admission, Arc::clone(&stalls), activity.clone());
         let service: Stack<S, V> =
-            TowerToHyperService::new(HealthRoute::new(measured, self.health.clone()));
+            TowerToHyperService::new(HealthRoute::new(guard, self.health.clone()));
         let serving = self.http.serve_connection(TokioIo::new(io), service);
         let mut serving = std::pin::pin!(serving);
         let limits = &self.limits;

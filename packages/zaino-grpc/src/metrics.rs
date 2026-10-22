@@ -8,7 +8,6 @@ use tonic::Code;
 use zaino_primitives::metric::Metric;
 
 use crate::admission::Class;
-use crate::labels::{label, slot, CODES, LABELS};
 use crate::overload::OverloadCause;
 use crate::read_lanes::Lane;
 use crate::service::{Method, Reply};
@@ -17,8 +16,6 @@ use crate::summary;
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
 const DURATION_SECONDS: &str = "zaino.grpc.duration_seconds";
-const STREAM_DURATION_SECONDS: &str = "zaino.grpc.stream_duration_seconds";
-const STREAM_MESSAGES: &str = "zaino.grpc.stream_messages";
 const SENT_BYTES_TOTAL: &str = "zaino.grpc.sent_bytes_total";
 const ACTIVE_STREAMS: &str = "zaino.grpc.active_streams";
 const ADMISSION_REJECTED_TOTAL: &str = "zaino.grpc.admission_rejected_total";
@@ -42,51 +39,39 @@ const QUEUE_DELAY_SECONDS: &str = "zaino.grpc.queue_delay_seconds";
 const RETRANSMIT_RATIO: &str = "zaino.grpc.retransmit_ratio";
 const OVERLOAD_LATCHED: &str = "zaino.grpc.overload_latched";
 
-/// One method's series, registered on first use (the recorder is installed at boot, before the
-/// server binds: a handle taken earlier would be a no-op forever)
-struct MethodSeries {
-    timing: Timing,
-    sent: metrics::Counter,
-    requests: [std::sync::OnceLock<metrics::Counter>; CODES.len()],
+/// `method` label (`None` = `unknown`: any other path, so the set stays fixed)
+pub(crate) fn method_label(method: Option<Method>) -> &'static str {
+    method.map_or("unknown", Method::name)
 }
 
-/// By the row's [`Reply`]: one reply = its latency; a stream = time to first message (its latency)
-/// + lifetime + messages (a stream's duration is how long its client kept it, not a latency)
-enum Timing {
-    One {
-        duration: metrics::Histogram,
-    },
-    Stream {
-        first_message: metrics::Histogram,
-        lifetime: metrics::Histogram,
-        messages: metrics::Histogram,
-    },
+/// `code` label = `Code`'s `Debug` spelling (never formatted per request)
+pub(crate) fn code_label(code: Code) -> &'static str {
+    const CODES: [&str; 17] = [
+        "Ok",
+        "Cancelled",
+        "Unknown",
+        "InvalidArgument",
+        "DeadlineExceeded",
+        "NotFound",
+        "AlreadyExists",
+        "PermissionDenied",
+        "ResourceExhausted",
+        "FailedPrecondition",
+        "Aborted",
+        "OutOfRange",
+        "Unimplemented",
+        "Internal",
+        "Unavailable",
+        "DataLoss",
+        "Unauthenticated",
+    ];
+    // `Code` = the 17 gRPC codes, discriminants 0..=16
+    CODES[code as usize]
 }
 
-fn series(method: Option<Method>) -> &'static MethodSeries {
-    static SERIES: [std::sync::OnceLock<MethodSeries>; LABELS] =
-        [const { std::sync::OnceLock::new() }; LABELS];
-
-    let slot = slot(method);
-    SERIES[slot].get_or_init(|| {
-        let name = label(slot);
-        // an unknown path = no row: answered UNIMPLEMENTED in one reply
-        let timing = match method.map_or(Reply::One, |method| method.route().reply) {
-            Reply::One => {
-                Timing::One { duration: metrics::histogram!(DURATION_SECONDS, "method" => name) }
-            }
-            Reply::Stream => Timing::Stream {
-                first_message: metrics::histogram!(FIRST_MESSAGE_SECONDS, "method" => name),
-                lifetime: metrics::histogram!(STREAM_DURATION_SECONDS, "method" => name),
-                messages: metrics::histogram!(STREAM_MESSAGES, "method" => name),
-            },
-        };
-        MethodSeries {
-            timing,
-            sent: metrics::counter!(SENT_BYTES_TOTAL, "method" => name),
-            requests: [const { std::sync::OnceLock::new() }; CODES.len()],
-        }
-    })
+/// Unknown path = one reply (answered `UNIMPLEMENTED`)
+fn reply(method: Option<Method>) -> Reply {
+    method.map_or(Reply::One, |method| method.route().reply)
 }
 
 /// Every metric this crate emits
@@ -102,12 +87,6 @@ pub const METRICS: &[Metric] = &[
         "Server-streaming RPC latency: admission to first message, by method",
     )
     .unit(Unit::Seconds),
-    Metric::histogram(
-        STREAM_DURATION_SECONDS,
-        "Server-streaming RPC lifetime: admission through trailers or the client leaving, by method",
-    )
-    .unit(Unit::Seconds),
-    Metric::histogram(STREAM_MESSAGES, "Messages sent per server stream, by method"),
     Metric::counter(SENT_BYTES_TOTAL, "Response body bytes, by method").unit(Unit::Bytes),
     Metric::gauge(ACTIVE_STREAMS, "Work streams holding an admission slot"),
     Metric::counter(
@@ -235,8 +214,9 @@ pub(crate) fn disk_read_waited(lane: Lane, waited: Duration) {
 
 /// A stream's first message (a one-reply RPC's = its whole answer: [`stream_finished`] times it)
 pub(crate) fn first_message(method: Option<Method>, elapsed: Duration) {
-    if let Timing::Stream { first_message, .. } = &series(method).timing {
-        first_message.record(elapsed.as_secs_f64());
+    if reply(method) == Reply::Stream {
+        let method = method_label(method);
+        metrics::histogram!(FIRST_MESSAGE_SECONDS, "method" => method).record(elapsed);
     }
 }
 
@@ -248,28 +228,15 @@ pub(crate) fn stream_finished(
     code: Code,
     elapsed: Duration,
     latency: Option<Duration>,
-    messages: u64,
     sent: u64,
 ) {
-    summary::finished(method, code, latency);
-    let series = series(method);
-    // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)
-    let at = code as usize;
-    series.requests[at]
-        .get_or_init(|| {
-            let (method, code) = (label(slot(method)), CODES[at]);
-            metrics::counter!(REQUESTS_TOTAL, "method" => method, "code" => code)
-        })
-        .increment(1);
-    match &series.timing {
-        // latency of answers only: a refusal (UNAVAILABLE held, UNIMPLEMENTED) = µs of no work
-        Timing::One { duration } if code == Code::Ok => duration.record(elapsed.as_secs_f64()),
-        Timing::One { .. } => {}
-        Timing::Stream { lifetime, messages: sent_messages, .. } => {
-            lifetime.record(elapsed.as_secs_f64());
-            sent_messages.record(messages as f64);
-        }
+    summary::finished(code, latency);
+    let name = method_label(method);
+    metrics::counter!(REQUESTS_TOTAL, "method" => name, "code" => code_label(code)).increment(1);
+    // answers only (refusal = µs of no work)
+    if reply(method) == Reply::One && code == Code::Ok {
+        metrics::histogram!(DURATION_SECONDS, "method" => name).record(elapsed);
     }
-    series.sent.increment(sent);
+    metrics::counter!(SENT_BYTES_TOTAL, "method" => name).increment(sent);
     SENT_BYTES.fetch_add(sent, Ordering::Relaxed);
 }

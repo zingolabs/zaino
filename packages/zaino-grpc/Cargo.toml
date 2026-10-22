@@ -15,7 +15,7 @@ thiserror = { workspace = true }
 tonic.workspace = true
 futures.workspace = true
 tokio = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 http = "1"
 http-body-util = { workspace = true }
 bytes = { workspace = true }

@@ -37,9 +37,9 @@ impl ConnectionCaps {
         }
     }
 
-    /// Connections held now (reserved or served), of `max_connections`
-    pub(crate) fn held(&self) -> (usize, usize) {
-        (self.total_max.saturating_sub(self.total.available_permits()), self.total_max)
+    /// Connections held now (reserved or served)
+    pub(crate) fn held(&self) -> usize {
+        self.total_max.saturating_sub(self.total.available_permits())
     }
 
     /// `None` = at `max_connections` (caller drops the socket)
