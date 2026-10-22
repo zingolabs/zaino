@@ -124,29 +124,49 @@ impl Permits {
 mod tests {
     use super::*;
 
-    /// - of 8, the poll keeps 1
-    /// - lane fills the shared permits, never another lane's reserve
+    /// - of 8, the poll keeps 1: 7 lane permits = 3 reserves + 4 shared
     /// - each lane still admits its reserved one with every shared permit taken
-    /// - peers: same lanes, no poll's permit
     #[test]
-    fn lanes_share_idle_permits_but_never_a_reserve() {
+    fn a_trusted_members_lanes_share_idle_permits_but_never_a_reserve() {
         let permits = Permits::trusted(8);
         let mut in_flight = [0; LANES];
+
         while permits.admits(&in_flight, Lane::Bulk) {
             in_flight[Lane::Bulk.index()] += 1;
         }
-        assert_eq!(in_flight, [0, 0, 5], "bulk stops where the poll's and other reserves begin");
-        for lane in [Lane::Control, Lane::Interactive] {
-            assert!(permits.admits(&in_flight, lane), "{lane:?} reserve held");
-            in_flight[lane.index()] += 1;
-            assert!(!permits.admits(&in_flight, lane), "{lane:?}: one reserved, none shared");
-        }
-        assert!(permits.holds(&in_flight));
-        assert!(!permits.holds(&[6, 1, 0]), "control on the idle bulk reserve breaks T1");
 
+        assert_eq!(in_flight, [0, 0, 5], "bulk fills its reserve + the 4 shared, then stops");
+        for lane in [Lane::Control, Lane::Interactive] {
+            assert!(permits.admits(&in_flight, lane), "{lane:?} reserve free beside {in_flight:?}");
+            in_flight[lane.index()] += 1;
+            let full = !permits.admits(&in_flight, lane);
+            assert!(full, "{lane:?}: its reserve taken, no shared left: {in_flight:?}");
+        }
+        assert!(permits.holds(&in_flight), "all 7 lane permits held: within T1: {in_flight:?}");
+        let borrowed = [6, 1, 0];
+        let broken = !permits.holds(&borrowed);
+        assert!(broken, "control on the idle bulk reserve breaks T1: {borrowed:?}");
+    }
+
+    /// 4 in flight = 3 reserves + 1 shared, no poll's permit
+    #[test]
+    fn the_peer_sets_lanes_keep_a_reserve_each_and_share_the_rest() {
         let peers = Permits::peers(4);
-        assert!(peers.admits(&[0, 0, 3], Lane::Control), "control reserve held beside full bulk");
-        assert!(!peers.admits(&[0, 0, 2], Lane::Bulk), "bulk stops at the other two reserves");
-        assert!(!peers.admits(&[1, 1, 2], Lane::Interactive), "all 4 in flight");
+
+        #[rustfmt::skip]
+        let cases = [
+            // case,                                         in flight, lane,              admits
+            ("control's reserve beside bulk on the rest",    [0, 0, 3], Lane::Control,     true),
+            ("bulk past its reserve: the shared one",        [0, 0, 1], Lane::Bulk,        true),
+            ("bulk stops at the other two reserves",         [0, 0, 2], Lane::Bulk,        false),
+            ("all 4 in flight",                              [1, 1, 2], Lane::Interactive, false),
+        ];
+        for (case, in_flight, lane, admits) in cases {
+            assert_eq!(
+                peers.admits(&in_flight, lane),
+                admits,
+                "{case}: {lane:?} beside {in_flight:?}"
+            );
+        }
     }
 }

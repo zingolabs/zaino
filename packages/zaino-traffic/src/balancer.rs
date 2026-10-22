@@ -31,7 +31,7 @@ use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, T
 use crate::member::{Health, Limits, MemberId, Synced, TrustedValidatorId};
 
 /// Block ask open this long without an answer → warn, and again each period after
-const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 const MISANSWERS_TOTAL: &str = "zaino.traffic.misanswers_total";
 

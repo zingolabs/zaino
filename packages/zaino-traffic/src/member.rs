@@ -208,13 +208,13 @@ impl Member {
     }
 }
 
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Push stream up: events wake it sooner, the poll stays the truth
-const STREAMED_POLL_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const STREAMED_POLL_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const MIN_POLL_SPACING: Duration = Duration::from_millis(200);
 const LADDER_START: Duration = Duration::from_millis(500);
 pub(crate) const LADDER_CEILING: Duration = Duration::from_secs(30);
-const METADATA_REFRESH: Duration = Duration::from_secs(60);
+pub(crate) const METADATA_REFRESH: Duration = Duration::from_secs(60);
 
 /// One trusted member's poll cadence (`last` = latest start, `previous` = the one before)
 #[derive(Debug, Clone, Default)]
@@ -255,5 +255,29 @@ impl Poller {
         if std::mem::take(&mut self.metadata_asked) && answered {
             self.metadata_at = self.last;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bench_lasts_60_s_doubling_per_report_up_to_an_hour() {
+        let limits = Limits::new(MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
+        let t0 = Instant::now();
+        let mut member = Member::trusted(0, limits);
+        member.bench(t0);
+        let edge =
+            (member.benched(t0 + BENCH - Duration::from_millis(1)), member.benched(t0 + BENCH));
+        assert_eq!(edge, (true, false), "benched (1 ms before, at) {BENCH:?} after one report");
+
+        let spans: Vec<u64> = (2..=8)
+            .map(|_| {
+                member.bench(t0);
+                (member.bench.expect("benched").until - t0).as_secs()
+            })
+            .collect();
+        assert_eq!(spans, [120, 240, 480, 960, 1_920, 3_600, 3_600], "span (s) of reports 2..=8");
     }
 }
