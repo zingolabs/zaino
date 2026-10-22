@@ -62,7 +62,7 @@ fn main() -> ExitCode {
             Command::GenerateConfig { output } => {
                 exit(config::generate_config(&output.unwrap_or(config)), 1)
             }
-            Command::Verify => exit(verify::run(&config), 2),
+            Command::Verify => verify::run(&config),
             Command::Hold(action) => exit(hold::command(&config, action), 1),
             Command::Overload { action } => exit(overload::command(&config, action), 1),
         }
