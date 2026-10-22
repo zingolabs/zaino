@@ -100,34 +100,17 @@ knows it missed some.
 
 ## Metrics
 
-Every request above passes one function, which times and counts it; `METRICS` holds each one's
-help and unit (zainod registers it with every crate's).
-
-| Metric | Labels | Answers |
-|---|---|---|
-| `zaino_peers_request_duration_seconds` | `request` | network round trip: sent to a ready peer → its answer (histogram) |
-| `zaino_peers_request_failures_total` | `request`, `failure` (`timeout`, `peer`) | requests ending in an error; `peer` = zebra's error |
-
-The histogram holds answered requests only, so it is a latency and nothing else:
-
-- the wait for a ready peer (local queueing) is not in it
-- a failure never is: zebra refuses many without touching the wire (`MempoolTransactionIdsFrom` a
-  peer not ready = `NoReadyPeers`, an item no usable peer holds = a synthetic `notfound`), and a
-  timeout is the timeout; both land in the failure counter
-- a push never is: zebra fans it out and answers `Nil` itself, no peer replies
-
-`request` = zebra's `Request::command` (`FindHeaders`, `BlocksByHash`, `TransactionsById`,
-`MempoolTransactionIds`, `PushTransaction`), the label zebra's own `zebra_net_out_requests` and
-`zcash_net_out_messages` counters use, so a latency lines up with its message counts.
+Every request above passes one function that times and counts it (`METRICS`). The latency
+histogram holds answered requests only, so it is a network round trip and nothing else: the
+wait for a ready peer, failures (zebra refuses many without touching the wire) and pushes (zebra
+answers `Nil` itself) are not in it. Its `request` label is zebra's `Request::command`, as on
+zebra's own `zebra_net_out_requests` and `zcash_net_out_messages`, so a latency lines up with its
+message counts.
 
 ## Tests
 
-- Loopback, no DNS: a scripted zebra-network regtest node (a full `init`, since
-  isolated connections advertise no services and the peer set refuses those as
-  outbound peers) serves real mainnet blocks 1–3 and three transactions, lying
-  for one of them. It admits Zaino and records it with no services. Headers and blocks
-  arrive byte-identical, its mempool asked by address lists its three ids (a stranger's
-  = a failure), the lie never labels the asked id, a transaction `inv` is ignored and a
-  block `inv` arrives attributed to the sender. A push lands byte-identical at a peer
-  the peer set already holds; without a ready peer it fails
-- Real mainnet blocks 1 and 1,687,107 round-trip through every wire conversion
+- Loopback, no DNS: a scripted zebra-network regtest node (a full `init`: the peer set refuses
+  isolated connections as outbound peers) serves real mainnet blocks 1–3 and three
+  transactions, lying for one of them. Headers, blocks and pushes arrive byte-identical, the lie
+  never labels the asked id, and announcements arrive attributed to their sender.
+- Real mainnet blocks 1 and 1,687,107 round-trip through every wire conversion.

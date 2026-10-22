@@ -65,7 +65,7 @@ pub(crate) enum SnapshotPhase {
     Unpacking,
 }
 
-/// Published beside the archives (`usage.md` "Index snapshot"): one seed, one height
+/// Published beside the archives (`docs/running.md` "Index snapshot"): one seed, one height
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {

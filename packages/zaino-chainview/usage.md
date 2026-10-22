@@ -38,17 +38,10 @@ let _ = (view, headers, merge);
 
 zainod spawns the balancer's driver first, builds the view once the upgrade schedule is known
 (regtest's = the first answered poll), then spawns header sync, the observation merge, each push
-stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and with `[p2p]` on
-`peer_watch()` and `peer_mempool(ServedUtxos)`. `zaino-grpc`'s `RouteDeps.chain_view` holds the view for
-`SendTransaction`; every read goes through `zaino-grpc-snapshot`.
-
-## Membership
-
-- `ChainView::new` names each trusted member by its `TrustedValidator::address`
-  (`TrafficBalancer::addresses()`). The balancer itself holds 1 ..= `TrustedValidatorId::MAX` = 64
-  members; zainod refuses a config outside that before boot.
-- No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
-  verified blocks it holds, a mempool listing and a submission entry.
+stream, and with `[p2p]` on `peer_watch()` and `peer_mempool(..)`. `zaino-grpc`'s `RouteDeps`
+holds the view for `SendTransaction`; every read goes through `zaino-grpc-snapshot`. Each trusted
+member is named by its `TrustedValidator::address` (`TrafficBalancer::addresses()`); no validator
+outvotes another.
 
 ## Structure
 
@@ -115,17 +108,7 @@ Cheap to clone; cannot drive polling or submit.
 | `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
 | `alarms()` | below |
 
-`TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured
-positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
-
-`TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, peers
-(every 60 s), release (build, user agent, end-of-service height), push-stream state,
-`blocks_to_end_of_service()`.
-
-`Agreement` from its claim and `getblockhash` answer, as of its last answered poll: `Agreed` (claim
-= best), `Ahead` (claims higher, answer on our chain), `Behind` (claim on our chain, below best),
-`Diverged` (none of these: telemetry, never an error), `Unknown` (nothing verified, or last poll
-failed).
+`TrustedValidatorSet`, `TrustedValidatorMeta` and `Agreement` are documented on their types.
 
 ## Validator states in the merge
 
@@ -170,21 +153,17 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 - `ChainView::broadcast_transaction(validated)` → `TxId`: the relay job; only a
   `ValidatedTransaction` goes in, so no relay skips the checks
 
-- Precheck: undecodable → `Rejected` code −22; once a verified best exists, expired
-  (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.
-- Check: `checkadmission` (a `submit` ask) on `entries()` ∩ `held_by()`, shuffled; the first
-  refusal = `SubmitError::Rejected` at once (outcome `rejected`, 0 attempts), the first `Ok` =
-  the answer; `Unsupported` / no answer = the next.
-- `SubmitError::Rejected` = the precheck's or the check's refusal, else the first trusted rejection;
-  `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
-  push failure).
+- Precheck: expiry 0 = none; expiry and branch are judged only once a verified best exists.
+- Check: `checkadmission` (a `submit` ask) on `entries()` ∩ `held_by()`, shuffled.
+- `SubmitError::Rejected` = the precheck's or the check's refusal, else the first trusted
+  rejection; `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection
+  (cause = the last push failure).
 - Job inputs, taken once at its start: peers = `PeerSource::live()` non-empty, trusted =
-  `TrafficBalancer::entries()` (`Live`, not benched), checked = the check admitted it.
-- A trusted entry's own listing counts for acceptance, not for spread.
+  `TrafficBalancer::entries()` (`Live`, not benched), checked = the check admitted it. A trusted
+  entry's own listing counts for acceptance, not for spread.
 - Job end: `spread`, `unconfirmed`, `rejected`, `unreachable`. Nothing ties it to mining or expiry.
-- `SubmitPolicy { propagation_threshold, max_attempts }` = 15 s, 4 by default. It is zainod's
-  `[submission]` table as parsed (`Deserialize`/`Serialize`: `propagation_threshold_secs`,
-  non-zero whole seconds, and `max_attempts`; unknown keys refused).
+- `SubmitPolicy { propagation_threshold, max_attempts }` is zainod's `[submission]` table as
+  parsed (unknown keys refused; defaults in the example config).
 
 ## Ports
 
@@ -208,19 +187,13 @@ Two steps, both `Result<_, SubmitError>`; the protocol is
 
 ## Telemetry
 
-zainod registers each from `METRICS` (help, unit). The `zaino.chainview.*` gauges are
-`zaino-grpc-snapshot`'s, set at scrape. This crate emits events only:
-
-| Metric | Kind | Labels |
-|---|---|---|
-| `submission_attempts` | histogram | `outcome` |
-| `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
+This crate emits events only (its `METRICS`: submissions by outcome); the `zaino_chainview_*`
+gauges are `zaino-grpc-snapshot`'s, set at scrape.
 
 `alarms()` → `Alarms`: each raised `Alarm` (`FinalityPaused`, and per validator `Stale`,
-`Ending`), derived per merge (definitions and thresholds:
-[architecture §11](../../docs/architecture.md#11-telemetry); in `alarm_thresholds.rs`). A new
-alarm = an `Alarm` variant: the compiler then names its arms (raised in `telemetry::alarms`,
-noted and logged in `zaino-grpc-snapshot`'s report).
+`Ending`), derived per merge ([architecture §11](../../docs/architecture.md#11-telemetry);
+thresholds in `alarm_thresholds.rs`). A new alarm = an `Alarm` variant: the compiler then names
+its arms (raised in `telemetry::alarms`, noted and logged in `zaino-grpc-snapshot`'s report).
 
 ## Testing (feature `testing`)
 

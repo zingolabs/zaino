@@ -1,23 +1,20 @@
 # `zaino-source` — usage
 
-`ChainDataSource`: every question Zaino asks one trusted validator, one trait,
-declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its
-own domain error, nothing about the transport. Blocks come back decoded once, from consensus bytes,
-into `zaino_primitives::types::Block`. Each method, its JSON-RPC call and its answer: the
-`ChainDataSource` rustdoc (`chain_data_source.rs`). Two implementations: `ZcashLegacyRpcClient`, and
-`ZebraIndexerGrpcClient`, which fetches blocks over zebrad's indexer gRPC (`GetBlock`,
-`GetBlockRange` per consecutive run) and asks everything else of its inner legacy client. Tests
-drive the real legacy client against [`MockValidator`](#testing-mockvalidator).
+`ChainDataSource`: every question Zaino asks one trusted validator, one trait, declared in domain
+vocabulary (`zaino-primitives` + its own reply types), each method with its own domain error,
+nothing about the transport. Each method, its JSON-RPC call and its answer: the
+`ChainDataSource` rustdoc (`chain_data_source.rs`). Blocks come back decoded once, from consensus
+bytes, into `zaino_primitives::types::Block`.
 
-Every method answers `Err(QueryError::Unsupported)` when the validator has no such method
-(JSON-RPC `-32601`: zcashd and stock zebrad lack `checkadmission`). It is classified once, for every call, and is an answer about the node:
-never a failure, so a balancer asks the next member and the node stays healthy.
+Two implementations: `ZcashLegacyRpcClient` (JSON-RPC, zebrad or zcashd), and
+`ZebraIndexerGrpcClient`, which fetches blocks over zebrad's indexer gRPC and asks everything
+else of its inner legacy client. Tests drive the real legacy client against
+[`MockValidator`](#testing-mockvalidator).
 
-What a validator reports about itself is this crate's, beside its parser:
-`BlockchainInfo` (tip, network-tip estimate, each known upgrade's activation;
-`schedule()` = those as a `LocalNetwork`, or `ScheduleError::OutOfOrder` /
-`NoSapling`: regtest's boot reads it and refuses either), `NodeRelease` / `EndOfService`, `PeerInfo`. Only fields Zaino reads
-are parsed, so an upgrade this build does not know is skipped, never a failed poll.
+What a validator reports about itself (`BlockchainInfo`, `NodeRelease` / `EndOfService`,
+`PeerInfo`) is this crate's, beside its parser. Only fields Zaino reads are parsed, so an upgrade
+this build does not know is skipped, never a failed poll. `BlockchainInfo::schedule()` refuses a
+regtest schedule out of protocol order or without Sapling (`ScheduleError`).
 
 ## Building a client: one per validator
 
@@ -32,61 +29,38 @@ let grpc = ZebraIndexerGrpcClient::new(legacy, indexer_address, tls.as_ref(), Ti
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `TrustedValidator` member
 ```
 
-`new` builds the client without contacting the validator. An unreachable
-validator is the caller's retry, never a construction failure; `EndpointError`
-means a bad address, an unreadable cookie or TLS file, or a client that cannot
-be built. zainod picks one for every validator (`validator_client`).
+- `new` never contacts the validator: an unreachable validator is the caller's retry, never a
+  construction failure. `EndpointError` = a bad address, an unreadable cookie or TLS file, or a
+  client that cannot be built.
+- `Auth`: `Cookie` sends basic auth as `__cookie__` with the file's token, `Basic` the pair,
+  `None` no `Authorization` header.
+- One attempt per call. Which validator, how many requests in flight, retries and hedges are the
+  balancer's (`zaino-traffic`): this crate never re-sends, and a batch item's refusal (zebrad's
+  `-1` work queue full included) is that item's own outcome.
+- `LinkLimits`: `max_connections` = idle connections kept to the validator; `response_size_cap`
+  (one full block's reply ..= 32 MiB) = the largest JSON-RPC reply buffered, which sets how many
+  blocks one `getblock` batch asks.
+- Every call is recorded at the transport whoever asked, by `validator` and `method` (a batch's
+  `method` = its one method, or `poll` for `get_poll_reading`'s mixed batch); failure labels are
+  a fixed set.
 
-`Auth`: `Cookie` sends basic auth as `__cookie__` with the file's token, `Basic`
-sends the pair, `None` sends no `Authorization` header.
+## The indexer gRPC
 
-## The indexer gRPC: plaintext or mutual TLS
+`ZebraIndexerGrpcClient::new` and `ZebraIndexerWatch::new` take `Option<&ZebraIndexerTls>`:
+`None` = plaintext, as zebrad serves it; `Some` = mutual TLS, which zakurad requires on any
+non-loopback indexer address. `ca_path` verifies the server, `cert_path` + `key_path` are this
+client's, `server_name` defaults to the address's host. The PEM files are read in `new`; a
+rotated file is read on the next restart.
 
-`ZebraIndexerGrpcClient::new` and `ZebraIndexerWatch::new` (the push streams) take
-`Option<&ZebraIndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
-zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
+- A block arrives as its stored consensus bytes in a protobuf `bytes` field: no hex, no JSON.
+- `get_blocks_by_height` cuts its heights into consecutive runs, one `GetBlockRange` stream each.
+  Stock zebrad lacks the indexer's `GetBlockRange` ([`zaino-proto`](../zaino-proto/README.md#modules)).
+- Streams are multiplexed over `ceil(max_connections / 20)` connections (zebrad admits 20 streams
+  per connection), with a 4 MiB receive window per stream (a whole block in flight).
+- `read` timeout = silence per message, never a total.
 
-- `ca_path` verifies the server's certificate; `cert_path` + `key_path` are this client's,
-  signed by the server's client CA. Deserializes from the same keys (zainod's
-  `[trusted_validators.indexer_tls]`).
-- `server_name` = the name on the server's certificate (`None` = the address's host).
-- The PEM files are read in `new`: an unreadable one is `EndpointError::TlsFile`, naming it. A
-  rotated file is read on the next restart.
-
-- `ZcashLegacyRpcClient`: JSON-RPC over HTTP/1.1 (zebrad or zcashd). A block
-  arrives as hex inside JSON: the body buffer is sized once from `Content-Length`,
-  and the hex string is handed over as raw bytes (no UTF-8 pass) and decoded by
-  `const-hex` (SIMD) into an exact-size buffer.
-- `ZebraIndexerGrpcClient`: blocks over zebrad's indexer gRPC (HTTP/2), the rest through
-  the `ZcashLegacyRpcClient` it holds.
-  - A block arrives as its stored consensus bytes in a protobuf `bytes` field, a
-    `Bytes` slice of the received frame: no hex, no JSON.
-  - `get_blocks_by_height` cuts its heights into consecutive runs, one
-    `GetBlockRange` stream each.
-  - It needs a zebrad serving the indexer's `GetBlockRange`, which stock zebrad lacks
-    ([`zaino-proto`](../zaino-proto/README.md#modules)).
-  - Streams are multiplexed over `ceil(max_connections / 20)` connections (zebrad
-    admits 20 streams per connection), requests rotated across them.
-  - Receive windows: 4 MiB per stream (a whole block in flight), every stream's at
-    once per connection.
-  - `read` timeout = silence per message, never a total.
-  - Metrics (`GetBlock`, `GetBlockRange`) land in the same families as JSON-RPC.
-
-- One attempt per call. Which validator, how many requests in flight, the request
-  rate, retries and hedges are the balancer's (`zaino-traffic`): this crate never
-  re-sends, and a batch item's refusal (zebrad's `-1` work queue full included) is
-  that item's own outcome.
-- `LinkLimits`: `max_connections` = idle connections kept to the validator;
-  `response_size_cap` (`ResponseSizeCap`: one full block's reply ..= 32 MiB) = the largest
-  JSON-RPC reply buffered, and sets how many blocks one `getblock` batch asks.
-- Per-validator metrics carry a `validator` label: call duration by method,
-  failures, calls in flight, bytes received. A failure's `failure` label is `connection`,
-  `timeout`, `auth`, `parse`, `grpc_{code}`, `http_3xx` / `http_4xx` / `http_5xx` (else
-  `http_other`), or `rpc_{code}` for a code the client reads a verdict from (`-1`, `-5`, `-8`,
-  `-22`, `-25` to `-27`, `-32601`, `-32602`; else `rpc_other`). Every call is recorded at the transport, whoever
-  asked (the balancer's routed reads, the chain view's polls, sync's fetches). A batch's
-  `method` is what it is for: its one method (`getblock`, `getblockheader`,
-  `getrawtransaction`), or `poll` for `get_poll_reading`'s mixed batch.
+The legacy client gets a block as hex inside JSON: the body buffer is sized once from
+`Content-Length`, and the hex is decoded by `const-hex` (SIMD) without a UTF-8 pass.
 
 ## Error model
 
@@ -97,70 +71,49 @@ pub enum QueryError<E> {
 }
 ```
 
-`Domain` is never worth asking again. An adapter that reports "no block at
-that height" as `NonDomain` makes every caller's retry treat an above-tip probe
-as an outage. If the validator replied at all, it is almost certainly `Domain`.
+`Domain` is never worth asking again. An adapter that reports "no block at that height" as
+`NonDomain` makes every caller's retry treat an above-tip probe as an outage: if the validator
+replied at all, it is almost certainly `Domain`. `NonDomainError { mode: FailureMode, .. }` keeps
+the concrete cause as its `source()`.
 
-`NonDomainError { mode: FailureMode, .. }` keeps the concrete cause as its
-`source()`; `mode` classifies it (`Connection`, `Timeout`, `HttpStatus`,
-`RpcError(code)`, `GrpcStatus(code)`, `Parse`, `Auth`).
+Every method answers `Err(QueryError::Unsupported)` when the validator lacks the method
+(JSON-RPC `-32601`: zcashd and stock zebrad lack `checkadmission`). It is an answer about the
+node, never a failure: a balancer asks the next member and the node stays healthy.
 
 ## `ZebraIndexerWatch`: push streams as wake hints
 
-`ZebraIndexerWatch::new(address, tls, timeouts)` names zebrad's indexer gRPC
-(`indexer_listen_addr`; `tls` as above). `run(cancel, on_change, on_link)` subscribes to
-`ChainTipChange` and `MempoolChange` until cancelled: every event on either calls
-`on_change()`; `on_link(true)` fires once both
-streams are open and `on_link(false)` when either ends after that (a refused
-connect is no edge), then it reconnects on a 500 ms → 30 s ladder. Events are
-hints only: zebrad ends a lagged stream rather than skip events, so a consumer
-that polls on every edge never misses a change. zainod wires the callbacks to
+`ZebraIndexerWatch::run(cancel, on_change, on_link)` subscribes to zebrad's `ChainTipChange` and
+`MempoolChange` until cancelled: every event calls `on_change()`; `on_link(true)` fires once both
+streams are open and `on_link(false)` when either ends after that, then it reconnects on a
+500 ms → 30 s ladder. Events are hints only: zebrad ends a lagged stream rather than skip events,
+so a consumer that polls on every edge never misses a change. zainod wires the callbacks to
 `zaino_traffic::TrafficBalancer::pushed`.
 
 ## Batched ports for one poll
 
-The balancer's poll asks one validator `get_poll_reading`; the chain view then
-asks `get_raw_mempool_transactions` for the bytes of what it newly lists, and its
-header sync `get_block_links`:
+The balancer's poll asks one validator `get_poll_reading` (one batch, so the listing and the
+answers are tagged with the tip read beside them); the chain view then asks
+`get_raw_mempool_transactions` for the bytes of what it newly lists, and header sync
+`get_block_links`.
 
-- `get_poll_reading(metadata, holds)`: one batch (its calls: the method's rustdoc), so the
-  listing and the answers are tagged with the tip read beside them.
-  `PollReading::held` has one answer per height, in order: the hash on the
-  validator's best chain, `GetAtHeightError::HeightNotFound` above its tip (zebrad's
-  `-32602`, zcashd's `-8`), or that item's own failure (the rest of the poll
-  stands). The chain view asks this to learn which validators hold a verified
-  block. With `metadata`, `MetadataReading` = the answered `Telemetry` + each failed read,
-  named: a failed read never fails the poll, and `Telemetry::absorb` keeps the last answer
-  in its place. The listing carries each entry's txid,
-  fee and `encoded_len`; the fee is the validator's (it resolved the prevouts),
-  sent by zebra as an `f64` and parsed back to exact zatoshis. `Unavailable`
-  means the validator has no mempool. `Inactive` means zebrad's mempool is off
-  until it reaches the network tip (an empty state reports genesis this way).
-- `get_block_links(heights)` (`getblockheader <h> false` each):
-  `BlockLink { header }` per height, the raw consensus header bytes, neither decoded nor
-  hashed here: the consumer decodes once on receipt (`zaino_header_chain::decode_header`
-  recomputes the hash from the bytes). `GetAtHeightError::HeightNotFound` means a height above
-  the tip.
-- `get_raw_mempool_transactions(listed)`: the bytes of listed entries, in batches of at most
-  100 calls and, by `encoded_len`, as many bytes as keep the hex reply within
-  `response_size_cap` (an entry over that budget goes alone). `NotFound` on an item means it
-  left the mempool after the listing (a normal race).
-
-In each, items come back in request order and `Err` means the batch as a whole
-failed. A crate-internal JSON-RPC batch call is the transport underneath: one
-HTTP request, replies matched by `id` (the balancer charges its request rate per
-call).
-
-`NodeRelease` (from `getinfo` + `getdeprecationinfo`) carries the build, user
-agent and `EndOfService`: `At { height }` on
-mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
+- `PollReading::held`: one answer per height, the hash on the validator's best chain or
+  `HeightNotFound` above its tip; an item's own failure leaves the rest of the poll standing. A
+  failed metadata read never fails the poll either (`Telemetry::absorb` keeps the last answer).
+- The listing's fee is the validator's, sent by zebra as an `f64` and parsed back to exact
+  zatoshis. `Inactive` = zebrad's mempool is off until it reaches the network tip.
+- `get_block_links` returns raw header bytes, neither decoded nor hashed here
+  (`zaino_header_chain::decode_header` recomputes the hash).
+- `get_raw_mempool_transactions` batches at most 100 calls and, by `encoded_len`, as many bytes
+  as keep the reply within `response_size_cap`. `NotFound` on an item = it left the mempool after
+  the listing (a normal race).
 
 ## Testing: `MockChain`
 
-The `testing` feature (always on for this crate's own tests; enable it from
-`[dev-dependencies]` only) holds the one chain builder every test below the live suite takes
-its blocks, headers, fees, mempool and validators from. Every transaction is real consensus
-bytes, written by librustzcash; every block handed out is `decode_block` of its own bytes.
+The `testing` feature (always on for this crate's own tests; enable it from `[dev-dependencies]`
+only) holds the one chain builder every test below the live suite takes its blocks, headers,
+fees, mempool and validators from. Every transaction is real consensus bytes written by
+librustzcash; every block handed out is `decode_block` of its own bytes and passes Zaino's own
+checks.
 
 ```rust,ignore
 use zaino_source::testing::{all_at, commitment, h, nullifier, p2pkh, Ledger, MockChain, Unmined};
@@ -199,55 +152,39 @@ let mined = chain.mine_mempool();                    // one block on tip() carry
 let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs, txids, nullifiers
 ```
 
-- **Who writes what.** A test states values, scripts, spends, fees and note tags. The
-  chain derives everything else:
-  - the transaction format and branch from the upgrade active at that height (v1 before
-    Overwinter, v3, v4 from Sapling, v5 from NU5, v6 when Ironwood actions are present, v4 when
-    Sprout is)
-  - txid = the hash of the written bytes; merkle root over them
-  - the coinbase script = BIP 34 height + extranonce; an NU5+ coinbase expires at its height
-    (ZIP 203: a v5 txid skips `scriptSig`, so this is its height commitment)
-  - each other transaction's lock time = a mint counter (unique bytes, always final)
-  - points, proofs, signatures, ciphertexts = deterministic filler (librustzcash's lazy
-    readers never decompress them)
-- **Note tags.** Nullifiers and leaves are small `u32`s, little-endian, canonical in every
-  pool's field; compare against `nullifier(tag)` / `commitment(leaf)`.
-- **A balance needs a description.** `value_balance(pool, ..)` without a spend, output or
-  action in that pool panics (an empty bundle carries no balance); Sprout + Orchard / Ironwood
-  in one transaction panics (no format carries both).
-- **Configure first.** `upgrades`, `varied_work`, `network` and `genesis_with` rebuild
-  genesis, so they panic after the first `mine`.
-- **Work.** `Work::Limit` (default): every nBits is the regtest limit, so only a longer
-  branch wins. A reorg-by-work test declares `varied_work()`; then `outweigh()` gives the
-  branch's next block the least work that makes it the best, and `BlockBuilder::bits`
-  sets any nBits.
-- **Txids and nullifiers are distinct per branch**, not chain-wide: the same bytes re-mined
-  on a competing branch (`raw_tx(chain.tx_bytes(txid))`) is the reorg shape mempool and index
-  tests need.
+- **A test states** values, scripts, spends, fees and note tags; the chain derives the rest: the
+  transaction format and branch from the upgrade active at that height, txids and merkle roots
+  from the written bytes, the coinbase script (BIP 34 height + extranonce), unique lock times,
+  and deterministic filler for points, proofs, signatures and ciphertexts.
+- **Note tags.** Nullifiers and leaves are small `u32`s, canonical in every pool's field; compare
+  against `nullifier(tag)` / `commitment(leaf)`.
+- **Configure first.** `upgrades`, `varied_work`, `network` and `genesis_with` rebuild genesis,
+  so they panic after the first `mine`.
+- **Work.** `Work::Limit` (default): every nBits is the regtest limit, so only a longer branch
+  wins. A reorg-by-work test declares `varied_work()`; then `outweigh()` gives the branch's next
+  block the least work that makes it the best, and `BlockBuilder::bits` sets any nBits.
+- **Txids and nullifiers are distinct per branch**, not chain-wide: the same bytes re-mined on a
+  competing branch (`raw_tx(chain.tx_bytes(txid))`) is the reorg shape mempool and index tests
+  need.
 - **Mempool.** `submit` / `submit_raw` admit each on the best after every entry before it,
   through the same `Ledger` mining uses, and panic with the `Refused` rule otherwise. Whenever
-  the best moves, the mempool is re-admitted on the new best: transactions only the old best
-  mined come back first (block order, coinbases never), and mined, conflicting or orphaned
-  entries leave.
+  the best moves, the mempool is re-admitted on the new best.
 
-### Views in other crates
-
-Each lives in the crate that owns its type, behind that crate's `testing` feature, and is
-documented there: header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer
-sets ([`zaino-traffic`](../zaino-traffic/usage.md)), peers and the UTXO set
+Views over a `MockChain` live in the crate that owns each type, behind its `testing` feature:
+header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer sets
+([`zaino-traffic`](../zaino-traffic/usage.md)), peers and the UTXO set
 ([`zaino-chainview`](../zaino-chainview/usage.md#testing-feature-testing)), chain params
 ([`zaino-nfs`](../zaino-nfs/usage.md)). Finality is the header chain's, never the builder's.
 
 ### Invariants
 
-Every block `MockChain` hands out passes these. A construction that would break one
-panics with a message naming the rule. The labels appear in test docs across the
-workspace.
+Every block `MockChain` hands out passes these; a construction that would break one panics
+naming the rule.
 
 | | Invariant |
 |---|---|
 | M1 | hash = SHA-256d of `encode_header`; genesis pinned byte for byte |
-| M2 | `prev_hash` = parent's hash, height = parent + 1, time after the parent's median time past (default time = parent + target spacing: 150 s pre-Blossom, 75 s, 25 s from NU7) |
+| M2 | `prev_hash` = parent's hash, height = parent + 1, time after the parent's median time past (default time = parent + target spacing) |
 | M3 | merkle root = the minted txids'; txids distinct on the branch |
 | M4 | exactly one coinbase, in slot 0, spending nothing and stating no fee |
 | M5 | `Work::Limit` = every nBits the regtest limit; `outweigh()` = best right after its first block, by the least work that wins |
@@ -257,14 +194,13 @@ workspace.
 | M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
 
 M1–M7: `src/testing/chain.rs` (minting in `mint.rs`, the transaction rules in `ledger.rs`),
-tested in `chain/tests.rs`. `encode_header` / `header_hash` = the consensus header bytes and
-their SHA-256d (version 4, a zero 36-byte regtest solution, a mint counter as each nonce),
-pinned against five mainnet headers in the decode tests.
+tested in `chain/tests.rs`; `encode_header` is pinned against five mainnet headers in the decode
+tests.
 
 ## Testing: `MockValidator`
 
-One simulated zebrad over a `MockChain`, answering zebrad's JSON-RPC as bytes. A test reaches
-it through Zaino's own client, so every test above it runs the production request builder,
+One simulated zebrad over a `MockChain`, answering zebrad's JSON-RPC as bytes. A test reaches it
+through Zaino's own client, so every test above it runs the production request builder,
 envelope, batching, parsers and error classification:
 
 ```rust,ignore
@@ -290,28 +226,20 @@ validator.tamper(h(80), |header| header.time = early); // a header the builder r
 assert_eq!(validator.calls("getblockheader"), 12);   // each batch item counted
 ```
 
-- **One dispatch table** (`METHODS` in `validator.rs`): each method a plain handler, params in,
-  zebrad's result or `(code, message)` out. A name it lacks (or `lacks`) answers `-32601`.
-  Scripting names are checked against it: a typo panics.
-- **Faults look like the network.** Latency delays a whole request (a batch waits for its
-  slowest method); `reachable` / `down` refuse it with HTTP 503 before anything is answered;
-  `-1` / `-5` / `-8` / `-25` / `-32602` are zebrad's own codes.
-- Answers from its best chain only, nothing above its tip. Its mempool is its own view of the
-  chain's: entries it `hear`s plus sends it accepts, each admitted in order on its tip by the
-  chain's own `Ledger` and listed at the fee its bytes leave there. `hear` panics on a txid
-  outside `chain.mempool()` or refused on its tip; `follow` re-admits on the new tip.
-- **Lies are byte edits** on what `getblock` serves: a flipped nonce, an appended or repeated
-  transaction, a coinbase claiming the next height (a v5 coinbase's txid skips `scriptSig`, so
-  `WrongHeight` keeps a valid merkle root). Each fails the NFS body check by its rule.
+- **One dispatch table** (`METHODS` in `validator.rs`): each method a plain handler. A name it
+  lacks (or `lacks`) answers `-32601`; scripting names are checked against it, so a typo panics.
+- **Faults look like the network.** Latency delays a whole request (a batch waits for its slowest
+  method); `reachable` / `down` refuse it with HTTP 503; error codes are zebrad's own.
+- It answers from its best chain only. Its mempool is entries it `hear`s plus sends it accepts,
+  each admitted on its tip by the chain's own `Ledger`; `hear` panics on a txid outside
+  `chain.mempool()` or refused on its tip.
+- **Lies are byte edits** on what `getblock` serves; each fails the NFS body check by its rule.
 - The seam is `RpcClient`'s wire: HTTP in production, an in-process server under `testing` (no
-  socket, so a paused clock stays deterministic). Status and body cap over real HTTP
-  are `rpc/client.rs`'s own tests.
+  socket, so a paused clock stays deterministic).
 
-`testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`
-(419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000). `block(height)` = its consensus
-bytes; `transactions(height)` = each of its transactions as its own consensus bytes, for
-tests that need real transactions (every pool, every version).
+`testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`, as whole blocks
+(`block(height)`) or each transaction's own bytes (`transactions(height)`), for tests that need
+real transactions of every pool and version.
 
-A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
-bare feature gate that nothing enables compiles nothing, and its tests silently
-never run.
+A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a bare feature gate
+that nothing enables compiles nothing, and its tests silently never run.

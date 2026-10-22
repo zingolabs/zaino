@@ -2,8 +2,10 @@
 
 One scheduler for every request Zaino sends to its trusted validators and to peers
 ([architecture §9](../../docs/architecture.md#9-talking-to-validators-and-peers)): one member
-table, per member a permit for its poll and three lanes (control, interactive, bulk) each with a
-reserved permit, one hedge / failover / blame policy, and the poll loop of every trusted validator.
+table, one hedge / failover / blame policy, and the poll loop of every trusted validator. Per
+member, one permit is the poll's alone (nothing delays tip following); then three lanes, control
+(submit, headers), interactive (tip blocks, lookups, mempool bytes) and bulk (bulk blocks), each
+with one reserved permit; the rest is shared.
 
 Built as a pure core (`TrafficCore::step(input, now) -> Vec<Output>`, time as input) plus one
 driver. No `tower::Service`: every answer must name its sender (blame) and every hedge needs
@@ -109,7 +111,7 @@ let checked = loop {
   the right answer to a lying validator). Counted in
   `zaino_traffic_misanswers_total{endpoint,class}` (`endpoint` = its address, `peers` for the
   peer set).
-- Absent is never blame: a lagging validator lacks a fresh block. A header from the future (H7)
+- Absent is never blame: a lagging validator lacks a fresh block. A header from the future
   or an orphan run is not a misanswer either.
 
 ## Polling and observations

@@ -94,17 +94,10 @@ manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.1.0/manifest.json"
 connections = 8   # total across every archive, at most 16
 ```
 
-The manifest lists one archive per index, all from one seed at one `height`. Each archive is a
-zstd tar of that index directory's contents (no top-level directory); `archive` resolves against
-the manifest URL, `installed_bytes` = its unpacked size:
-
-```json
-{"network": "mainnet", "height": 3501802,
- "indexes": {
-   "compact_block": {"archive": "compact_block.tar.zst", "sha256": "…",
-                     "archive_bytes": 31000000000, "installed_bytes": 74000000000},
-   "utxo_set": {…}, "block_hash": {…}, "tree_state": {…}, "transparent_address": {…}}}
-```
+The manifest, `{"network", "height", "indexes": {<index>: {"archive", "sha256", "archive_bytes",
+"installed_bytes"}}}`, lists one archive per index, all from one seed at one `height`. Each
+archive is a zstd tar of that index directory's contents (no top-level directory); `archive`
+resolves against the manifest URL, `installed_bytes` = its unpacked size.
 
 - Only an enabled index whose directory is missing or empty is filled; one holding data is never
   touched. With none empty nothing is downloaded. An empty index the manifest has no archive for
@@ -167,22 +160,11 @@ process start (before an index-snapshot bootstrap or boot), so they answer `prov
 tailnet name.
 
 ```json
-{
-  "state": "serving",
-  "detail": { "start": 1790000400, "mbps": 12.5 },
-  "chain": {
-    "network": "mainnet",
-    "tip": { "height": 3515406, "hash": "0000…" },
-    "served": 3515400,
-    "validators": { "trusted": 2, "answering": 1 },
-    "alarms": []
-  },
-  "build": { "version": "0.11.0-alpha.4" },
-  "indexes": {
-    "compact_block": ["GetBlock", "GetBlockRange", "GetBlockRangeNullifiers"],
-    "utxo_set": []
-  }
-}
+{"state": "serving", "detail": {"start": 1790000400, "mbps": 12.5},
+ "chain": {"network": "mainnet", "tip": {"height": 3515406, "hash": "0000…"}, "served": 3515400,
+           "validators": {"trusted": 2, "answering": 1}, "alarms": []},
+ "build": {"version": "0.11.0-alpha.4"},
+ "indexes": {"compact_block": ["GetBlock", "GetBlockRange", "GetBlockRangeNullifiers"], "utxo_set": []}}
 ```
 
 - `tip` = the verified best block, `served` = the height RPCs answer at (`null` before boot, as
