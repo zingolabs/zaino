@@ -63,8 +63,6 @@ bytes.workspace = true
 zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
-zcash_transparent.workspace = true
-zaino-internal-txid-location.workspace = true
 zaino-index-tree-state.workspace = true
 
 [dev-dependencies]

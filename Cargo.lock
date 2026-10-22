@@ -5439,7 +5439,6 @@ dependencies = [
  "zaino-header-chain",
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
- "zaino-internal-txid-location",
  "zaino-nfs",
  "zaino-peers",
  "zaino-persistence",
@@ -5449,7 +5448,6 @@ dependencies = [
  "zaino-sync",
  "zaino-traffic",
  "zcash_protocol",
- "zcash_transparent",
  "zstd",
 ]
 
