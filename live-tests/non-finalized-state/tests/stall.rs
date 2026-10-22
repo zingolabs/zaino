@@ -51,7 +51,11 @@ async fn stalled_through_a_reorg_past_the_window_realigns_without_finalizing_orp
     for (block, height) in served.iter().zip(1u32..) {
         let truth = vrpc.call_value("getblockhash", json!([height])).await?;
         let hash = BlockHash::from_wire(&block.hash).context("served hash is 32 bytes")?;
-        assert_eq!(Some(hash.to_string().as_str()), truth.as_str(), "block at {height}");
+        assert_eq!(
+            Some(hash.to_string().as_str()),
+            truth.as_str(),
+            "{height} hash: zaino vs zebrad"
+        );
     }
     for (height, hash) in &reorg.orphaned {
         let code = indexer.get_block_by_hash(*hash).await.err().and_then(|e| e.grpc_code());

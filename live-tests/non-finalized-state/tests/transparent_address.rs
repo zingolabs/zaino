@@ -47,7 +47,7 @@ async fn address_index_moves_orphaned_coinbase_to_the_winning_miner() -> Result<
         let who = json!([{ "addresses": [address] }]);
         let balance = i64::from(indexer.get_taddress_balance(vec![address.to_owned()]).await?);
         let truth = vrpc.call_value("getaddressbalance", who.clone()).await?;
-        assert_eq!(Some(balance), truth["balance"].as_i64(), "{address} balance vs zebrad");
+        assert_eq!(Some(balance), truth["balance"].as_i64(), "{address} balance: zaino vs zebrad");
 
         let mut utxos: Vec<(String, u32, i64, u64)> = indexer
             .get_address_utxos(vec![address.to_owned()], 0u32.into(), 0)
@@ -80,25 +80,39 @@ async fn address_index_moves_orphaned_coinbase_to_the_winning_miner() -> Result<
             .collect();
         utxos.sort();
         utxo_truth.sort();
-        assert_eq!(utxos, utxo_truth, "{address} UTXOs (txid, index, value, height) vs zebrad");
+        assert_eq!(
+            utxos, utxo_truth,
+            "{address} UTXOs (txid, index, value, height): zaino vs zebrad"
+        );
 
         let range = json!([{ "addresses": [address], "start": 1, "end": tip }]);
-        let txids = vrpc.call_value("getaddresstxids", range).await?;
-        let mut tx_truth = Vec::new();
-        for txid in txids.as_array().context("getaddresstxids returns an array")? {
-            let tx = vrpc.call_value("getrawtransaction", json!([txid, 1])).await?;
-            let hex = tx["hex"].as_str().unwrap_or_default().to_owned();
-            tx_truth.push((hex, tx["height"].as_u64().unwrap_or(u64::MAX)));
+        let listed = vrpc.call_value("getaddresstxids", range).await?;
+        let mut zebrad_txs: Vec<(String, String, u64)> = Vec::new();
+        for entry in listed.as_array().with_context(|| format!("getaddresstxids: {listed}"))? {
+            let tx = vrpc.call_value("getrawtransaction", json!([entry, 1])).await?;
+            let raw = tx["hex"].as_str().unwrap_or_default().to_owned();
+            let id = entry.as_str().unwrap_or_default().to_owned();
+            zebrad_txs.push((raw, id, tx["height"].as_u64().unwrap_or(u64::MAX)));
         }
+        // zaino's bytes → zebrad's txid for the same bytes, else the byte length
         let mut served: Vec<(String, u64)> = indexer
             .get_taddress_txids(address.to_owned(), 1u32.into(), tip.into())
             .await?
-            .into_iter()
-            .map(|tx| (hex::encode(&tx.data), tx.height))
+            .iter()
+            .map(|tx| {
+                let raw = hex::encode(&tx.data);
+                let id = zebrad_txs.iter().find(|(r, ..)| *r == raw).map(|(_, id, _)| id.clone());
+                (
+                    id.unwrap_or_else(|| format!("<{} bytes, not zebrad's>", tx.data.len())),
+                    tx.height,
+                )
+            })
             .collect();
+        let mut tx_truth: Vec<(String, u64)> =
+            zebrad_txs.into_iter().map(|(_, id, height)| (id, height)).collect();
         served.sort();
         tx_truth.sort();
-        assert_eq!(served, tx_truth, "{address} txids (raw hex, height) in [1, {tip}] vs zebrad");
+        assert_eq!(served, tx_truth, "{address} txs (txid, height) in [1, {tip}]: zaino vs zebrad");
 
         let orphaned: i64 = utxos_before
             .iter()

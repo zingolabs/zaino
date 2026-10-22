@@ -45,10 +45,15 @@ async fn reorg_storm_during_catch_up_converges_on_the_validators_chain() -> Resu
     for (block, height) in served.iter().zip(1u32..) {
         let truth = vrpc.call_value("getblockhash", json!([height])).await?;
         let hash = BlockHash::from_wire(&block.hash).context("served hash is 32 bytes")?;
-        assert_eq!(Some(hash.to_string().as_str()), truth.as_str(), "block at {height}");
+        assert_eq!(
+            Some(hash.to_string().as_str()),
+            truth.as_str(),
+            "{height} hash: zaino vs zebrad"
+        );
     }
     for pair in served.windows(2) {
-        assert_eq!(pair[1].prev_hash, pair[0].hash, "{} unlinked", pair[1].height);
+        let (link, parent) = (hex::encode(&pair[1].prev_hash), hex::encode(&pair[0].hash));
+        assert_eq!(link, parent, "{} prev_hash vs {}'s hash", pair[1].height, pair[0].height);
     }
 
     let empty = |tree: &str| if tree.is_empty() { "000000".to_owned() } else { tree.to_owned() };
@@ -70,7 +75,10 @@ async fn reorg_storm_during_catch_up_converges_on_the_validators_chain() -> Resu
             final_state("orchard"),
             final_state("ironwood"),
         ];
-        assert_eq!(served, truth, "[hash, sapling, orchard, ironwood] at {height}");
+        assert_eq!(
+            served, truth,
+            "[hash, sapling, orchard, ironwood] at {height}: zaino vs zebrad"
+        );
     }
     for index in ZainoIndex::ALL {
         assert_eq!(indexer.synced(index).await?, Some(true), "{index:?} serving after the storm");

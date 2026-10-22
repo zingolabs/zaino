@@ -28,7 +28,7 @@ const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 async fn reorg_across_nu6_3_activation_matches_the_validator(
     #[case] fork_parent: u32,
 ) -> Result<()> {
-    let heights = ActivationHeights::builder()
+    let nu6_3_mid_chain = ActivationHeights::builder()
         .set_overwinter(Some(1))
         .set_sapling(Some(1))
         .set_blossom(Some(1))
@@ -40,7 +40,7 @@ async fn reorg_across_nu6_3_activation_matches_the_validator(
         .set_nu6_2(Some(2))
         .set_nu6_3(Some(NU6_3))
         .build();
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_mid_chain);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer =
         env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
@@ -63,10 +63,15 @@ async fn reorg_across_nu6_3_activation_matches_the_validator(
     for (block, height) in served.iter().zip(1u32..) {
         let truth = vrpc.call_value("getblockhash", json!([height])).await?;
         let hash = BlockHash::from_wire(&block.hash).context("served hash is 32 bytes")?;
-        assert_eq!(Some(hash.to_string().as_str()), truth.as_str(), "block at {height}");
+        assert_eq!(
+            Some(hash.to_string().as_str()),
+            truth.as_str(),
+            "{height} hash: zaino vs zebrad"
+        );
     }
     for pair in served.windows(2) {
-        assert_eq!(pair[1].prev_hash, pair[0].hash, "{} unlinked", pair[1].height);
+        let (link, parent) = (hex::encode(&pair[1].prev_hash), hex::encode(&pair[0].hash));
+        assert_eq!(link, parent, "{} prev_hash vs {}'s hash", pair[1].height, pair[0].height);
     }
 
     let empty = |tree: &str| if tree.is_empty() { "000000".to_owned() } else { tree.to_owned() };
@@ -88,7 +93,10 @@ async fn reorg_across_nu6_3_activation_matches_the_validator(
             final_state("orchard"),
             final_state("ironwood"),
         ];
-        assert_eq!(served, truth, "[hash, sapling, orchard, ironwood] at {height}");
+        assert_eq!(
+            served, truth,
+            "[hash, sapling, orchard, ironwood] at {height}: zaino vs zebrad"
+        );
     }
     let latest = indexer.get_latest_tree_state().await?;
     let parent = indexer.get_tree_state(fork_parent.into()).await?;
@@ -101,6 +109,7 @@ async fn reorg_across_nu6_3_activation_matches_the_validator(
 
     let chain = vrpc.call_value("getblockchaininfo", json!([])).await?;
     let branch = chain["consensus"]["chaintip"].as_str().unwrap_or_default();
-    assert_eq!(indexer.indexer_info().await?.consensus_branch_id, branch, "branch id at {tip}");
+    let served = indexer.indexer_info().await?.consensus_branch_id;
+    assert_eq!(served, branch, "consensus branch id at {tip}: zaino vs zebrad");
     Ok(())
 }

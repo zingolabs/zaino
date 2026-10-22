@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rstest::rstest;
 use ztest::prelude::*;
 
@@ -49,7 +49,7 @@ async fn mempool_stream_ends_when_a_reorg_moves_the_tip(
     let tip = u32::from(reorg.tip.0);
     let ended =
         ended.map_err(|_| anyhow::anyhow!("stream still open {CLOSE:?} after tip → {tip}"))?;
-    let drained = ended?;
+    let drained = ended.context("mempool-stream task")?;
     assert!(drained.is_ok(), "stream ended cleanly, not with an error: {drained:?}");
     Ok(())
 }

@@ -6,12 +6,14 @@
 use std::time::Duration;
 
 use anyhow::{ensure, Result};
+use pretty_assertions::assert_eq;
 use ztest::backends::zainod::family;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
 const CONVERGE: Duration = Duration::from_secs(180);
 const SETTLE: Duration = Duration::from_secs(60);
+const SETTLE_POLL: Duration = Duration::from_millis(250);
 const SCRAPE: Duration = Duration::from_secs(10);
 const DEPTH: u32 = 10;
 const CHAIN: u32 = 3 * DEPTH;
@@ -76,22 +78,25 @@ async fn flip_flopping_between_two_branches_serves_each_byte_identically() -> Re
                     started.elapsed() < SETTLE,
                     "round {round}: zebrad never settled on {branch}"
                 );
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(SETTLE_POLL).await;
             }
             indexer.wait_for_tip(want, CONVERGE).await?;
             reorgs += 1;
 
             let served =
                 indexer.get_block_range_with_pools(1u32.into(), want.0, ALL_POOLS.to_vec()).await?;
-            assert!(
-                served == *blocks,
-                "round {round}: {branch} blocks byte-identical to first visit"
-            );
-            let mut served_trees = Vec::new();
-            for height in fork_parent..=u32::from(want.0) {
-                served_trees.push(indexer.get_tree_state(height.into()).await?);
+            assert_eq!(served.len(), blocks.len(), "round {round}: {branch} blocks served");
+            for (now, first) in served.iter().zip(blocks) {
+                let height = first.height;
+                assert_eq!(now, first, "round {round}: {branch} block {height} vs first visit");
             }
-            assert_eq!(&served_trees, trees, "round {round}: {branch} tree states");
+            for (height, first) in (fork_parent..=u32::from(want.0)).zip(trees) {
+                let now = indexer.get_tree_state(height.into()).await?;
+                assert_eq!(
+                    &now, first,
+                    "round {round}: {branch} tree state {height} vs first visit"
+                );
+            }
             for hash in dead {
                 let code = indexer.get_block_by_hash(*hash).await.err().and_then(|e| e.grpc_code());
                 assert_eq!(code, Some(tonic::Code::NotFound), "round {round} on {branch}: {hash}");

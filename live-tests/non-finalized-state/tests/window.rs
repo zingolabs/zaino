@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use pretty_assertions::assert_eq;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
@@ -16,6 +17,8 @@ const CONVERGE: Duration = Duration::from_secs(180);
 /// Observation span after a fatal reorg (covers kubelet's first 10 s crash backoff twice)
 const HALT_WINDOW: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_secs(1);
+/// Durable-extent sampler period (dip shorter than this = unseen)
+const SAMPLE_PERIOD: Duration = Duration::from_millis(200);
 const DEPTH: u32 = 10;
 const CHAIN: u32 = 3 * DEPTH;
 /// `PoolType` wire enum: transparent, sapling, orchard, ironwood
@@ -48,7 +51,7 @@ async fn deepest_legal_reorg_never_rewrites_durable_data() -> Result<()> {
                     row.push(indexer.finalized_height(index).await.ok().flatten());
                 }
                 samples.push(row);
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(SAMPLE_PERIOD).await;
             }
             samples
         })
@@ -60,7 +63,8 @@ async fn deepest_legal_reorg_never_rewrites_durable_data() -> Result<()> {
     let samples = sampler.await?;
     let fork_parent = u32::from(reorg.fork_parent.0);
 
-    assert!(samples.len() > 1, "durable extents sampled through the reorg");
+    let sampled = samples.len();
+    assert!(sampled > 1, "premise: durable extents sampled through the reorg, got {sampled}");
     for (i, index) in ZainoIndex::ALL.iter().enumerate() {
         let trace: Vec<u32> = samples.iter().filter_map(|row| row[i]).collect();
         let regressed = trace.windows(2).find(|pair| pair[1] < pair[0]);
@@ -76,16 +80,19 @@ async fn deepest_legal_reorg_never_rewrites_durable_data() -> Result<()> {
     let common = durable.min(fork_parent as usize);
     let served =
         indexer.get_block_range_with_pools(1u32.into(), reorg.tip.0, ALL_POOLS.to_vec()).await?;
-    assert!(common > 0, "fixture leaves a durable band below the window");
-    assert!(
-        served[..common] == old_chain[..common],
-        "durable blocks [1, {common}] byte-identical across the reorg",
-    );
-    let replaced: Vec<_> = served[fork_parent as usize..].iter().map(|b| b.hash.clone()).collect();
-    let orphaned: Vec<_> =
-        old_chain[fork_parent as usize..].iter().map(|b| b.hash.clone()).collect();
+    assert!(common > 0, "premise: durable band below the window, durable {durable}");
+    for (after, before) in served[..common].iter().zip(&old_chain[..common]) {
+        let height = before.height;
+        assert_eq!(after, before, "durable block {height}: after vs before the reorg");
+    }
+    let orphaned: Vec<_> = old_chain[fork_parent as usize..].iter().map(|b| &b.hash).collect();
     assert_eq!(orphaned.len(), DEPTH as usize, "the whole window orphaned");
-    assert!(replaced.iter().all(|h| !orphaned.contains(h)), "every window block replaced");
+    let survivors: Vec<u64> = served[fork_parent as usize..]
+        .iter()
+        .filter(|block| orphaned.contains(&&block.hash))
+        .map(|block| block.height)
+        .collect();
+    assert_eq!(survivors, Vec::<u64>::new(), "window heights still serving a pre-reorg block");
     Ok(())
 }
 

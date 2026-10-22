@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use pretty_assertions::assert_eq;
 use rstest::rstest;
 use serde_json::json;
 use ztest::backends::zainod::family;
@@ -63,13 +64,19 @@ async fn every_index_serves_the_validators_chain_after_a_reorg(
         let truth = vrpc.call_value("getblockhash", json!([height])).await?;
         let hash = BlockHash::from_wire(&block.hash).context("served hash is 32 bytes")?;
         assert_eq!(block.height, u64::from(height), "range order (fork {fork})");
-        assert_eq!(Some(hash.to_string().as_str()), truth.as_str(), "{height} (fork {fork})");
+        let hash = Some(hash.to_string());
+        assert_eq!(hash.as_deref(), truth.as_str(), "{height} hash: zaino vs zebrad (fork {fork})");
     }
     for pair in served.windows(2) {
-        assert_eq!(pair[1].prev_hash, pair[0].hash, "{} unlinked (fork {fork})", pair[1].height);
+        let (link, parent) = (hex::encode(&pair[1].prev_hash), hex::encode(&pair[0].hash));
+        let (height, below) = (pair[1].height, pair[0].height);
+        assert_eq!(link, parent, "{height} prev_hash vs {below}'s hash (fork {fork})");
     }
     let below = fork_parent as usize;
-    assert_eq!(served[..below], old_branch[..below], "blocks below fork {fork} byte-identical");
+    for (after, before) in served[..below].iter().zip(&old_branch[..below]) {
+        let height = before.height;
+        assert_eq!(after, before, "block {height} below fork {fork}: after vs before the reorg");
+    }
 
     for (height, hash) in &reorg.orphaned {
         let refused = indexer.get_block_by_hash(*hash).await.err().map(|e| e.grpc_code());
@@ -107,7 +114,10 @@ async fn every_index_serves_the_validators_chain_after_a_reorg(
             final_state("orchard"),
             final_state("ironwood"),
         ];
-        assert_eq!(served, truth, "[hash, time, sapling, orchard, ironwood] at {height}");
+        assert_eq!(
+            served, truth,
+            "[hash, time, sapling, orchard, ironwood] at {height}: zaino vs zebrad"
+        );
     }
     let latest = indexer.get_latest_tree_state().await?;
     let parent_trees = indexer.get_tree_state(fork_parent.into()).await?;

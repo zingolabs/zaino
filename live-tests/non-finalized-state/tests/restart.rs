@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use ztest::backends::zainod::family;
 use ztest::prelude::*;
@@ -60,12 +61,19 @@ async fn restart_after_a_reorg_serves_identically() -> Result<()> {
     for height in 1..=tip {
         replayed_trees.push(indexer.get_tree_state(height.into()).await?);
     }
-    assert!(replayed_blocks == lived_blocks, "blocks [1, {tip}] identical after {restart:?}");
-    assert_eq!(replayed_trees, lived_trees, "tree states [1, {tip}] after {restart:?}");
+    assert_eq!(replayed_blocks.len(), lived_blocks.len(), "blocks in [1, {tip}] after {restart:?}");
+    for (replayed, lived) in replayed_blocks.iter().zip(&lived_blocks) {
+        let height = lived.height;
+        assert_eq!(replayed, lived, "block {height}: replayed vs lived through the reorg");
+    }
+    for (replayed, lived) in replayed_trees.iter().zip(&lived_trees) {
+        let height = lived.height;
+        assert_eq!(replayed, lived, "tree state {height}: replayed vs lived through the reorg");
+    }
     assert_eq!(
         indexer.finalized_height(ZainoIndex::CompactBlock).await?,
         lived_durable,
-        "durable extent reopened as committed",
+        "compact-block durable height: after restart vs before",
     );
     for (_, hash) in &reorg.orphaned {
         let code = indexer.get_block_by_hash(*hash).await.err().and_then(|e| e.grpc_code());
@@ -102,14 +110,19 @@ async fn reorg_while_down_is_followed_on_restart() -> Result<()> {
     for (block, height) in served.iter().zip(1u32..) {
         let truth = vrpc.call_value("getblockhash", json!([height])).await?;
         let hash = BlockHash::from_wire(&block.hash).context("served hash is 32 bytes")?;
-        assert_eq!(Some(hash.to_string().as_str()), truth.as_str(), "block at {height}");
+        assert_eq!(
+            Some(hash.to_string().as_str()),
+            truth.as_str(),
+            "{height} hash: zaino vs zebrad"
+        );
     }
     let empty = |tree: &str| if tree.is_empty() { "000000".to_owned() } else { tree.to_owned() };
     for height in fork_parent..=tip {
         let zaino = indexer.get_tree_state(height.into()).await?;
         let zebra = vrpc.call_value("z_gettreestate", json!([height.to_string()])).await?;
         let truth = zebra["ironwood"]["commitments"]["finalState"].as_str().unwrap_or_default();
-        assert_eq!(empty(&zaino.ironwood_tree), empty(truth), "ironwood tree at {height}");
+        let served = empty(&zaino.ironwood_tree);
+        assert_eq!(served, empty(truth), "ironwood tree at {height}: zaino vs zebrad");
     }
     for (_, hash) in &reorg.orphaned {
         let code = indexer.get_block_by_hash(*hash).await.err().and_then(|e| e.grpc_code());
