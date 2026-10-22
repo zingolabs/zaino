@@ -1,5 +1,8 @@
 //! Zaino's peer set against a scripted zebra-network peer on loopback (real handshakes, real
 //! codec): no DNS, no internet
+//!
+//! - multi_thread on every test: zebra-network's codec parses blocks and txs in `block_in_place`
+//! - real clock (zebra's own timers and sockets), every wait bounded by `within`
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -20,10 +23,10 @@ use zebra_chain::transaction::UnminedTx;
 use zebra_network::types::PeerServices;
 use zebra_network::{BoxError, InventoryResponse, Request, Response};
 
-use zaino_source::testing::raw_transaction;
+use zaino_source::testing::{raw_transaction, within};
 
 use crate::wire;
-use crate::{PeerConfig, PeerError, PeerNetwork, PushError, Supplied};
+use crate::{PeerConfig, PeerError, PeerNetwork, PushError};
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;
@@ -60,51 +63,39 @@ where
     (listen_addr, peers, book)
 }
 
-async fn until(what: &str, done: impl Fn() -> bool) {
-    for _ in 0..200 {
-        if done() {
-            return;
+/// Zaino's peer set seeded with `fake` alone, back once `fake` is live (handshaken)
+async fn zaino_peered_with(fake: SocketAddr) -> PeerNetwork {
+    let mut config = PeerConfig::new(NetworkType::Regtest);
+    config.initial_peers = vec![fake.to_string()];
+    config.request_timeout = Duration::from_secs(10);
+    let peers = PeerNetwork::start(config).await;
+    within("the fake node handshaken (live)", async {
+        while !peers.live().contains(&fake) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("never {what}");
+    })
+    .await;
+    peers
 }
 
-/// Fake peer: mainnet blocks 1–3 + three mempool txs, lying when asked for tx A (answers B)
-///
-/// - Zaino admitted while advertising no services
-/// - headers + blocks byte-identical, unknown hash → `None`
-/// - its mempool asked by address = its three ids
-/// - peer not in the set = a failure, never another's listing
-/// - lie = an answer, not a failure (A = `None`, B never labelled A)
-/// - its block `inv` attributed to its address (a transaction `inv` = nothing), peer = live
-/// - round trips timed for answers only: unknown hash + stranger = failures, never latency
-// multi_thread required: zebra-network's codec parses blocks and txs in `block_in_place`
-#[tokio::test(flavor = "multi_thread")]
-async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_inv_is_attributed() {
-    // thread-local: `call` records on the test body's thread (the body awaits every request)
-    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
-    let rendered = recorder.handle();
-    let _recording = metrics::set_default_local_recorder(&recorder);
-
-    let blocks: Vec<Arc<Block>> = [
+fn mainnet_blocks_1_to_3() -> Vec<Arc<Block>> {
+    [
         zebra_test::vectors::BLOCK_MAINNET_1_BYTES.as_slice(),
         zebra_test::vectors::BLOCK_MAINNET_2_BYTES.as_slice(),
         zebra_test::vectors::BLOCK_MAINNET_3_BYTES.as_slice(),
     ]
     .map(|bytes| Arc::new(Block::zcash_deserialize(bytes).expect("mainnet vector")))
-    .to_vec();
-    let raws = [1, 2, 3].map(|lock_time| raw_transaction(lock_time, 0).1);
-    let txs: Vec<UnminedTx> =
-        raws.iter().map(|raw| wire::unmined_tx(raw).expect("real tx")).collect();
-    let (a, b, c) = (txs[0].clone(), txs[1].clone(), txs[2].clone());
+    .to_vec()
+}
 
-    let served = (blocks.clone(), txs.clone(), a.id, b.clone());
+#[tokio::test(flavor = "multi_thread")]
+async fn zaino_is_admitted_advertising_no_services_and_reads_headers_and_blocks_byte_identical() {
+    let blocks = mainnet_blocks_1_to_3();
+    let served = blocks.clone();
     let inbound = tower::service_fn(move |request: Request| {
-        let (blocks, txs, lie_for, lie) = served.clone();
         let response = match request {
             Request::FindHeaders { .. } => Response::BlockHeaders(
-                blocks
+                served
                     .iter()
                     .map(|block| CountedHeader { header: Arc::clone(&block.header) })
                     .collect(),
@@ -112,23 +103,9 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
             Request::BlocksByHash(hashes) => Response::Blocks(
                 hashes
                     .into_iter()
-                    .map(|hash| match blocks.iter().find(|block| block.hash() == hash) {
+                    .map(|hash| match served.iter().find(|block| block.hash() == hash) {
                         Some(block) => InventoryResponse::Available((Arc::clone(block), None)),
                         None => InventoryResponse::Missing(hash),
-                    })
-                    .collect(),
-            ),
-            Request::MempoolTransactionIds => {
-                Response::TransactionIds(txs.iter().map(|tx| tx.id).collect())
-            }
-            Request::TransactionsById(ids) => Response::Transactions(
-                ids.into_iter()
-                    .map(|id| match txs.iter().find(|tx| tx.id == id) {
-                        Some(_) if id == lie_for => {
-                            InventoryResponse::Available((lie.clone(), None))
-                        }
-                        Some(tx) => InventoryResponse::Available((tx.clone(), None)),
-                        None => InventoryResponse::Missing(id),
                     })
                     .collect(),
             ),
@@ -138,41 +115,172 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, mut fake_peers, fake_book) = fake_node(inbound).await;
+    let (fake, _, fake_book) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
 
-    let mut config = PeerConfig::new(NetworkType::Regtest);
-    config.initial_peers = vec![fake.to_string()];
-    config.request_timeout = Duration::from_secs(10);
-    let peers = PeerNetwork::start(config).await;
-    let mut announcements = peers.announcements();
-    until("handshaken (live)", || peers.live().contains(&fake)).await;
     let seen: Vec<_> = {
         let book = fake_book.lock().expect("fake address book");
         book.peers().filter(|meta| meta.is_inbound()).map(|meta| meta.services()).collect()
     };
-    assert_eq!(seen, [Some(PeerServices::empty())], "Zaino advertises no services, still admitted");
+    assert_eq!(seen, [Some(PeerServices::empty())], "the fake's record of Zaino: no services");
 
     let hash = |block: &Arc<Block>| wire::block_hash(block.hash());
-    let headers = peers.find_headers(&[hash(&blocks[0])]).await.expect("headers");
-    let expected: Vec<Vec<u8>> =
-        blocks.iter().map(|block| block.header.zcash_serialize_to_vec().expect("vec")).collect();
-    assert_eq!(headers, expected, "every header byte-identical, in order");
+    let headers = peers.find_headers(&[hash(&blocks[0])]).await.expect("headers answered");
+    assert_eq!(headers.len(), 3, "headers after block 1's hash: all three the fake serves");
+    for (height, (header, block)) in (1..).zip(headers.iter().zip(&blocks)) {
+        let expected = block.header.zcash_serialize_to_vec().expect("vec");
+        assert!(*header == expected, "header {height}: byte-identical to the mainnet vector");
+    }
 
-    let fetched = peers.block_by_hash(hash(&blocks[1])).await.expect("block");
-    let vector = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.to_vec();
-    let supplied = Supplied { bytes: vector, peer: Some(fake) };
-    assert_eq!(fetched, Some(supplied), "sender named");
-    let unknown = peers.block_by_hash(BlockHash([7; 32])).await.expect("answered");
-    assert_eq!(unknown, None, "not supplied");
+    let fetched = peers.block_by_hash(hash(&blocks[1])).await.expect("answered");
+    let fetched = fetched.expect("block 2 supplied");
+    let vector = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.as_slice();
+    assert_eq!(fetched.peer, Some(fake), "block 2's sender");
+    let (got, want) = (fetched.bytes.len(), vector.len());
+    assert!(fetched.bytes == *vector, "block 2 byte-identical: {got} bytes vs the vector's {want}");
+    let unknown = peers.block_by_hash(BlockHash([7; 32])).await;
+    assert!(matches!(unknown, Ok(None)), "a hash no peer holds = not supplied: {unknown:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peers_mempool_is_its_own_listing_and_a_peer_not_in_the_set_is_a_failure() {
+    let txs: Vec<UnminedTx> = [1, 2, 3]
+        .map(|lock_time| wire::unmined_tx(&raw_transaction(lock_time, 0).1).expect("real tx"))
+        .to_vec();
+    let listed_ids: Vec<_> = txs.iter().map(|tx| tx.id).collect();
+    let inbound = tower::service_fn(move |request: Request| {
+        let response = match request {
+            Request::MempoolTransactionIds => Response::TransactionIds(listed_ids.clone()),
+            Request::Peers => Response::Peers(Vec::new()),
+            _ => Response::Nil,
+        };
+        std::future::ready(Ok::<_, BoxError>(response))
+    });
+    let (fake, _, _) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
 
     let listed: HashSet<PeerTxId> =
         peers.mempool_of(fake).await.expect("its mempool").into_iter().collect();
     let ids: HashSet<PeerTxId> = txs.iter().map(|tx| wire::peer_tx_id(tx.id)).collect();
-    assert_eq!(listed, ids);
+    assert_eq!(listed, ids, "{fake}'s listing vs its three mempool ids");
     let stranger = SocketAddr::from(([127, 0, 0, 9], 1));
-    assert!(peers.mempool_of(stranger).await.is_err(), "no other peer answers for it");
+    let refused = peers.mempool_of(stranger).await;
+    assert!(
+        matches!(refused, Err(PeerError::Network(_))),
+        "{stranger} not in the set: a failure, never another peer's listing: {refused:?}"
+    );
+}
 
-    // zebra's local refusals (unknown hash → notfound, stranger → no ready peer) = failures only
+/// Fake answers B's bytes when asked for A
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lying_peers_answer_never_labels_the_asked_id_and_is_an_answer_not_a_failure() {
+    let raws = [1, 2, 3].map(|lock_time| raw_transaction(lock_time, 0).1);
+    let txs: Vec<UnminedTx> =
+        raws.iter().map(|raw| wire::unmined_tx(raw).expect("real tx")).collect();
+    let (a, b, c) = (txs[0].clone(), txs[1].clone(), txs[2].clone());
+    let served = (a.id, b, c.clone());
+    let inbound = tower::service_fn(move |request: Request| {
+        let (lie_for, lie, honest) = served.clone();
+        let response = match request {
+            Request::TransactionsById(ids) => Response::Transactions(
+                ids.into_iter()
+                    .map(|id| match id {
+                        _ if id == lie_for => InventoryResponse::Available((lie.clone(), None)),
+                        _ if id == honest.id => {
+                            InventoryResponse::Available((honest.clone(), None))
+                        }
+                        _ => InventoryResponse::Missing(id),
+                    })
+                    .collect(),
+            ),
+            Request::Peers => Response::Peers(Vec::new()),
+            _ => Response::Nil,
+        };
+        std::future::ready(Ok::<_, BoxError>(response))
+    });
+    let (fake, _, _) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
+
+    let (id_a, id_c) = (wire::peer_tx_id(a.id), wire::peer_tx_id(c.id));
+    let lied = peers.transactions_by_id(&[id_a]).await.expect("an answer, not a failure");
+    assert_eq!(lied, [(id_a, None)], "A asked, B's bytes sent: A unsupplied");
+    let honest = peers.transactions_by_id(&[id_c]).await.expect("an answer");
+    assert_eq!(honest, [(id_c, Some(raws[2].clone()))], "C asked, C's bytes sent");
+    // zebra ends the reply at the unsolicited B: C rides it only if it came first
+    let both = peers.transactions_by_id(&[id_a, id_c]).await.expect("an answer, not a failure");
+    assert_eq!(both[0], (id_a, None), "A and C asked together: A unsupplied");
+    let c_honest = both[1].1.as_ref().is_none_or(|raw| *raw == raws[2]);
+    assert!(c_honest, "A and C asked together: C = its own bytes or unsupplied: {both:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_block_inv_arrives_attributed_to_its_sender_and_a_transaction_inv_is_ignored() {
+    let block_2 = Arc::clone(&mainnet_blocks_1_to_3()[1]);
+    let inbound = tower::service_fn(|request: Request| {
+        let response = match request {
+            Request::Peers => Response::Peers(Vec::new()),
+            _ => Response::Nil,
+        };
+        std::future::ready(Ok::<_, BoxError>(response))
+    });
+    let (fake, mut fake_peers, _) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
+    let mut announcements = peers.announcements();
+
+    let tx = wire::unmined_tx(&raw_transaction(1, 0).1).expect("real tx");
+    let advertise = Request::AdvertiseTransactionIds([tx.id].into_iter().collect(), None);
+    fake_peers.ready().await.expect("ready").call(advertise).await.expect("tx inv sent");
+    let advertise = Request::AdvertiseBlock(block_2.hash(), None);
+    fake_peers.ready().await.expect("ready").call(advertise).await.expect("block inv sent");
+
+    let heard = within("the first announcement", announcements.recv()).await;
+    let block = Announced { peer: fake, hash: wire::block_hash(block_2.hash()) };
+    assert_eq!(heard, Ok(block), "first announced = block 2 from {fake} (tx inv skipped)");
+}
+
+/// - `call` records on the test body's thread (thread-local recorder, every request awaited here)
+/// - zebra's local refusals (unknown hash → notfound, stranger → no ready peer) never hit the wire
+#[tokio::test(flavor = "multi_thread")]
+async fn only_answered_requests_are_timed_and_zebras_local_refusals_count_as_failures() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recording = metrics::set_default_local_recorder(&recorder);
+    let blocks = mainnet_blocks_1_to_3();
+    let listed = wire::unmined_tx(&raw_transaction(1, 0).1).expect("real tx").id;
+    let served = blocks.clone();
+    let inbound = tower::service_fn(move |request: Request| {
+        let response = match request {
+            Request::FindHeaders { .. } => Response::BlockHeaders(
+                served
+                    .iter()
+                    .map(|block| CountedHeader { header: Arc::clone(&block.header) })
+                    .collect(),
+            ),
+            Request::BlocksByHash(hashes) => Response::Blocks(
+                hashes
+                    .into_iter()
+                    .map(|hash| match served.iter().find(|block| block.hash() == hash) {
+                        Some(block) => InventoryResponse::Available((Arc::clone(block), None)),
+                        None => InventoryResponse::Missing(hash),
+                    })
+                    .collect(),
+            ),
+            Request::MempoolTransactionIds => Response::TransactionIds(vec![listed]),
+            Request::Peers => Response::Peers(Vec::new()),
+            _ => Response::Nil,
+        };
+        std::future::ready(Ok::<_, BoxError>(response))
+    });
+    let (fake, _, _) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
+
+    let block_1 = wire::block_hash(blocks[0].hash());
+    peers.find_headers(&[block_1]).await.expect("answered");
+    peers.block_by_hash(block_1).await.expect("answered");
+    peers.block_by_hash(BlockHash([7; 32])).await.expect("answered: not supplied");
+    peers.mempool_of(fake).await.expect("answered");
+    peers.mempool_of(SocketAddr::from(([127, 0, 0, 9], 1))).await.expect_err("not in the set");
+
     let scrape = rendered.render();
     let missing: Vec<&str> = [
         r#"zaino_peers_request_duration_seconds_count{request="FindHeaders"} 1"#,
@@ -185,44 +293,13 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     .filter(|line| !scrape.lines().any(|scraped| scraped == *line))
     .collect();
     assert!(missing.is_empty(), "missing {missing:?} from:\n{scrape}");
-
-    let (id_a, id_c) = (wire::peer_tx_id(a.id), wire::peer_tx_id(c.id));
-    let lied = peers.transactions_by_id(&[id_a]).await.expect("an answer, not a failure");
-    assert_eq!(lied, [(id_a, None)], "B's bytes never labelled A");
-    let honest = peers.transactions_by_id(&[id_c]).await.expect("transactions");
-    assert_eq!(honest, [(id_c, Some(raws[2].clone()))]);
-    // together: zebra ends the reply at the unsolicited B, so C rides it only if it came first
-    let both = peers.transactions_by_id(&[id_a, id_c]).await.expect("an answer, not a failure");
-    assert_eq!(both[0], (id_a, None));
-    assert!(both[1].1.as_ref().is_none_or(|raw| *raw == raws[2]), "{both:?}");
-
-    // a transaction inv first: ignored, so the block inv is the first announcement
-    let advertised: HashSet<_> = [a.id, b.id].into_iter().collect();
-    let advertise = Request::AdvertiseTransactionIds(advertised, None);
-    fake_peers.ready().await.expect("ready").call(advertise).await.expect("inv sent");
-    let advertise = Request::AdvertiseBlock(blocks[1].hash(), None);
-    fake_peers.ready().await.expect("ready").call(advertise).await.expect("inv sent");
-    let heard = tokio::time::timeout(Duration::from_secs(10), announcements.recv())
-        .await
-        .expect("a block inv within 10 s")
-        .expect("announcement");
-    let block = Announced { peer: fake, hash: hash(&blocks[1]) };
-    assert_eq!(heard, block, "the block's hash, sender named");
 }
 
-/// - Push → lands at a peer the peer set is already connected to (an isolated second connection
-///   from our IP = dropped by zebra's one-per-IP limit), exactly the bytes, named by their txid
-/// - Malformed bytes never sent
-/// - No ready peer = a `Peers` failure, not a verdict
-/// - A push never timed (zebra's fan-out answers `Nil`, no peer replies), its timeout counted
-// multi_thread required: zebra-network's codec parses txs in `block_in_place`
+/// - isolated second connection from our IP = dropped by zebra's one-per-IP limit: the push must
+///   ride the peer set's existing one
+/// - malformed bytes first, then the good ones: the fake's record = the good ones alone
 #[tokio::test(flavor = "multi_thread")]
-async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
-    // thread-local: `call` records on the test body's thread (the body awaits every push)
-    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
-    let rendered = recorder.handle();
-    let _recording = metrics::set_default_local_recorder(&recorder);
-
+async fn a_push_reaches_a_connected_peer_byte_identical_and_malformed_bytes_never_leave() {
     let pushed: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
     let recorded = Arc::clone(&pushed);
     let inbound = tower::service_fn(move |request: Request| {
@@ -231,36 +308,47 @@ async fn a_push_rides_the_peer_sets_own_connection_with_the_exact_bytes() {
                 recorded.lock().expect("pushed").push(wire::transaction_bytes(&tx));
                 Response::Nil
             }
-            // zebra's `init` awaits one crawl of its seeds: a real peer answers `getaddr`
             Request::Peers => Response::Peers(Vec::new()),
             _ => Response::Nil,
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (entry, _, _) = fake_node(inbound).await;
-
-    let mut config = PeerConfig::new(NetworkType::Regtest);
-    config.initial_peers = vec![entry.to_string()];
-    config.request_timeout = Duration::from_secs(10);
-    let peers = PeerNetwork::start(config).await;
-    until("handshaken (live)", || peers.live().contains(&entry)).await;
-
-    let (expected, raw) = raw_transaction(42, 0);
-    let txid = peers.push(&raw).await.expect("pushed");
-    assert_eq!(txid, wire::peer_tx_id(wire::unmined_tx(&raw).expect("real tx").id).txid);
-    assert_eq!(txid, expected, "zcash_primitives' txid of the same bytes");
-    until("the push lands", || !pushed.lock().expect("pushed").is_empty()).await;
-    assert_eq!(*pushed.lock().expect("pushed"), std::slice::from_ref(&raw));
+    let (fake, _, _) = fake_node(inbound).await;
+    let peers = zaino_peered_with(fake).await;
+    let (expected_txid, raw) = raw_transaction(42, 0);
 
     let malformed = peers.push(&raw[..raw.len() - 1]).await;
-    assert!(matches!(malformed, Err(PushError::Wire(_))), "{malformed:?}");
+    let txid = peers.push(&raw).await.expect("pushed");
+
+    assert!(matches!(malformed, Err(PushError::Wire(_))), "truncated: refused: {malformed:?}");
+    assert_eq!(txid, expected_txid, "push's txid vs zcash_primitives' of the same bytes");
+    within("the push lands", async {
+        while pushed.lock().expect("pushed").is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let landed = pushed.lock().expect("pushed").clone();
+    assert!(landed == [raw.clone()], "{} pushes landed, want the good bytes once", landed.len());
+}
+
+/// - `call` records on the test body's thread (thread-local recorder, the push awaited here)
+/// - a push never timed: zebra's fan-out answers `Nil` itself, no peer replies
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_with_no_ready_peer_is_a_peers_timeout_counted_never_timed() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recording = metrics::set_default_local_recorder(&recorder);
     let mut alone = PeerConfig::new(NetworkType::Regtest);
     alone.request_timeout = Duration::from_secs(1);
-    let unpeered = PeerNetwork::start(alone).await.push(&raw).await;
-    assert!(matches!(unpeered, Err(PushError::Peers(PeerError::Timeout(_)))), "{unpeered:?}");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(pushed.lock().expect("pushed").len(), 1, "nothing else reached the peer");
+    let peers = PeerNetwork::start(alone).await;
 
+    let unpeered = peers.push(&raw_transaction(42, 0).1).await;
+
+    assert!(
+        matches!(unpeered, Err(PushError::Peers(PeerError::Timeout(_)))),
+        "no peer: a Peers timeout, never a verdict: {unpeered:?}"
+    );
     let scrape = rendered.render();
     let timeout =
         r#"zaino_peers_request_failures_total{request="PushTransaction",failure="timeout"} 1"#;

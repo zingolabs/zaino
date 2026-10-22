@@ -93,28 +93,41 @@ mod tests {
     #[test]
     fn real_blocks_and_their_transactions_round_trip_byte_identical() {
         let mut witnessed = 0;
-        for vector in [
-            zebra_test::vectors::BLOCK_MAINNET_1_BYTES.as_slice(),
-            zebra_test::vectors::BLOCK_MAINNET_1687107_BYTES.as_slice(),
+        for (height, vector) in [
+            (1, zebra_test::vectors::BLOCK_MAINNET_1_BYTES.as_slice()),
+            (1_687_107, zebra_test::vectors::BLOCK_MAINNET_1687107_BYTES.as_slice()),
         ] {
             let block = Block::zcash_deserialize(vector).expect("mainnet vector");
-            assert_eq!(block_bytes(&block), vector);
-            let header = CountedHeader { header: Arc::clone(&block.header) };
-            assert_eq!(header_bytes(&header), &vector[..header_bytes(&header).len()]);
-            for tx in &block.transactions {
+            let encoded = block_bytes(&block);
+            let at = encoded.iter().zip(vector).position(|(ours, theirs)| ours != theirs);
+            let lens = (encoded.len(), vector.len());
+            assert!(
+                encoded == vector,
+                "block {height}: first differing byte {at:?}, lens {lens:?}"
+            );
+            let header = header_bytes(&CountedHeader { header: Arc::clone(&block.header) });
+            let prefix = &vector[..header.len()];
+            assert!(header == prefix, "block {height}: header ≠ the block's leading bytes");
+            for (index, tx) in block.transactions.iter().enumerate() {
                 let raw = to_vec(tx.as_ref());
                 let unmined = unmined_tx(&raw).expect("a mined tx parses alone");
-                assert_eq!(transaction_bytes(&unmined), raw);
-                assert_eq!(unmined_tx_id(peer_tx_id(unmined.id)), unmined.id);
+                let case = format!("block {height} tx {index}");
+                assert!(transaction_bytes(&unmined) == raw, "{case}: re-encoded ≠ its bytes");
+                let id = unmined_tx_id(peer_tx_id(unmined.id));
+                assert_eq!(id, unmined.id, "{case}: id through PeerTxId and back");
                 witnessed += usize::from(unmined.id.auth_digest().is_some());
 
                 let mut padded = raw.clone();
                 padded.push(0);
-                assert!(matches!(unmined_tx(&padded), Err(WireError::Trailing(1))));
-                assert!(unmined_tx(&raw[..raw.len() - 1]).is_err(), "truncated");
+                let padded = unmined_tx(&padded);
+                let trailing = matches!(padded, Err(WireError::Trailing(1)));
+                assert!(trailing, "{case} + 1 byte: refused as trailing: {padded:?}");
+                let truncated = unmined_tx(&raw[..raw.len() - 1]);
+                let parse = matches!(truncated, Err(WireError::Parse(_)));
+                assert!(parse, "{case} − 1 byte: refused at parse: {truncated:?}");
             }
         }
-        assert!(witnessed > 0, "a v5 transaction exercised the witnessed id");
+        assert!(witnessed > 0, "a v5 transaction exercised the witnessed id: {witnessed}");
     }
 
     proptest! {
@@ -125,8 +138,9 @@ mod tests {
             auth_digest in proptest::option::of(any::<[u8; 32]>()),
         ) {
             let id = PeerTxId { txid: TxId::from_bytes(txid), auth_digest };
-            prop_assert_eq!(peer_tx_id(unmined_tx_id(id)), id);
-            prop_assert_eq!(unmined_tx_id(id).mined_id().0, txid);
+            prop_assert_eq!(peer_tx_id(unmined_tx_id(id)), id, "Zaino → zebra → Zaino");
+            let mined = unmined_tx_id(id).mined_id().0;
+            prop_assert_eq!(mined, txid, "zebra's mined id vs the txid bytes");
         }
     }
 }
