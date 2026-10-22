@@ -126,14 +126,20 @@ impl<F> Graph<F> {
         for node in self.nodes.values() {
             let header = node.block.header();
             let at = BlockRef { hash: header.hash, height: header.height };
-            assert_eq!(at, node.at, "N1: every node's block = its own header");
-            assert_eq!(header.prev_hash, node.parent, "N1: every node's block = its own header");
+            let node_at = node.at.height;
+            let message = "every node's block = its own header (N1): block (left) vs node (right)";
+            assert_eq!(at, node.at, "node at {node_at:?}: {message}");
+            assert_eq!(header.prev_hash, node.parent, "node at {node_at:?}: {message}");
             let body = node.block.check_body();
-            assert_eq!(body, Ok(()), "N1: every node's body = its header's merkle root");
-            let above = Some(node.at.height) > root.map(|root| root.height);
-            assert!(above, "N2: nodes only above the root");
+            let message = "every node's body = its header's merkle root (N1)";
+            assert_eq!(body, Ok(()), "node at {node_at:?}: {message}");
+            let root_height = root.map(|root| root.height);
+            let above = Some(node.at.height) > root_height;
+            let message = "nodes only above the root (N2)";
+            assert!(above, "node at {node_at:?}, root {root_height:?}: {message}");
             let held = self.holds_parent(root, node.parent, node.at.height);
-            assert!(held, "N2: every node folds on a held parent");
+            let (parent, message) = (node.parent, "every node folds on a held parent (N2)");
+            assert!(held, "node at {node_at:?}, parent {parent} gone: {message}");
             let held = chain.holds(node.at);
             assert!(held, "N8: every node on the best chain or a side branch it holds");
         }

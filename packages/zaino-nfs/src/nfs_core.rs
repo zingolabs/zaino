@@ -44,8 +44,16 @@ struct Shown {
 }
 
 /// Index positions (`Input::Durable` order), at most 32
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Indexes(u32);
+
+/// `Indexes[0, 2]` (positions, not the mask)
+impl std::fmt::Debug for Indexes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let positions = (0..32).filter(|position| self.contains(*position));
+        write!(f, "Indexes{:?}", positions.collect::<Vec<usize>>())
+    }
+}
 
 impl Indexes {
     pub(crate) fn one(position: usize) -> Self {
@@ -280,35 +288,65 @@ impl<F> NfsCore<F> {
     /// N1–N4 and the fetch bookkeeping (panics naming the invariant broken)
     #[cfg(test)]
     pub(crate) fn check(&self) {
+        let held = || {
+            let nodes: Vec<BlockHeight> = self.graph.nodes().map(|node| node.at.height).collect();
+            let ready: Vec<&BlockHeight> = self.ready.keys().collect();
+            let folding = self.folding.values().map(|(block, _)| block.header().height);
+            let folding: Vec<BlockHeight> = folding.collect();
+            let wanted: Vec<&BlockHeight> = self.wanted.keys().collect();
+            format!("nodes {nodes:?}, ready {ready:?}, folding {folding:?}, wanted {wanted:?}")
+        };
         let Some(chain) = &self.chain else {
             let empty = self.graph.is_empty() && self.ready.is_empty() && self.folding.is_empty();
             let empty = empty && self.wanted.is_empty();
-            assert!(empty && self.shown.is_none(), "nothing before a chain");
+            let shown = self.shown.as_ref().map(|shown| shown.tip.height);
+            assert!(
+                empty && shown.is_none(),
+                "nothing before a chain: {}, shown {shown:?}",
+                held()
+            );
             return;
         };
+        let (root, best) = (height(self.root()), chain.best().height);
         if !self.active(chain) {
             let idle = self.graph.is_empty() && self.ready.is_empty() && self.folding.is_empty();
-            assert!(idle && self.wanted.is_empty(), "N5: nothing folded outside the window");
+            assert!(
+                idle && self.wanted.is_empty(),
+                "nothing folded outside the window (N5): root {root:?}, best {best:?}, window {}: {}",
+                self.window,
+                held(),
+            );
         }
         self.graph.check(chain, self.root());
         let served = self.served(chain).map(|shown| shown.tip);
         let shown = self.shown.as_ref().map(|shown| shown.tip);
-        assert_eq!(shown, served, "N4: served tip = the deepest folded best block");
+        assert_eq!(
+            shown, served,
+            "published tip (left) = the deepest folded best block, else the root (right) (N4)"
+        );
         let next = self.next_root();
         for (height, block) in &self.ready {
             let at = BlockRef { hash: block.header().hash, height: *height };
-            assert!(*height >= next, "fetch: ready bodies above the root");
-            assert!(chain.on_best(at), "N1: every ready body is best");
-            assert!(!self.graph.contains(&at.hash), "fetch: a folded block is not ready");
-            assert!(!self.wanted.contains_key(height), "fetch: a ready body is not wanted");
+            let ready = || format!("ready body at {height:?} (root {root:?}, best {best:?})");
+            assert!(*height >= next, "{}: ready bodies above the root only (fetch)", ready());
+            assert!(chain.on_best(at), "{}: every ready body is best (N1)", ready());
+            let folded = self.graph.contains(&at.hash);
+            assert!(!folded, "{}: a folded block is not ready (fetch)", ready());
+            let wanted = self.wanted.contains_key(height);
+            assert!(!wanted, "{}: a ready body is not wanted (fetch)", ready());
         }
-        for hash in self.folding.keys() {
-            assert!(!self.graph.contains(hash), "fold: nothing folds twice");
+        for (block, _) in self.folding.values() {
+            let at = block.header().height;
+            let folded = self.graph.contains(&block.header().hash);
+            assert!(!folded, "folding at {at:?}, already a node: nothing folds twice (fold)");
         }
         for (height, hash) in &self.wanted {
-            assert!(*height >= next, "fetch: wants above the root");
-            assert_eq!(chain.hash_at(*height), Some(*hash), "N1: every want is best");
-            assert!(!self.graph.contains(hash), "fetch: a folded block is not wanted");
+            let wanted = || format!("want at {height:?} (root {root:?}, best {best:?})");
+            assert!(*height >= next, "{}: wants above the root only (fetch)", wanted());
+            let on_best = chain.hash_at(*height);
+            assert_eq!(on_best, Some(*hash), "{}: every want is best (N1): best (left)", wanted());
+            let folded = self.graph.contains(hash);
+            assert!(!folded, "{}: a folded block is not wanted (fetch)", wanted());
         }
     }
 }
