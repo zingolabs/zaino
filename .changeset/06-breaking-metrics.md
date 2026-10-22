@@ -33,8 +33,8 @@ Removed with no replacement: `zaino_db_*`, `zaino_migration_*`, `zaino_jsonrpc_*
 - **Validators:** `zaino_validator_rpc_*`, `zaino_traffic_misanswers_total`, and the chain
   view's `zaino_chainview_*` (tip holders, agreement, validator state and release, push streams,
   peers, finality pause, mempool, submissions).
-- **gRPC serving:** `zaino_grpc_*` per `{method}` (requests, first-message and total latency,
-  messages, bytes sent), and connection, admission, subscription and adaptive-limit gauges and
+- **gRPC serving:** `zaino_grpc_*` per `{method}` (requests, one-reply and first-message
+  latency, bytes sent), and connection, admission, subscription and adaptive-limit gauges and
   counters.
 - **Storage:** `zaino_store_commit_{seconds,bytes_total}{index}`, `zaino_lsm_*{index}`,
   `zaino_disk_{committed,cached}_bytes{index}`, `zaino_disk_bytes{index}` (sampled every 30 s).

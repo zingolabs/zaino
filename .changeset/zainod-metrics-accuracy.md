@@ -5,9 +5,8 @@ default: major
 # `zainod`: accurate latencies, a state gauge, high-level per-index and peer metrics
 
 - **gRPC:** `zaino_grpc_duration_seconds{method}` = one-reply RPCs' latency, `OK` answers only.
-  Server streams moved out: `zaino_grpc_stream_duration_seconds{method}` (lifetime, new) and
-  `zaino_grpc_first_message_seconds{method}` (latency, now streams only);
-  `zaino_grpc_stream_messages` streams only.
+  Server streams moved out to `zaino_grpc_first_message_seconds{method}` (latency, now streams
+  only).
 - **Validators:** `zaino_validator_rpc_duration_seconds` = attempts the validator answered (an
   error reply included). No answer (refused connection, timeout) = `failures_total` only.
 - **State:** `zaino_state{state}`, one-hot over `/readyz`'s six states.

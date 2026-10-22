@@ -107,10 +107,11 @@ name and its `method` metric label. A new RPC is:
    `Subscription` for a stream that idles between arrivals: own pool, never cut
    for silence, no latency recorded) and the index whose view its handler reads
    (`None` = reads none, so never disabled),
-3. its arm in `Routed::handle`, returning `Result<Response<Body>, Status>`
-   (built with `wire::unary_response`, `wire::streamed_response` or
-   `wire::streaming`, never by hand: `streaming` joins ready records into full
-   DATA frames).
+3. its arm in `Wired::handle`, which hands the handler its decoded request
+   message (`wire::decode`, or `wire::decode_each` for a client stream); the
+   handler returns `Result<Response<Body>, Status>` (built with
+   `wire::unary_response`, `wire::streamed_response` or `wire::streaming`, never
+   by hand: `streaming` joins ready records into full DATA frames).
 
 Both matches are exhaustive, so the compiler names the two arms a new variant
 still needs. The path is resolved to its `Method` once per request
@@ -146,8 +147,13 @@ Outermost first, per connection after the first three:
 
 ```text
 accept ─ total cap ─ PROXY header (trusted peers) ─ per-client cap ─ TLS ─ h2 / HTTP/1.1
-  ─ health (resolves the RPC) ─ metrics ─ admission ─ dispatch (grpc-timeout, silence) ─ handler
+  ─ health (resolves the RPC) ─ guard (metrics, admission, stall watch)
+  ─ dispatch (grpc-timeout, silence, request body) ─ handler
 ```
+
+The guard (`guard.rs`) wraps each response body once: the body owns its
+admission slot, its stall-watch ticket and its close-out metrics, so all three
+end together when hyper drops it.
 
 - **Health** (`with_health(Arc<dyn Health>)`): `GET /readyz` (`Health::readyz` → `200` / `503`)
   and `GET /status` (`Health::status`, always `200`) are answered on this listener over
@@ -294,9 +300,9 @@ for that one computation, then every later ask is answered inline.
 
 - Per connection: 64 KiB per-stream send buffer, 30 s keepalive ping (20 s
   timeout), rapid-reset limit of 128.
-- Metrics: `method` and `code` labels come from fixed tables (every
-  `CompactTxStreamer` method plus `unknown`); each series handle is resolved once
-  per process, never per request.
+- Metrics: `method` and `code` labels come from fixed sets (every
+  `CompactTxStreamer` method plus `unknown`; the 17 gRPC codes), so a misbehaving
+  client cannot grow the series count.
 
 ### Overload
 
@@ -317,43 +323,33 @@ thresholds live.
 tasks inherit it too), built from the same close-outs the metrics count:
 
 ```text
-INFO  … Grpc:  Serving    rps=42.1 conns=17
-WARN  … Grpc:  Serving    rps=14.7 conns=9 failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
-WARN  … Grpc:  High load  rps=412 conns=1,203/4,096 work=640/2,048
+INFO  … Grpc:  Serving    rps=42.13 conns=17
+WARN  … Grpc:  Serving    rps=14.7 conns=9 failed=2 refused=31 at_capacity=29 slow=3
 ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 ```
 
-- **Rate** = streams finished in the window, per second. **conns** = connections
-  held at the summary; **work** / **subs** (and **conns** as `used/max`) appear
-  only under `High load`. Latency and bytes out, by each `Method`'s `Reply` (the proto's
-  response side; a test holds every method to `service.proto`):
+- **rps** = streams finished in the window, per second. **conns** = connections
+  held at the summary. Per-method detail is the metrics', by each `Method`'s
+  `Reply` (the proto's response side; a test holds every method to `service.proto`):
   - one reply: `zaino.grpc.duration_seconds` (admission through trailers, `OK` answers only: a
     refusal is microseconds of no work, counted by `requests_total{code}`)
-  - a server stream: `zaino.grpc.first_message_seconds` (its latency),
-    `zaino.grpc.stream_duration_seconds` (its lifetime: how long the client kept it),
-    `zaino.grpc.stream_messages`
+  - a server stream: `zaino.grpc.first_message_seconds` (its latency)
   - both: `zaino.grpc.sent_bytes_total`, `zaino.grpc.requests_total{method, code}`
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
   nothing served yet, validator unreachable; `at_capacity` = the admission share);
-  everything else = the client's (bad argument, not found, cancelled), counted
-  per method at DEBUG only.
+  everything else = the client's (bad argument, not found, cancelled), left to
+  `requests_total{code}`.
 - The summary is WARN once the window holds a failure, a refusal, a request
-  slower than 1 s to its first message (`slow`, `slowest` = the method with the
-  most), a stalled connection closed (`stalled`) or a connection refused at a
-  cap (`conns_refused`); problem fields appear only when non-zero. Nothing
-  served and nothing held = no line.
-- While more than 25% of the work-stream, subscription or connection cap is held, the
-  summary is WARN `High load` instead, with each such cap as `used/max`.
+  slower than 1 s to its first message (`slow`), a stalled connection closed
+  (`stalled`) or a connection refused at a cap (`conns_refused`); problem fields
+  appear only when non-zero. Nothing served and nothing held = no line.
 - The window's first failure is logged as it happens (ERROR `Request failed`:
   `method`, `code`, the `error` message the client got), and its first
   refusal other than admission (WARN `Request unavailable`); the rest are only
   counted, so an outage costs two lines a minute, not one per request.
-- DEBUG adds `Method served` per method with traffic: `requests`, `client`,
-  `refused`, `failed`, `slow`.
-- Cost: one or two relaxed atomic adds per request into fixed per-method counters,
-  swapped to zero once a minute on the accept loop; no lock, no allocation per
-  request.
+- Cost: one or two relaxed atomic adds per request, swapped to zero once a
+  minute on the accept loop; no lock, no allocation per request.
 
 ## Stored bytes on the wire
 
