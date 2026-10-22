@@ -485,9 +485,10 @@ mod tests {
         out
     }
 
-    /// Four bulk blocks, each its own commit (write_buffer = 1 byte), crashed after every operation:
-    /// each state reopens to an acknowledged or attempted commit, and the writer on it resolves
-    /// the next block's fees against the outputs it recovered and commits it
+    /// Four bulk blocks, each its own commit (write_buffer = 1 byte), crashed after every operation
+    ///
+    /// - each state reopens to an acknowledged or attempted commit
+    /// - a writer on it resolves the next block's fees from the recovered outputs + commits it
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_durable_prefix_whose_outputs_still_resolve() {
         // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
