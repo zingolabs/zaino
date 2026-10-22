@@ -71,21 +71,26 @@ mod tests {
     #[test]
     fn a_window_publishes_three_significant_figures_and_hides_near_idle() {
         let secs = WINDOW.as_secs_f64();
+        #[rustfmt::skip]
         let cases = [
-            (0, 0.0),
-            (7_400_000, 0.0),
-            (7_500_000, 0.1),
-            (93_812_345, 1.25),
-            (938_123_456, 12.5),
-            (93_812_345_678, 1_250.0),
+            // case,                       bytes over WINDOW, published Mbit/s
+            ("idle",                       0,                 0.0),
+            ("just under 0.1: hidden",     7_400_000,         0.0),
+            ("0.1: shown",                 7_500_000,         0.1),
+            ("3 sig figs below 10",        93_812_345,        1.25),
+            ("3 sig figs below 100",       938_123_456,       12.5),
+            ("3 sig figs past 1000",       93_812_345_678,    1_250.0),
         ];
-        for (bytes, mbps) in cases {
-            assert_eq!(published_mbps(bytes, secs), mbps, "{bytes} B over 600 s");
+        for (case, bytes, mbps) in cases {
+            assert_eq!(published_mbps(bytes, secs), mbps, "{case}: {bytes} B over 600 s");
         }
         assert_eq!(published_mbps(1_000, 0.0), 0.0, "no time elapsed: nothing to say");
 
-        let at = |secs: u64| next_boundary(Duration::from_secs(secs));
-        assert_eq!(at(1_790_000_000), (Duration::from_secs(400), 1_790_000_400));
-        assert_eq!(at(1_790_000_400), (WINDOW, 1_790_001_000), "on a boundary: the next one");
+        let (wait, boundary) = next_boundary(Duration::from_secs(1_790_000_000));
+        assert_eq!(boundary, 1_790_000_400, "next UTC 10-min multiple after 1_790_000_000");
+        assert_eq!(wait, Duration::from_secs(400), "wait until 1_790_000_400");
+        let (wait, boundary) = next_boundary(Duration::from_secs(1_790_000_400));
+        assert_eq!(boundary, 1_790_001_000, "on a boundary: the next one");
+        assert_eq!(wait, WINDOW, "on a boundary: a whole window");
     }
 }

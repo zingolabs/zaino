@@ -139,8 +139,9 @@ mod tests {
         std::fs::write(root.path().join("by_hash/0.seg"), [0; 4096]).expect("segment");
         std::fs::write(root.path().join("by_hash/1.seg"), []).expect("empty segment");
 
-        assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
+        let summed = disk_bytes(root.path()).expect("walk");
+        assert_eq!(summed, 10 + 4096, "MANIFEST + by_hash/0.seg + empty by_hash/1.seg");
         let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound, "absent directory: {missing}");
     }
 }

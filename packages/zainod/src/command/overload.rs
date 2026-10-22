@@ -50,16 +50,21 @@ impl Settings {
 }
 
 /// `config` with `markers` (`key`, `value`) applied, by `[grpc.overload]`'s own rules
+///
+/// - each marker checked as it lands: a refusal names its `key = value`
 fn merged(config: &OverloadLimits, markers: &[(String, String)]) -> Result<OverloadLimits, String> {
     let mut table = toml::Table::try_from(config).map_err(|error| error.to_string())?;
+    let mut limits = config.clone();
     for (key, value) in markers {
-        let value = toml::from_str::<toml::Table>(&format!("value = {value}"))
+        let refused = |why: &str| format!("{key} = {value}: {why}");
+        let parsed = toml::from_str::<toml::Table>(&format!("value = {value}"))
             .ok()
             .and_then(|mut parsed| parsed.remove("value"))
-            .ok_or_else(|| format!("{key} = {value}: not a value"))?;
-        table.insert(key.clone(), value);
+            .ok_or_else(|| refused("not a value"))?;
+        table.insert(key.clone(), parsed);
+        limits = table.clone().try_into().map_err(|e: toml::de::Error| refused(e.message()))?;
     }
-    table.try_into().map_err(|error: toml::de::Error| error.message().to_owned())
+    Ok(limits)
 }
 
 /// `dir`'s markers over `config`
@@ -146,10 +151,9 @@ mod tests {
 
     /// A session of commands, read back as the running zainod reads it:
     /// - off / on toggle detection; set / unset one key over the config's (twice = once)
-    /// - an invalid key or value is refused before anything is written
     /// - notes name what is in force, none once all is undone
     #[test]
-    fn markers_override_the_config_until_undone_and_bad_values_never_land() {
+    fn markers_override_the_config_until_undone() {
         let root = tempfile::tempdir().expect("tempdir");
         let dir = root.path().join("overload");
         let config = OverloadLimits::default();
@@ -179,22 +183,16 @@ mod tests {
                 "network_queue_delay_ms = 10".into(),
             ],
         };
-        assert_eq!(read(&dir, &config), Ok(expected.clone()));
+        assert_eq!(read(&dir, &config), Ok(expected.clone()), "off twice + two keys set");
         assert_eq!(
             expected.notes(),
             [
                 "Overload detection off (zainod overload on)",
                 "Overload overridden: cpu_pressure_percent = 40, network_queue_delay_ms = 10 \
                  (zainod overload unset)",
-            ]
+            ],
+            "notes while overridden"
         );
-
-        for refused in
-            [set("nope", "1"), set("network_min_networks", "0"), set("io_pressure_percent", "x")]
-        {
-            assert!(run(refused.clone()).is_err(), "{refused:?}");
-        }
-        assert_eq!(read(&dir, &config), Ok(expected), "nothing refused landed");
 
         for action in [
             Action::On,
@@ -205,6 +203,32 @@ mod tests {
             run(action).expect("applies");
         }
         assert_eq!(read(&dir, &config), Ok(defaults.clone()), "all undone");
-        assert!(defaults.notes().is_empty());
+        assert_eq!(defaults.notes(), Vec::<String>::new(), "nothing overridden: no notes");
+    }
+
+    /// Invalid key or value refused naming it, before anything is written
+    #[test]
+    fn a_bad_override_is_refused_naming_it_and_never_lands() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("overload");
+        let config = OverloadLimits::default();
+
+        #[rustfmt::skip]
+        let refusals = [
+            // key,                    value, refusal names
+            ("nope",                   "1",   "nope = 1: unknown field `nope`"),
+            ("network_min_networks",   "0",   "network_min_networks = 0: invalid value"),
+            ("io_pressure_percent",    "x",   "io_pressure_percent = x: not a value"),
+        ];
+        for (key, value, named) in refusals {
+            let set = Action::Set { key: key.to_owned(), value: value.to_owned() };
+            let refused = apply(&dir, &config, &set).map_err(|error| error.to_string());
+            assert!(
+                refused.as_ref().is_err_and(|refused| refused.contains(named)),
+                "{key} = {value}: refused naming {named:?}, got {refused:?}"
+            );
+        }
+        let untouched = Settings { limits: config.clone(), detection: true, overrides: vec![] };
+        assert_eq!(read(&dir, &config), Ok(untouched), "nothing refused landed");
     }
 }

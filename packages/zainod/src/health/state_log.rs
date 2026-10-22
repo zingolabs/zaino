@@ -115,57 +115,65 @@ mod tests {
 
     /// One node's day, second by second where it matters:
     /// - each change (state or reason) logged once at its moment, `after` = time in the last
-    /// - reasonless states (provisioning, syncing, serving) never repeat; down / held every REPEAT
-    /// - level: down = ERROR, held / degraded = WARN, the rest = INFO
+    /// - reasonless states (provisioning, syncing, serving) never repeat; down / degraded / held
+    ///   every REPEAT
     #[test]
     fn changes_log_once_and_unrouted_states_repeat_every_minute() {
         use Readiness::{Degraded, Down, Held, Provisioning, Serving, Syncing};
         let t0 = Instant::now();
         let at = |secs: u64| t0 + Duration::from_secs(secs);
-        let mins = |m: u64| Duration::from_secs(m * 60);
+        let (secs, mins) = (Duration::from_secs, |m: u64| Duration::from_secs(m * 60));
         let changed = |from, after| Some(Line::Changed { from, after });
         let not_ready = |elapsed| Some(Line::NotReady { elapsed });
         let network = DaemonReason::Overloaded(OverloadCause::NetworkSaturated);
         let cpu = DaemonReason::Overloaded(OverloadCause::CpuPressure);
         let (pending, sent) = (DaemonReason::GoawayPending, DaemonReason::GoawaySent);
+        let unvouched = DaemonReason::TipUnvouched;
 
         let mut log = StateLog::default();
+        #[rustfmt::skip]
         let timeline = [
-            (at(0), Provisioning(None), changed(None, None)),
-            (at(1), Provisioning(None), None),
-            (at(600), Syncing(None), changed(Some("provisioning"), Some(mins(10)))),
-            (at(1_200), Syncing(None), None),
-            (at(1_200), Serving(None), changed(Some("syncing"), Some(mins(10)))),
-            (at(4_800), Serving(None), None),
-            (at(4_800), Down(network), changed(Some("serving"), Some(mins(60)))),
-            (at(4_830), Down(network), None),
-            (at(4_860), Down(network), not_ready(mins(1))),
-            (at(4_890), Down(network), None),
-            (at(4_920), Down(network), not_ready(mins(2))),
-            (at(4_940), Down(cpu), changed(Some("down"), Some(Duration::from_secs(140)))),
-            (at(5_000), Down(cpu), not_ready(Duration::from_secs(60))),
-            (at(5_000), Held(pending), changed(Some("down"), Some(mins(1)))),
-            (at(5_010), Held(sent), changed(Some("held"), Some(Duration::from_secs(10)))),
-            (at(5_070), Held(sent), not_ready(mins(1))),
-            (at(5_130), Serving(None), changed(Some("held"), Some(mins(2)))),
-            (at(5_190), Serving(None), None),
+            // case,                               now,       readiness,           line due
+            ("boot",                               at(0),     Provisioning(None),  changed(None, None)),
+            ("provisioning: never repeats",        at(1),     Provisioning(None),  None),
+            ("syncing",                            at(600),   Syncing(None),       changed(Some("provisioning"), Some(mins(10)))),
+            ("syncing: never repeats",             at(1_200), Syncing(None),       None),
+            ("serving",                            at(1_200), Serving(None),       changed(Some("syncing"), Some(mins(10)))),
+            ("serving: never repeats",             at(4_800), Serving(None),       None),
+            ("overloaded",                         at(4_800), Down(network),       changed(Some("serving"), Some(mins(60)))),
+            ("down: under REPEAT",                 at(4_830), Down(network),       None),
+            ("down: REPEAT after the change",      at(4_860), Down(network),       not_ready(mins(1))),
+            ("down: under REPEAT since the last",  at(4_890), Down(network),       None),
+            ("down: second REPEAT",                at(4_920), Down(network),       not_ready(mins(2))),
+            ("down, new reason = a change",        at(4_940), Down(cpu),           changed(Some("down"), Some(secs(140)))),
+            ("down: REPEAT after the new reason",  at(5_000), Down(cpu),           not_ready(secs(60))),
+            ("held",                               at(5_000), Held(pending),       changed(Some("down"), Some(mins(1)))),
+            ("held, GOAWAYs sent = a change",      at(5_010), Held(sent),          changed(Some("held"), Some(secs(10)))),
+            ("held: REPEAT",                       at(5_070), Held(sent),          not_ready(mins(1))),
+            ("resumed: serving",                   at(5_130), Serving(None),       changed(Some("held"), Some(mins(2)))),
+            ("degraded",                           at(5_190), Degraded(unvouched), changed(Some("serving"), Some(mins(1)))),
+            ("degraded: REPEAT",                   at(5_250), Degraded(unvouched), not_ready(mins(1))),
+            ("vouched again: serving",             at(5_260), Serving(None),       changed(Some("degraded"), Some(secs(70)))),
         ];
-        let logged: Vec<_> =
-            timeline.iter().map(|(now, readiness, _)| log.step(*now, readiness)).collect();
-        let expected: Vec<_> = timeline.iter().map(|(.., line)| *line).collect();
-        assert_eq!(logged, expected);
+        for (case, now, readiness, line) in timeline {
+            assert_eq!(log.step(now, &readiness), line, "{case}: {readiness:?}");
+        }
+    }
 
+    #[test]
+    fn down_logs_at_error_held_and_degraded_at_warn_the_rest_at_info() {
+        use Readiness::{Degraded, Down, Held, Provisioning, Serving, Syncing};
+        let cpu = DaemonReason::Overloaded(OverloadCause::CpuPressure);
         let levels = [
-            Provisioning(None),
-            Syncing(None),
-            Serving(None),
-            Degraded(DaemonReason::TipUnvouched),
-            Held(sent),
-            Down(cpu),
-        ]
-        .map(|readiness| level(&readiness));
-        let expected =
-            [Level::INFO, Level::INFO, Level::INFO, Level::WARN, Level::WARN, Level::ERROR];
-        assert_eq!(levels, expected);
+            (Provisioning(None), Level::INFO),
+            (Syncing(None), Level::INFO),
+            (Serving(None), Level::INFO),
+            (Degraded(DaemonReason::TipUnvouched), Level::WARN),
+            (Held(DaemonReason::GoawaySent), Level::WARN),
+            (Down(cpu), Level::ERROR),
+        ];
+        for (readiness, expected) in levels {
+            assert_eq!(level(&readiness), expected, "{readiness:?}");
+        }
     }
 }

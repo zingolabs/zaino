@@ -335,16 +335,7 @@ impl DaemonStatus {
     /// The state + reason (`/readyz`'s) + every `GrpcSnapshot` gauge (none before boot), set just before a
     /// scrape renders
     pub(crate) fn emit_gauges(&self) {
-        let readiness = self.current_readiness();
-        for state in Readiness::LABELS {
-            let now = u8::from(state == readiness.label());
-            metrics::gauge!(STATE, "state" => state).set(f64::from(now));
-        }
-        let reason = readiness.reason().map(DaemonReason::label);
-        for label in DaemonReason::LABELS {
-            let now = u8::from(Some(label) == reason);
-            metrics::gauge!(REASON, "reason" => label).set(f64::from(now));
-        }
+        emit_state_gauges(&self.current_readiness());
         if let Some(sources) = self.sources.get() {
             zaino_grpc_snapshot::emit_gauges(&sources.grpc_snapshots.load(), &sources.progress);
         }
@@ -359,6 +350,18 @@ impl DaemonStatus {
 
     pub(crate) fn current_bootstrap(&self) -> Option<SnapshotProgress> {
         self.bootstrap.lock().expect("bootstrap progress mutex poisoned").clone()
+    }
+}
+
+fn emit_state_gauges(readiness: &Readiness) {
+    for state in Readiness::LABELS {
+        let now = u8::from(state == readiness.label());
+        metrics::gauge!(STATE, "state" => state).set(f64::from(now));
+    }
+    let reason = readiness.reason().map(DaemonReason::label);
+    for label in DaemonReason::LABELS {
+        let now = u8::from(Some(label) == reason);
+        metrics::gauge!(REASON, "reason" => label).set(f64::from(now));
     }
 }
 
@@ -463,6 +466,8 @@ mod tests {
     /// - held = the operator's intent over every condition, detail = its GOAWAYs
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_own_detail() {
+        const LIVE: bool = true;
+        const STALLED: bool = false;
         let stage = |serving_status, overload, target: Option<u32>, rate: Option<f64>| {
             let (height, egress) =
                 (Some(3_514_194), Some(Egress { start: 1_790_000_400, mbps: 12.5 }));
@@ -488,14 +493,14 @@ mod tests {
             (
                 "plain startup",
                 Hold::Off,
-                true,
+                LIVE,
                 starting(None, false),
                 serde_json::json!({ "state": "provisioning", "detail": null }),
             ),
             (
                 "bootstrap downloading",
                 Hold::Off,
-                true,
+                LIVE,
                 starting(Some(downloading), false),
                 serde_json::json!({
                     "state": "provisioning",
@@ -508,7 +513,7 @@ mod tests {
             (
                 "boot waiting on a validator",
                 Hold::Off,
-                true,
+                LIVE,
                 starting(None, true),
                 serde_json::json!({
                     "state": "down",
@@ -518,63 +523,63 @@ mod tests {
             (
                 "runtime stalled beats serving",
                 Hold::Off,
-                false,
+                STALLED,
                 booted(ServingStatus::Serving, Some(3_514_194), None),
                 serde_json::json!({ "state": "down", "detail": stalled }),
             ),
             (
                 "runtime stalled beats overloaded",
                 Hold::Off,
-                false,
+                STALLED,
                 overloaded(ServingStatus::Serving),
                 serde_json::json!({ "state": "down", "detail": stalled }),
             ),
             (
                 "runtime stalled beats degraded",
                 Hold::Off,
-                false,
+                STALLED,
                 booted(ServingStatus::Degraded, None, None),
                 serde_json::json!({ "state": "down", "detail": stalled }),
             ),
             (
                 "overloaded beats syncing",
                 Hold::Off,
-                true,
+                LIVE,
                 overloaded(ServingStatus::Syncing),
                 serde_json::json!({ "state": "down", "detail": saturated }),
             ),
             (
                 "overloaded beats down",
                 Hold::Off,
-                true,
+                LIVE,
                 overloaded(ServingStatus::Down),
                 serde_json::json!({ "state": "down", "detail": saturated }),
             ),
             (
                 "overloaded beats degraded",
                 Hold::Off,
-                true,
+                LIVE,
                 overloaded(ServingStatus::Degraded),
                 serde_json::json!({ "state": "down", "detail": saturated }),
             ),
             (
                 "unvouched tip, fresh: peers carried it",
                 Hold::Off,
-                true,
+                LIVE,
                 booted(ServingStatus::Degraded, Some(3_514_194), None),
                 serde_json::json!({ "state": "degraded", "detail": unvouched }),
             ),
             (
                 "unvouched tip, stale",
                 Hold::Off,
-                true,
+                LIVE,
                 booted(ServingStatus::Down, Some(3_515_406), Some(6.2)),
                 serde_json::json!({ "state": "down", "detail": unvouched }),
             ),
             (
                 "syncing",
                 Hold::Off,
-                true,
+                LIVE,
                 booted(ServingStatus::Syncing, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
                     "state": "syncing",
@@ -584,14 +589,14 @@ mod tests {
             (
                 "syncing, no header chain yet",
                 Hold::Off,
-                true,
+                LIVE,
                 booted(ServingStatus::Syncing, None, None),
                 serde_json::json!({ "state": "syncing", "detail": null }),
             ),
             (
                 "serving: its last egress window",
                 Hold::Off,
-                true,
+                LIVE,
                 booted(ServingStatus::Serving, Some(3_514_194), Some(1.0)),
                 serde_json::json!({
                     "state": "serving", "detail": { "start": 1_790_000_400, "mbps": 12.5 },
@@ -600,7 +605,7 @@ mod tests {
             (
                 "held while serving",
                 Hold::Draining,
-                true,
+                LIVE,
                 booted(ServingStatus::Serving, None, None),
                 serde_json::json!({
                     "state": "held", "detail": because("goaway_pending", "GOAWAY pending"),
@@ -609,7 +614,7 @@ mod tests {
             (
                 "held while overloaded, stalled",
                 Hold::Drained,
-                false,
+                STALLED,
                 overloaded(ServingStatus::Down),
                 serde_json::json!({
                     "state": "held", "detail": because("goaway_sent", "GOAWAY sent"),
@@ -618,19 +623,25 @@ mod tests {
             (
                 "held while booting, no validator",
                 Hold::Drained,
-                true,
+                LIVE,
                 starting(None, true),
                 serde_json::json!({
                     "state": "held", "detail": because("goaway_sent", "GOAWAY sent"),
                 }),
             ),
         ];
+        // case, hold, heartbeat, stage, `/readyz` body
         for (case, hold, live, stage, expected) in cases {
             let readiness = readiness(hold, live, stage);
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            assert_eq!(expected["state"], readiness.label(), "{case}: label = serde");
-            let serving = matches!(readiness, Readiness::Serving(_) | Readiness::Degraded(_));
-            assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
+            let state = expected["state"].as_str().expect("a state tag");
+            assert_eq!(
+                readiness.label(),
+                state,
+                "{case}: label (gauge, state log) = /readyz state"
+            );
+            let ready = ["serving", "degraded"].contains(&state);
+            assert_eq!(readiness.ready(), ready, "{case}: /readyz 200 ⇔ serving or degraded");
         }
     }
 
@@ -660,6 +671,7 @@ mod tests {
                 },
                 "build": build, "indexes": indexes,
             }),
+            "before boot",
         );
 
         let chain = Chain {
@@ -682,54 +694,56 @@ mod tests {
                 },
                 "build": build, "indexes": indexes,
             }),
+            "booted, serving",
         );
     }
 
     /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail reason, each one-hot
-    ///
-    /// - not booted = provisioning, no reason; a zero-delay operator hold = held, its GOAWAYs sent
     #[test]
     fn the_state_gauges_are_readyz_one_hot() {
         let (recorder, rendered) =
             crate::telemetry::metrics::recorder().expect("native config is valid");
         let _recording = metrics::set_default_local_recorder(&recorder);
-        let status = DaemonStatus::new(NetworkType::Regtest, []);
-        // sorted: the exporter renders a family's series in no fixed order
-        let one_hot = |family: &str, key: &str, labels: &[&str], now: Option<&str>| {
-            let mut lines: Vec<_> = (labels.iter())
-                .map(|&label| {
-                    format!("{family}{{{key}=\"{label}\"}} {}", u8::from(Some(label) == now))
-                })
-                .collect();
-            lines.sort();
-            lines
-        };
-        let scraped = |family: &str| {
-            status.emit_gauges();
+        // the series at 1 (each family's other series checked at 0)
+        let set = |family: &str, key: &str, labels: &[&str]| -> Vec<String> {
             let text = rendered.render();
-            let prefix = format!("{family}{{");
-            let mut lines: Vec<_> =
-                text.lines().filter(|line| line.starts_with(&prefix)).map(str::to_owned).collect();
-            lines.sort();
-            lines
+            let mut ones = Vec::new();
+            for label in labels {
+                let series = format!("{family}{{{key}=\"{label}\"}} ");
+                let value = text.lines().find_map(|line| line.strip_prefix(&series));
+                match value {
+                    Some("1") => ones.push((*label).to_owned()),
+                    Some("0") => {}
+                    other => panic!("{series}= {other:?}, want 0 or 1 in:\n{text}"),
+                }
+            }
+            ones
+        };
+        let scraped = || {
+            let state = set("zaino_state", "state", &Readiness::LABELS);
+            (state, set("zaino_state_reason", "reason", &DaemonReason::LABELS))
         };
 
-        let states = Readiness::LABELS;
-        let reasons = &DaemonReason::LABELS;
-        assert_eq!(
-            scraped("zaino_state"),
-            one_hot("zaino_state", "state", &states, Some("provisioning"))
-        );
-        assert_eq!(
-            scraped("zaino_state_reason"),
-            one_hot("zaino_state_reason", "reason", reasons, None)
-        );
-        status.retire().hold(std::time::Duration::ZERO);
-        assert_eq!(scraped("zaino_state"), one_hot("zaino_state", "state", &states, Some("held")));
-        let sent = Some("goaway_sent");
-        assert_eq!(
-            scraped("zaino_state_reason"),
-            one_hot("zaino_state_reason", "reason", reasons, sent)
-        );
+        let status = DaemonStatus::new(NetworkType::Regtest, []);
+        status.emit_gauges();
+        let (state, reason) = scraped();
+        assert_eq!(state, ["provisioning"], "not booted: zaino_state");
+        assert_eq!(reason, Vec::<String>::new(), "not booted: zaino_state_reason");
+
+        let serving = Readiness::Serving(Some(Egress { start: 1_790_000_400, mbps: 12.5 }));
+        let held = Readiness::Held(DaemonReason::GoawaySent);
+        #[rustfmt::skip]
+        let cases = [
+            // case,             readiness,                                     state,       reason
+            ("serving",          serving,                                       "serving",   None),
+            ("degraded",         Readiness::Degraded(DaemonReason::TipUnvouched), "degraded", Some("tip_unvouched")),
+            ("held, GOAWAY'd",   held,                                          "held",      Some("goaway_sent")),
+        ];
+        for (case, readiness, expected_state, expected_reason) in cases {
+            emit_state_gauges(&readiness);
+            let (state, reason) = scraped();
+            assert_eq!(state, [expected_state], "{case}: zaino_state");
+            assert_eq!(reason, Vec::from_iter(expected_reason), "{case}: zaino_state_reason");
+        }
     }
 }

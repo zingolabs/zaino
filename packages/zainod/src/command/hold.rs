@@ -228,16 +228,18 @@ mod tests {
     fn hold_and_resume_are_idempotent_on_the_marker() {
         let root = tempfile::tempdir().expect("tempdir");
         let state_dir = root.path().join("state");
-        let steps = [
-            (Action::Resume, Changed::NotHeld, false),
-            (Action::Hold, Changed::Held, true),
-            (Action::Hold, Changed::AlreadyHeld, true),
-            (Action::Resume, Changed::Resumed, false),
-            (Action::Resume, Changed::NotHeld, false),
+        #[rustfmt::skip]
+        let commands = [
+            // case,                               action,          changed,              marker after
+            ("resume, no state dir yet",           Action::Resume,  Changed::NotHeld,     false),
+            ("hold: state dir + marker created",   Action::Hold,    Changed::Held,        true),
+            ("hold again",                         Action::Hold,    Changed::AlreadyHeld, true),
+            ("resume: marker removed",             Action::Resume,  Changed::Resumed,     false),
+            ("resume again",                       Action::Resume,  Changed::NotHeld,     false),
         ];
-        for (step, (action, changed, marked)) in steps.into_iter().enumerate() {
-            assert_eq!(apply(&state_dir, action).expect("applies"), changed, "step {step}");
-            assert_eq!(state_dir.join(MARKER).exists(), marked, "step {step}: marker");
+        for (case, action, changed, marked) in commands {
+            assert_eq!(apply(&state_dir, action).expect("applies"), changed, "{case}");
+            assert_eq!(state_dir.join(MARKER).exists(), marked, "{case}: marker present");
         }
     }
 
@@ -256,22 +258,21 @@ mod tests {
             let body = status.readiness_json().1;
             serde_json::from_str::<Readyz>(&body).expect("readyz body")
         };
-        let read = |status: &DaemonStatus| {
-            let readyz = readyz(status);
-            (readyz.state.clone(), readyz.reason().map(str::to_owned))
+        let held = |reason: &str| Readyz {
+            state: "held".to_owned(),
+            detail: Some(ReadyzDetail { reason: Some(reason.to_owned()) }),
         };
 
         spawn(Arc::clone(&status), state_dir.clone(), delay);
         tokio::time::sleep(POLL).await;
-        let pending = (String::from("held"), Some(String::from("goaway_pending")));
-        assert_eq!(read(&status), pending, "held at the first poll");
+        assert_eq!(readyz(&status), held("goaway_pending"), "held at the first poll");
         tokio::time::sleep(goaway_bound(delay) - POLL).await;
-        let sent = (String::from("held"), Some(String::from("goaway_sent")));
-        assert_eq!(read(&status), sent, "GOAWAY by the CLI's bound");
+        assert_eq!(readyz(&status), held("goaway_sent"), "GOAWAY by the CLI's bound");
 
         apply(&state_dir, Action::Resume).expect("resumes");
         tokio::time::sleep(POLL).await;
         assert_eq!(status.retire().state(), zaino_grpc::Hold::Off, "resumed within a poll");
-        assert_ne!(readyz(&status).state, "held");
+        let unbooted = Readyz { state: "provisioning".to_owned(), detail: None };
+        assert_eq!(readyz(&status), unbooted, "resumed: the state rules again (not booted)");
     }
 }

@@ -149,6 +149,7 @@ mod tests {
 
     /// - No `indexer_address` = refused, naming the validator
     /// - `indexer_address` set = client (unprobed)
+    // tokio::test: the gRPC channel's connect_lazy needs a runtime, no .await
     #[tokio::test]
     async fn the_grpc_client_needs_each_validators_indexer_address() {
         let refused = grpc_client(&TrustedValidatorConfig::default()).err().map(|e| e.to_string());
@@ -159,6 +160,7 @@ mod tests {
             indexer_address: Some("127.0.0.1:8230".to_owned()),
             ..TrustedValidatorConfig::default()
         };
-        assert!(grpc_client(&indexed).is_ok(), "no validator needed to build one");
+        let built = grpc_client(&indexed).err().map(|e| e.to_string());
+        assert_eq!(built, None, "indexer_address set: built unprobed (no validator needed)");
     }
 }

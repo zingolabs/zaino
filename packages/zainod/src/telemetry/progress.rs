@@ -170,63 +170,36 @@ mod tests {
         use zcash_protocol::{consensus::BlockHeight, BlockHash};
         let at =
             |height: u32| BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(height) };
-        let tips = |finalized_tip: u32, served: u32, best: u32, synced: bool| Tips {
+        let tips = |finalized_tip: u32, served: u32, best: u32| Tips {
             best: Some(at(best)),
             finalized_tip: Some(at(finalized_tip)),
             served: Some(at(served)),
-            synced,
+            synced: false,
         };
-        let restart = tips(3_515_519, 3_515_519, 3_516_522, false);
+        let synced = |finalized_tip, served, best| Tips {
+            synced: true,
+            ..tips(finalized_tip, served, best)
+        };
+        let restart = tips(3_515_519, 3_515_519, 3_516_522);
+        let finalized = |done, target| Some(Phase::Finalized { done, target });
+        let window = |fetched, total| Some(Phase::Window { fetched, total });
+        #[rustfmt::skip]
         let cases = [
-            (
-                "fresh: nothing handed or durable",
-                restart,
-                None,
-                None,
-                Some(Phase::Finalized { done: None, target: 3_515_519 }),
-            ),
-            (
-                "durable below finalized, follower idle",
-                restart,
-                None,
-                Some(3_515_000),
-                Some(Phase::Finalized { done: Some(3_515_000), target: 3_515_519 }),
-            ),
-            (
-                "handed past the durable tip",
-                restart,
-                Some(3_515_100),
-                Some(3_515_000),
-                Some(Phase::Finalized { done: Some(3_515_100), target: 3_515_519 }),
-            ),
-            (
-                "restart: durable = finalized, handed none",
-                restart,
-                None,
-                Some(3_515_519),
-                Some(Phase::Window { fetched: 0, total: 1_003 }),
-            ),
-            (
-                "window part fetched",
-                tips(3_515_519, 3_515_859, 3_516_522, false),
-                None,
-                Some(3_515_519),
-                Some(Phase::Window { fetched: 340, total: 1_003 }),
-            ),
-            (
-                "served = best, synced",
-                tips(3_515_522, 3_516_522, 3_516_522, true),
-                Some(3_515_522),
-                Some(3_515_522),
-                None,
-            ),
-            (
-                "synced, a block behind",
-                tips(3_515_523, 3_516_522, 3_516_523, true),
-                Some(3_515_523),
-                Some(3_515_523),
-                None,
-            ),
+            // case, tips (finalized, served, best), handed, durable, expected
+            ("fresh: nothing handed or durable", restart, None, None,
+                finalized(None, 3_515_519)),
+            ("durable below finalized, follower idle", restart, None, Some(3_515_000),
+                finalized(Some(3_515_000), 3_515_519)),
+            ("handed past the durable tip", restart, Some(3_515_100), Some(3_515_000),
+                finalized(Some(3_515_100), 3_515_519)),
+            ("restart: durable = finalized, handed none", restart, None, Some(3_515_519),
+                window(0, 1_003)),
+            ("window part fetched", tips(3_515_519, 3_515_859, 3_516_522), None, Some(3_515_519),
+                window(340, 1_003)),
+            ("served = best, synced", synced(3_515_522, 3_516_522, 3_516_522),
+                Some(3_515_522), Some(3_515_522), None),
+            ("synced, a block behind", synced(3_515_523, 3_516_522, 3_516_523),
+                Some(3_515_523), Some(3_515_523), None),
         ];
         for (case, tips, handed, durable, expected) in cases {
             assert_eq!(Phase::of(&tips, handed, durable), expected, "{case}");
@@ -237,8 +210,16 @@ mod tests {
 
     #[test]
     fn per_second_rounds_and_a_zero_interval_is_zero() {
-        assert_eq!(per_second(90, Duration::from_secs(30)), 3);
-        assert_eq!(per_second(100, Duration::from_secs(30)), 3);
-        assert_eq!(per_second(90, Duration::ZERO), 0);
+        #[rustfmt::skip]
+        let cases = [
+            // case,                 count, over,                     per second
+            ("exact",                90,    Duration::from_secs(30),  3),
+            ("3.33 rounds down",     100,   Duration::from_secs(30),  3),
+            ("3.5 rounds up",        105,   Duration::from_secs(30),  4),
+            ("zero interval",        90,    Duration::ZERO,           0),
+        ];
+        for (case, count, over, expected) in cases {
+            assert_eq!(per_second(count, over), expected, "{case}: {count} over {over:?}");
+        }
     }
 }

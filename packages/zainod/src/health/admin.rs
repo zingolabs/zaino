@@ -249,58 +249,59 @@ mod tests {
         let network = zcash_protocol::consensus::NetworkType::Regtest;
         tokio::spawn(serve(listener, handle, Arc::new(DaemonStatus::new(network, []))));
 
-        // Retry, no fixed sleep (accept loop races the connect); lossy: protobuf bodies are binary
-        let get = |path: &'static str, accept: &'static str| async move {
-            for _ in 0..50 {
-                if let Ok(mut stream) = tokio::net::TcpStream::connect(endpoint).await {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let request = format!(
-                        "GET {path} HTTP/1.1\r\nHost: x\r\nAccept: {accept}\r\nConnection: close\r\n\r\n"
-                    );
-                    stream.write_all(request.as_bytes()).await.unwrap();
-                    let mut response = Vec::new();
-                    stream.read_to_end(&mut response).await.unwrap();
-                    return String::from_utf8_lossy(&response).into_owned();
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+        // listener bound before the spawn: a connect lands in its backlog, no retry
+        let client = reqwest::Client::new();
+        let get = |path: &'static str, accept: &'static str| {
+            let request = client.get(format!("http://{endpoint}{path}"));
+            async move {
+                let response = request.header("accept", accept).send().await;
+                let response = response.unwrap_or_else(|e| panic!("GET {path}: {e}"));
+                let content_type = response.headers().get("content-type").cloned();
+                let content_type =
+                    content_type.map(|v| v.to_str().unwrap_or("non-ASCII").to_owned());
+                let status = response.status().as_u16();
+                // lossy: protobuf bodies are binary
+                let body =
+                    response.bytes().await.unwrap_or_else(|e| panic!("GET {path} body: {e}"));
+                (status, content_type, String::from_utf8_lossy(&body).into_owned())
             }
-            panic!("admin endpoint never accepted a connection on {endpoint}");
         };
 
         // Prometheus 3 / Alloy with native histograms on: protobuf first, text as fallback
-        let protobuf = get(
+        let (status, content_type, protobuf) = get(
             "/metrics",
             "application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;\
              encoding=delimited;q=0.6,text/plain;version=0.0.4;q=0.4,*/*;q=0.1",
         )
         .await;
-        assert!(protobuf.starts_with("HTTP/1.1 200"), "{protobuf}");
-        assert!(
-            protobuf.to_ascii_lowercase().contains("content-type: application/vnd.google.protobuf"),
-            "{protobuf}"
-        );
+        assert_eq!(status, 200, "protobuf scrape: {protobuf}");
+        let protobuf_type = content_type.as_deref().unwrap_or_default();
+        assert!(protobuf_type.starts_with("application/vnd.google.protobuf"), "{content_type:?}");
         for family in ["zaino_test_total", "zaino_test_seconds"] {
             assert!(protobuf.contains(family), "{family} missing from the protobuf scrape");
         }
 
         // Text (curl, or protobuf refused): counters only, a native histogram has no text form
         for accept in ["*/*", "application/vnd.google.protobuf;q=0,text/plain"] {
-            let text = get("/metrics", accept).await;
-            assert!(text.starts_with("HTTP/1.1 200"), "{accept}: {text}");
+            let (status, content_type, text) = get("/metrics", accept).await;
+            assert_eq!(status, 200, "{accept}: {text}");
+            let text_type = content_type.as_deref().unwrap_or_default();
             assert!(
-                text.to_ascii_lowercase().contains("content-type: text/plain; version=0.0.4"),
-                "{accept}: {text}"
+                text_type.starts_with("text/plain; version=0.0.4"),
+                "{accept}: {content_type:?}"
             );
             assert!(text.contains("zaino_test_total 7"), "{accept}: {text}");
             assert!(!text.contains("zaino_test_seconds"), "{accept}: histogram not native: {text}");
         }
 
-        assert!(get("/livez", "*/*").await.starts_with("HTTP/1.1 200"));
+        let (livez, _, body) = get("/livez", "*/*").await;
+        assert_eq!(livez, 200, "/livez before any beat (still starting): {body}");
         // no indexer booted in this test = sources unpublished
         let readyz = get("/readyz", "*/*").await;
-        assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
-        assert!(readyz.ends_with(r#"{"state":"provisioning","detail":null}"#), "{readyz}");
-        assert!(get("/nope", "*/*").await.starts_with("HTTP/1.1 404"));
+        let provisioning = r#"{"state":"provisioning","detail":null}"#.to_owned();
+        assert_eq!((readyz.0, readyz.2), (503, provisioning), "/readyz (status, body) before boot");
+        let (unknown, _, body) = get("/nope", "*/*").await;
+        assert_eq!(unknown, 404, "/nope: {body}");
     }
 
     /// Held port → bind error naming the endpoint
@@ -316,6 +317,7 @@ mod tests {
     fn a_stale_heartbeat_is_not_live() {
         for (case, age, fresh) in [
             ("just beaten", Some(Duration::ZERO), true),
+            ("a tick under the max age", Some(HEARTBEAT_MAX_AGE - Duration::from_millis(1)), true),
             ("stale = wedged runtime", Some(HEARTBEAT_MAX_AGE), false),
             ("never beaten = still starting", None, true),
         ] {

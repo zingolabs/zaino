@@ -32,13 +32,21 @@ fn fits(max_connections: NonZeroUsize, limit: u64) -> Result<(), IndexerError> {
 mod tests {
     use super::*;
 
-    /// - Connections + the reserve must fit
+    /// - Connections + the reserve must fit (both sides of the boundary)
     /// - Refusal names the knob and both remedies
     #[test]
     fn max_connections_plus_the_reserve_must_fit_the_limit() {
         let connections = |n| NonZeroUsize::new(n).expect("non-zero");
 
-        assert!(fits(connections(4096), 4096 + RESERVED).is_ok(), "exactly fits");
+        let exactly = fits(connections(4096), 4096 + RESERVED);
+        assert!(exactly.is_ok(), "4096 + {RESERVED} reserved = the limit: fits, got {exactly:?}");
+        let one_short = fits(connections(4096), 4096 + RESERVED - 1).map_err(|e| e.to_string());
+        let needs = format!("needs {}", 4096 + RESERVED);
+        assert!(
+            one_short.as_ref().is_err_and(|refused| refused.contains(&needs)),
+            "one fd short: refused naming {needs:?}, got {one_short:?}"
+        );
+
         let refused = fits(connections(4096), 1024).expect_err("systemd's default soft limit");
         let message = refused.to_string();
         for named in ["grpc.max_connections = 4096", "needs 5120", "limit is 1024", "LimitNOFILE"] {

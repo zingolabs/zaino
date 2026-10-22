@@ -217,16 +217,23 @@ mod tests {
         };
         let scraped = |emit| {
             let text = String::from_utf8(super::state_gauges(emit, super::Format::Text));
-            let text = text.expect("text exposition is UTF-8");
-            let series = text.lines().filter(|line| line.starts_with("zaino_chainview_release{"));
-            (text.contains("# HELP zaino_chainview_release "), series.map(str::to_owned).collect())
+            text.expect("text exposition is UTF-8")
         };
-        let first: (bool, Vec<String>) = scraped(release("6.0.0"));
-        let upgraded: (bool, Vec<String>) = scraped(release("6.1.0"));
-        let series =
+        let series = |text: &str| -> Vec<String> {
+            let release = text.lines().filter(|line| line.starts_with("zaino_chainview_release{"));
+            release.map(str::to_owned).collect()
+        };
+        let labelled =
             |build| format!(r#"zaino_chainview_release{{endpoint="a:8232",build="{build}"}} 1"#);
-        assert_eq!(first, (true, vec![series("6.0.0")]), "described, one series");
-        assert_eq!(upgraded, (true, vec![series("6.1.0")]), "6.0.0's series gone");
+        for (scrape, build) in
+            [(scraped(release("6.0.0")), "6.0.0"), (scraped(release("6.1.0")), "6.1.0")]
+        {
+            assert!(
+                scrape.contains("# HELP zaino_chainview_release "),
+                "build {build}: family described in every scrape:\n{scrape}"
+            );
+            assert_eq!(series(&scrape), [labelled(build)], "build {build}: its series only");
+        }
     }
 
     /// zebra-network's emissions (its own label shapes) through zainod's recorder:

@@ -111,24 +111,27 @@ mod tests {
     /// `READY=1` once serving or held (a node started held must not fail its start job)
     #[test]
     fn startup_extends_only_on_progress_then_reports_ready() {
-        let at = |started: bool, progress: &[u64]| Startup {
-            started,
+        let starting = |progress: &[u64]| Startup {
+            started: false,
             progress: progress.iter().copied().map(Some).collect(),
         };
+        let started = |progress: &[u64]| Startup { started: true, ..starting(progress) };
         let extend = Some(Message::ExtendTimeout(STALL_WINDOW));
         let mut reporter = Reporter::default();
 
-        let steps = [
-            (at(false, &[0, 10]), None),
-            (at(false, &[0, 90]), extend.clone()),
-            (at(false, &[0, 90]), None),
-            (at(false, &[]), extend.clone()),
-            (at(false, &[]), None),
-            (at(false, &[7, 5, 5]), extend),
-            (at(true, &[9, 9, 9]), Some(Message::Ready)),
+        #[rustfmt::skip]
+        let ticks = [
+            // case,                                       tick's startup,          message sent
+            ("first tick: nothing to compare against",     starting(&[0, 10]),      None),
+            ("bootstrap bytes moved",                      starting(&[0, 90]),      extend.clone()),
+            ("no progress",                                starting(&[0, 90]),      None),
+            ("bootstrap over, pipeline not up: changed",   starting(&[]),           extend.clone()),
+            ("still nothing",                              starting(&[]),           None),
+            ("pipeline booted: handed, served, durable",   starting(&[7, 5, 5]),    extend),
+            ("serving or held",                            started(&[9, 9, 9]),     Some(Message::Ready)),
         ];
-        for (step, (now, expected)) in steps.into_iter().enumerate() {
-            assert_eq!(reporter.observe(now), expected, "step {step}");
+        for (case, now, expected) in ticks {
+            assert_eq!(reporter.observe(now), expected, "{case}");
         }
     }
 }
