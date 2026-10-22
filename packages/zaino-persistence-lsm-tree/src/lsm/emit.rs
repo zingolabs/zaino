@@ -16,6 +16,9 @@ mod names {
     pub(super) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
     pub(super) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
     pub(super) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
+    pub(super) const LEFTOVER_BYTES: &str = "zaino.lsm.leftover_bytes";
+    pub(super) const MERGE_LAUNCH_FAILED_TOTAL: &str = "zaino.lsm.merge_launch_failed_total";
+    pub(super) const UNLINKED_MAPPED_BYTES: &str = "zaino.lsm.unlinked_mapped_bytes";
 }
 
 /// `(metric, bucket edges)` for the exporter (ms tier-0 merges → tens of minutes at the top)
@@ -33,7 +36,7 @@ pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
 ];
 
 /// `# HELP` registrations for every metric this module emits
-pub fn describe_metrics() {
+pub(crate) fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
     describe_gauge!(
@@ -75,6 +78,20 @@ pub fn describe_metrics() {
         Unit::Seconds,
         "Commit time spent waiting on a merge that fell two windows behind, by set"
     );
+    describe_gauge!(
+        names::LEFTOVER_BYTES,
+        Unit::Bytes,
+        "Merge-replaced segment bytes whose removal keeps failing, by set"
+    );
+    describe_counter!(
+        names::MERGE_LAUNCH_FAILED_TOTAL,
+        "Background merges that failed to start (retried at the next write), by set"
+    );
+    describe_gauge!(
+        names::UNLINKED_MAPPED_BYTES,
+        Unit::Bytes,
+        "Deleted segment bytes still mapped by a reader (disk freed when it drops), by set"
+    );
 }
 
 /// Per tier `0..shape.len()`: `(segments listed, merge running)`
@@ -112,4 +129,18 @@ pub(super) fn merged(set: &str, tier: u32, merged: &Merged, took: Duration) {
 
 pub(super) fn stalled(set: &str, took: Duration) {
     metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set.to_owned()).record(took);
+}
+
+/// Merge-replaced bytes still on disk (removal failing: retried every write)
+pub(super) fn leftover(set: &str, bytes: u64) {
+    metrics::gauge!(names::LEFTOVER_BYTES, "set" => set.to_owned()).set(bytes as f64);
+}
+
+/// Deleted segment bytes still mapped: raised at unlink, lowered as the last reader drops
+pub(super) fn unlinked(set: &str) -> metrics::Gauge {
+    metrics::gauge!(names::UNLINKED_MAPPED_BYTES, "set" => set.to_owned())
+}
+
+pub(super) fn launch_failed(set: &str) {
+    metrics::counter!(names::MERGE_LAUNCH_FAILED_TOTAL, "set" => set.to_owned()).increment(1);
 }

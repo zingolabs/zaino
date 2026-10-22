@@ -17,8 +17,10 @@ description = "On-disk zaino-persistence backend: positional files for sequences
 testing = ["zaino-persistence/testing"]
 
 [dependencies]
+arc-swap.workspace = true
 bytes.workspace = true
 crc32fast.workspace = true
+imbl.workspace = true
 memmap2.workspace = true
 metrics.workspace = true
 rayon.workspace = true
@@ -38,4 +40,7 @@ unreachable_pub = "warn"
 libc.workspace = true
 
 [dev-dependencies]
+metrics-util = "0.20"
+proptest.workspace = true
 tempfile.workspace = true
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

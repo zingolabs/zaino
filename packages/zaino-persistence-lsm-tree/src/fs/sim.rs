@@ -152,6 +152,8 @@ struct Image {
     durable: BTreeMap<PathBuf, Node>,
     /// Files made read-only (inode metadata: kept through every crash state)
     read_only: BTreeSet<FileId>,
+    /// Per directory, children whose entry changed since its last `sync_dir`
+    unsynced: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 }
 
 fn is_root(path: &Path) -> bool {
@@ -210,7 +212,16 @@ impl Image {
             durable: namespace.clone(),
             volatile: namespace,
             read_only: self.read_only.clone(),
+            unsynced: BTreeMap::new(),
         }
+    }
+
+    /// `path`'s entry changed: its parent's next `sync_dir` persists it
+    fn touched(&mut self, path: &Path) {
+        self.unsynced
+            .entry(parent(path).to_path_buf())
+            .or_default()
+            .insert(path.to_path_buf());
     }
 
     /// `id` writable, or `PermissionDenied` (a read-write open of a read-only file)
@@ -373,6 +384,8 @@ struct Inner {
     fail_from: Option<u64>,
     reads: u64,
     fail_reads_from: Option<u64>,
+    fail_removes: bool,
+    fail_creates: bool,
 }
 
 impl Inner {
@@ -500,6 +513,18 @@ impl SimFs {
         self.lock_inner().fail_from = Some(op);
     }
 
+    /// Every removal fails with `EIO` while `on` (a disk refusing unlinks), everything else works
+    #[cfg(test)]
+    pub(crate) fn fail_removes(&self, on: bool) {
+        self.lock_inner().fail_removes = on;
+    }
+
+    /// Every new file's creation fails with `EIO` while `on`, everything else works
+    #[cfg(test)]
+    pub(crate) fn fail_creates(&self, on: bool) {
+        self.lock_inner().fail_creates = on;
+    }
+
     /// `EIO` from the nth positional read on (failing disk surfacing on read)
     ///
     /// - mapped reads = copies here, never fail (real disk: `SIGBUS` kills the process, untestable
@@ -586,6 +611,7 @@ impl Fs for SimFs {
                 None => {
                     inner.mutate(|| format!("mkdir {}", up.display()))?;
                     inner.image.volatile.insert(up.to_path_buf(), Node::Dir);
+                    inner.image.touched(up);
                 }
             }
         }
@@ -603,6 +629,12 @@ impl Fs for SimFs {
                 id
             }
             None => {
+                if inner.fail_creates {
+                    return Err(io::Error::other(format!(
+                        "sim: injected create EIO: {}",
+                        path.display()
+                    )));
+                }
                 inner.mutate(|| format!("create {}", path.display()))?;
                 let id = inner.image.files.len();
                 inner.image.files.push(Content::default());
@@ -610,6 +642,7 @@ impl Fs for SimFs {
                     .image
                     .volatile
                     .insert(path.to_path_buf(), Node::File(id));
+                inner.image.touched(path);
                 id
             }
         };
@@ -634,6 +667,16 @@ impl Fs for SimFs {
         Ok(id.map(|id| self.handle(id, path)))
     }
 
+    /// No page cache here: the current bytes (one counted read)
+    fn read_uncached(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        let mut inner = self.lock_inner();
+        let Some(id) = inner.image.file(path)? else {
+            return Ok(None);
+        };
+        inner.read(path)?;
+        Ok(Some(inner.image.files[id].current.clone()))
+    }
+
     fn set_read_only(&self, path: &Path) -> io::Result<()> {
         let mut inner = self.lock_inner();
         let id = inner.image.file(path)?.ok_or_else(|| not_found(path))?;
@@ -654,6 +697,8 @@ impl Fs for SimFs {
             .image
             .volatile
             .insert(to.to_path_buf(), Node::File(id));
+        inner.image.touched(from);
+        inner.image.touched(to);
         inner.record(|| format!("rename {} -> {}", from.display(), to.display()));
         Ok(())
     }
@@ -661,8 +706,15 @@ impl Fs for SimFs {
     fn remove(&self, path: &Path) -> io::Result<()> {
         let mut inner = self.lock_inner();
         inner.image.file(path)?.ok_or_else(|| not_found(path))?;
+        if inner.fail_removes {
+            return Err(io::Error::other(format!(
+                "sim: injected remove EIO: {}",
+                path.display()
+            )));
+        }
         inner.mutate(|| format!("remove {}", path.display()))?;
         inner.image.volatile.remove(path);
+        inner.image.touched(path);
         inner.record(|| format!("remove {}", path.display()));
         Ok(())
     }
@@ -682,15 +734,33 @@ impl Fs for SimFs {
     }
 
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+        // `.` = the directory relative paths start from: here, the root
+        let dir = match dir == Path::new(".") {
+            true => Path::new(""),
+            false => dir,
+        };
         let mut inner = self.lock_inner();
         if !inner.image.is_dir(dir) {
             return Err(not_found(dir));
         }
         inner.mutate(|| format!("sync_dir {}", dir.display()))?;
-        let persisted = inner.image.with_dir_persisted(dir);
-        if persisted != inner.image.durable {
+        let children = inner.image.unsynced.remove(dir).unwrap_or_default();
+        let image = &inner.image;
+        let changed: Vec<(PathBuf, Option<Node>)> = children
+            .into_iter()
+            .filter_map(|path| {
+                let now = image.volatile.get(&path).copied();
+                (image.durable.get(&path).copied() != now).then_some((path, now))
+            })
+            .collect();
+        if !changed.is_empty() {
             inner.record(|| format!("before sync_dir {}", dir.display()));
-            inner.image.durable = persisted;
+            for (path, node) in changed {
+                match node {
+                    Some(node) => inner.image.durable.insert(path, node),
+                    None => inner.image.durable.remove(&path),
+                };
+            }
             inner.record(|| format!("sync_dir {}", dir.display()));
         }
         Ok(())

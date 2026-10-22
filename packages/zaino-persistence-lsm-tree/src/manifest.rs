@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
-//! slot = magic b"ZAINOMS2" ‖ format u16 ‖ name_len u8 ‖ name ‖ seq u64 ‖ body_len u32
+//! slot = magic b"ZAINOMS3" ‖ format u16 ‖ name_len u8 ‖ name ‖ seq u64 ‖ body_len u32
 //!        ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
@@ -14,7 +14,8 @@
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
-const MAGIC: [u8; 8] = *b"ZAINOMS2";
+/// Layout version of the slot and body (3: per-segment filter prefix in segment lists)
+const MAGIC: [u8; 8] = *b"ZAINOMS3";
 const CRC: usize = 4;
 
 /// Where the name starts: after magic ‖ format u16 ‖ name_len u8
@@ -46,6 +47,10 @@ impl Identity {
             }),
             false => Err(ManifestError::NameLength { len: name.len() }),
         }
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 
     /// Header bytes before `seq`: magic ‖ format ‖ name_len ‖ name
@@ -248,10 +253,10 @@ pub(crate) fn read(
     dir: &std::path::Path,
     identity: &Identity,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(file) = fs.open_read_only(&dir.join(crate::dir::MANIFEST))? else {
+    let Some(bytes) = fs.read_uncached(&dir.join(crate::dir::MANIFEST))? else {
         return Ok(None);
     };
-    latest(identity, &file.read_all()?)
+    latest(identity, &bytes)
         .map(|committed| committed.map(|(_, body)| body.to_vec()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
@@ -325,6 +330,16 @@ impl<'a> BodyReader<'a> {
             .ok_or(ManifestError::Body("truncated"))?;
         self.rest = rest;
         Ok(*head)
+    }
+
+    /// The next `len` bytes
+    pub(crate) fn take(&mut self, len: usize) -> Result<&'a [u8], ManifestError> {
+        let (head, rest) = self
+            .rest
+            .split_at_checked(len)
+            .ok_or(ManifestError::Body("truncated"))?;
+        self.rest = rest;
+        Ok(head)
     }
 
     pub(crate) fn u32(&mut self) -> Result<u32, ManifestError> {

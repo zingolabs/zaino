@@ -16,11 +16,13 @@ use super::{
     file_name,
     layout::{Row, Shape},
     writer::SegmentWriter,
-    Breach, Cursor, Lookup, SegmentError, SegmentLog, Slots, Snapshot, Tuning,
+    Breach, Cursor, Lookup, LsmConfig, SegmentError, SegmentLog, SegmentMeta, Slots, Snapshot,
+    Tuning,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
     pages::{sums_path, PageError},
+    testing::{eventually, SPILL},
 };
 
 fn width(n: u32) -> NonZeroU32 {
@@ -33,12 +35,20 @@ fn scanned() -> Shape {
         scope: 8,
         cache_writes: false,
     };
-    Shape::of("scanned", width(12), width(8), false, tuning).expect("shape")
+    Shape::of("scanned", width(12), width(8), false, tuning, SPILL).expect("shape")
 }
 
 /// Hash-like id → position, point lookups only
 fn probed(deletes: bool) -> Shape {
-    Shape::of("probed", width(16), width(4), deletes, Tuning::default()).expect("shape")
+    Shape::of(
+        "probed",
+        width(16),
+        width(4),
+        deletes,
+        Tuning::default(),
+        SPILL,
+    )
+    .expect("shape")
 }
 
 /// Uniform 8 bytes per account (the filter shards on them)
@@ -71,6 +81,39 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
 
 fn slots() -> Arc<Slots> {
     Arc::new(Slots::new(4, u64::MAX))
+}
+
+/// Merging every `fanout` segments, spilling at the tests' threshold
+fn config(fanout: usize) -> LsmConfig {
+    LsmConfig {
+        fanout,
+        spill_bytes: SPILL,
+        ..LsmConfig::default()
+    }
+}
+
+/// `rows` written as the engine writes them: merges joined first, then batched and committed
+fn commit(log: &mut SegmentLog, rows: Vec<(&[u8], Option<&[u8]>)>) -> Result<(), SegmentError> {
+    let upcoming: Vec<u64> = match rows.len() {
+        0 => Vec::new(),
+        count => vec![count as u64],
+    };
+    log.prepare(&upcoming)?;
+    let staged = log.batch(rows, Vec::new())?;
+    log.committed(staged);
+    Ok(())
+}
+
+/// Empty batches committed until `landed` holds for the listed segments or a batch fails (a
+/// merge's error surfaces at the batch that lands it); 5 s deadline
+fn until_landed(
+    log: &mut SegmentLog,
+    landed: impl Fn(&[SegmentMeta]) -> bool,
+) -> Result<(), SegmentError> {
+    eventually("the merge landed", || match commit(log, Vec::new()) {
+        Err(error) => Some(Err(error)),
+        Ok(()) => landed(&log.snapshot().segments()).then_some(Ok(())),
+    })
 }
 
 /// Owned `(key, value)` rows
@@ -108,8 +151,16 @@ fn lookup(snapshot: &Snapshot, key: &[u8]) -> Lookup {
 fn a_row_the_map_cannot_hold_is_refused() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    let mut log =
-        SegmentLog::open(fs, Path::new("/m"), "scanned", scanned(), &[], 2, slots()).expect("open");
+    let mut log = SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        "scanned",
+        scanned(),
+        &[],
+        &config(2),
+        slots(),
+    )
+    .expect("open");
     type Refused = (&'static [u8], Option<&'static [u8]>);
     let rows: [Refused; 3] = [
         (&[0; 11], Some(&[0; 8])),
@@ -117,16 +168,14 @@ fn a_row_the_map_cannot_hold_is_refused() {
         (&[0; 12], None),
     ];
     for (key, value) in rows {
-        let refused = log.batch(vec![(key, value)]);
+        let refused = log.batch(vec![(key, value)], Vec::new());
         assert!(
             matches!(refused, Err(SegmentError::Internal(_))),
             "{refused:?}"
         );
     }
     let (key, value) = scanned_row(1, 1);
-    log.batch(vec![(key.as_slice(), Some(value.as_slice()))])
-        .expect("a fitting row");
-    log.committed().expect("committed");
+    commit(&mut log, vec![(key.as_slice(), Some(value.as_slice()))]).expect("a fitting row");
 }
 
 /// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
@@ -217,12 +266,20 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
         "scanned",
         shape,
         &[kept, second],
-        2,
+        &config(2),
         slots(),
     )
     .expect("merge");
-    log.settle();
-    corrupt(log.batch(Vec::new()).map(drop));
+    let merged = until_landed(&mut log, |_| false);
+    assert!(
+        matches!(
+            &merged,
+            Err(SegmentError::MergeFailed { name, source })
+                if name == "scanned"
+                    && matches!(&**source, SegmentError::Page(PageError::Corrupt { page: 0, .. }))
+        ),
+        "{merged:?}"
+    );
 
     fs.remove(&sums_path(&path)).expect("remove checksums");
     let unsummed = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
@@ -432,9 +489,10 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     assert_eq!(range(301).len(), 20, "an account from one segment");
     assert!(range(7_777).is_empty(), "an account no segment holds");
 
-    let file =
-        SegmentFile::open(fs.as_ref(), dir, &segments[0], shape, Access::Normal).expect("open");
-    file.warm_filter().expect("warm");
+    let file = SegmentFile::open(fs.as_ref(), dir, &segments[0], shape, Access::Normal)
+        .expect("open")
+        .probed()
+        .expect("filter checked");
     assert!(
         (1..50).all(|a| file.may_contain(&account(a)).expect("probe")),
         "no false negative"
@@ -552,6 +610,100 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
 /// Value in one segment, its tombstone in a tombstone-only other, an unrelated third: whatever
 /// the list order, and after a merge of any two (adjacent or not), the key reads removed through
 /// `lookup_with` and `get_many`, and absent from every walk
+/// A merge failing for a cause a retry clears: the next write's `MergeFailed` with nothing
+/// staged, no partial file left; once the disk recovers, a later write's merge lands
+#[test]
+fn a_failed_merge_fails_the_next_write_and_runs_again_later() {
+    let fs = SimFs::new();
+    let dir = Path::new("/retried");
+    fs.create_dir_all(dir).expect("dir");
+    let mut log = SegmentLog::open(
+        fs.clone(),
+        dir,
+        "scanned",
+        scanned(),
+        &[],
+        &config(2),
+        slots(),
+    )
+    .expect("open");
+    let owned: Vec<Rows> = (1..=2u64)
+        .map(|owner| (0..50).map(|seq| scanned_row(owner, seq)).collect())
+        .collect();
+    let [first, second] = owned.as_slice() else {
+        panic!("two batches");
+    };
+    commit(&mut log, borrowed(first)).expect("first");
+
+    // the second segment's commit launches the merge; every create fails from then on
+    log.prepare(&[second.len() as u64]).expect("prepare");
+    let staged = log.batch(borrowed(second), Vec::new()).expect("batch");
+    fs.fail_creates(true);
+    log.committed(staged);
+    let listed = log.snapshot().segments();
+    let on_disk = fs.list(dir).expect("list");
+
+    let failed = eventually("the merge's failure surfaces", || {
+        commit(&mut log, Vec::new()).err()
+    });
+    assert!(
+        matches!(
+            &failed,
+            SegmentError::MergeFailed { name, source }
+                if name == "scanned" && matches!(&**source, SegmentError::Page(PageError::Io(_)))
+        ),
+        "{failed:?}"
+    );
+    assert_eq!(log.snapshot().segments(), listed, "nothing staged");
+    assert_eq!(fs.list(dir).expect("list"), on_disk, "no partial file left");
+
+    fs.fail_creates(false);
+    until_landed(&mut log, |segments| segments.len() == 1).expect("merged on retry");
+    let snapshot = log.snapshot();
+    for (key, value) in first.iter().chain(second) {
+        assert_eq!(
+            lookup(snapshot, key),
+            Lookup::Value(Bytes::copy_from_slice(value)),
+            "every row kept"
+        );
+    }
+}
+
+/// Rate = the rows read + written: the merge alone fits the one-second burst, so the half-second
+/// debt is the output's read-back
+#[test]
+fn a_merges_read_back_is_charged_to_its_bandwidth() {
+    let fs = SimFs::new();
+    let dir = Path::new("/paced");
+    fs.create_dir_all(dir).expect("dir");
+    let shape = scanned();
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let rows = 5_000u32;
+    let segments: Vec<SegmentMeta> = (0..2u64)
+        .map(|owner| {
+            let owned: Vec<_> = (0..rows).map(|seq| scanned_row(owner, seq)).collect();
+            writer
+                .write(owner as u32, borrowed(&owned))
+                .expect("write")
+                .expect("rows")
+        })
+        .collect();
+    let merged_bytes = 2 * rows as u64 * shape.stride as u64;
+    let slots = Slots::new(1, 2 * merged_bytes);
+    let cancel = AtomicBool::new(false);
+    let slot = slots.acquire(0, &cancel).expect("free slot");
+    let started = std::time::Instant::now();
+    writer
+        .merge(9, &segments, &cancel, &slot)
+        .expect("merge")
+        .expect("not cancelled");
+    let waited = started.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(400),
+        "read-back unpaced: {waited:?}"
+    );
+}
+
 #[test]
 fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let fs = SimFs::new();
@@ -724,11 +876,17 @@ fn a_cursor_walks_every_range_in_order_across_segments() {
     for _ in 0..37 {
         cursor.advance().expect("advance");
     }
-    let mut log = SegmentLog::open(fs.clone(), dir, "scanned", shape, &segments, 5, slots())
-        .expect("merging");
-    log.settle();
-    log.batch(Vec::new()).expect("land");
-    log.committed().expect("swap");
+    let mut log = SegmentLog::open(
+        fs.clone(),
+        dir,
+        "scanned",
+        shape,
+        &segments,
+        &config(5),
+        slots(),
+    )
+    .expect("merging");
+    until_landed(&mut log, |listed| listed.len() < segments.len()).expect("landed");
     let mut rest = Vec::new();
     while let Some((key, value)) = cursor.current().expect("row") {
         rest.push((key.to_vec(), value.to_vec()));
@@ -770,22 +928,20 @@ fn short_keys_write_merge_and_read() {
     let fs = SimFs::new();
     let dir = Path::new("/short");
     fs.create_dir_all(dir).expect("dir");
-    let shape = Shape::of("short", width(2), width(1), false, Tuning::default()).expect("shape");
+    let shape =
+        Shape::of("short", width(2), width(1), false, Tuning::default(), SPILL).expect("shape");
     let rows = |range: std::ops::Range<u16>| -> Vec<(Vec<u8>, Vec<u8>)> {
         range
             .map(|n| (n.to_be_bytes().to_vec(), vec![n as u8]))
             .collect()
     };
-    let mut log = SegmentLog::open(fs.clone(), dir, "short", shape, &[], 2, slots()).expect("open");
+    let mut log =
+        SegmentLog::open(fs.clone(), dir, "short", shape, &[], &config(2), slots()).expect("open");
     for range in [0..500u16, 500..1_000] {
         let batch = rows(range);
-        log.batch(borrowed(&batch)).expect("batch");
-        log.committed().expect("committed");
+        commit(&mut log, borrowed(&batch)).expect("batch");
     }
-    log.settle();
-    log.batch(Vec::new()).expect("land the merge");
-    log.committed().expect("committed");
-    assert_eq!(log.segments().len(), 1, "merged into one");
+    until_landed(&mut log, |listed| listed.len() == 1).expect("merged into one");
     let snapshot = Arc::clone(log.snapshot());
     assert_eq!(
         lookup(&snapshot, &700u16.to_be_bytes()),

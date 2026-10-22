@@ -33,14 +33,25 @@ pub trait CommitState {
     fn key_state(&self, namespace: Namespace, key: &[u8]) -> Result<KeyState, ReadError>;
 }
 
-/// Whether `ops` may be committed at `tip` over `state`.
+/// Whether `ops` may be committed at `tip` over `state`: [`check_shape`], then
+/// [`check_keys`].
+pub fn check_commit(
+    specs: &[NamespaceSpec],
+    state: &impl CommitState,
+    tip: BlockRef,
+    ops: &[WriteOp],
+) -> Result<(), CommitError> {
+    check_shape(specs, state, tip, ops)?;
+    check_keys(specs, state, ops)
+}
+
+/// Every rule that needs no map key's state (no disk reads): run first.
 ///
 /// - `tip` above the last committed tip
 /// - every namespace declared in `specs`
 /// - sequence: `Put` at the next position, records of the declared width, no `Delete`
-/// - map: declared widths, each key once per batch; `Put` of an absent key;
-///   `Delete` of a present key, in a namespace declared with `deletes`
-pub fn check_commit(
+/// - map: declared widths, each key once per batch, `Delete` only with `deletes`
+pub fn check_shape(
     specs: &[NamespaceSpec],
     state: &impl CommitState,
     tip: BlockRef,
@@ -52,17 +63,9 @@ pub fn check_commit(
     let mut next: HashMap<Namespace, u64> = HashMap::new();
     let mut written: HashSet<(Namespace, &[u8])> = HashSet::new();
     for op in ops {
-        let (namespace, key) = match op {
-            WriteOp::Put { namespace, key, .. } | WriteOp::Delete { namespace, key } => {
-                (*namespace, key.as_slice())
-            }
-        };
+        let (namespace, key) = op_key(op);
         let name = || namespace.to_string();
-        let spec = specs
-            .iter()
-            .find(|spec| spec.namespace == namespace)
-            .ok_or_else(|| CommitError::NamespaceNotFound(name()))?;
-        match (spec.kind, op) {
+        match (spec_of(specs, namespace)?.kind, op) {
             (NamespaceKind::Sequence { record }, WriteOp::Put { value, .. }) => {
                 let expected = match next.get(&namespace) {
                     Some(&position) => position,
@@ -94,39 +97,67 @@ pub fn check_commit(
                 if !written.insert((namespace, key)) {
                     return Err(CommitError::DuplicateInBatch { namespace: name() });
                 }
-                let held = || state.key_state(namespace, key).map_err(CommitError::Check);
                 match op {
                     WriteOp::Put { value, .. } => {
                         check_width(namespace, Part::Value, Width::Fixed(value_width), value)?;
-                        match held()? {
-                            KeyState::Absent => {}
-                            KeyState::Present => {
-                                return Err(CommitError::KeyExists { namespace: name() })
-                            }
-                            KeyState::Removed => {
-                                return Err(CommitError::KeyRemoved { namespace: name() })
-                            }
-                        }
                     }
-                    WriteOp::Delete { .. } => {
-                        if !deletes {
-                            return Err(CommitError::DeleteNotAllowed { namespace: name() });
-                        }
-                        match held()? {
-                            KeyState::Present => {}
-                            KeyState::Absent => {
-                                return Err(CommitError::KeyAbsent { namespace: name() })
-                            }
-                            KeyState::Removed => {
-                                return Err(CommitError::KeyRemoved { namespace: name() })
-                            }
-                        }
+                    WriteOp::Delete { .. } if !deletes => {
+                        return Err(CommitError::DeleteNotAllowed { namespace: name() });
                     }
+                    WriteOp::Delete { .. } => {}
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Map keys against their state (after [`check_shape`]): `Put` of an absent key, `Delete` of
+/// a present one; a removed key refused while the backend records the removal.
+pub fn check_keys(
+    specs: &[NamespaceSpec],
+    state: &impl CommitState,
+    ops: &[WriteOp],
+) -> Result<(), CommitError> {
+    for op in ops {
+        let (namespace, key) = op_key(op);
+        if !matches!(spec_of(specs, namespace)?.kind, NamespaceKind::Map { .. }) {
+            continue;
+        }
+        let name = || namespace.to_string();
+        let held = state
+            .key_state(namespace, key)
+            .map_err(CommitError::Check)?;
+        match (op, held) {
+            (WriteOp::Put { .. }, KeyState::Absent)
+            | (WriteOp::Delete { .. }, KeyState::Present) => {}
+            (WriteOp::Put { .. }, KeyState::Present) => {
+                return Err(CommitError::KeyExists { namespace: name() })
+            }
+            (WriteOp::Delete { .. }, KeyState::Absent) => {
+                return Err(CommitError::KeyAbsent { namespace: name() })
+            }
+            (_, KeyState::Removed) => return Err(CommitError::KeyRemoved { namespace: name() }),
+        }
+    }
+    Ok(())
+}
+
+/// `op`'s namespace and key
+fn op_key(op: &WriteOp) -> (Namespace, &[u8]) {
+    match op {
+        WriteOp::Put { namespace, key, .. } | WriteOp::Delete { namespace, key } => {
+            (*namespace, key.as_slice())
+        }
+    }
+}
+
+/// `namespace`'s spec, or `NamespaceNotFound`
+fn spec_of(specs: &[NamespaceSpec], namespace: Namespace) -> Result<&NamespaceSpec, CommitError> {
+    specs
+        .iter()
+        .find(|spec| spec.namespace == namespace)
+        .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
 }
 
 /// A point read's key: `namespace` declared in `specs`, `key` of its key width

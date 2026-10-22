@@ -17,14 +17,22 @@
         clippy::get_unwrap
     )
 )]
-// the engine that uses these lands in later commits of this series
-#![allow(dead_code, unused_imports)]
 
+mod backend;
+mod buffer;
 mod dir;
+mod emit;
+mod engine;
+mod error;
 pub mod fs;
 mod lsm;
 mod manifest;
 mod pages;
+mod sequence;
+#[cfg(test)]
+mod testing;
 
+pub use backend::{verify_dir, LsmTreeBackend, LsmTreeConfig, LsmTreeReader, LsmTreeWriter};
 pub use dir::disk_bytes;
-pub use lsm::{describe_metrics, LsmConfig, Tuning, METRIC_BUCKETS};
+pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use lsm::{LsmConfig, Tuning, METRIC_BUCKETS as LSM_METRIC_BUCKETS};

@@ -296,6 +296,17 @@ fn undeclared_namespace_is_an_error_for_every_read() {
         chunks.next().expect("error is yielded").map(drop)
     ));
     assert!(chunks.next().is_none(), "finished after the error");
+    let empty_range = range(Included(1), Excluded(1), Forward, 1024);
+    let mut chunks = reader.scan_range(OTHER, empty_range, raw_entry);
+    assert!(
+        not_found(
+            chunks
+                .next()
+                .expect("error even for an empty range")
+                .map(drop)
+        ),
+        "an undeclared namespace is an error whatever the range"
+    );
 }
 
 #[test]

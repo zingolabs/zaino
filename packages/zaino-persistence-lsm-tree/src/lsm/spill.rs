@@ -1,12 +1,14 @@
 //! Byte stream a segment's navigation writes while its records stream out, copied in after the
-//! records: memory up to [`SPILL_AT`], then a scratch file beside the segment
+//! records: memory up to its threshold (`LsmConfig::spill_bytes`), then a scratch file beside the
+//! segment
 //!
 //! - large merge's fences + fingerprints = hundreds of MB (held in memory: merge memory ∝ segment)
-//! - small batch never reaches [`SPILL_AT`], never touches a scratch file
+//! - small batch never reaches the threshold, never touches a scratch file
 //! - scratch files never listed, always removed when a set opens (crash can leave one)
 
 use std::{
     io,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -16,19 +18,12 @@ use crate::{
     pages::PagedFile,
 };
 
-/// Bytes held in memory before the stream moves to its scratch file (and the copy chunk size)
-///
-/// - tests spill from 4 KiB (every segment-writing test, crash states included, runs through the
-///   scratch files too)
-const SPILL_AT: usize = match cfg!(any(test, feature = "testing")) {
-    true => 4096,
-    false => 1 << 20,
-};
-
-/// `file` = scratch file + bytes already written to it, once spilled
+/// `file` = scratch file + bytes already written to it, once spilled; `at` = bytes held in
+/// memory before the stream moves to its scratch file (and the copy chunk size)
 pub(crate) struct Spill {
     fs: Arc<dyn Fs>,
     path: PathBuf,
+    at: usize,
     buffer: Vec<u8>,
     file: Option<(Arc<dyn FileHandle>, u64)>,
 }
@@ -38,11 +33,12 @@ fn overflow() -> io::Error {
 }
 
 impl Spill {
-    /// `path` = where it spills, if it grows past [`SPILL_AT`]
-    pub(crate) fn new(fs: Arc<dyn Fs>, path: PathBuf) -> Self {
+    /// `path` = where it spills, once it grows past `at` bytes
+    pub(crate) fn new(fs: Arc<dyn Fs>, path: PathBuf, at: NonZeroUsize) -> Self {
         Self {
             fs,
             path,
+            at: at.get(),
             buffer: Vec::new(),
             file: None,
         }
@@ -50,7 +46,7 @@ impl Spill {
 
     pub(crate) fn push(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.buffer.extend_from_slice(bytes);
-        if self.buffer.len() >= SPILL_AT {
+        if self.buffer.len() >= self.at {
             self.write_out()?;
         }
         Ok(())
@@ -70,10 +66,10 @@ impl Spill {
         let file = Arc::clone(file);
         self.write_out()?;
         let total = self.len();
-        let mut chunk = vec![0; SPILL_AT];
+        let mut chunk = vec![0; self.at];
         let mut at: u64 = 0;
         while let Some(left) = total.checked_sub(at).filter(|left| *left > 0) {
-            let take = usize::try_from(left).map_or(SPILL_AT, |left| left.min(SPILL_AT));
+            let take = usize::try_from(left).map_or(self.at, |left| left.min(self.at));
             let piece = chunk.get_mut(..take).ok_or_else(overflow)?;
             file.read_exact_at(piece, at)?;
             out.append(piece)?;
@@ -122,6 +118,8 @@ mod tests {
         pages::{FileKind, Sealed},
     };
 
+    const AT: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
+
     /// - past the threshold → scratch file; appended bytes = exactly what was pushed, scratch gone
     /// - below it: nothing touches the disk
     #[test]
@@ -129,10 +127,10 @@ mod tests {
         let fs = SimFs::new();
         let dir = Path::new("/set");
         fs.create_dir_all(dir).expect("dir");
-        let pushed: Vec<u8> = (0..3 * SPILL_AT + 77).map(|n| (n % 251) as u8).collect();
+        let pushed: Vec<u8> = (0..3 * AT.get() + 77).map(|n| (n % 251) as u8).collect();
 
         let path = scratch_path(dir, 7, "fences");
-        let mut spill = Spill::new(fs.clone(), path.clone());
+        let mut spill = Spill::new(fs.clone(), path.clone(), AT);
         for piece in pushed.chunks(1000) {
             spill.push(piece).expect("push");
         }
@@ -146,7 +144,7 @@ mod tests {
         assert_eq!(fs.contents(&target).expect("segment"), pushed);
         assert!(fs.contents(&path).is_none(), "scratch removed");
 
-        let small = Spill::new(fs.clone(), scratch_path(dir, 8, "fences"));
+        let small = Spill::new(fs.clone(), scratch_path(dir, 8, "fences"), AT);
         assert!(
             fs.contents(&scratch_path(dir, 8, "fences")).is_none(),
             "never spilled"

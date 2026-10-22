@@ -7,11 +7,13 @@ use crate::{
     pages::Sealed,
 };
 
-/// Committed segment: file id, record count, its file's seal
+/// Committed segment: file id, record count, the key bytes its filter covers (the map's scope
+/// when it was written), its file's seal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SegmentMeta {
     pub(crate) id: u32,
     pub(crate) records: u64,
+    pub(crate) filtered: u32,
     pub(crate) sealed: Sealed,
 }
 
@@ -19,6 +21,7 @@ impl SegmentMeta {
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.id.to_le_bytes());
         out.extend_from_slice(&self.records.to_le_bytes());
+        out.extend_from_slice(&self.filtered.to_le_bytes());
         self.sealed.encode(out);
     }
 
@@ -26,13 +29,14 @@ impl SegmentMeta {
         Ok(Self {
             id: body.u32()?,
             records: body.u64()?,
+            filtered: body.u32()?,
             sealed: Sealed::decode(body)?,
         })
     }
 }
 
-/// `count u32 ‖ (id u32 ‖ records u64 ‖ sealed len u64 ‖ tail crc u32 ‖ sums u32)*`, in list
-/// order
+/// `count u32 ‖ (id u32 ‖ records u64 ‖ filtered u32 ‖ sealed len u64 ‖ tail crc u32 ‖
+/// sums u32)*`, in list order
 pub(crate) fn encode_list(
     segments: &[SegmentMeta],
     out: &mut Vec<u8>,
@@ -46,7 +50,7 @@ pub(crate) fn encode_list(
     Ok(())
 }
 
-/// Duplicate id or empty segment refused (neither ever committed)
+/// Duplicate id, empty segment or zero-byte filter prefix refused (none ever committed)
 pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
     let count = body.u32()?;
     let mut segments = Vec::new();
@@ -54,6 +58,9 @@ pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>,
         let segment = SegmentMeta::decode(body)?;
         if segment.records == 0 {
             return Err(ManifestError::Body("empty segment listed"));
+        }
+        if segment.filtered == 0 {
+            return Err(ManifestError::Body("a segment filtering on no key bytes"));
         }
         if segments
             .iter()
@@ -71,14 +78,20 @@ pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>,
 ///
 /// - a fanout below 2 (refused at open) or an empty segment (never listed) = tier 0
 pub(crate) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
+    tier_of_rows(segment.records, fanout)
+}
+
+/// [`tier_of`] a segment of `records` rows
+pub(crate) fn tier_of_rows(records: u64, fanout: usize) -> u32 {
     let base = u64::try_from(fanout).unwrap_or(u64::MAX);
-    segment.records.checked_ilog(base).unwrap_or(0)
+    records.checked_ilog(base).unwrap_or(0)
 }
 
 /// Next size-tiered merge: lowest tier outside `busy` listing `fanout` segments → its oldest
 /// `fanout`
 ///
-/// - peers need not be adjacent (keys unique across segments → order never changes an answer)
+/// - peers need not be adjacent (order never changes an answer: a key is a value in one segment,
+///   at most a tombstone in another, and reads treat that pair alike in either order)
 /// - lowest first: cheapest merge, most segments retired per byte
 pub(crate) fn merge_candidates(
     segments: &[SegmentMeta],
@@ -141,6 +154,7 @@ mod tests {
         SegmentMeta {
             id,
             records,
+            filtered: 8,
             sealed: Sealed {
                 len: records * 3,
                 tail: id * 7,
@@ -149,20 +163,27 @@ mod tests {
         }
     }
 
-    /// List codec round trip; duplicate id or empty segment in a manifest refused
+    /// List codec round trip (each segment's filter prefix kept); duplicate id, empty segment or
+    /// zero-byte filter prefix in a manifest refused
     #[test]
     fn segment_lists_round_trip_and_refuse_duplicates_and_empties() {
-        let segments = vec![segment(4, 10), segment(9, 1), segment(2, 1 << 40)];
+        let mut segments = vec![segment(4, 10), segment(9, 1), segment(2, 1 << 40)];
+        segments[1].filtered = 21;
         let mut bytes = Vec::new();
         encode_list(&segments, &mut bytes).expect("encode");
-        assert_eq!(bytes.len(), 4 + 3 * 28);
+        assert_eq!(bytes.len(), 4 + 3 * 32);
         let mut body = BodyReader::new(&bytes);
         assert_eq!(decode_list(&mut body).expect("decode"), segments);
         body.finish().expect("whole list consumed");
 
+        let unfiltered = SegmentMeta {
+            filtered: 0,
+            ..segment(1, 5)
+        };
         for (bad, reason) in [
             (vec![segment(1, 5), segment(1, 6)], "segment listed twice"),
             (vec![segment(1, 0)], "empty segment listed"),
+            (vec![unfiltered], "a segment filtering on no key bytes"),
         ] {
             let mut bytes = Vec::new();
             encode_list(&bad, &mut bytes).expect("encode");

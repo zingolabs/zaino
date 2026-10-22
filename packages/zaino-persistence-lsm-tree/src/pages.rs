@@ -36,7 +36,6 @@ pub(crate) const PAGE: usize = 4096;
 const PAGE_U64: u64 = PAGE as u64;
 
 const SUM: usize = 4;
-const SUM_U64: u64 = SUM as u64;
 
 /// Dirty bytes per file before writeback starts (RocksDB `bytes_per_sync` recommendation)
 const WRITE_BEHIND: u64 = 1 << 20;
@@ -86,7 +85,7 @@ impl Sealed {
     }
 
     /// Bytes of `<file>.crc` this seal covers
-    fn sums_len(&self) -> u64 {
+    pub(crate) fn sums_len(&self) -> u64 {
         self.full_pages().saturating_mul(SUM as u64)
     }
 }
@@ -153,10 +152,6 @@ pub(crate) enum PageError {
         end: usize,
         len: usize,
     },
-
-    /// Debug builds only: an unchecked read of a page no checked read covered
-    #[error("{path} page {page}: unchecked read before a checked one")]
-    Unchecked { path: PathBuf, page: usize },
 
     #[error("{path}: {what} overflows")]
     Overflow { path: PathBuf, what: &'static str },
@@ -555,20 +550,6 @@ impl Pages {
         self.within(range)
     }
 
-    /// `range` whose pages an earlier [`read`](Self::read) checked (caller's own record of it):
-    /// no per-page bitmap walk on a hot path; debug builds confirm it
-    pub(crate) fn read_unchecked(&self, range: Range<usize>) -> Result<&[u8], PageError> {
-        let bytes = self.within(range.clone())?;
-        #[cfg(debug_assertions)]
-        if let Some(page) = pages_of(&range).find(|page| !self.is_checked(*page)) {
-            return Err(PageError::Unchecked {
-                path: self.inner.path.clone(),
-                page,
-            });
-        }
-        Ok(bytes)
-    }
-
     /// `range` of the sealed bytes, or `OutOfRange`
     fn within(&self, range: Range<usize>) -> Result<&[u8], PageError> {
         let data = &self.inner.data;
@@ -676,6 +657,7 @@ pub(crate) enum Lost {
 }
 
 impl Checked {
+    #[cfg(test)]
     pub(crate) fn is_clean(&self) -> bool {
         self.lost.is_none() && !self.bad_sums && self.bad_pages.is_empty()
     }

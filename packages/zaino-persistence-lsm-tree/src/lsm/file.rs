@@ -1,6 +1,6 @@
 //! Listed segment, mapped: what readers and merges hold
 
-use std::{ops::Range, path::Path};
+use std::{ops::Range, path::Path, sync::OnceLock};
 
 use bytes::Bytes;
 
@@ -23,12 +23,23 @@ pub(crate) enum Prefetch {
 }
 
 /// - `summary` = the summary section, copied into memory at open (one key per page of fences)
+/// - `unlinked` = its file deleted while mapped: counted there until dropped
 #[derive(Debug)]
 pub(crate) struct SegmentFile {
     pub(crate) meta: SegmentMeta,
+    filtered: usize,
     pages: Pages,
     sections: Sections,
     summary: Box<[u8]>,
+    unlinked: OnceLock<metrics::Gauge>,
+}
+
+impl Drop for SegmentFile {
+    fn drop(&mut self) {
+        if let Some(unlinked) = self.unlinked.get() {
+            unlinked.decrement(self.meta.sealed.len as f64);
+        }
+    }
 }
 
 impl SegmentFile {
@@ -53,22 +64,38 @@ impl SegmentFile {
             FilterLayout::parse(read, section)
         })?;
         let summary = pages.read(sections.summary.clone())?.into();
+        let filtered = usize::try_from(meta.filtered)
+            .ok()
+            .filter(|filtered| (1..=shape.key_len).contains(filtered))
+            .ok_or(SegmentError::Corrupt {
+                segment: meta.id,
+                reason: "a filter prefix off the key",
+            })?;
         Ok(Self {
             meta: *meta,
+            filtered,
             pages,
             sections,
             summary,
+            unlinked: OnceLock::new(),
         })
     }
 
-    /// Whole filter section read + checked up front (no probe ever faults in or checks a cold
-    /// filter page; reader's copy, merges never probe)
-    pub(crate) fn warm_filter(&self) -> Result<()> {
+    /// Its file deleted while still mapped: its bytes counted in `unlinked` until dropped
+    pub(super) fn unlinked(&self, unlinked: &metrics::Gauge) {
+        if self.unlinked.set(unlinked.clone()).is_ok() {
+            unlinked.increment(self.meta.sealed.len as f64);
+        }
+    }
+
+    /// Whole filter section read + checked up front: the only way to probe (no probe ever faults
+    /// in or checks a cold filter page; merges never probe)
+    pub(crate) fn probed(self) -> Result<Probed> {
         let (at, layout) = &self.sections.filter;
         let range = shifted(*at, 0..layout.len())?;
         self.pages.will_need(range.clone());
-        self.pages.read(range)?;
-        Ok(())
+        let filter = self.pages.bytes(range)?;
+        Ok(Probed { file: self, filter })
     }
 
     pub(crate) fn pages(&self) -> &Pages {
@@ -77,10 +104,6 @@ impl SegmentFile {
 
     pub(crate) fn records(&self) -> usize {
         self.sections.records
-    }
-
-    pub(crate) fn shape(&self) -> &Shape {
-        &self.sections.shape
     }
 
     pub(crate) fn row(&self, slot: usize) -> Result<&[u8]> {
@@ -126,9 +149,9 @@ impl SegmentFile {
         }
     }
 
-    /// Key bytes the filter covers
+    /// Key bytes this segment's filter covers (the map's scope when it was written)
     pub(crate) fn filtered(&self) -> usize {
-        self.sections.shape.filtered
+        self.filtered
     }
 
     /// Bytes a [`seek`](Self::seek) for `needle` reads in `step`, for readahead ahead of it
@@ -179,16 +202,35 @@ impl SegmentFile {
         }
         Ok(low)
     }
+}
 
-    /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) here
-    ///
-    /// - reads only pages [`warm_filter`](Self::warm_filter) already checked
+/// A segment whose filter section was checked whole ([`SegmentFile::probed`]): probes read it
+/// with no page check
+#[derive(Debug)]
+pub(crate) struct Probed {
+    file: SegmentFile,
+    filter: Bytes,
+}
+
+impl std::ops::Deref for Probed {
+    type Target = SegmentFile;
+
+    fn deref(&self) -> &SegmentFile {
+        &self.file
+    }
+}
+
+impl Probed {
+    /// `false` = no key starting with `prefix` (the [`filtered`](SegmentFile::filtered) bytes)
+    /// here
     pub(crate) fn may_contain(&self, prefix: &[u8]) -> Result<bool> {
-        let (at, layout) = &self.sections.filter;
         let read = |range: Range<usize>| -> Result<&[u8]> {
-            Ok(self.pages.read_unchecked(shifted(*at, range)?)?)
+            self.filter.get(range).ok_or(SegmentError::Corrupt {
+                segment: self.file.meta.id,
+                reason: "a filter shard past its section",
+            })
         };
-        layout.may_contain(read, prefix)
+        self.file.sections.filter.1.may_contain(read, prefix)
     }
 }
 

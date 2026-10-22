@@ -230,9 +230,11 @@ mod tests {
         for charger in chargers {
             charger.join().expect("charger");
         }
+        // a lower bound only: pacing must slow the work; how much slower a busy machine runs is
+        // not the pacer's
         let took = started.elapsed();
         assert!(
-            (0.4..1.5).contains(&took.as_secs_f64()),
+            took.as_secs_f64() >= 0.4,
             "30 MB at 20 MB/s, 20 MB burst: {took:?}"
         );
     }

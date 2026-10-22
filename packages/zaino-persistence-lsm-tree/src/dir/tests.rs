@@ -5,6 +5,36 @@ fn identity() -> Identity {
     Identity::new("compact_block", 1).expect("short name")
 }
 
+/// A directory several missing levels deep, and a nested subdirectory, survive a power loss
+/// right after the first commit: every new level durably linked in its parent
+#[test]
+fn every_new_directory_level_survives_a_power_loss() {
+    let fs = SimFs::new();
+    let path = Path::new("/a/b/c/idx");
+    let mut opened = IndexDir::open(fs.clone(), path, identity()).expect("open fresh");
+    let nested = opened.dir.subdir("p/q").expect("subdir");
+    opened.dir.commit(&[7]).expect("commit");
+    drop(opened);
+
+    let crashed = fs.power_loss();
+    assert!(crashed.list(&nested).is_ok(), "nested subdirectory kept");
+    let reopened = IndexDir::open(crashed, path, identity()).expect("reopen");
+    assert_eq!(reopened.body, Some(vec![7]), "the commit survived");
+
+    // a relative single name: its entry synced in the current directory
+    let fs = SimFs::new();
+    let relative = Path::new("idx");
+    let mut opened = IndexDir::open(fs.clone(), relative, identity()).expect("open fresh");
+    opened.dir.commit(&[8]).expect("commit");
+    drop(opened);
+    let reopened = IndexDir::open(fs.power_loss(), relative, identity()).expect("reopen");
+    assert_eq!(
+        reopened.body,
+        Some(vec![8]),
+        "the relative directory survived"
+    );
+}
+
 /// - fresh → commit → reopen reads it back; commits after a reopen continue the sequence
 ///   (never over the live slot); manifest never past its two slots
 /// - second opener locked out; foreign index never committed state

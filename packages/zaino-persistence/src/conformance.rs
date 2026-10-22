@@ -69,7 +69,9 @@ pub trait Subject {
         false
     }
 
-    /// Background work finished (merges); no-op where there is none
+    /// Background work finished (merges); optional: a no-op where there is none, or where a
+    /// backend can't wait for it through the port (then a pinned reader is checked only against
+    /// work that lands at a flush, and the backend tests the rest itself)
     fn settle(&self, _backend: &Self::Backend) {}
 
     /// Backend-internal invariants after every step (`just_opened` = a fresh open)
@@ -301,6 +303,15 @@ impl Model {
                     ordered(&whole, direction),
                     "{label}: {namespace} {direction:?}"
                 );
+                filtered(
+                    reader,
+                    namespace,
+                    (Bound::Unbounded, Bound::Unbounded),
+                    direction,
+                    40,
+                    &ordered(&whole, direction),
+                    &format!("{label}: {namespace} {direction:?} filtered"),
+                );
             }
             let middle = len / 3..len - len / 3;
             let (lower, upper) = (
@@ -369,9 +380,16 @@ impl Model {
                     budget,
                 );
                 let expected = ordered(&expected, direction);
-                assert_eq!(
-                    got, expected,
-                    "{label}: {lower:?}..{upper:?} {direction:?} {budget}"
+                let label = format!("{label}: {lower:?}..{upper:?} {direction:?} {budget}");
+                assert_eq!(got, expected, "{label}");
+                filtered(
+                    reader,
+                    SCANNED,
+                    (lower.clone(), upper.clone()),
+                    direction,
+                    budget,
+                    &expected,
+                    &format!("{label} filtered"),
                 );
             }
         }
@@ -395,7 +413,13 @@ fn ordered(entries: &[(RawKey, RawValue)], direction: ScanDirection) -> Vec<(Raw
     entries
 }
 
-/// A `scan_range`, joined, checking every chunk is non-empty and within `budget` (or one entry)
+/// Raw bytes of an entry
+fn size((key, value): &(RawKey, RawValue)) -> usize {
+    key.len() + value.len()
+}
+
+/// A `scan_range`, joined, checking every chunk is non-empty, within `budget` (or one entry) and
+/// full: a chunk ends only where the next entry would take it past `budget`
 fn chunked(
     reader: &impl BackendReader,
     namespace: Namespace,
@@ -414,15 +438,85 @@ fn chunked(
         .scan_range(namespace, range, raw_entry)
         .collect::<Result<_, _>>()
         .expect("scan_range");
-    for chunk in &chunks {
-        let bytes: usize = chunk.iter().map(|(k, v)| k.len() + v.len()).sum();
+    for (at, chunk) in chunks.iter().enumerate() {
+        let bytes: usize = chunk.iter().map(size).sum();
         assert!(!chunk.is_empty(), "{namespace}: an empty chunk");
         assert!(
             chunk.len() == 1 || bytes <= budget,
             "{namespace}: a {bytes}-byte chunk over its {budget}-byte budget"
         );
+        if let Some(next) = chunks.get(at + 1).and_then(|next| next.first()) {
+            assert!(
+                bytes + size(next) > budget,
+                "{namespace}: a {bytes}-byte chunk ended before an entry that fit its \
+                 {budget}-byte budget"
+            );
+        }
     }
     chunks.concat()
+}
+
+/// A `scan_range` through a filter keeping every other entry, checking the filter sees every
+/// entry in `entries` (all of the range, in walk order) exactly once, and each chunk counts only
+/// kept entries against `budget` and ends only where the next entry seen would pass it
+fn filtered(
+    reader: &impl BackendReader,
+    namespace: Namespace,
+    (lower, upper): (Bound<RawKey>, Bound<RawKey>),
+    direction: ScanDirection,
+    budget: usize,
+    entries: &[(RawKey, RawValue)],
+    label: &str,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let filter = {
+        let seen = std::sync::Arc::clone(&seen);
+        move |key: &[u8], value: &[u8]| {
+            let mut seen = seen.lock().expect("filter log");
+            let keep = seen.len() % 2 == 0;
+            seen.push(key.to_vec());
+            keep.then(|| (key.to_vec(), value.to_vec()))
+        }
+    };
+    let range = ScanRange {
+        lower,
+        upper,
+        direction,
+        chunk_bytes: NonZeroUsize::new(budget).expect("budgets are non-zero"),
+    };
+    let mut chunks = Vec::new();
+    let mut seen_by = Vec::new();
+    for chunk in reader.scan_range(namespace, range, filter) {
+        chunks.push(chunk.expect("scan_range"));
+        seen_by.push(seen.lock().expect("filter log").len());
+    }
+    let seen = seen.lock().expect("filter log").clone();
+    let keys: Vec<&RawKey> = entries.iter().map(|(key, _)| key).collect();
+    assert_eq!(
+        seen.iter().collect::<Vec<_>>(),
+        keys,
+        "{label}: the filter sees every entry once, in walk order"
+    );
+    let kept: Vec<(RawKey, RawValue)> = entries.iter().step_by(2).cloned().collect();
+    assert_eq!(chunks.concat(), kept, "{label}: exactly the kept entries");
+    for (at, chunk) in chunks.iter().enumerate() {
+        let bytes: usize = chunk.iter().map(size).sum();
+        assert!(!chunk.is_empty(), "{label}: an empty chunk");
+        assert!(
+            chunk.len() == 1 || bytes <= budget,
+            "{label}: {bytes} kept bytes over the {budget}-byte budget"
+        );
+        let stopped_before = seen_by
+            .get(at)
+            .filter(|_| at + 1 < chunks.len())
+            .and_then(|&seen| entries.get(seen));
+        if let Some(next) = stopped_before {
+            assert!(
+                bytes + size(next) > budget,
+                "{label}: a chunk of {bytes} kept bytes ended before an entry that fit {budget}"
+            );
+        }
+    }
 }
 
 /// Commit `ops` at `tip` through a fresh writer handle
@@ -704,6 +798,40 @@ pub fn contract<S: Subject>(subject: S) {
             key.len()
         );
     }
+    let undeclared = Namespace::new("undeclared");
+    let not_found = |error: &ReadError| matches!(error, ReadError::NamespaceNotFound(name) if name == undeclared.as_str());
+    let get = reader().get(undeclared, &[0; 8]);
+    assert!(
+        get.as_ref().is_err_and(not_found),
+        "undeclared get: {get:?}"
+    );
+    let scan = reader().scan(undeclared);
+    assert!(
+        scan.as_ref().is_err_and(not_found),
+        "undeclared scan: {scan:?}"
+    );
+    for (lower, upper) in [
+        (Bound::Unbounded, Bound::Unbounded),
+        (Bound::Included(vec![1]), Bound::Excluded(vec![1])),
+        (Bound::Included(vec![2]), Bound::Included(vec![1])),
+    ] {
+        let range = ScanRange {
+            lower,
+            upper,
+            direction: ScanDirection::Forward,
+            chunk_bytes: NonZeroUsize::MIN,
+        };
+        let label = format!("undeclared scan_range {range:?}");
+        let mut chunks = reader().scan_range(undeclared, range, raw_entry);
+        let first = chunks.next().map(|chunk| chunk.map(drop));
+        assert!(
+            first
+                .as_ref()
+                .is_some_and(|chunk| chunk.as_ref().is_err_and(not_found)),
+            "{label}: NamespaceNotFound whatever the range, got {first:?}"
+        );
+        assert!(chunks.next().is_none(), "{label}: finished after the error");
+    }
     assert!(
         backend.verify().expect("verify").is_clean(),
         "fresh: verify clean"
@@ -714,6 +842,10 @@ pub fn contract<S: Subject>(subject: S) {
     assert_eq!(
         namespaces, declared,
         "footprint: every namespace, declared order"
+    );
+    assert!(
+        footprint.iter().all(|namespace| namespace.bytes == 0),
+        "fresh: nothing stored {footprint:?}"
     );
 
     let fresh = reader();
@@ -735,6 +867,8 @@ pub fn contract<S: Subject>(subject: S) {
     model.assert_view(&reader(), "committed: visible to a new reader before flush");
     Model::default().assert_view(&fresh, "a reader opened before: its snapshot");
     first.assert_view(&pinned, "a reader opened between: its snapshot");
+    // the chunks outlive the handle that started them
+    drop(pinned);
     let rest: Vec<_> = chunks.collect::<Result<_, _>>().expect("chunks");
     let whole = [vec![started], rest].concat().concat();
     assert_eq!(
@@ -744,6 +878,11 @@ pub fn contract<S: Subject>(subject: S) {
     );
     backend.flush().expect("flush");
     model.assert_view(&reader(), "flushed");
+    let footprint = backend.footprint().expect("footprint");
+    assert!(
+        footprint.iter().all(|namespace| namespace.bytes > 0),
+        "flushed: every namespace holds data {footprint:?}"
+    );
     backend.flush().expect("an empty flush");
     drop(backend);
 
@@ -794,6 +933,12 @@ pub fn contract<S: Subject>(subject: S) {
         (
             "a tip at the last committed",
             block_ref(model.advances),
+            vec![ok_append()],
+            Box::new(|e| matches!(e, CommitError::TipNotAbove { .. })),
+        ),
+        (
+            "a tip below the last committed",
+            block_ref(model.advances - 1),
             vec![ok_append()],
             Box::new(|e| matches!(e, CommitError::TipNotAbove { .. })),
         ),
@@ -958,4 +1103,14 @@ pub fn contract<S: Subject>(subject: S) {
         is_removed,
     );
     model.assert_view(&reader(), "commits continue after refusals");
+
+    // a tip is checked by height only: a higher one with any hash commits
+    let (tip, ops) = model.advance(1, &[], 0, &[]);
+    let rehashed = BlockRef {
+        hash: BlockHash::from([0xee; 32]),
+        ..tip
+    };
+    commit(&backend, rehashed, ops).expect("a higher tip, another hash");
+    model.tip = Some(rehashed);
+    model.assert_view(&reader(), "a higher tip with another hash");
 }

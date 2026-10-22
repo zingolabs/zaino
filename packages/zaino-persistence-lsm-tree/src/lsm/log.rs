@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Weak,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -17,50 +17,89 @@ use std::{
 
 use super::{
     emit,
+    file::Probed,
+    file_name,
     layout::Shape,
-    meta::{merge_candidates, tier_of, tier_shape},
+    meta::{merge_candidates, tier_of, tier_of_rows, tier_shape},
     reader::Snapshot,
     report::{self, Landed},
     slots::Slots,
     writer::{Merged, SegmentWriter},
-    Result, SegmentError, SegmentMeta,
+    LsmConfig, Result, SegmentError, SegmentMeta,
 };
-use crate::fs::Fs;
+use crate::{fs::Fs, pages::sums_path};
 
 /// Idle windows a merging tier may queue before [`SegmentLog::batch`] waits on its merge
 /// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
 const STALL_WINDOWS: usize = 2;
 
-/// Map's committed list + merges running under it + list staged for the next manifest
+/// Map's committed list + merges running under it
 ///
 /// - one merge per tier at a time, <= `slots` working engine-wide (lowest tier first:
 ///   small merges never queue behind a large one)
-/// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
+/// - `prepare` joins finished merges before a write touches anything (a failed one = the
+///   write's `MergeFailed`) → `batch` stages everything else that can fail (segments written, the
+///   next list mapped) → owner's manifest commit → `committed` swaps it in and can't fail
+///   (removal failures warned and retried; a launch failure returned by the next write)
 pub(crate) struct SegmentLog {
     fs: Arc<dyn Fs>,
     dir: PathBuf,
     name: String,
-    shape: Shape,
     snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
     fanout: usize,
+    max_retries: u32,
     slots: Arc<Slots>,
     next: u32,
+    filtered: usize,
     segments: Vec<SegmentMeta>,
-    staged: Option<Staged>,
+    leftover: Vec<Leftover>,
+    removal_failure: Option<String>,
+    unlinked: metrics::Gauge,
     merges: Vec<Merge>,
+    ready: Vec<Ready>,
+    launch_failed: Option<SegmentError>,
     shape_tiers: usize,
 }
 
-/// List awaiting the owner's manifest + merge inputs it no longer lists + merges it lands
-struct Staged {
+/// List awaiting the owner's manifest, mapped, + merge inputs it no longer lists + merges it lands
+#[derive(Debug)]
+pub(crate) struct Staged {
     segments: Vec<SegmentMeta>,
+    snapshot: Arc<Snapshot>,
     retired: Vec<SegmentMeta>,
     landed: Vec<Landed>,
 }
 
-/// Background merge; thread yields `(merged, wall time)`, `None` = cancelled
+/// A merge joined before a write, its output sealed: swapped in by that write's batch
+struct Ready {
+    inputs: Vec<SegmentMeta>,
+    landed: Landed,
+}
+
+impl Staged {
+    /// The list for the owner's manifest
+    pub(crate) fn segments(&self) -> &[SegmentMeta] {
+        &self.segments
+    }
+
+    /// The list, mapped for readers
+    pub(crate) fn snapshot(&self) -> &Arc<Snapshot> {
+        &self.snapshot
+    }
+}
+
+/// A file no committed manifest lists, still on disk
+/// - `mapped` = a retired segment's mapping, counted as unlinked once its file is removed
+struct Leftover {
+    path: PathBuf,
+    bytes: u64,
+    mapped: Option<Weak<Probed>>,
+}
+
+/// Background merge into segment `id`; thread yields `(merged, wall time)`, `None` = cancelled
 struct Merge {
+    id: u32,
     tier: u32,
     inputs: Vec<SegmentMeta>,
     cancel: Arc<AtomicBool>,
@@ -68,21 +107,23 @@ struct Merge {
 }
 
 impl SegmentLog {
-    /// Map `name`'s segments in `dir`, at the committed `listed`
+    /// Map `name`'s segments in `dir`, at the committed `listed`, run by `lsm`
     ///
     /// - `fanout` below 2 refused (a merge of one segment = no merge)
     /// - unlisted files removed ([`Snapshot::open`])
     /// - merges launched on every idle tier holding `fanout` segments (reopen cancelled the last
-    ///   process's: else no stall bounds a tier until the next commit)
+    ///   process's: else no stall bounds a tier until the next commit); none while a segment's
+    ///   filter covers another scope than `shape`'s ([`rescope`](Self::rescope) first)
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         dir: &Path,
         name: &str,
         shape: Shape,
         listed: &[SegmentMeta],
-        fanout: usize,
+        lsm: &LsmConfig,
         slots: Arc<Slots>,
     ) -> Result<Self> {
+        let fanout = lsm.fanout;
         if fanout < 2 {
             return Err(SegmentError::Shape {
                 name: name.to_owned(),
@@ -103,18 +144,25 @@ impl SegmentLog {
             fs,
             dir: dir.to_path_buf(),
             name: name.to_owned(),
-            shape,
             snapshot,
             fanout,
+            max_retries: lsm.max_retries,
             slots,
             next,
+            filtered: shape.filtered,
             segments: listed.to_vec(),
-            staged: None,
+            leftover: Vec::new(),
+            removal_failure: None,
+            unlinked: emit::unlinked(name),
             merges: Vec::new(),
+            ready: Vec::new(),
+            launch_failed: None,
             shape_tiers: 0,
         };
         emit::stall_at(&log.name, stall_at(fanout));
-        log.launch_merges()?;
+        if log.stale().is_empty() {
+            log.launch_merges()?;
+        }
         Ok(log)
     }
 
@@ -123,82 +171,305 @@ impl SegmentLog {
         &self.snapshot
     }
 
-    /// Committed list, ≈ data age (readers probe newest first; answers never depend on order)
-    #[cfg(test)]
-    pub(crate) fn segments(&self) -> &[SegmentMeta] {
-        &self.segments
+    /// Listed segments whose filter covers another prefix than the map's scope
+    fn stale(&self) -> Vec<SegmentMeta> {
+        self.segments
+            .iter()
+            .filter(|segment| usize::try_from(segment.filtered).ok() != Some(self.filtered))
+            .copied()
+            .collect()
     }
 
-    /// `rows` (`(key, value)`, `None` = tombstone) as one segment (sealed, durably linked) + every
-    /// finished merge swapped in for its inputs = list for the owner's next manifest
+    /// Every segment written under another scope rewritten under the map's (its filter rebuilt;
+    /// under the merge bandwidth), staged for the owner's manifest in the old one's place
+    /// (`None` = every segment current); merges launch once it commits
     ///
-    /// - merge error or panic returns here
-    /// - waits only on a merging tier the staged list holds `STALL_WINDOWS` windows behind
-    ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
-    pub(crate) fn batch(&mut self, rows: Vec<(&[u8], Option<&[u8]>)>) -> Result<Vec<SegmentMeta>> {
-        if self.staged.is_some() {
-            return Err(SegmentError::Internal(
-                "batch before the last one was committed",
-            ));
+    /// - a crash before that commit: the rewrites are unlisted (removed at open), the old
+    ///   segments still listed, so the next open rescopes again
+    pub(crate) fn rescope(&mut self) -> Result<Option<Staged>> {
+        let stale = self.stale();
+        if stale.is_empty() {
+            return Ok(None);
         }
-        let mut staged = Staged {
-            segments: self.segments.clone(),
-            retired: Vec::new(),
+        report::rescoping(&self.name, &stale);
+        let mut segments = self.segments.clone();
+        let cancel = AtomicBool::new(false);
+        for old in &stale {
+            let id = self.allocate()?;
+            let slot = self
+                .slots
+                .acquire(tier_of(old, self.fanout), &cancel)
+                .ok_or(SegmentError::Internal("a rescope refused its slot"))?;
+            let merged = self
+                .writer
+                .merge(id, std::slice::from_ref(old), &cancel, &slot)?
+                .ok_or(SegmentError::Internal("a rescope cancelled"))?;
+            let rewritten = merged
+                .output
+                .filter(|output| output.records == old.records)
+                .ok_or(SegmentError::Internal("a rescope off its segment's rows"))?;
+            let listed = segments
+                .iter_mut()
+                .find(|segment| *segment == old)
+                .ok_or(SegmentError::Internal("a rescoped segment unlisted"))?;
+            *listed = rewritten;
+        }
+        self.writer.sync_dir()?;
+        let snapshot = Arc::new(self.snapshot.next(self.fs.as_ref(), &self.dir, &segments)?);
+        Ok(Some(Staged {
+            segments,
+            snapshot,
+            retired: stale,
             landed: Vec::new(),
-        };
-        self.land(&mut staged, |merge, _| merge.thread.is_finished())?;
+        }))
+    }
 
-        let id = self.allocate()?;
-        if let Some(segment) = self.writer.write(id, rows)? {
-            self.writer.sync_dir()?;
-            emit::batched(&self.name, &segment);
-            staged.segments.push(segment);
+    /// Before a write touches any file: every finished merge joined, and every merge the write
+    /// would leave its tier `STALL_WINDOWS` windows behind (given `upcoming`, the record counts
+    /// of the segments it adds; repeated: a landed output joins the tier above); successes kept
+    /// for the write's [`batch`](Self::batch)
+    ///
+    /// - a merge that failed, or failed to start at the last write = `MergeFailed`: nothing
+    ///   written, its partial files removed, its inputs still listed (merged again at a later
+    ///   write)
+    pub(crate) fn prepare(&mut self, upcoming: &[u64]) -> Result<()> {
+        if let Some(error) = self.launch_failed.take() {
+            return Err(self.merge_failed(error));
         }
-
+        let mut failure = None;
+        self.join(|merge, _| merge.thread.is_finished(), &mut failure);
         let (fanout, waited) = (self.fanout, Instant::now());
         let mut stalled = Vec::new();
         loop {
-            let tiers = self.land(&mut staged, |merge, segments| {
-                behind(merge, segments, fanout)
-            })?;
-            if tiers.is_empty() {
+            let tiers = self.projected_tiers(upcoming);
+            let joined = self.join(|merge, _| behind(merge.tier, &tiers, fanout), &mut failure);
+            if joined.is_empty() {
                 break;
             }
-            stalled.extend(tiers);
+            stalled.extend(joined);
         }
         if !stalled.is_empty() {
             emit::stalled(&self.name, waited.elapsed());
             report::stalled(&self.name, &stalled, waited.elapsed());
         }
-
-        let segments = staged.segments.clone();
-        self.staged = Some(staged);
-        Ok(segments)
+        match failure {
+            Some(error) => Err(self.merge_failed(error)),
+            None => Ok(()),
+        }
     }
 
-    /// Owner's manifest with [`batch`](Self::batch)'s list durable → mapped, retired inputs
-    /// unlinked, merges launched on every idle tier holding `fanout` segments
-    pub(crate) fn committed(&mut self) -> Result<()> {
-        let staged = self
-            .staged
-            .take()
-            .ok_or(SegmentError::Internal("committed without a batch"))?;
-        self.segments = staged.segments;
-        self.snapshot = Arc::new(self.snapshot.next(
+    fn merge_failed(&self, error: SegmentError) -> SegmentError {
+        SegmentError::MergeFailed {
+            name: self.name.clone(),
+            source: Box::new(error),
+        }
+    }
+
+    /// Tier of every segment the next manifest would list: the list with each ready merge swapped
+    /// in, plus `upcoming`
+    fn projected_tiers(&self, upcoming: &[u64]) -> Vec<u32> {
+        let mut records: Vec<u64> = self
+            .segments
+            .iter()
+            .filter(|segment| {
+                !self
+                    .ready
+                    .iter()
+                    .any(|ready| ready.inputs.contains(segment))
+            })
+            .map(|segment| segment.records)
+            .collect();
+        records.extend(
+            self.ready
+                .iter()
+                .filter_map(|ready| ready.landed.merged.output)
+                .map(|output| output.records),
+        );
+        records.extend(upcoming);
+        records
+            .into_iter()
+            .map(|records| tier_of_rows(records, self.fanout))
+            .collect()
+    }
+
+    /// `rows` (`(key, value)`, `None` = tombstone) as one segment, then `removed` (keys `rows`
+    /// inserts) as tombstones in a newer one (sealed, durably linked) + every merge
+    /// [`prepare`](Self::prepare) joined swapped in for its inputs = list for the owner's next
+    /// manifest, mapped for readers
+    ///
+    /// - `removed`: a pair inserted + removed between two writes stays recorded until a merge
+    ///   cancels it (a removal is forgotten only by a merge)
+    pub(crate) fn batch(
+        &mut self,
+        rows: Vec<(&[u8], Option<&[u8]>)>,
+        removed: Vec<&[u8]>,
+    ) -> Result<Staged> {
+        let mut staged = Staged {
+            segments: self.segments.clone(),
+            snapshot: Arc::clone(&self.snapshot),
+            retired: Vec::new(),
+            landed: Vec::new(),
+        };
+        for ready in std::mem::take(&mut self.ready) {
+            staged.swap(ready.inputs, ready.landed)?;
+        }
+
+        let tombstones = removed.into_iter().map(|key| (key, None)).collect();
+        let mut written = false;
+        for rows in [rows, tombstones] {
+            if rows.is_empty() {
+                continue;
+            }
+            let id = self.allocate()?;
+            if let Some(segment) = self.writer.write(id, rows)? {
+                emit::batched(&self.name, &segment);
+                staged.segments.push(segment);
+                written = true;
+            }
+        }
+        if written {
+            self.writer.sync_dir()?;
+        }
+
+        staged.snapshot = Arc::new(self.snapshot.next(
             self.fs.as_ref(),
             &self.dir,
-            &self.segments,
+            &staged.segments,
         )?);
-        if self.snapshot.segments() != self.segments {
+        if staged.snapshot.segments() != staged.segments {
             return Err(SegmentError::Internal(
-                "readers' list differs from the committed one",
+                "readers' list differs from the staged one",
             ));
         }
-        self.writer.remove(&staged.retired)?;
+        Ok(staged)
+    }
+
+    /// Owner's manifest with `staged`'s list durable → swapped in; retired inputs removed and
+    /// merges launched on every idle tier holding `fanout` segments (never an error: the commit
+    /// is durable; a removal failure kept as a leftover, a launch failure returned by the next
+    /// write)
+    pub(crate) fn committed(&mut self, staged: Staged) {
+        let retired = staged
+            .retired
+            .iter()
+            .flat_map(|segment| {
+                let path = self.dir.join(file_name(segment.id));
+                [
+                    Leftover {
+                        path: sums_path(&path),
+                        bytes: segment.sealed.sums_len(),
+                        mapped: None,
+                    },
+                    Leftover {
+                        path,
+                        bytes: segment.sealed.len,
+                        mapped: self.snapshot.file(segment.id),
+                    },
+                ]
+            })
+            .collect();
+        self.segments = staged.segments;
+        self.snapshot = staged.snapshot;
         for landed in &staged.landed {
             report::swapped(&self.name, landed);
         }
-        self.launch_merges()
+        self.clean(retired);
+        if let Err(error) = self.launch_merges() {
+            emit::launch_failed(&self.name);
+            report::launch_failed(&self.name, &error);
+            self.launch_failed = Some(error);
+        }
+    }
+
+    /// Older leftovers removed, one attempt each (no wait: their cause is not transient); `new`
+    /// ones retried `max_retries` times 10, 20, 40 ms … apart; those still failing kept for the
+    /// next write
+    fn clean(&mut self, new: Vec<Leftover>) {
+        let mut kept = Vec::new();
+        let old = std::mem::take(&mut self.leftover)
+            .into_iter()
+            .map(|old| (old, 0));
+        let retries = self.max_retries;
+        for (leftover, retries) in old.chain(new.into_iter().map(|new| (new, retries))) {
+            match self.remove(&leftover.path, retries) {
+                Ok(()) => {
+                    if let Some(file) = leftover.mapped.as_ref().and_then(Weak::upgrade) {
+                        file.unlinked(&self.unlinked);
+                    }
+                }
+                Err(error) => {
+                    self.removal_failure = Some(error.to_string());
+                    kept.push(leftover);
+                }
+            }
+        }
+        if kept.is_empty() {
+            self.removal_failure = None;
+        }
+        self.leftover = kept;
+        emit::leftover(&self.name, self.leftover().1);
+    }
+
+    /// Leftover files no manifest lists and removal keeps failing on: count, bytes, last error
+    pub(crate) fn leftover(&self) -> (usize, u64, Option<&str>) {
+        let bytes = self
+            .leftover
+            .iter()
+            .fold(0u64, |sum, leftover| sum.saturating_add(leftover.bytes));
+        (self.leftover.len(), bytes, self.removal_failure.as_deref())
+    }
+
+    /// `path` unlinked (already gone = done), retried `retries` times with doubling pauses
+    fn remove(&self, path: &Path, retries: u32) -> std::io::Result<()> {
+        let mut pause = Duration::from_millis(10);
+        let mut retried = 0u32;
+        loop {
+            match self.fs.remove(path) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) if retried >= retries => return Err(error),
+                Err(error) => {
+                    report::removal_retry(&self.name, path, retried, &error);
+                    thread::sleep(pause);
+                    pause = pause.saturating_mul(2);
+                    retried = retried.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// A failed merge's partial files (its output segment, checksums and scratch) removed; any
+    /// still failing kept as leftovers
+    fn remove_partial(&mut self, id: u32) {
+        let prefix = format!("{id:010}.");
+        let names = match self.fs.list(&self.dir) {
+            Ok(names) => names,
+            Err(error) => {
+                // unlisted, so removed at the next open in any case
+                self.removal_failure = Some(error.to_string());
+                return;
+            }
+        };
+        let partial = names
+            .into_iter()
+            .filter(|name| name.starts_with(&prefix))
+            .map(|name| {
+                let path = self.dir.join(name);
+                let bytes = self
+                    .fs
+                    .open_read_only(&path)
+                    .ok()
+                    .flatten()
+                    .and_then(|file| file.len().ok())
+                    .unwrap_or(0);
+                Leftover {
+                    path,
+                    bytes,
+                    mapped: None,
+                }
+            })
+            .collect();
+        self.clean(partial);
     }
 
     /// Merge on every idle tier listing `fanout` segments, then the tier shape published
@@ -256,6 +527,7 @@ impl SegmentLog {
                 }
             })?;
         Ok(Merge {
+            id,
             tier,
             inputs,
             cancel,
@@ -263,38 +535,57 @@ impl SegmentLog {
         })
     }
 
-    /// Joins every merge `lands` picks (given the staged list) and swaps it in → their tiers
-    fn land(
+    /// Joins every merge `picks` chooses (given the ready list) → their tiers; each success kept
+    /// ready for the next batch, each failure's partial files removed and its error kept in
+    /// `failure` (the first)
+    fn join(
         &mut self,
-        staged: &mut Staged,
-        lands: impl Fn(&Merge, &[SegmentMeta]) -> bool,
-    ) -> Result<Vec<u32>> {
-        let (landed, running): (Vec<Merge>, _) = std::mem::take(&mut self.merges)
+        picks: impl Fn(&Merge, &[Ready]) -> bool,
+        failure: &mut Option<SegmentError>,
+    ) -> Vec<u32> {
+        let (picked, running): (Vec<Merge>, _) = std::mem::take(&mut self.merges)
             .into_iter()
-            .partition(|merge| lands(merge, &staged.segments));
+            .partition(|merge| picks(merge, &self.ready));
         self.merges = running;
-        let mut tiers = Vec::with_capacity(landed.len());
-        for merge in landed {
+        let mut tiers = Vec::with_capacity(picked.len());
+        for merge in picked {
+            tiers.push(merge.tier);
+            let (id, name) = (merge.id, self.name.clone());
             let joined = merge
                 .thread
                 .join()
-                .map_err(|_| SegmentError::MergePanicked {
-                    name: self.name.clone(),
-                })?;
-            let (merged, took) =
-                joined?.ok_or(SegmentError::Internal("merge cancelled outside drop"))?;
-            let inputs = merge
-                .inputs
-                .iter()
-                .fold(0u64, |sum, input| sum.saturating_add(input.records));
-            let written = merged.output.map_or(0, |output| output.records);
-            if written.saturating_add(merged.cancelled.saturating_mul(2)) != inputs {
-                return Err(SegmentError::Internal("merge rows off its inputs"));
+                .map_err(|_| SegmentError::MergePanicked { name })
+                .and_then(|joined| joined)
+                .and_then(|merged| {
+                    merged.ok_or(SegmentError::Internal("merge cancelled outside drop"))
+                })
+                .and_then(|(merged, took)| {
+                    let inputs = merge
+                        .inputs
+                        .iter()
+                        .fold(0u64, |sum, input| sum.saturating_add(input.records));
+                    let written = merged.output.map_or(0, |output| output.records);
+                    match written.saturating_add(merged.cancelled.saturating_mul(2)) == inputs {
+                        true => Ok((merged, took)),
+                        false => Err(SegmentError::Internal("merge rows off its inputs")),
+                    }
+                });
+            match joined {
+                Ok((merged, took)) => self.ready.push(Ready {
+                    inputs: merge.inputs,
+                    landed: Landed {
+                        tier: merge.tier,
+                        merged,
+                        took,
+                    },
+                }),
+                Err(error) => {
+                    self.remove_partial(id);
+                    failure.get_or_insert(error);
+                }
             }
-            tiers.push(merge.tier);
-            staged.swap(merge.tier, merge.inputs, merged, took)?;
         }
-        Ok(tiers)
+        tiers
     }
 
     fn allocate(&mut self) -> Result<u32> {
@@ -304,29 +595,11 @@ impl SegmentLog {
             .ok_or(SegmentError::Overflow("segment id"))?;
         Ok(id)
     }
-
-    /// Merges launched and not yet landed (each may have an unlisted output on disk)
-    #[cfg(test)]
-    pub(crate) fn merging(&self) -> usize {
-        self.merges.len()
-    }
-
-    /// Blocks until every running merge finishes (lands on the next `batch`)
-    #[cfg(test)]
-    pub(crate) fn settle(&self) {
-        while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
-            thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
 }
 
-/// `segments` lists [`stall_at`] of `merge`'s tier
-fn behind(merge: &Merge, segments: &[SegmentMeta], fanout: usize) -> bool {
-    let listed = segments
-        .iter()
-        .filter(|segment| tier_of(segment, fanout) == merge.tier)
-        .count();
-    listed >= stall_at(fanout)
+/// `tiers` (one per listed segment) hold [`stall_at`] of `tier`
+fn behind(tier: u32, tiers: &[u32], fanout: usize) -> bool {
+    tiers.iter().filter(|listed| **listed == tier).count() >= stall_at(fanout)
 }
 
 /// Merging tier's segment count a commit waits at: `fanout` inputs + `STALL_WINDOWS` idle windows
@@ -335,15 +608,9 @@ fn stall_at(fanout: usize) -> usize {
 }
 
 impl Staged {
-    /// `merged`'s output listed where the oldest input was (none: nothing in their place), every
+    /// `landed`'s output listed where the oldest input was (none: nothing in their place), every
     /// input retired
-    fn swap(
-        &mut self,
-        tier: u32,
-        inputs: Vec<SegmentMeta>,
-        merged: Merged,
-        took: Duration,
-    ) -> Result<()> {
+    fn swap(&mut self, inputs: Vec<SegmentMeta>, landed: Landed) -> Result<()> {
         let at = inputs
             .first()
             .and_then(|oldest| self.segments.iter().position(|segment| segment == oldest))
@@ -355,10 +622,10 @@ impl Staged {
         if listed.saturating_sub(self.segments.len()) != inputs.len() {
             return Err(SegmentError::Internal("a merge input unlisted"));
         }
-        if let Some(output) = merged.output {
+        if let Some(output) = landed.merged.output {
             self.segments.insert(at.min(self.segments.len()), output);
         }
-        self.landed.push(Landed { tier, merged, took });
+        self.landed.push(landed);
         self.retired.extend(inputs);
         Ok(())
     }

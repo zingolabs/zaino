@@ -106,6 +106,14 @@ pub enum CommitError {
     /// A previous write failed; the backend refuses writes until reopened.
     #[error("a previous write failed: reopen the backend")]
     Poisoned,
+    /// The backend's background merge failed, or failed to start: nothing of
+    /// this write was applied, the backend stays usable and merges again later.
+    #[error("a background merge failed; nothing applied")]
+    MergeFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// Stored bytes failed their integrity check while writing (e.g. a merge's
+    /// input): the backend refuses writes; stop, verify, resync.
+    #[error("stored data corrupted, found while writing")]
+    Corrupted(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// Reading the state a commit is checked against failed.
     #[error("commit check failed")]
     Check(#[source] ReadError),

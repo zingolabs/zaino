@@ -122,10 +122,9 @@ fn seals_reopen_and_every_committed_byte_is_checked() {
     assert!(matches!(short, Err(PageError::Lost { have: 10, .. })));
 }
 
-/// Reads outside the sealed bytes (past the end, inverted): `OutOfRange`, never a panic;
-/// an unchecked read of an unchecked page: `Unchecked` in debug builds
+/// Reads outside the sealed bytes (past the end, inverted): `OutOfRange`, never a panic
 #[test]
-fn reads_outside_the_seal_or_unchecked_are_errors() {
+fn reads_outside_the_seal_are_errors() {
     let fs = SimFs::new();
     let path = Path::new("/p/data");
     fs.create_dir_all(Path::new("/p")).expect("dir");
@@ -154,21 +153,7 @@ fn reads_outside_the_seal_or_unchecked_are_errors() {
         ),
         "{inverted:?}"
     );
-    assert!(matches!(
-        pages.read_unchecked(len..len + 1),
-        Err(PageError::OutOfRange { .. })
-    ));
-
-    let unchecked = pages.read_unchecked(PAGE..PAGE + 1);
-    if cfg!(debug_assertions) {
-        assert!(
-            matches!(unchecked, Err(PageError::Unchecked { page: 1, .. })),
-            "{unchecked:?}"
-        );
-    }
-    pages.read(PAGE..PAGE + 1).expect("checked read");
-    let after = pages.read_unchecked(PAGE..PAGE + 1).expect("now checked");
-    assert_eq!(after, &[3]);
+    assert_eq!(pages.read(PAGE..PAGE + 1).expect("in range"), &[3]);
 }
 
 /// Open's tail-page + checksum reads: failure = the read's `Err` (never a panic, never a file

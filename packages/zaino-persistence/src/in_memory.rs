@@ -243,8 +243,7 @@ where
     type Item = Result<Vec<T>, ReadError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done || is_empty_range(&self.range.lower, &self.range.upper) {
-            self.done = true;
+        if self.done {
             return None;
         }
         let map = match declared(&self.state, self.namespace) {
@@ -254,6 +253,10 @@ where
                 return Some(Err(err));
             }
         };
+        if is_empty_range(&self.range.lower, &self.range.upper) {
+            self.done = true;
+            return None;
+        }
         let bounds = (
             self.range.lower.as_ref().map(Vec::as_slice),
             self.range.upper.as_ref().map(Vec::as_slice),

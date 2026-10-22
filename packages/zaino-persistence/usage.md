@@ -76,7 +76,9 @@ nothing.
 
 A backend implements [`CommitState`] (its tip, each sequence's length, each map
 key's [`KeyState`]) and calls [`check_commit`]; [`check_specs`] refuses a
-namespace declared twice.
+namespace declared twice. A backend whose key states cost reads can run the two
+halves itself: [`check_shape`] (every rule needing no key state) first, then
+look the keys up, then [`check_keys`].
 
 ## Visibility and durability
 
@@ -127,7 +129,8 @@ durable, and returns a [`Verification`]: one [`Unit`] per stored file (or the
 backend's equivalent) with its [`Problem`]s — missing, truncated, a page or the
 checksum list not matching, or harmless orphaned bytes past the commit. It checks
 integrity, not meaning. `Backend::footprint` returns a [`NamespaceFootprint`] per
-declared namespace: bytes stored and, where knowable, bytes in the page cache.
+declared namespace, in declaration order: bytes stored and, where knowable, bytes
+in the page cache.
 
 ## Errors
 
@@ -136,8 +139,11 @@ One error type per operation — [`OpenError`], [`CommitError`], [`ReadError`],
 backend's own failure as a boxed cause while naming no concrete backend type.
 [`CommitError`] distinguishes each broken rule, `OutOfSpace` and `ManifestFull`
 (no retry clears them on their own) and `Poisoned` (a write failed earlier:
-reopen). [`ReadError::Corrupted`] means stored bytes failed their integrity
-check: stop, verify, resync. A `get` whose key is not of the namespace's key
+reopen). `MergeFailed` means a background merge failed or failed to start:
+nothing of the commit was applied and the backend stays usable, so retry it.
+`CommitError::Corrupted` and [`ReadError::Corrupted`] mean stored bytes failed
+their integrity check: stop, verify, resync (a corrupted commit also refuses
+later writes). A `get` whose key is not of the namespace's key
 width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
 reading as absent; `scan_range` bounds may be any length.
 

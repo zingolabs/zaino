@@ -29,12 +29,32 @@ use crate::{
 /// Records buffered to this before each append
 const CHUNK: usize = 1 << 20;
 
-/// O(rows) read-back of every sealed segment (RocksDB `paranoid_file_checks`, TigerBeetle
-/// `constants.verify`): tests and test suites only
-const VERIFY: bool = cfg!(any(test, feature = "testing"));
-
 /// Merge input's next record: `(key, source, slot)`, min-first
 type Head<'a> = Reverse<(&'a [u8], usize, usize)>;
+
+/// A merge's I/O, charged to its bandwidth slot a chunk at a time; stops once `cancel` is set
+struct Paced<'a, 'b> {
+    slot: &'a Slot<'b>,
+    cancel: &'a AtomicBool,
+    uncharged: usize,
+}
+
+impl Paced<'_, '_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    fn charge(&mut self, bytes: usize) {
+        self.uncharged = self.uncharged.saturating_add(bytes);
+        if self.uncharged >= CHUNK {
+            self.settle();
+        }
+    }
+
+    fn settle(&mut self) {
+        self.slot.charge(std::mem::take(&mut self.uncharged));
+    }
+}
 
 /// What a finished merge wrote: its segment (`None` = every row cancelled) + the value/tombstone
 /// pairs it cancelled (output rows + 2 × cancelled = input rows)
@@ -57,6 +77,7 @@ pub(crate) struct SegmentWriter {
 /// - `digest` = CRC-32 over every row pushed ([`SegmentWriter::verify`] recomputes it from disk)
 struct SegmentOut {
     id: u32,
+    filtered: u32,
     file: PagedFile,
     navigation: Navigation,
     chunk: Vec<u8>,
@@ -84,6 +105,7 @@ impl SegmentOut {
         let meta = SegmentMeta {
             id: self.id,
             records,
+            filtered: self.filtered,
             sealed: self.file.seal()?,
         };
         Ok((meta, self.digest.finalize(), self.file))
@@ -104,8 +126,8 @@ impl SegmentWriter {
     ///
     /// - every row checked against the shape first (widths, tombstones only with deletes)
     /// - uncommitted until listed in a manifest, unlinked until [`sync_dir`](Self::sync_dir)
-    /// - a key twice = `Contract` (the buffer holds one row per key: a cancelled pair writes
-    ///   neither)
+    /// - a key twice = `Contract` (the buffer holds one row per key: a cancelled pair's value is
+    ///   one segment's row, its tombstone a newer segment's)
     /// - unique keys → unstable sort exact; parallel on the CPU pool
     pub(crate) fn write(
         &self,
@@ -139,7 +161,7 @@ impl SegmentWriter {
             )?;
             out.push(&row)?;
         }
-        self.sealed(out).map(Some)
+        self.sealed(out, None)
     }
 
     /// K-way merge of `inputs` into segment `id`, sealed; `None` once `cancel` is set (partial file
@@ -149,9 +171,10 @@ impl SegmentWriter {
     ///   no other row of that key exists anywhere); a lone tombstone → written (its value is in a
     ///   segment outside the merge); any other duplicate → [`SegmentError::Contract`]
     /// - no row left → no file, `output: None` (the inputs retire with nothing in their place)
+    /// - one input = that segment rewritten under the map's current shape (its filter rebuilt
+    ///   for a changed scope)
     /// - inputs read through their page checksums (corrupt input = an error, never propagates)
-    /// - caller then commits a manifest listing it in their place, then
-    ///   [`remove`](Self::remove)s the inputs
+    /// - caller then commits a manifest listing it in their place, then removes the inputs
     /// - streams: memory = a few 1 MiB buffers + summary + filter's shard table, whatever the
     ///   segments' size (fences + fingerprints spill to scratch files, `spill.rs`)
     pub(crate) fn merge(
@@ -161,8 +184,8 @@ impl SegmentWriter {
         cancel: &AtomicBool,
         slot: &Slot<'_>,
     ) -> Result<Option<Merged>> {
-        if inputs.len() < 2 {
-            return Err(SegmentError::Internal("a merge of fewer than two segments"));
+        if inputs.is_empty() {
+            return Err(SegmentError::Internal("a merge of no segments"));
         }
         let sources = inputs
             .iter()
@@ -207,10 +230,14 @@ impl SegmentWriter {
 
         let mut out: Option<SegmentOut> = None;
         let mut cancelled: u64 = 0;
-        // read + written per row, charged to the engine's merge bandwidth a chunk at a time
-        let mut uncharged: usize = 0;
+        // read + written per row
+        let mut paced = Paced {
+            slot,
+            cancel,
+            uncharged: 0,
+        };
         while let Some(Reverse((key, at, row_at))) = heads.pop() {
-            if cancel.load(Ordering::Relaxed) {
+            if paced.cancelled() {
                 return Ok(None);
             }
             heads.extend(head(at, row_at.saturating_add(1))?);
@@ -223,7 +250,7 @@ impl SegmentWriter {
                 heads.extend(head(at, row_at.saturating_add(1))?);
                 group.push((at, row_at));
             }
-            uncharged = uncharged.saturating_add(group.len().saturating_mul(self.shape.stride));
+            paced.charge(group.len().saturating_mul(self.shape.stride));
             let row = match group.as_slice() {
                 [(at, row_at)] => Some(source(*at)?.row(*row_at)?),
                 [(a, a_at), (b, b_at)] if self.shape.deletes => {
@@ -244,14 +271,17 @@ impl SegmentWriter {
                     None => out.insert(self.create(id, total)?),
                 };
                 writing.push(row)?;
-                uncharged = uncharged.saturating_add(row.len());
-            }
-            if uncharged >= CHUNK {
-                slot.charge(std::mem::take(&mut uncharged));
+                paced.charge(row.len());
             }
         }
-        slot.charge(uncharged);
-        let output = out.map(|out| self.sealed(out)).transpose()?;
+        paced.settle();
+        let output = match out {
+            Some(out) => match self.sealed(out, Some(&mut paced))? {
+                Some(meta) => Some(meta),
+                None => return Ok(None),
+            },
+            None => None,
+        };
         let written = output.map_or(0, |output| output.records);
         let read = sources
             .iter()
@@ -265,13 +295,19 @@ impl SegmentWriter {
         Ok(Some(Merged { output, cancelled }))
     }
 
-    /// `out` finished, then (under [`VERIFY`]) read back through its page checksums, then out of
-    /// page cache unless its map caches writes (after the read-back: it faults every page back
-    /// in), then made read-only (data + checksums: never written again)
-    fn sealed(&self, out: SegmentOut) -> Result<SegmentMeta> {
+    /// `out` finished, read back through its page checksums (O(rows); RocksDB
+    /// `paranoid_file_checks`), out of page cache unless its map caches writes (after the
+    /// read-back: it faults every page back in), then made read-only (never written again)
+    ///
+    /// - a merge's read-back is `paced` (`None` once cancelled); a batch's never is
+    fn sealed(
+        &self,
+        out: SegmentOut,
+        paced: Option<&mut Paced<'_, '_>>,
+    ) -> Result<Option<SegmentMeta>> {
         let (meta, digest, file) = out.finish()?;
-        if VERIFY {
-            self.verify(&meta, digest)?;
+        if !self.verify(&meta, digest, paced)? {
+            return Ok(None);
         }
         if !self.shape.cache_writes {
             file.drop_cache()?;
@@ -280,20 +316,26 @@ impl SegmentWriter {
         let path = self.dir.join(file_name(meta.id));
         self.fs.set_read_only(&path)?;
         self.fs.set_read_only(&sums_path(&path))?;
-        Ok(meta)
+        Ok(Some(meta))
     }
 
     /// Sealed segment re-read from disk: record count, strictly ascending keys, no filter false
     /// negative, every row decoding, same row digest as written (TigerBeetle pair assertion:
-    /// checked writing + reading)
-    fn verify(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
+    /// checked writing + reading); `false` = cancelled
+    fn verify(
+        &self,
+        meta: &SegmentMeta,
+        written: u32,
+        mut paced: Option<&mut Paced<'_, '_>>,
+    ) -> Result<bool> {
         let file = SegmentFile::open(
             self.fs.as_ref(),
             &self.dir,
             meta,
             self.shape,
             Access::Sequential,
-        )?;
+        )?
+        .probed()?;
         let failed = |reason: String| SegmentError::SelfCheck {
             segment: meta.id,
             reason,
@@ -302,10 +344,15 @@ impl SegmentWriter {
             let found = file.records();
             return Err(failed(format!("{found} records, {} listed", meta.records)));
         }
-        file.warm_filter()?;
         let mut digest = crc32fast::Hasher::new();
         let mut previous: Option<&[u8]> = None;
         for slot in 0..file.records() {
+            if let Some(paced) = paced.as_deref_mut() {
+                if paced.cancelled() {
+                    return Ok(false);
+                }
+                paced.charge(self.shape.stride);
+            }
             let key = file.key(slot)?;
             if previous.is_some_and(|previous| previous >= key) {
                 return Err(failed(format!("slot {slot}: keys not ascending")));
@@ -321,7 +368,10 @@ impl SegmentWriter {
         if digest.finalize() != written {
             return Err(failed("rows differ from those written".to_owned()));
         }
-        Ok(())
+        if let Some(paced) = paced {
+            paced.settle();
+        }
+        Ok(true)
     }
 
     /// Segments written since the last call → durably linked
@@ -329,23 +379,13 @@ impl SegmentWriter {
         Ok(self.fs.sync_dir(&self.dir)?)
     }
 
-    /// Unlinks segments (and their checksums) no committed manifest lists any more
-    ///
-    /// - no dir sync: unlink lost to a crash = unlisted segment, removed at open
-    pub(crate) fn remove(&self, segments: &[SegmentMeta]) -> Result<()> {
-        for segment in segments {
-            let path = self.dir.join(file_name(segment.id));
-            self.fs.remove(&sums_path(&path))?;
-            self.fs.remove(&path)?;
-        }
-        Ok(())
-    }
-
     fn create(&self, id: u32, records: u64) -> Result<SegmentOut> {
         let path = self.dir.join(file_name(id));
         let file = PagedFile::open(self.fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)?;
         Ok(SegmentOut {
             id,
+            filtered: u32::try_from(self.shape.filtered)
+                .map_err(|_| SegmentError::Overflow("filter prefix"))?,
             file,
             navigation: Navigation::new(self.shape, records, &self.fs, &self.dir, id)?,
             chunk: Vec::with_capacity(CHUNK.saturating_add(self.shape.stride)),

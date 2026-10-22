@@ -223,7 +223,8 @@ pub trait Backend: Send + Sync {
     /// Check that the stored bytes are exactly the bytes last made durable.
     fn verify(&self) -> Result<Verification, VerifyError>;
 
-    /// Bytes each declared namespace holds.
+    /// Bytes each declared namespace holds: one entry per namespace, in
+    /// declaration order.
     fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError>;
 }
 

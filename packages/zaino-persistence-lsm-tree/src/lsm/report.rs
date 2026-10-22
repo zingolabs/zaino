@@ -4,11 +4,11 @@
 //!   manifest listing its output is durable (routine: bulk sync lands several a second)
 //! - Commit waiting on a merge = WARN (go-ethereum "Database compacting, degraded performance")
 
-use std::{fmt, time::Duration};
+use std::{fmt, io, path::Path, time::Duration};
 
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
-use super::{writer::Merged, SegmentMeta};
+use super::{writer::Merged, SegmentError, SegmentMeta};
 
 /// Merge the log swaps in: `tier` → `merged`, `took` = its thread's wall time
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +48,37 @@ pub(super) fn stalled(set: &str, tiers: &[u32], waited: Duration) {
 
 pub(super) fn cancelled(set: &str, merges: usize) {
     debug!(set, merges, "Compaction cancelled at close");
+}
+
+/// Scope changed since `stale` were written: their filters rebuilt before the map serves
+pub(super) fn rescoping(set: &str, stale: &[SegmentMeta]) {
+    let bytes = stale
+        .iter()
+        .fold(0u64, |sum, segment| sum.saturating_add(segment.sealed.len));
+    info!(set, segments = stale.len(), size = %Size(bytes), "Rebuilding filters for a changed scope");
+}
+
+pub(super) fn removal_retry(set: &str, path: &Path, retried: u32, error: &io::Error) {
+    warn!(set, path = %path.display(), retried, %error, "Removing a merged-away file failed; retrying");
+}
+
+/// Every map's leftovers together; `alert` = at or past `LsmConfig::cleanup_alert_bytes`: an
+/// error (the disk may be failing)
+pub(crate) fn leftover(files: usize, bytes: u64, error: &str, alert: bool) {
+    match alert {
+        true => error!(
+            files, size = %Size(bytes), error,
+            "Merged-away files can't be removed: the disk may be failing"
+        ),
+        false => warn!(
+            files, size = %Size(bytes), error,
+            "Merged-away files not removed; retrying at the next write"
+        ),
+    }
+}
+
+pub(super) fn launch_failed(set: &str, error: &SegmentError) {
+    warn!(set, %error, "A merge failed to start; the next write returns the error");
 }
 
 /// `412.3MiB` (binary units, no space: one logfmt token)

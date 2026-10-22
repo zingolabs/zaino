@@ -38,7 +38,7 @@ pub(crate) struct Opened {
 }
 
 impl IndexDir {
-    /// `path` created if absent (durably in its parent), locked, manifest read
+    /// `path` created if absent (every new level durably in its parent), locked, manifest read
     ///
     /// - missing manifest → two zeroed slots under `CREATING`, synced, renamed in (`MANIFEST`
     ///   only ever whole; later commits overwrite existing blocks)
@@ -48,11 +48,22 @@ impl IndexDir {
         path: &Path,
         identity: Identity,
     ) -> Result<Opened, ManifestError> {
-        fs.create_dir_all(path)?;
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
+        let mut missing = Vec::new();
+        for level in path
+            .ancestors()
+            .filter(|level| !level.as_os_str().is_empty())
         {
+            match fs.list(level) {
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(level),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        fs.create_dir_all(path)?;
+        let mut parents: Vec<&Path> = missing.iter().map(|level| parent_dir(level)).collect();
+        parents.push(parent_dir(path));
+        parents.dedup();
+        for parent in parents {
             fs.sync_dir(parent)?;
         }
         let lock = fs.lock(&path.join(LOCK))?;
@@ -72,7 +83,10 @@ impl IndexDir {
         };
         fs.sync_dir(path)?;
 
-        let bytes = manifest.read_all()?;
+        // past the page cache: commit only on what the device holds
+        let bytes = fs
+            .read_uncached(&path.join(MANIFEST))?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MANIFEST vanished"))?;
         let committed = manifest::latest(&identity, &bytes)?;
         let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body.to_vec())));
         let dir = Self {
@@ -89,12 +103,16 @@ impl IndexDir {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
-
-    /// `relative` created and durably linked into this directory
+    /// `relative` created and durably linked into this directory, every level of it (`a/b`: `a`
+    /// in this directory, `b` in `a`)
     pub(crate) fn subdir(&self, relative: &str) -> io::Result<PathBuf> {
         let dir = self.path.join(relative);
         self.fs.create_dir_all(&dir)?;
-        self.fs.sync_dir(&self.path)?;
+        let mut parent = self.path.clone();
+        for part in relative.split('/') {
+            self.fs.sync_dir(&parent)?;
+            parent.push(part);
+        }
         Ok(dir)
     }
 
@@ -143,6 +161,14 @@ impl IndexDir {
             self.ensure_empty(&format!("{relative}/{name}"))?;
         }
         Ok(())
+    }
+}
+
+/// Directory holding `path`'s entry (a relative single name: the current directory)
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     }
 }
 

@@ -37,11 +37,13 @@ mod writer;
 )]
 mod tests;
 
-pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub(crate) use emit::describe_metrics;
+pub use emit::METRIC_BUCKETS;
 pub(crate) use layout::Shape;
-pub(crate) use log::SegmentLog;
+pub(crate) use log::{SegmentLog, Staged};
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
 pub(crate) use reader::{Cursor, Lookup, Snapshot};
+pub(crate) use report::leftover as report_leftover;
 pub(crate) use slots::Slots;
 
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -61,6 +63,14 @@ pub struct LsmConfig {
     pub merge_slots: NonZeroUsize,
     /// Merge read + write bandwidth, MiB per second, shared
     pub merge_mib_per_sec: NonZeroU32,
+    /// Immediate retries (10, 20, 40 ms … apart) of removing merge-replaced files after a commit
+    pub max_retries: u32,
+    /// Merge-replaced bytes left on disk at which each write logs an error (the disk may be
+    /// failing), not a warning
+    pub cleanup_alert_bytes: u64,
+    /// Segment index bytes a writer holds in memory before spilling to a scratch file
+    #[doc(hidden)]
+    pub spill_bytes: NonZeroUsize,
 }
 
 impl Default for LsmConfig {
@@ -69,6 +79,9 @@ impl Default for LsmConfig {
             fanout: 16,
             merge_slots: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
             merge_mib_per_sec: NonZeroU32::new(200).unwrap_or(NonZeroU32::MIN),
+            max_retries: 3,
+            cleanup_alert_bytes: 1 << 30,
+            spill_bytes: NonZeroUsize::new(1 << 20).unwrap_or(NonZeroUsize::MIN),
         }
     }
 }
@@ -118,6 +131,15 @@ pub(crate) enum SegmentError {
     /// A merge thread panicked (outside this crate's code: it never panics)
     #[error("map {name}: a merge thread panicked")]
     MergePanicked { name: String },
+
+    /// A background merge failed, or failed to start (nothing of the write that found it was
+    /// applied; the merge runs again later)
+    #[error("map {name}: a background merge failed")]
+    MergeFailed {
+        name: String,
+        #[source]
+        source: Box<SegmentError>,
+    },
 
     /// The engine's own state broke a precondition (a bug in this crate)
     #[error("lsm: {0}")]

@@ -11,14 +11,14 @@ use std::{
     cmp::Ordering,
     ops::{Bound, Range},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use bytes::Bytes;
 use rayon::prelude::*;
 
 use super::{
-    file::{Prefetch, SegmentFile},
+    file::{Prefetch, Probed, SegmentFile},
     layout::{Row, Shape},
     parse_file_name,
     spill::is_scratch,
@@ -36,7 +36,7 @@ const PARALLEL_FROM: usize = 64;
 /// Map's committed segments, mapped for reads
 pub(crate) struct Snapshot {
     shape: Shape,
-    segments: Vec<Arc<SegmentFile>>,
+    segments: Vec<Arc<Probed>>,
 }
 
 impl std::fmt::Debug for Snapshot {
@@ -64,16 +64,16 @@ enum Hit<'a> {
 }
 
 /// `meta`'s segment mapped for reads, its filter read and checked up front
-fn mapped(fs: &dyn Fs, dir: &Path, shape: Shape, meta: &SegmentMeta) -> Result<Arc<SegmentFile>> {
+fn mapped(fs: &dyn Fs, dir: &Path, shape: Shape, meta: &SegmentMeta) -> Result<Arc<Probed>> {
     // probed = point lookups on hash-like keys, else range scans
     let access = if shape.probed {
         Access::Random
     } else {
         Access::Normal
     };
-    let file = SegmentFile::open(fs, dir, meta, shape, access)?;
-    file.warm_filter()?;
-    Ok(Arc::new(file))
+    Ok(Arc::new(
+        SegmentFile::open(fs, dir, meta, shape, access)?.probed()?,
+    ))
 }
 
 /// Ascending byte ranges widened to whole pages (readahead's unit), then merged where they
@@ -148,12 +148,8 @@ impl Snapshot {
         })
     }
 
-    pub(crate) fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    /// Segments a scan between `lower` and `upper` reads: those whose filter may hold the
-    /// filtered prefix both bounds share (all, when unbounded or not sharing one)
+    /// Segments a scan between `lower` and `upper` reads: those whose filter may hold the prefix
+    /// (of that segment's filter length) both bounds share (all, when unbounded or not sharing one)
     fn candidates(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<Vec<usize>> {
         fn prefix(bound: Bound<&[u8]>, filtered: usize) -> Option<&[u8]> {
             match bound {
@@ -161,16 +157,12 @@ impl Snapshot {
                 Bound::Unbounded => None,
             }
         }
-        let filtered = self.shape.filtered;
-        let shared = match (prefix(lower, filtered), prefix(upper, filtered)) {
-            (Some(low), Some(high)) if low == high => Some(low),
-            _ => None,
-        };
         let mut candidates = Vec::with_capacity(self.segments.len());
         for (at, file) in self.segments.iter().enumerate() {
-            let admitted = match shared {
-                Some(prefix) => file.may_contain(prefix)?,
-                None => true,
+            let filtered = file.filtered();
+            let admitted = match (prefix(lower, filtered), prefix(upper, filtered)) {
+                (Some(low), Some(high)) if low == high => file.may_contain(low)?,
+                _ => true,
             };
             if admitted {
                 candidates.push(at);
@@ -296,10 +288,9 @@ impl Snapshot {
         if key.len() != self.shape.key_len {
             return Err(SegmentError::Internal("a point lookup off the key width"));
         }
-        let prefix = key.get(..self.shape.filtered).unwrap_or(key);
         let mut value = None;
         for file in self.segments.iter().rev() {
-            if !file.may_contain(prefix)? {
+            if !file.may_contain(key.get(..file.filtered()).unwrap_or(key))? {
                 continue;
             }
             let slot = file.seek(key)?;
@@ -320,6 +311,14 @@ impl Snapshot {
     /// Every committed segment's file
     pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
         self.segments.iter().map(|file| file.pages())
+    }
+
+    /// Segment `id`'s mapping, not kept alive
+    pub(super) fn file(&self, id: u32) -> Option<Weak<Probed>> {
+        self.segments
+            .iter()
+            .find(|file| file.meta.id == id)
+            .map(Arc::downgrade)
     }
 
     /// Committed segments in list order (the merge policy's input)
@@ -427,7 +426,7 @@ impl Cursor {
         self.snapshot
             .segments
             .get(segment)
-            .map(AsRef::as_ref)
+            .map(|file| -> &SegmentFile { file })
             .ok_or(SegmentError::Internal("cursor head past the snapshot"))
     }
 
@@ -460,55 +459,75 @@ impl Cursor {
     }
 
     /// `current` = the head holding the next live row, skipping removed keys
+    ///
+    /// - holders of the next key tracked in two slots + a count (valid data: a value and at most
+    ///   its tombstone); only a breach collects every holder, for its error
     fn resolve(&mut self) -> Result<()> {
         loop {
-            let reverse = self.reverse;
-            let next = self
-                .heads
-                .iter()
-                .map(|head| head.key.as_slice())
-                .reduce(|a, b| match (a.cmp(b), reverse) {
-                    (Ordering::Greater, false) | (Ordering::Less, true) => b,
-                    _ => a,
-                });
-            let Some(next) = next else {
+            let (mut first, mut second, mut held) = (None::<usize>, None::<usize>, 0usize);
+            for (at, head) in self.heads.iter().enumerate() {
+                let order = first
+                    .and_then(|best| self.heads.get(best))
+                    .map(|best| head.key.cmp(&best.key));
+                match (order, self.reverse) {
+                    (None, _) | (Some(Ordering::Less), false) | (Some(Ordering::Greater), true) => {
+                        (first, second, held) = (Some(at), None, 1);
+                    }
+                    (Some(Ordering::Equal), _) => {
+                        second = second.or(Some(at));
+                        held = held.saturating_add(1);
+                    }
+                    _ => {}
+                }
+            }
+            let Some(first) = first else {
                 self.current = None;
                 return Ok(());
             };
-            let group: Vec<usize> = (0..self.heads.len())
-                .filter(|&at| self.heads.get(at).is_some_and(|head| head.key == next))
-                .collect();
             let deletes = self.snapshot.shape.deletes;
-            let contents = group
-                .iter()
-                .map(|&at| {
-                    let head = self
-                        .heads
-                        .get(at)
-                        .ok_or(SegmentError::Internal("cursor group past its heads"))?;
-                    let (_, row) = self.file(head.segment)?.content(head.slot(reverse))?;
-                    Ok(matches!(row, Row::Value(_)))
-                })
-                .collect::<Result<Vec<bool>>>()?;
-            match (contents.as_slice(), deletes) {
-                ([true], _) => {
-                    self.current = group.first().copied();
-                    return Ok(());
+            match (held, second) {
+                (1, _) => match self.is_value(first)? {
+                    true => {
+                        self.current = Some(first);
+                        return Ok(());
+                    }
+                    false if deletes => self.step(&[first])?,
+                    false => return Err(self.breach(first, held)),
+                },
+                (2, Some(second)) if deletes => {
+                    match (self.is_value(first)?, self.is_value(second)?) {
+                        (true, false) | (false, true) => self.step(&[first, second])?,
+                        _ => return Err(self.breach(first, held)),
+                    }
                 }
-                ([false], true) | ([true, false] | [false, true], true) => self.step(&group)?,
-                (held, _) => {
-                    let segments = group
-                        .iter()
-                        .filter_map(|&at| self.heads.get(at))
-                        .filter_map(|head| self.snapshot.segments.get(head.segment))
-                        .map(|file| file.meta.id)
-                        .collect();
-                    return Err(SegmentError::Contract {
-                        segments,
-                        breach: Breach::Repeated { held: held.len() },
-                    });
-                }
+                _ => return Err(self.breach(first, held)),
             }
+        }
+    }
+
+    /// Whether head `at`'s next row is a value (else a tombstone)
+    fn is_value(&self, at: usize) -> Result<bool> {
+        let head = self
+            .heads
+            .get(at)
+            .ok_or(SegmentError::Internal("cursor holder past its heads"))?;
+        let (_, row) = self.file(head.segment)?.content(head.slot(self.reverse))?;
+        Ok(matches!(row, Row::Value(_)))
+    }
+
+    /// `Contract`: the key at head `at` held `held` times, naming every segment holding it
+    fn breach(&self, at: usize, held: usize) -> SegmentError {
+        let key = self.heads.get(at).map(|head| head.key.as_slice());
+        let segments = self
+            .heads
+            .iter()
+            .filter(|head| Some(head.key.as_slice()) == key)
+            .filter_map(|head| self.snapshot.segments.get(head.segment))
+            .map(|file| file.meta.id)
+            .collect();
+        SegmentError::Contract {
+            segments,
+            breach: Breach::Repeated { held },
         }
     }
 }

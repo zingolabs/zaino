@@ -27,7 +27,9 @@ pub use backend::{
     ScanRange, Width, WriteOp, SEQUENCE_KEY_LEN,
 };
 pub use error::{CommitError, FlushError, FootprintError, OpenError, Part, ReadError, VerifyError};
-pub use rules::{check_commit, check_key, check_specs, CommitState, KeyState};
+pub use rules::{
+    check_commit, check_key, check_keys, check_shape, check_specs, CommitState, KeyState,
+};
 pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 
 // test support (feature `testing`, never in production builds): asserting is its job

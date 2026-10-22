@@ -13,7 +13,13 @@
 //!   (0 = value, 1 = tombstone with zeroed value bytes; [`encode_row`] / [`decode_row`])
 //! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
 
-use std::{cmp::Ordering, num::NonZeroU32, ops::Range, path::Path, sync::Arc};
+use std::{
+    cmp::Ordering,
+    num::{NonZeroU32, NonZeroUsize},
+    ops::Range,
+    path::Path,
+    sync::Arc,
+};
 
 use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
@@ -39,6 +45,7 @@ pub(crate) struct Shape {
     pub(crate) filtered: usize,
     pub(crate) cache_writes: bool,
     pub(crate) deletes: bool,
+    pub(crate) spill_at: NonZeroUsize,
 }
 
 /// One row's content: a value, or (on a `deletes` map) the key's tombstone
@@ -102,13 +109,14 @@ pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<(&'a [u8], 
 
 impl Shape {
     /// Map `name` of `key`-byte keys to `value`-byte values (removable when `deletes`), laid out
-    /// by `tuning`; a `scope` past the key = `Shape`
+    /// by `tuning`, its writers spilling past `spill_at` bytes; a `scope` past the key = `Shape`
     pub(crate) fn of(
         name: &str,
         key: NonZeroU32,
         value: NonZeroU32,
         deletes: bool,
         tuning: Tuning,
+        spill_at: NonZeroUsize,
     ) -> Result<Self> {
         let refused = |reason: String| SegmentError::Shape {
             name: name.to_owned(),
@@ -137,6 +145,7 @@ impl Shape {
             probed: scope == 0,
             filtered,
             cache_writes: tuning.cache_writes,
+            spill_at,
             deletes,
         })
     }
@@ -301,7 +310,7 @@ impl Navigation {
         dir: &Path,
         id: u32,
     ) -> Result<Self> {
-        let spill = |part| Spill::new(Arc::clone(fs), scratch_path(dir, id, part));
+        let spill = |part| Spill::new(Arc::clone(fs), scratch_path(dir, id, part), shape.spill_at);
         let summary = shape.groups(records)?.saturating_mul(shape.key_len);
         Ok(Self {
             segment: id,
@@ -347,22 +356,12 @@ impl Navigation {
         if first || previous != filtered {
             self.filter
                 .push(filtered)
-                .map_err(|error| self.filter_error(error))?;
+                .map_err(|error| filter_error(self.segment, error))?;
         }
         self.previous.clear();
         self.previous.extend_from_slice(key);
         self.records = self.records.saturating_add(1);
         Ok(())
-    }
-
-    fn filter_error(&self, error: FilterError) -> SegmentError {
-        match error {
-            FilterError::Build(reason) => SegmentError::Filter {
-                segment: self.segment,
-                reason,
-            },
-            FilterError::Io(error) => SegmentError::Io(error),
-        }
     }
 
     /// Records pushed so far
@@ -375,13 +374,21 @@ impl Navigation {
         let segment = self.segment;
         self.spilled_fences.append_to(out)?;
         out.append(&self.summary)?;
-        let (head, fingerprints) = self.filter.finish().map_err(|error| match error {
-            FilterError::Build(reason) => SegmentError::Filter { segment, reason },
-            FilterError::Io(error) => SegmentError::Io(error),
-        })?;
+        let (head, fingerprints) = self
+            .filter
+            .finish()
+            .map_err(|error| filter_error(segment, error))?;
         out.append(&head)?;
         fingerprints.append_to(out)?;
         Ok(())
+    }
+}
+
+/// Segment `segment`'s filter failure as a `SegmentError`
+fn filter_error(segment: u32, error: FilterError) -> SegmentError {
+    match error {
+        FilterError::Build(reason) => SegmentError::Filter { segment, reason },
+        FilterError::Io(error) => SegmentError::Io(error),
     }
 }
 
@@ -389,9 +396,19 @@ impl Navigation {
 mod tests {
     use super::*;
 
+    use crate::testing::SPILL;
+
     fn shape(deletes: bool) -> Shape {
         let width = |n| NonZeroU32::new(n).expect("non-zero");
-        Shape::of("rows", width(8), width(4), deletes, Tuning::default()).expect("shape")
+        Shape::of(
+            "rows",
+            width(8),
+            width(4),
+            deletes,
+            Tuning::default(),
+            SPILL,
+        )
+        .expect("shape")
     }
 
     /// - `key ‖ value` without deletes; `key ‖ value ‖ flag` with (tombstone value = zeros)
@@ -453,14 +470,14 @@ mod tests {
     #[test]
     fn shapes_take_any_key_width_and_refuse_a_scope_past_it() {
         let width = |n| NonZeroU32::new(n).expect("non-zero");
-        let tiny =
-            Shape::of("tiny", width(2), width(1), false, Tuning::default()).expect("2-byte key");
+        let tiny = Shape::of("tiny", width(2), width(1), false, Tuning::default(), SPILL)
+            .expect("2-byte key");
         assert_eq!((tiny.stride, tiny.filtered, tiny.probed), (3, 2, true));
         let scoped = Tuning {
             scope: 13,
             cache_writes: false,
         };
-        let refused = Shape::of("wide", width(12), width(8), false, scoped);
+        let refused = Shape::of("wide", width(12), width(8), false, scoped, SPILL);
         assert!(
             matches!(&refused, Err(SegmentError::Shape { reason, .. }) if reason.contains("scope 13")),
             "{refused:?}"

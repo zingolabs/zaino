@@ -39,6 +39,13 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// Read only, `None` when absent (offline verify: beside a live writer, never writes)
     fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>>;
 
+    /// The whole file as the device holds it, bypassing the page cache (after a failed flush the
+    /// cache may hold bytes the device never got); `None` when absent
+    ///
+    /// - Linux: guaranteed (`O_DIRECT`); macOS: best effort (`F_NOCACHE` leaves pages already
+    ///   cached in place)
+    fn read_uncached(&self, path: &Path) -> io::Result<Option<Vec<u8>>>;
+
     /// `from` linked at `to`, replacing it
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 
