@@ -2,12 +2,13 @@
 //!
 //! - Store, then signal (a woken reader must find what woke it)
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use imbl::{OrdSet, Vector};
+use imbl::{OrdMap, OrdSet, Vector};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::HeaderChainSnapshot;
@@ -17,7 +18,7 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
 use crate::chain_view_snapshot::{ChainViewSnapshot, Sighting};
-use crate::observation_merge::{Reading, TrustedValidatorReport};
+use crate::observation_merge::{Reading, Sighted, TrustedValidatorReport};
 use crate::telemetry;
 use crate::trusted_validators::TrustedValidatorMeta;
 
@@ -66,47 +67,26 @@ impl ChainViewCore {
         self.published.load().sighting(txid).is_some()
     }
 
-    /// One member's poll merged, published → txids not admitted
-    ///
-    /// - not admitted = listed, bytes nowhere (re-listed + re-fetched next poll, never lost)
-    pub(crate) fn apply(
-        &self,
-        validator: TrustedValidatorId,
-        report: TrustedValidatorReport,
-    ) -> Vec<TxId> {
+    /// One member's poll merged, published
+    pub(crate) fn apply(&self, validator: TrustedValidatorId, report: TrustedValidatorReport) {
         self.merge(|state| {
-            let mut unadmitted: Vec<TxId> = Vec::new();
             let Some(meta) = state.trusted_validators.get_mut(validator.get()) else {
-                return (Change::Unchanged, unadmitted);
+                return (Change::Unchanged, ());
             };
             match report {
                 TrustedValidatorReport::Read { reading, health, listed } => {
                     meta.health = health;
                     read(meta, reading);
                     if !listed {
-                        retract(&mut state.mempool, validator);
+                        retract(&mut state.mempool, validator, |_| true);
                     }
                 }
                 TrustedValidatorReport::Listed(listing) => {
-                    for txid in &listing.removed {
-                        if let Some(sighting) = state.mempool.get_mut(txid) {
-                            sighting.unsight(validator);
-                        }
-                    }
-                    for sighted in listing.added {
-                        match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
-                            (Some(sighting), _) => {
-                                sighting.sight(validator);
-                                sighting.listed_fee(sighted.fee);
-                            }
-                            (None, Some(raw)) => {
-                                let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
-                                sighting.sight(validator);
-                                state.mempool.insert(sighted.txid, sighting);
-                            }
-                            // held at the fetch-once check, gone before the merge
-                            (None, None) => unadmitted.push(sighted.txid),
-                        }
+                    let listed: BTreeSet<TxId> =
+                        listing.iter().map(|sighted| sighted.txid).collect();
+                    retract(&mut state.mempool, validator, |txid| !listed.contains(txid));
+                    for sighted in listing {
+                        sight(&mut state.mempool, validator, sighted);
                     }
                 }
                 TrustedValidatorReport::Failed(health) => {
@@ -114,11 +94,11 @@ impl ChainViewCore {
                     if health == Health::Down {
                         (meta.info, meta.block_at_best) = (None, None);
                         meta.telemetry.peers = None;
-                        retract(&mut state.mempool, validator);
+                        retract(&mut state.mempool, validator, |_| true);
                     }
                 }
             }
-            (Change::Settle, unadmitted)
+            (Change::Settle, ())
         })
     }
 
@@ -273,16 +253,43 @@ fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.telemetry.absorb(reading.telemetry);
 }
 
-/// `validator`'s bit cleared from every sighting
-fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, validator: TrustedValidatorId) {
+/// `validator`'s bit cleared from every sighting `unlisted` names
+fn retract(
+    mempool: &mut OrdMap<TxId, Sighting>,
+    validator: TrustedValidatorId,
+    unlisted: impl Fn(&TxId) -> bool,
+) {
     let held: Vec<TxId> = mempool
         .iter()
-        .filter(|(_, sighting)| sighting.trusted().contains(validator))
+        .filter(|(txid, sighting)| sighting.trusted().contains(validator) && unlisted(txid))
         .map(|(txid, _)| *txid)
         .collect();
     for txid in &held {
         if let Some(sighting) = mempool.get_mut(txid) {
             sighting.unsight(validator);
         }
+    }
+}
+
+/// One listed txid sighted by `validator`
+///
+/// - already sighted = untouched (its `imbl` nodes stay shared with the last publish)
+fn sight(mempool: &mut OrdMap<TxId, Sighting>, validator: TrustedValidatorId, sighted: Sighted) {
+    let Sighted { txid, raw, fee } = sighted;
+    match (mempool.get(&txid).map(|sighting| sighting.trusted().contains(validator)), raw) {
+        (Some(true), _) => {}
+        (Some(false), _) => {
+            if let Some(sighting) = mempool.get_mut(&txid) {
+                sighting.sight(validator);
+                sighting.listed_fee(fee);
+            }
+        }
+        (None, Some(raw)) => {
+            let mut sighting = Sighting::new(raw, Some(fee), false);
+            sighting.sight(validator);
+            mempool.insert(txid, sighting);
+        }
+        // held at the fetch-once check, gone before the merge (fetched next poll)
+        (None, None) => {}
     }
 }

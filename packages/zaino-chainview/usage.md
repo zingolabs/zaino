@@ -55,13 +55,14 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 ```text
 HeaderSync             trusted headers(Pinned) + peer headers(Peers) → HeaderChain → HeaderChainSnapshot
 ObservationMerge       each trusted validator's poll (TrafficBalancer::observe): claim + getblockhash first,
-      │                then the listing diff (bytes(..) fetched between)
+      │                then the whole listing (bytes(..) fetched between)
 PeerMempool / PeerWatch  peers' listings (quorum) / block invs (peer witnesses)
 ChainViewCore          merges all of it into one ChainViewSnapshot via ArcSwap
 ChainViewSubscriber    readers pin one `ChainViewSnapshot` per request
 ```
 
-The merge is `O(change)`. Raw bytes are fetched once per txid, the lister preferred. Each
+A listing is diffed against that validator's bits in the held sightings, under the merge lock;
+only a change touches a sighting. Raw bytes are fetched once per txid, the lister preferred. Each
 `MempoolEntry` carries a `Projection` (the serving layer's encoding), rendered once
 (`get_or_render`); a fee arriving for an unpriced entry starts a fresh one.
 

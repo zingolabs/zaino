@@ -1,14 +1,13 @@
 //! [`ObservationMerge`]: each trusted validator's polls (the balancer's [`Observation`]s) →
 //! `TrustedValidatorReport`s merged into the view
 //!
-//! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
+//! - Diff = its listing vs its bits in the view, under the merge lock (no shadow set to drift)
 //! - Reading (claim, `getblockhash`) merged first, then the listing (holder facts never wait on
 //!   bytes)
 //! - Bytes = only what the view lacks, through `bytes(..)` with this validator preferred
 //! - Transaction leaves a validator's listing one way: unlisted (mined or evicted)
 //! - New tip clears nothing (an unmined transaction survives a block)
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -45,7 +44,6 @@ impl<S: ChainDataSource> ObservationMerge<S> {
                 address,
                 core: &self.core,
                 balancer: &self.balancer,
-                listed: BTreeSet::new(),
             };
             merging.follow()
         });
@@ -75,39 +73,27 @@ pub(crate) struct Reading {
     pub(crate) streaming: bool,
 }
 
-/// One trusted validator's poll-to-poll mempool change
-#[derive(Debug, Clone)]
-pub(crate) struct Listing {
-    pub(crate) added: Vec<Sighted>,
-    pub(crate) removed: Vec<TxId>,
-}
-
 /// One member's poll, as the merge takes it: its reading first, then its listing (bytes fetched
 /// between: holder facts never wait on them)
 #[derive(Debug, Clone)]
 pub(crate) enum TrustedValidatorReport {
     /// `listed` = mempool read (its listing follows), else sightings retracted
-    Read {
-        reading: Reading,
-        health: Health,
-        listed: bool,
-    },
-    Listed(Listing),
+    Read { reading: Reading, health: Health, listed: bool },
+    /// Its whole listing (any sighting of its absent from it = unlisted)
+    Listed(Vec<Sighted>),
     /// `Down` = neither chain nor sightings, else sightings kept + holds no tip
     Failed(Health),
 }
 
-/// - `listed` = its last listing as admitted (the diff's left side)
 struct ValidatorFollower<'a, S> {
     validator: TrustedValidatorId,
     address: &'a str,
     core: &'a ChainViewCore,
     balancer: &'a TrafficBalancer<S>,
-    listed: BTreeSet<TxId>,
 }
 
 impl<S: ChainDataSource> ValidatorFollower<'_, S> {
-    async fn follow(mut self) {
+    async fn follow(self) {
         let mut observations = self.balancer.observe(self.validator);
         // a poll landed before this subscribed: merged too
         observations.mark_changed();
@@ -119,10 +105,15 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         }
     }
 
-    async fn merge(&mut self, observation: &Observation) {
+    /// - `Degraded`: holds no tip, sightings kept
+    /// - `Down`: neither (its next answer re-lists all)
+    async fn merge(&self, observation: &Observation) {
         let polled = match &observation.polled {
             Ok(polled) => polled,
-            Err(_) => return self.failed(observation.health),
+            Err(_) => {
+                let report = TrustedValidatorReport::Failed(observation.health);
+                return self.core.apply(self.validator, report);
+            }
         };
         let PollReading { info, listing, held, metadata } = polled;
         let telemetry = self.telemetry(metadata.as_ref());
@@ -139,49 +130,29 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
             Err(_) => {
                 let report = TrustedValidatorReport::Read { reading, health, listed: false };
                 self.core.apply(self.validator, report);
-                self.listed.clear();
             }
         }
     }
 
-    /// Mempool read (its reading already merged): the diff, bytes for what the view lacks, one
-    /// report
-    async fn listed(&mut self, listing: &[MempoolListed]) {
-        let listing: BTreeMap<TxId, MempoolListed> =
-            listing.iter().map(|entry| (entry.txid, *entry)).collect();
-        let removed: Vec<TxId> =
-            self.listed.iter().filter(|txid| !listing.contains_key(txid)).copied().collect();
-        let mut admitted: BTreeSet<TxId> =
-            listing.keys().filter(|txid| self.listed.contains(txid)).copied().collect();
-        let mut added = Vec::new();
-        let mut unheld = Vec::new();
-        for entry in listing.values().filter(|entry| !self.listed.contains(&entry.txid)) {
-            match self.core.holds(&entry.txid) {
-                true => {
-                    added.push(Sighted { txid: entry.txid, raw: None, fee: entry.fee });
-                    admitted.insert(entry.txid);
-                }
-                false => unheld.push(*entry),
-            }
-        }
+    /// Mempool read (its reading already merged): bytes for what the view lacks, then the listing
+    ///
+    /// - unfetched = left out (re-listed + re-fetched next poll, never lost)
+    async fn listed(&self, listing: &[MempoolListed]) {
+        let sighted =
+            |entry: &MempoolListed, raw| Sighted { txid: entry.txid, raw, fee: entry.fee };
+        let (held, unheld): (Vec<MempoolListed>, Vec<MempoolListed>) =
+            listing.iter().partition(|entry| self.core.holds(&entry.txid));
+        let mut listed: Vec<Sighted> = held.iter().map(|entry| sighted(entry, None)).collect();
         for (entry, raw) in unheld.iter().zip(self.bytes(&unheld).await) {
             match raw {
-                Ok(raw) => {
-                    let raw = Some(Bytes::from(raw));
-                    added.push(Sighted { txid: entry.txid, raw, fee: entry.fee });
-                    admitted.insert(entry.txid);
-                }
+                Ok(raw) => listed.push(sighted(entry, Some(Bytes::from(raw)))),
                 // listed, then mined or evicted before the fetch
                 Err(GetRawMempoolTransactionError::NotFound(txid)) => {
                     debug!(%txid, "Mempool transaction gone before fetch")
                 }
             }
         }
-        let listing = Listing { added, removed };
-        for txid in self.core.apply(self.validator, TrustedValidatorReport::Listed(listing)) {
-            admitted.remove(&txid);
-        }
-        self.listed = admitted;
+        self.core.apply(self.validator, TrustedValidatorReport::Listed(listed));
     }
 
     /// Bytes of `unheld` (unanswered = none: each re-listed, re-fetched next poll)
@@ -199,15 +170,6 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
                 debug!(validator = self.address, %unanswered, "Mempool bytes unanswered");
                 Vec::new()
             }
-        }
-    }
-
-    /// - `Degraded`: holds no tip, sightings kept
-    /// - `Down`: neither (its next answer re-lists all)
-    fn failed(&mut self, health: Health) {
-        self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
-        if health == Health::Down {
-            self.listed.clear();
         }
     }
 

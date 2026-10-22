@@ -32,7 +32,7 @@ use zcash_transparent::bundle::OutPoint;
 use crate::admission::NextBlock;
 use crate::chain_view_core::ChainViewCore;
 use crate::listings::LISTING_FRESH;
-use crate::observation_merge::{Listing, Reading, Sighted, TrustedValidatorReport};
+use crate::observation_merge::{Reading, Sighted, TrustedValidatorReport};
 use crate::peer_mempool::judge;
 use crate::trusted_validators::TrustedValidatorMeta;
 
@@ -208,15 +208,13 @@ impl Run {
                     listed: true,
                 };
                 self.core.apply(id, report);
-                let before = &self.oracle.listed[v];
                 let sighted = |tx: &usize| Sighted {
                     txid: self.txs[*tx].0,
                     raw: Some(self.txs[*tx].1.clone()),
                     fee: Zatoshis::from_u64(FEES[*tx]).expect("in supply"),
                 };
-                let added = listed.difference(before).map(sighted).collect();
-                let removed = before.difference(&listed).map(|tx| self.txs[*tx].0).collect();
-                self.core.apply(id, TrustedValidatorReport::Listed(Listing { added, removed }));
+                let listing = listed.iter().map(sighted).collect();
+                self.core.apply(id, TrustedValidatorReport::Listed(listing));
                 self.oracle.health[v] = Health::Live;
                 self.oracle.polled_since_block[v] = true;
                 self.oracle.listed[v] = listed.clone();
