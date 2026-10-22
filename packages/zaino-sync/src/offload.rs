@@ -39,25 +39,23 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 mod tests {
     use super::*;
 
-    /// Both hops return the job's value from off the runtime, and a job's panic resumes on the
-    /// awaiting task with its own message
     #[tokio::test]
-    async fn offloaded_jobs_return_their_value_and_resume_their_panic() {
+    async fn offloaded_jobs_return_their_value_compute_from_off_the_runtime() {
         let off_runtime = || tokio::runtime::Handle::try_current().is_err();
         assert!(compute(off_runtime).await, "compute ran on a runtime thread");
-        assert_eq!(compute(|| (1..=4u64).product::<u64>()).await, 24);
-        assert_eq!(blocking(|| 7).await, 7);
+        assert_eq!(compute(|| (1..=4u64).product::<u64>()).await, 24, "compute: 4!");
+        assert_eq!(blocking(|| 7).await, 7, "blocking: 7");
+    }
 
-        for hop in ["compute", "blocking"] {
-            let task = tokio::spawn(async move {
-                match hop {
-                    "compute" => compute(|| panic!("compute blew up")).await,
-                    _ => blocking(|| panic!("blocking blew up")).await,
-                }
-            });
-            let panic = task.await.expect_err("panic resumed").into_panic();
-            let payload = format!("{hop} blew up");
-            assert_eq!(panic.downcast_ref::<&str>(), Some(&payload.as_str()));
-        }
+    #[tokio::test]
+    #[should_panic(expected = "compute blew up")]
+    async fn a_compute_jobs_panic_resumes_on_the_awaiting_task() {
+        compute(|| panic!("compute blew up")).await
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "blocking blew up")]
+    async fn a_blocking_jobs_panic_resumes_on_the_awaiting_task() {
+        blocking(|| panic!("blocking blew up")).await
     }
 }

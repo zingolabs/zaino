@@ -261,6 +261,7 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
     struct Blob {
         height: BlockHeight,
         bytes: usize,
@@ -283,8 +284,12 @@ mod tests {
     fn popped(step: Step<Blob>) -> BlockHeight {
         match step {
             Step::Apply(blob) => blob.height,
-            Step::FinalizedTip(_) | Step::Shutdown => panic!("expected an apply"),
+            other => panic!("expected an Apply, popped {other:?}"),
         }
+    }
+
+    fn assert_shutdown(step: Step<Blob>, why: &str) {
+        assert!(matches!(step, Step::Shutdown), "{why}: popped {step:?}, expected Shutdown");
     }
 
     /// - two subscribers see the same steps in the same order
@@ -305,13 +310,13 @@ mod tests {
         }
         assert_eq!(popped(two.next().await), h(7), "the cancelled 99 never queued for two");
         sink.send(apply(8, 1)).await;
-        assert_eq!(popped(two.next().await), h(8));
+        assert_eq!(popped(two.next().await), h(8), "two: next send after the cancelled one");
         sink.shutdown();
-        assert_eq!(popped(one.next().await), h(7));
-        assert_eq!(popped(one.next().await), h(8), "nor for one");
-        for sub in [&mut one, &mut two] {
-            assert!(matches!(sub.next().await, Step::Shutdown));
-            assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
+        assert_eq!(popped(one.next().await), h(7), "one: first send");
+        assert_eq!(popped(one.next().await), h(8), "one: the cancelled 99 never queued either");
+        for (name, sub) in [("one", &mut one), ("two", &mut two)] {
+            assert_shutdown(sub.next().await, &format!("{name}: after its last step"));
+            assert_shutdown(sub.next().await, &format!("{name}: closed queue past Shutdown"));
         }
     }
 
@@ -328,28 +333,31 @@ mod tests {
         sink.send(Step::FinalizedTip(blob(6, 10))).await;
         sink.send(apply(7, 10)).await;
         sink.shutdown();
-        let heights = |run: Run<Blob>| -> (Vec<u32>, bool) {
-            (
-                run.blocks.into_iter().map(|blob| u32::from(blob.height)).collect(),
-                run.ends_at_finalized_tip,
-            )
+        #[derive(Debug, PartialEq)]
+        struct Gathered {
+            heights: Vec<u32>,
+            ends_at_finalized_tip: bool,
+        }
+        let gathered = |run: Run<Blob>| Gathered {
+            heights: run.blocks.into_iter().map(|blob| u32::from(blob.height)).collect(),
+            ends_at_finalized_tip: run.ends_at_finalized_tip,
         };
         let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
 
         let start = sub.next().await;
-        assert_eq!(heights(sub.run(start, twenty)), (vec![0, 1], false), "cut at 20 bytes");
+        let expected = Gathered { heights: vec![0, 1], ends_at_finalized_tip: false };
+        assert_eq!(gathered(sub.run(start, twenty)), expected, "cut at 20 bytes");
         let start = sub.next().await;
-        assert_eq!(
-            heights(sub.run(start, all)),
-            (vec![2, 3, 4, 5], true),
-            "ends at FinalizedTip 5"
-        );
+        let expected = Gathered { heights: vec![2, 3, 4, 5], ends_at_finalized_tip: true };
+        assert_eq!(gathered(sub.run(start, all)), expected, "ends at FinalizedTip 5");
         let start = sub.next().await;
-        assert_eq!(heights(sub.run(start, all)), (vec![6], true), "a FinalizedTip first = alone");
+        let expected = Gathered { heights: vec![6], ends_at_finalized_tip: true };
+        assert_eq!(gathered(sub.run(start, all)), expected, "a FinalizedTip first = alone");
         let start = sub.next().await;
-        assert_eq!(heights(sub.run(start, all)), (vec![7], false), "cut by Shutdown");
-        assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown ended the last run");
-        assert!(matches!(sub.next().await, Step::Shutdown), "and stays");
+        let expected = Gathered { heights: vec![7], ends_at_finalized_tip: false };
+        assert_eq!(gathered(sub.run(start, all)), expected, "cut by Shutdown");
+        assert_shutdown(sub.next().await, "Shutdown ended the last run");
+        assert_shutdown(sub.next().await, "closed queue past Shutdown");
     }
 
     /// Queue held through `Shutdown` (dropped sooner = bug upstream)
@@ -389,32 +397,32 @@ mod tests {
         {
             let fourth = sink.send(apply(3, 100));
             tokio::pin!(fourth);
-            assert!(futures::poll!(fourth.as_mut()).is_pending(), "budget full");
-            assert_eq!(popped(sub.next().await), h(0));
+            assert!(futures::poll!(fourth.as_mut()).is_pending(), "budget full: 3 waits");
+            assert_eq!(popped(sub.next().await), h(0), "first of the full budget");
             fourth.await;
         }
 
         for height in 1..=3 {
-            assert_eq!(popped(sub.next().await), h(height));
+            assert_eq!(popped(sub.next().await), h(height), "in send order");
         }
         sink.send(apply(4, oversize)).await;
         {
             let small = sink.send(apply(5, 100));
             tokio::pin!(small);
-            assert!(futures::poll!(small.as_mut()).is_pending(), "oversize holds all");
-            assert_eq!(popped(sub.next().await), h(4));
+            assert!(futures::poll!(small.as_mut()).is_pending(), "oversize 4 holds all: 5 waits");
+            assert_eq!(popped(sub.next().await), h(4), "oversize 4 passed alone");
             small.await;
         }
 
         {
             let heavy = sink.send(apply(6, oversize));
             tokio::pin!(heavy);
-            assert!(futures::poll!(heavy.as_mut()).is_pending(), "waits for an empty queue");
-            assert_eq!(popped(sub.next().await), h(5));
+            assert!(futures::poll!(heavy.as_mut()).is_pending(), "oversize 6 waits for 5 to pop");
+            assert_eq!(popped(sub.next().await), h(5), "5 before oversize 6");
             heavy.await;
         }
         sink.shutdown();
-        assert_eq!(popped(sub.next().await), h(6));
-        assert!(matches!(sub.next().await, Step::Shutdown), "queued past the full budget");
+        assert_eq!(popped(sub.next().await), h(6), "oversize 6 once the queue drained");
+        assert_shutdown(sub.next().await, "queued past the full budget");
     }
 }

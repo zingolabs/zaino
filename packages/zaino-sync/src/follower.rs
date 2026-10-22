@@ -191,207 +191,228 @@ fn link(
     }
 }
 
+/// Balancer over mock validators + finalized-stream readers (infra: nothing asserted on here)
 #[cfg(test)]
-mod tests {
-    use zaino_source::testing::{h, within, Lie, MockChain};
-    use zaino_traffic::{Limits, TrustedValidator};
+mod test_kit {
+    use zaino_source::testing::{within, MockValidator};
+    use zaino_source::ZcashLegacyRpcClient;
+    use zaino_traffic::{Limits, Peers, TrustedValidator};
 
     use super::*;
 
-    /// Chain A 0..=11, finalized 5 then 8, honest member + `Lie::Poisoned` liar (by height too),
-    /// two subscribers (one durable at A2, one fresh)
+    /// `trusted` (one priority) + `peers`, balancing until `stop`
+    pub(super) fn balancer(
+        trusted: &[&MockValidator],
+        peers: Option<Peers>,
+        stop: &CancellationToken,
+    ) -> TrafficBalancer<ZcashLegacyRpcClient> {
+        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+        let trusted = trusted.iter().enumerate().map(|(index, validator)| TrustedValidator {
+            address: format!("validator{index}"),
+            source: Arc::new(validator.client()),
+            priority: 0,
+            limits,
+        });
+        let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), peers);
+        tokio::spawn(balancing.run(stop.clone()));
+        balancer
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) struct Sent {
+        pub(super) block: BlockRef,
+        pub(super) transactions: usize,
+        pub(super) finalized_tip: bool,
+    }
+
+    impl Sent {
+        pub(super) fn of(block: &Block, finalized_tip: bool) -> Self {
+            Self {
+                block: block.block_ref(),
+                transactions: block.transactions().len(),
+                finalized_tip,
+            }
+        }
+    }
+
+    /// Next `count` steps off `queue` (an early `Shutdown` panics naming what came before it)
+    pub(super) async fn received(queue: &mut Subscription<Block>, count: usize) -> Vec<Sent> {
+        let mut sent = Vec::new();
+        for _ in 0..count {
+            match within("a step", queue.next()).await {
+                Step::Apply(block) => sent.push(Sent::of(&block, false)),
+                Step::FinalizedTip(block) => sent.push(Sent::of(&block, true)),
+                Step::Shutdown => panic!("Shutdown after {sent:?}, {count} steps expected"),
+            }
+        }
+        sent
+    }
+
+    pub(super) async fn assert_shutdown_next(queue: &mut Subscription<Block>, why: &str) {
+        match within("Shutdown", queue.next()).await {
+            Step::Shutdown => {}
+            Step::Apply(block) | Step::FinalizedTip(block) => {
+                panic!("{why}: {:?} sent before Shutdown", block.block_ref())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::RangeInclusive;
+    use std::time::Duration;
+
+    use zaino_source::testing::{h, within, Lie, MockChain};
+
+    use super::test_kit::{assert_shutdown_next, balancer, received, Sent};
+    use super::*;
+
+    /// Paused clock: every fetch in flight lands long before this
+    const IDLE: Duration = Duration::from_secs(60);
+
+    /// Chain A0..=A11, finalized 5 then 8, honest validator + `Lie::Poisoned` liar, subscribers
+    /// durable at A2 and fresh
     ///
-    /// - both queues = A0..=A8, once each, in order, the honest bodies (a lie never sent)
-    /// - the finalized tip's block (A5, then A8) `FinalizedTip`, every other `Apply`
-    /// - nothing above the finalized tip
-    /// - progress = the last height sent, blocks counted
-    /// - cancel → `Ok`, `Shutdown` last in every queue
+    /// - both queues = A0..=A8 once each, in order, honest bodies, finalized tip's `FinalizedTip`
+    /// - nothing above the finalized tip, progress = last height sent
+    /// - cancel → `Ok`, `Shutdown` last
     #[tokio::test(start_paused = true)]
     async fn finalized_blocks_reach_every_subscriber_once_in_order_from_the_lowest_durable_tip() {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
-        let members = [None, Some(Lie::Poisoned)].map(|lie| {
-            let member = chain.validator(a11);
-            member.lie(lie);
-            member
-        });
-        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = members.iter().enumerate().map(|(index, member)| TrustedValidator {
-            address: format!("member{index}"),
-            source: Arc::new(member.client()),
-            priority: 0,
-            limits,
-        });
-        let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
-        let stop_balancing = CancellationToken::new();
-        tokio::spawn(balancing.run(stop_balancing.clone()));
-        let finalized_at_five = Arc::new(HeaderChainSnapshot::finalized(&chain, a11, h(5)));
-        let (verified, verified_rx) = watch::channel(Some(finalized_at_five));
-
+        let (honest, liar) = (chain.validator(a11), chain.validator(a11));
+        liar.lie(Some(Lie::Poisoned));
+        let balancer = balancer(&[&honest, &liar], None, &CancellationToken::new());
+        let finalized_at_five = HeaderChainSnapshot::finalized(&chain, a11, h(5));
+        let (verified, verified_rx) = watch::channel(Some(Arc::new(finalized_at_five)));
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
-        let durable_tip_a2 = Some(trunk[2].block_ref());
-        let mut durable_at_a2 =
-            follower.subscribe(IndexKind::BlockHash, durable_tip_a2, NonZeroUsize::MAX);
+        let a2 = Some(trunk[2].block_ref());
+        let mut durable_at_a2 = follower.subscribe(IndexKind::BlockHash, a2, NonZeroUsize::MAX);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
         let progress = follower.progress();
         let cancel = CancellationToken::new();
         let running = tokio::spawn(follower.run(cancel.clone()));
-        let sent = async |queue: &mut Subscription<Block>, count: usize| {
-            let mut sent = Vec::new();
-            for _ in 0..count {
-                let (data, finalized) = match within("a step", queue.next()).await {
-                    Step::Apply(data) => (data, false),
-                    Step::FinalizedTip(data) => (data, true),
-                    Step::Shutdown => panic!("Shutdown early"),
-                };
-                sent.push((data.block_ref(), finalized));
-            }
-            sent
-        };
-        let steps = |range: std::ops::RangeInclusive<usize>, finalized_tip: usize| -> Vec<_> {
-            range.map(|at| (trunk[at].block_ref(), at == finalized_tip)).collect()
+        let trunk_steps = |range: RangeInclusive<usize>, finalized_tip: usize| -> Vec<Sent> {
+            range.map(|at| Sent::of(&trunk[at], at == finalized_tip)).collect()
         };
 
-        let first = steps(0..=5, 5);
-        assert_eq!(sent(&mut durable_at_a2, 6).await, first, "from the lowest durable tip (fresh)");
-        assert_eq!(sent(&mut fresh, 6).await, first, "the same steps to every subscriber");
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        assert_eq!(progress.handed(), Some(h(5)), "nothing above the finalized tip");
+        let to_five = trunk_steps(0..=5, 5);
+        let got = received(&mut durable_at_a2, 6).await;
+        assert_eq!(got, to_five, "durable at A2: from the lowest durable tip (fresh's)");
+        assert_eq!(received(&mut fresh, 6).await, to_five, "fresh: the same steps");
+        tokio::time::sleep(IDLE).await;
+        assert_eq!(progress.handed(), Some(h(5)), "idle at finalized 5: nothing above it");
 
-        verified.send_replace(Some(Arc::new(HeaderChainSnapshot::finalized(&chain, a11, h(8)))));
-        let next = steps(6..=8, 8);
-        assert_eq!(
-            sent(&mut durable_at_a2, 3).await,
-            next,
-            "the finalized tip moved: its blocks next"
-        );
-        assert_eq!(sent(&mut fresh, 3).await, next);
-        assert_eq!((progress.handed(), progress.blocks()), (Some(h(8)), 9));
+        let finalized_at_eight = HeaderChainSnapshot::finalized(&chain, a11, h(8));
+        verified.send_replace(Some(Arc::new(finalized_at_eight)));
+        let six_to_eight = trunk_steps(6..=8, 8);
+        let got = received(&mut durable_at_a2, 3).await;
+        assert_eq!(got, six_to_eight, "durable at A2: finalized tip moved to 8");
+        assert_eq!(received(&mut fresh, 3).await, six_to_eight, "fresh: finalized tip moved to 8");
+        assert_eq!(progress.handed(), Some(h(8)), "progress = last height sent");
+        assert_eq!(progress.blocks(), 9, "A0..=A8 counted once each");
 
         cancel.cancel();
-        let stopped = within("the follower stopped", running).await;
-        stopped.expect("follower task").expect("cancel = clean stop");
-        for queue in [&mut durable_at_a2, &mut fresh] {
-            let last = within("Shutdown", queue.next()).await;
-            assert!(matches!(last, Step::Shutdown), "Shutdown last");
-        }
-        stop_balancing.cancel();
+        let stopped = within("the follower stopped", running).await.expect("follower task");
+        assert!(matches!(stopped, Ok(())), "cancel = clean stop: {stopped:?}");
+        assert_shutdown_next(&mut durable_at_a2, "durable at A2: Shutdown last").await;
+        assert_shutdown_next(&mut fresh, "fresh: Shutdown last").await;
     }
 
-    /// Broken links stop the follower, naming what broke:
-    /// - durable X1 (A1's sibling), finalized 5: A2's parent ≠ X1 → `Diverged` naming the index,
-    ///   before any step
-    /// - A0..=A5 sent, then the validator's history moves (B 5..=11 off A4), finalized 8: B6's
-    ///   parent ≠ A5 → `Unlinked` at 6, nothing past A5 sent
+    /// block_hash durable at X1 (A1's sibling), validator on A, finalized 5: A2's parent A1 ≠ X1
     #[tokio::test(start_paused = true)]
-    async fn a_block_off_the_chain_already_sent_or_committed_stops_the_follower() {
+    async fn a_durable_tip_off_the_validators_chain_stops_the_follower_before_any_step() {
         let mut chain = MockChain::regtest();
         let a7 = chain.mine_empty(7);
         let x1 = chain.fork(h(0)).mine_empty(1).tip();
-        let b11 = chain.fork(h(4)).mine_empty(7).tip();
-        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let validator = chain.validator(a7);
-        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
-        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
-        let (balancer, balancing) = TrafficBalancer::new(trusted, None);
-        let stop_balancing = CancellationToken::new();
-        tokio::spawn(balancing.run(stop_balancing.clone()));
+        let balancer = balancer(&[&validator], None, &CancellationToken::new());
+        let finalized_at_five = HeaderChainSnapshot::finalized(&chain, a7, h(5));
+        let (_verified, verified_rx) = watch::channel(Some(Arc::new(finalized_at_five)));
+        let mut follower = FinalizedFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
+        let mut at_x1 = follower.subscribe(IndexKind::BlockHash, Some(x1), NonZeroUsize::MAX);
 
-        let finalized_at_five = Some(Arc::new(HeaderChainSnapshot::finalized(&chain, a7, h(5))));
-        let (_verified, verified_rx) = watch::channel(finalized_at_five);
-        let mut follower = FinalizedFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
-        let durable_tip_a4 = Some(chain.blocks(a7)[4].block_ref());
-        let mut above = follower.subscribe(IndexKind::TreeState, durable_tip_a4, NonZeroUsize::MAX);
-        let mut foreign = follower.subscribe(IndexKind::BlockHash, Some(x1), NonZeroUsize::MAX);
         let stopped = within("the follower stopped", follower.run(CancellationToken::new())).await;
-        let stopped = stopped.expect_err("X1 off the validator's chain");
+
         let a1 = chain.blocks(a7)[1].header().hash;
         assert!(
-            matches!(stopped, FollowError::Diverged { index: "block_hash", height, expected, got }
-                if height == h(1) && expected == x1.hash && got == a1),
-            "{stopped}"
+            matches!(&stopped, Err(FollowError::Diverged { index: "block_hash", height, expected, got })
+                if *height == h(1) && *expected == x1.hash && *got == a1),
+            "Diverged naming block_hash at 1, X1 committed, A1 served: {stopped:?}"
         );
-        for queue in [&mut foreign, &mut above] {
-            let first = within("Shutdown", queue.next()).await;
-            assert!(matches!(first, Step::Shutdown), "no step before the stop");
-        }
+        assert_shutdown_next(&mut at_x1, "no step before the stop").await;
+    }
 
-        let (verified, verified_rx) =
-            watch::channel(Some(Arc::new(HeaderChainSnapshot::finalized(&chain, a7, h(5)))));
+    /// A0..=A5 sent, then the validator moves to B (B5..=B11 off A4), finalized 8: B6's parent
+    /// B5 ≠ A5
+    #[tokio::test(start_paused = true)]
+    async fn a_validator_history_moving_under_the_blocks_sent_stops_the_follower() {
+        let mut chain = MockChain::regtest();
+        let a7 = chain.mine_empty(7);
+        let b11 = chain.fork(h(4)).mine_empty(7).tip();
+        let validator = chain.validator(a7);
+        let balancer = balancer(&[&validator], None, &CancellationToken::new());
+        let finalized_at_five = HeaderChainSnapshot::finalized(&chain, a7, h(5));
+        let (verified, verified_rx) = watch::channel(Some(Arc::new(finalized_at_five)));
         let mut follower = FinalizedFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
         let running = tokio::spawn(follower.run(CancellationToken::new()));
-        let mut sent = Vec::new();
-        for _ in 0..=5 {
-            let data = match within("a step", fresh.next()).await {
-                Step::Apply(data) | Step::FinalizedTip(data) => data,
-                Step::Shutdown => panic!("Shutdown early"),
-            };
-            sent.push(data.block_ref());
-        }
-        let trunk: Vec<BlockRef> =
-            chain.blocks(a7)[..=5].iter().map(|block| block.block_ref()).collect();
-        assert_eq!(sent, trunk, "A0..=A5");
+        let a0_to_a5: Vec<BlockRef> =
+            chain.blocks(a7)[..=5].iter().map(|b| b.block_ref()).collect();
+        let sent = received(&mut fresh, 6).await.into_iter().map(|sent| sent.block);
+        assert_eq!(sent.collect::<Vec<_>>(), a0_to_a5, "finalized 5 on A");
+
         validator.follow(&chain, b11);
-        verified.send_replace(Some(Arc::new(HeaderChainSnapshot::finalized(&chain, b11, h(8)))));
+        let b_finalized_at_eight = HeaderChainSnapshot::finalized(&chain, b11, h(8));
+        verified.send_replace(Some(Arc::new(b_finalized_at_eight)));
+
         let stopped = within("the follower stopped", running).await.expect("follower task");
-        let stopped = stopped.expect_err("B6 does not extend A5");
-        assert!(matches!(stopped, FollowError::Unlinked { height } if height == h(6)), "{stopped}");
-        let last = within("Shutdown", fresh.next()).await;
-        assert!(matches!(last, Step::Shutdown), "nothing past A5 sent");
-        stop_balancing.cancel();
+        assert!(
+            matches!(stopped, Err(FollowError::Unlinked { height }) if height == h(6)),
+            "Unlinked at B6: {stopped:?}"
+        );
+        assert_shutdown_next(&mut fresh, "nothing past A5 sent").await;
     }
 }
 
 #[cfg(test)]
 mod peers {
-    use std::time::Duration;
+    use std::num::NonZeroU32;
 
+    use zaino_header_chain::{decode_header, testing::insert, HeaderChain};
+    use zaino_primitives::types::FinalityDepth;
     use zaino_source::testing::{h, MockChain};
     use zaino_traffic::testing::MockPeerSet;
-    use zaino_traffic::{Limits, Peers, TrustedValidator};
+    use zaino_traffic::Peers;
 
+    use super::test_kit::{balancer, received};
     use super::*;
 
-    /// Trusted validator unreachable throughout, peer set holding A0..=A11, finalized 8 on a chain
-    /// naming every header
-    ///
-    /// - A0..=A8 reach the stream from the peer set alone
-    /// - each checked against its verified header (validator asked first, never answers)
+    /// Trusted validator down throughout, peer set holding A0..=A11, finalized 8 on a chain
+    /// naming every header: A0..=A8 from the peer set alone, each checked against its header
     #[tokio::test(start_paused = true)]
     async fn finalized_blocks_the_verified_chain_names_come_from_peers_when_no_validator_answers() {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
-        let trunk = chain.blocks(a11);
         let validator = chain.validator(a11);
         validator.down(true);
-        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
-        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
-        let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
-        let cancel = CancellationToken::new();
-        tokio::spawn(balancing.run(cancel.clone()));
-        let finalized_at_eight = Some(Arc::new(HeaderChainSnapshot::finalized(&chain, a11, h(8))));
-        let (_verified, verified_rx) = watch::channel(finalized_at_eight);
+        let balancer = balancer(&[&validator], Some(peers), &CancellationToken::new());
+        let finalized_at_eight = HeaderChainSnapshot::finalized(&chain, a11, h(8));
+        let (_verified, verified_rx) = watch::channel(Some(Arc::new(finalized_at_eight)));
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
         let mut queue = follower.subscribe(IndexKind::BlockHash, None, NonZeroUsize::MAX);
-        tokio::spawn(follower.run(cancel.clone()));
+        tokio::spawn(follower.run(CancellationToken::new()));
 
-        let mut sent = Vec::new();
-        for _ in 0..=8 {
-            let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
-            match step.expect("a finalized block within a minute") {
-                Step::Apply(data) | Step::FinalizedTip(data) => sent.push(data.block_ref()),
-                Step::Shutdown => panic!("Shutdown early"),
-            }
-        }
-        let expected: Vec<BlockRef> = trunk[..=8].iter().map(|block| block.block_ref()).collect();
-        assert_eq!(sent, expected, "A0..=A8 in order, served while the validator never answered");
-        cancel.cancel();
+        let sent: Vec<BlockRef> = received(&mut queue, 9).await.iter().map(|s| s.block).collect();
+
+        let a0_to_a8: Vec<BlockRef> =
+            chain.blocks(a11)[..=8].iter().map(|b| b.block_ref()).collect();
+        assert_eq!(sent, a0_to_a8, "A0..=A8 in order, served while the validator never answered");
     }
 
     /// Headers held from A3 (anchored there), finalized 8, trusted validator on B (B3.. off A2),
@@ -401,24 +422,13 @@ mod peers {
     /// - A3..=A8 by hash, checked: the batch stops at A3 (by height they would be B's)
     #[tokio::test(start_paused = true)]
     async fn a_by_height_batch_stops_where_the_verified_headers_begin() {
-        use std::num::NonZeroU32;
-
-        use zaino_header_chain::{decode_header, testing::insert, HeaderChain};
-        use zaino_primitives::types::FinalityDepth;
-
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
         let b11 = chain.fork(h(2)).mine_empty(9).tip();
         let validator = chain.validator(b11);
-        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let (address, source) = ("validator".to_owned(), Arc::new(validator.client()));
-        let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
         let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, a11)), in_flight: 4 };
-        let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
-        let cancel = CancellationToken::new();
-        tokio::spawn(balancing.run(cancel.clone()));
-
+        let balancer = balancer(&[&validator], Some(peers), &CancellationToken::new());
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut headers = HeaderChain::new(depth);
         let a3 = decode_header(&chain.header_bytes(trunk[3].header().hash)).expect("decodes");
@@ -426,26 +436,17 @@ mod peers {
         insert(&mut headers, &trunk[4..]).expect("A4..=A11 link onto A3");
         headers.finalize(headers.finalizable().expect("A11 = A8 + depth"));
         let verified = headers.snapshot().expect("anchored");
-        assert_eq!(
-            (verified.header_at(h(2)), verified.finalized_tip()),
-            (None, trunk[8].block_ref())
-        );
+        assert_eq!(verified.header_at(h(2)), None, "no header below the A3 anchor");
+        assert_eq!(verified.finalized_tip(), trunk[8].block_ref(), "finalized A8");
         let (_verified, verified_rx) = watch::channel(Some(Arc::new(verified)));
         let lookahead = NonZeroUsize::new(16).expect("nonzero");
         let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
         let mut queue = follower.subscribe(IndexKind::BlockHash, None, NonZeroUsize::MAX);
-        tokio::spawn(follower.run(cancel.clone()));
+        tokio::spawn(follower.run(CancellationToken::new()));
 
-        let mut sent = Vec::new();
-        for _ in 0..=8 {
-            let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
-            match step.expect("a finalized block within a minute") {
-                Step::Apply(data) | Step::FinalizedTip(data) => sent.push(data.block_ref()),
-                Step::Shutdown => panic!("Shutdown early"),
-            }
-        }
-        let expected: Vec<BlockRef> = trunk[..=8].iter().map(|block| block.block_ref()).collect();
-        assert_eq!(sent, expected, "A0..=A8: the verified chain's, none of B's");
-        cancel.cancel();
+        let sent: Vec<BlockRef> = received(&mut queue, 9).await.iter().map(|s| s.block).collect();
+
+        let a0_to_a8: Vec<BlockRef> = trunk[..=8].iter().map(|block| block.block_ref()).collect();
+        assert_eq!(sent, a0_to_a8, "A0..=A8: the verified chain's, none of B's");
     }
 }

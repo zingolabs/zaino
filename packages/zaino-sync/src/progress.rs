@@ -54,12 +54,14 @@ mod tests {
     #[test]
     fn handed_is_the_last_height_and_blocks_count_every_hand() {
         let progress = SyncProgress::default();
-        assert_eq!((progress.handed(), progress.blocks()), (None, 0));
+        let reader = progress.clone();
+        assert_eq!(reader.handed(), None, "nothing handed yet");
+        assert_eq!(reader.blocks(), 0, "nothing counted yet");
         let at = BlockHeight::from;
         for h in [0, 1, 2] {
             progress.hand(at(h));
         }
-        assert_eq!((progress.handed(), progress.blocks()), (Some(at(2)), 3));
-        assert_eq!(progress.clone().handed(), Some(at(2)), "clones share one tally");
+        assert_eq!(reader.handed(), Some(at(2)), "clone taken before: last height handed");
+        assert_eq!(reader.blocks(), 3, "clone taken before: 0, 1, 2 counted");
     }
 }

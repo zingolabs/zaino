@@ -107,69 +107,90 @@ fn check_blocks_at(blocks: Vec<Block>, heights: &[BlockHeight]) -> Result<Vec<Ch
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::types::Transaction;
+    use zaino_primitives::types::{DecodedHeader, Transaction};
     use zaino_source::testing::{h, Lie, MockChain};
     use zaino_source::ChainDataSource;
 
     use super::*;
 
-    /// Chain 0..=3 (2 = coinbase + 2 txs) + a side 2'
+    /// Asked for A2 (coinbase + 2 txs) by hash and by height
     ///
-    /// - asked block passes
-    /// - by hash: sibling, header lying about its height, txid added (root moves), last pair
-    ///   repeated (root kept, CVE-2012-2459) → each refused by name
-    /// - by height (trusted member's body, trusted): only the height lie refused (sibling = the
+    /// - by hash: only A2 with the body its header commits to passes, each fault refused by name
+    /// - by height (trusted member's body, trusted): only the height lie refused (B2 = the
     ///   follower's linkage to refuse)
-    /// - batch short of its heights = `Count`, never truncated
     #[test]
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
-        let two = chain.mine(|b| b.tx(|t| t).tx(|t| t));
-        let tip = chain.mine_empty(1);
-        let side = chain.fork(h(1)).mine_empty(1).tip();
-        let h2 = h(2);
-        assert_eq!(chain.at(h2), two, "on the best chain to {tip:?}");
+        let a2 = chain.mine(|b| b.tx(|t| t).tx(|t| t));
+        let b2 = chain.fork(h(1)).mine_empty(1).tip();
         let block = |hash: BlockHash| Block::clone(chain.block(hash));
-        let with_txs = |txs: Vec<Transaction>| Block::new(block(two.hash).header().clone(), txs);
-        let mut header = block(two.hash).header().clone();
-        header.height = BlockHeight::from(9);
-        let lying = Block::new(header, block(two.hash).transactions().to_vec());
-        let txs = block(two.hash).transactions().to_vec();
-        let added = [txs.clone(), vec![txs[0].clone()]].concat();
-        let repeated = [txs.clone(), vec![txs[2].clone()]].concat();
+        let a2_header = block(a2.hash).header().clone();
+        let a2_txs = block(a2.hash).transactions().to_vec();
+        let with_txs = |txs: Vec<Transaction>| Block::new(a2_header.clone(), txs);
+        let lied_height = h(9);
+        let lying_height =
+            Block::new(DecodedHeader { height: lied_height, ..a2_header.clone() }, a2_txs.clone());
+        let txid_added = [a2_txs.clone(), vec![a2_txs[0].clone()]].concat();
+        let last_pair_repeated = [a2_txs.clone(), vec![a2_txs[2].clone()]].concat();
 
-        let passed = check_block(block(two.hash), two).expect("the asked block");
-        assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
-        let passed = check_block_at(block(two.hash), h2).expect("its own header's body");
-        assert_eq!(passed.block_ref(), BlockRef { hash: two.hash, height: h2 });
-        let (side_at, two_at) = (BlockRef { hash: side.hash, height: h2 }, two);
-        let wrong_height = Misanswer::WrongHeight { got: BlockHeight::from(9) };
-        let merkle_root = Misanswer::Body(BodyMismatch::MerkleRoot);
-        let mutated = Misanswer::Body(BodyMismatch::Mutated);
-        #[rustfmt::skip]
-        let served = [
-            (block(side.hash),   Err(Misanswer::WrongBlock { got: side.hash }), Ok(side_at)),
-            (lying,              Err(wrong_height),                             Err(wrong_height)),
-            (with_txs(added),    Err(merkle_root),                              Ok(two_at)),
-            (with_txs(repeated), Err(mutated),                                  Ok(two_at)),
-        ];
-        for (block, by_hash, by_height) in served {
-            let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.block_ref());
-            let got =
-                (checked(check_block(block.clone(), two)), checked(check_block_at(block, h2)));
-            assert_eq!(got, (by_hash, by_height));
+        struct Served {
+            case: &'static str,
+            block: Block,
+            by_hash: Result<BlockRef, Misanswer>,
+            by_height: Result<BlockRef, Misanswer>,
         }
-
-        let short = check_blocks_at(vec![block(two.hash)], &[h2, h(3)]).map(|_| ());
-        assert_eq!(short, Err(Misanswer::Count { asked: 2, got: 1 }), "a short batch = misanswer");
+        let b2_at_2 = BlockRef { hash: b2.hash, height: h(2) };
+        let wrong_height = Misanswer::WrongHeight { got: lied_height };
+        let cases = [
+            Served { case: "A2", block: block(a2.hash), by_hash: Ok(a2), by_height: Ok(a2) },
+            Served {
+                case: "sibling B2",
+                block: block(b2.hash),
+                by_hash: Err(Misanswer::WrongBlock { got: b2.hash }),
+                by_height: Ok(b2_at_2),
+            },
+            Served {
+                case: "header lying its height is 9",
+                block: lying_height,
+                by_hash: Err(wrong_height),
+                by_height: Err(wrong_height),
+            },
+            Served {
+                case: "txid added (root moves)",
+                block: with_txs(txid_added),
+                by_hash: Err(Misanswer::Body(BodyMismatch::MerkleRoot)),
+                by_height: Ok(a2),
+            },
+            Served {
+                case: "last pair repeated (root kept, CVE-2012-2459)",
+                block: with_txs(last_pair_repeated),
+                by_hash: Err(Misanswer::Body(BodyMismatch::Mutated)),
+                by_height: Ok(a2),
+            },
+        ];
+        for Served { case, block, by_hash, by_height } in cases {
+            let by_hash_got = check_block(block.clone(), a2).map(|checked| checked.block_ref());
+            assert_eq!(by_hash_got, by_hash, "{case} asked by A2's hash");
+            let by_height_got = check_block_at(block, h(2)).map(|checked| checked.block_ref());
+            assert_eq!(by_height_got, by_height, "{case} asked at height 2");
+        }
     }
 
-    /// M9: `MockValidator` answers its best block honestly, by hash and by height
+    #[test]
+    fn a_batch_short_of_its_heights_is_a_misanswer_never_truncated() {
+        let mut chain = MockChain::regtest();
+        let one = chain.mine_empty(1);
+        let only_one = vec![Block::clone(chain.block(one.hash))];
+        let short = check_blocks_at(only_one, &[h(1), h(2)]).map(|checked| checked.len());
+        assert_eq!(short, Err(Misanswer::Count { asked: 2, got: 1 }), "1 block for heights 1, 2");
+    }
+
+    /// `MockValidator`'s lies (M9) over the client: honest answer passes, each `Lie` fails the
+    /// body check by the rule that names it
     ///
-    /// - each `Lie` it is told to tell fails the body check by the rule that names it
-    /// - by height (trusted member): only the height lie, re-mined block = successor's link to
-    ///   refuse
+    /// - by height (trusted member): only the height lie (re-mined block = successor's link to
+    ///   refuse)
     #[tokio::test]
     async fn every_lie_a_mock_validator_tells_fails_the_body_check() {
         let mut chain = MockChain::regtest();
@@ -179,31 +200,45 @@ mod tests {
         let client = validator.client();
         let honest = client.get_block_by_hash(two.hash).await.expect("on its best");
         let passed = check_block(honest, two).map(|checked| checked.block_ref());
-        assert_eq!(passed, Ok(two));
+        assert_eq!(passed, Ok(two), "honest answer by hash");
         let honest = client.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
-        assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.block_ref()), Ok(two));
+        let passed = check_block_at(honest, h(2)).map(|checked| checked.block_ref());
+        assert_eq!(passed, Ok(two), "honest answer at height 2");
 
-        type Expected = fn(&Block) -> Option<Misanswer>;
-        #[rustfmt::skip]
-        let lies: [(Lie, Expected, Expected); 4] = [
-            (Lie::WrongBlock,  |served| Some(Misanswer::WrongBlock { got: served.header().hash }),
-                               |_| None),
-            (Lie::Poisoned,    |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot)),
-                               |_| None),
-            (Lie::Mutated,     |_| Some(Misanswer::Body(BodyMismatch::Mutated)),
-                               |_| None),
-            (Lie::WrongHeight, |_| Some(Misanswer::WrongHeight { got: h(3) }),
-                               |_| Some(Misanswer::WrongHeight { got: h(3) })),
+        struct Told {
+            lie: Lie,
+            by_hash: fn(served: &Block) -> Option<Misanswer>,
+            by_height: Option<Misanswer>,
+        }
+        let lies = [
+            Told {
+                lie: Lie::WrongBlock,
+                by_hash: |served| Some(Misanswer::WrongBlock { got: served.header().hash }),
+                by_height: None,
+            },
+            Told {
+                lie: Lie::Poisoned,
+                by_hash: |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot)),
+                by_height: None,
+            },
+            Told {
+                lie: Lie::Mutated,
+                by_hash: |_| Some(Misanswer::Body(BodyMismatch::Mutated)),
+                by_height: None,
+            },
+            Told {
+                lie: Lie::WrongHeight,
+                by_hash: |_| Some(Misanswer::WrongHeight { got: h(3) }),
+                by_height: Some(Misanswer::WrongHeight { got: h(3) }),
+            },
         ];
-        for (lie, by_hash, by_height) in lies {
+        for Told { lie, by_hash, by_height } in lies {
             validator.lie(Some(lie));
             let served = client.get_block_by_hash(two.hash).await.expect("answers");
             let expected = by_hash(&served);
-            let checked = check_block(served, two).err();
-            assert_eq!(checked, expected, "{lie:?} by hash");
+            assert_eq!(check_block(served, two).err(), expected, "{lie:?} asked by hash");
             let served = client.get_blocks_by_height(&[h(2)]).await.expect("answers").remove(0);
-            let expected = by_height(&served);
-            assert_eq!(check_block_at(served, h(2)).err(), expected, "{lie:?} by height");
+            assert_eq!(check_block_at(served, h(2)).err(), by_height, "{lie:?} asked at height 2");
         }
     }
 }

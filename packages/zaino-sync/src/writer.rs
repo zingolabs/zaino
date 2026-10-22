@@ -126,31 +126,26 @@ mod tests {
         assert_next(&SCHEMA.changes(chain.genesis()), Some(chain.genesis()), chain.block(one.hash));
     }
 
+    /// Each block checked against the one before it (gap / sibling / below = `Header::extends`
+    /// table, zaino-primitives)
     #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_run_past_a_gap_panics() {
+    fn a_run_of_linked_blocks_from_genesis_passes() {
         let mut chain = MockChain::regtest();
         let two = chain.mine_empty(2);
-        let run = [&**chain.block(chain.genesis().hash), &**chain.block(two.hash)];
-        assert_run(None, &run, &run.map(|block| SCHEMA.changes(block.block_ref())));
+        let blocks = chain.blocks(two);
+        let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
+        let out: Vec<BlockChanges> = run.iter().map(|b| SCHEMA.changes(b.block_ref())).collect();
+        assert_run(None, &run, &out);
     }
 
+    /// B2 at the height above A1, its parent B1 ≠ A1
     #[test]
     #[should_panic(expected = "does not extend the parent tip")]
-    fn a_sibling_at_the_tips_height_panics() {
+    fn a_block_on_another_parent_panics() {
         let mut chain = MockChain::regtest();
-        let two = chain.mine_empty(2);
-        let sibling = chain.fork(h(1)).mine_empty(1).tip();
-        assert_next(&SCHEMA.changes(sibling), Some(two), chain.block(sibling.hash));
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_block_below_the_tip_panics() {
-        let mut chain = MockChain::regtest();
-        let three = chain.mine_empty(3);
-        let two = chain.at(h(2));
-        assert_next(&SCHEMA.changes(two), Some(three), chain.block(two.hash));
+        let a1 = chain.mine_empty(1);
+        let b2 = chain.fork(h(0)).mine_empty(2).tip();
+        assert_next(&SCHEMA.changes(b2), Some(a1), chain.block(b2.hash));
     }
 
     /// Commit I/O failure = panic naming the index and its directory (never an `Err` to drain)
