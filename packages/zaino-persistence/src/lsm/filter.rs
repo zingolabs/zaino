@@ -192,67 +192,120 @@ mod tests {
         pages::{FileKind, PagedFile, Sealed},
     };
 
-    /// - golden inputs (persisted filter readable only while these stay byte-identical)
-    /// - sharding monotone in key order
-    /// - every written key found, strangers mostly refused
-    #[test]
-    fn hashes_are_stable_shards_follow_key_order_and_written_keys_are_found() {
-        assert_eq!(probe_hash(&[0x01; 8]), 0x0101_0101_0101_0101);
-        assert_eq!(probe_hash(&[0x01, 0x02]), 0x0102_0000_0000_0000);
-        assert_eq!(probe_hash(&[0u8; 36]), 0);
-        assert_eq!(probe_hash(&[0xab; 36]), 0xad4a_2fdc_9f89_727d);
-        let outpoint =
-            |vout: u32| probe_hash(&[[0x11; 32].as_slice(), &vout.to_be_bytes()].concat());
-        assert_ne!(outpoint(0), outpoint(1), "outpoints of one transaction stay distinct");
+    /// Uniform first 8 bytes (`mix(n)`), `n` after
+    fn key(n: u64) -> Vec<u8> {
+        [mix(n).to_be_bytes(), n.to_be_bytes()].concat()
+    }
 
-        let bits = [0, 1, SHARD_KEYS, SHARD_KEYS + 1, 5 * SHARD_KEYS].map(shard_bits);
-        assert_eq!(bits, [0, 0, 0, 1, 3]);
-
-        let key = |n: u64| -> Vec<u8> {
-            let mut key = mix(n).to_be_bytes().to_vec();
-            key.extend_from_slice(&n.to_be_bytes());
-            key
-        };
-        // section as a segment holds it: head, then the spilled fingerprints
+    /// Filter section of `keys` (ascending) as a segment holds it: head, then the fingerprints
+    fn section(keys: &[Vec<u8>]) -> Vec<u8> {
         let fs = SimFs::new();
         let dir = Path::new("/f");
         fs.create_dir_all(dir).expect("dir");
-        let written = |keys: &[Vec<u8>], id: u32| {
-            let spill = Spill::new(fs.clone(), dir.join(format!("{id}.filter.scratch")));
-            let mut writer = FilterWriter::new(keys.len() as u64, spill);
-            for key in keys {
-                writer.push(key).expect("push");
-            }
-            let (head, fingerprints) = writer.finish().expect("build");
-            let path = dir.join(format!("{id}.seg"));
-            let mut out = PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)
-                .expect("segment");
-            out.append(&head).expect("head");
-            fingerprints.append_to(&mut out).expect("fingerprints");
-            fs.contents(&path).expect("section")
-        };
+        let mut writer =
+            FilterWriter::new(keys.len() as u64, Spill::new(fs.clone(), dir.join("spill")));
+        for key in keys {
+            writer.push(key).expect("push");
+        }
+        let (head, fingerprints) = writer.finish().expect("build");
+        let path = dir.join("0.seg");
+        let mut out =
+            PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment).expect("segment");
+        out.append(&head).expect("head");
+        fingerprints.append_to(&mut out).expect("fingerprints");
+        fs.contents(&path).expect("section")
+    }
 
+    /// Persisted filters stay readable only while these stay identical
+    #[test]
+    fn probe_hashes_are_golden() {
+        // (case, key, hash)
+        #[rustfmt::skip]
+        let cases: [(&str, &[u8], u64); 4] = [
+            ("8 bytes = the key itself",       &[0x01; 8],    0x0101_0101_0101_0101),
+            ("short key, zero-padded right",   &[0x01, 0x02], 0x0102_0000_0000_0000),
+            ("36 zero bytes",                  &[0; 36],      0),
+            ("36 bytes, later words mixed in", &[0xab; 36],   0xad4a_2fdc_9f89_727d),
+        ];
+        for (case, key, hash) in cases {
+            assert_eq!(probe_hash(key), hash, "{case}: {key:02x?}");
+        }
+        let outpoint =
+            |vout: u32| probe_hash(&[[0x11; 32].as_slice(), &vout.to_be_bytes()].concat());
+        assert_ne!(outpoint(0), outpoint(1), "outpoints 0 + 1 of one transaction stay distinct");
+    }
+
+    /// Shard = top `bits` of the key's first 8 bytes: monotone in key order
+    #[test]
+    fn shards_hold_at_most_shard_keys_and_follow_key_order() {
+        // (records, shard bits)
+        #[rustfmt::skip]
+        let bits = [
+            (0,              0),
+            (1,              0),
+            (SHARD_KEYS,     0),
+            (SHARD_KEYS + 1, 1),
+            (5 * SHARD_KEYS, 3),
+        ];
+        for (records, expected) in bits {
+            assert_eq!(shard_bits(records), expected, "shard bits for {records} records");
+        }
+        // (key, shard bits, shard)
+        #[rustfmt::skip]
+        let shards: [([u8; 8], u8, usize); 4] = [
+            ([0x00; 8], 3, 0),
+            ([0x20; 8], 3, 1),
+            ([0xff; 8], 3, 7),
+            ([0xff; 8], 0, 0),
+        ];
+        for (key, bits, expected) in shards {
+            assert_eq!(shard(&key, bits), expected, "key {key:02x?} at {bits} shard bits");
+        }
+    }
+
+    /// 1.5 × `SHARD_KEYS` keys (2 shards), 200 000 strangers
+    #[test]
+    fn a_filter_finds_every_written_key_and_admits_strangers_at_its_false_positive_rate() {
         let mut keys: Vec<Vec<u8>> = (0..3 * SHARD_KEYS / 2).map(key).collect();
         keys.sort_unstable();
-        let section = written(&keys, 0);
+        let section = section(&keys);
         let read = |range: Range<usize>| &section[range];
+
         let layout = FilterLayout::parse(read, section.len()).expect("parses");
-        assert_eq!(layout.bits, 1);
-        assert!(keys.iter().all(|key| layout.may_contain(read, key)));
 
+        assert_eq!(layout.bits, 1, "shard bits");
+        let missed = keys.iter().filter(|key| !layout.may_contain(read, key)).count();
+        assert_eq!(missed, 0, "written keys refused");
         let strangers = 200_000u64;
-        let false_positives = (0..strangers)
-            .map(|n| key((n + 1) << 40))
-            .filter(|key| layout.may_contain(read, key))
-            .count();
-        let rate_ok = (false_positives as f64) < strangers as f64 * 2.0 / 256.0;
-        assert!(rate_ok, "{false_positives} false positives in {strangers}");
+        let admitted =
+            (0..strangers).map(|n| key((n + 1) << 40)).filter(|key| layout.may_contain(read, key));
+        let admitted = admitted.count();
+        assert!(
+            admitted < 2 * 200_000 / 256,
+            "{admitted} of {strangers} strangers admitted (2^-8)"
+        );
+    }
 
-        let empty = written(&[], 1);
-        let layout = FilterLayout::parse(|range| &empty[range], empty.len()).expect("empty");
-        assert!(!layout.may_contain(|range| &empty[range], &key(1)));
-        assert!(FilterLayout::parse(read, section.len() - 1).is_none(), "short");
+    #[test]
+    fn an_empty_filter_admits_nothing() {
+        let empty = section(&[]);
+        let read = |range: Range<usize>| &empty[range];
+
+        let layout = FilterLayout::parse(read, empty.len()).expect("empty parses");
+
+        assert!(!layout.may_contain(read, &key(1)), "key 1 admitted");
+    }
+
+    /// Filter of 100 keys, its section cut by a byte or one byte longer
+    #[test]
+    fn a_filter_section_of_the_wrong_length_is_malformed() {
+        let section = section(&(0..100).map(key).collect::<Vec<_>>());
         let longer = [&section[..], &[0]].concat();
-        assert!(FilterLayout::parse(|range| &longer[range], longer.len()).is_none(), "trailing");
+
+        let short = FilterLayout::parse(|range| &section[range], section.len() - 1);
+        let trailing = FilterLayout::parse(|range| &longer[range], longer.len());
+
+        assert!(short.is_none(), "a byte short parsed: {short:?}");
+        assert!(trailing.is_none(), "a trailing byte parsed: {trailing:?}");
     }
 }
