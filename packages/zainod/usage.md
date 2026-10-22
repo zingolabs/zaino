@@ -45,7 +45,7 @@ zainod dies rather than serve from a state it cannot vouch for
 
 ## Logging
 
-`zainod start` and `generate-config` log [logfmt](https://brandur.org/logfmt) to stdout;
+`zainod start` and `generate-config` log [logfmt](https://brandur.org/logfmt) to stdout, coloured only on a terminal;
 `verify`, `hold`, `resume` and `overload` print only their report.
 `RUST_LOG` is the standard tracing filter: unset, zaino crates log at `info`; a malformed one
 stops startup.
