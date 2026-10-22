@@ -23,7 +23,6 @@ tracing = { workspace = true }
 zcash_encoding = "0.4"
 zcash_primitives.workspace = true
 zcash_protocol.workspace = true
-governor = { version = "0.10.4", default-features = false, features = ["std"] }
 zaino-proto.workspace = true
 tonic = { workspace = true, features = ["tls-ring"] }
 tokio-util.workspace = true

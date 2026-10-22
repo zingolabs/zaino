@@ -302,8 +302,7 @@ bench times and the API are in [its guide](../packages/zaino-traffic/usage.md).
   `getblockchaininfo`, `getrawmempool true`, `getblockhash` at our best, and periodically peers,
   version and end-of-service height. Consecutive failures make it `Down`, probed until it
   answers. A failing validator never stops the process.
-- **Load on a zebrad** = `max_connections` + byte pacing (`max_mib_per_sec`). There is no
-  request-rate limit.
+- **Load on a zebrad** = `max_connections`. There is no request-rate or byte-rate limit.
 
 ## 10. When things fail
 

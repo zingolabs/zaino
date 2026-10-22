@@ -17,7 +17,6 @@ Per entry:
 | `connect_timeout_secs` | 2 | |
 | `read_timeout_secs` | 30 | silence before a request fails, not total duration |
 | `max_connections` | 32 | link budget, at least 5 (one for the poll, one reserved per lane + one shared) |
-| `max_mib_per_sec` | unlimited | response bytes paced to this rate |
 | `max_response_mib` | 32 | largest JSON-RPC reply, 4 ..= 32; batches split to fit |
 | `priority` | 0 | lower tiers asked first; a higher tier takes overflow and hedges only |
 | `indexer_address` | none | zebrad's indexer gRPC: tip and mempool push streams wake polling at once |

@@ -21,8 +21,8 @@ use crate::{
 /// Validator's link
 ///
 /// - Single attempt per call (retries, concurrency = the caller's balancer)
-/// - `rpc` `pub(crate)`: [`ZebraIndexerGrpcClient`](crate::ZebraIndexerGrpcClient) asks the rest through it and
-///   shares its metric label + byte pacing
+/// - `rpc` `pub(crate)`: [`ZebraIndexerGrpcClient`](crate::ZebraIndexerGrpcClient) asks the rest
+///   through it + shares its metric label
 pub struct ZcashLegacyRpcClient {
     pub(crate) rpc: RpcClient,
 }

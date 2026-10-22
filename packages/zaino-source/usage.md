@@ -24,7 +24,7 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 ```rust,ignore
 use zaino_source::{Auth, Endpoint, LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
-let link = LinkLimits { max_connections, max_bytes_per_sec, response_size_cap };
+let link = LinkLimits { max_connections, response_size_cap };
 let endpoint = Endpoint { address, auth: Auth::Cookie(path), timeouts: Timeouts::default(), limits: link };
 let legacy = ZcashLegacyRpcClient::new(&endpoint)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
@@ -70,8 +70,6 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   - Receive windows: 4 MiB per stream (a whole block in flight), every stream's at
     once per connection.
   - `read` timeout = silence per message, never a total.
-  - `max_bytes_per_sec` paces each block as received, so HTTP/2 flow control
-    slows the sender.
   - Metrics (`GetBlock`, `GetBlockRange`) land in the same families as JSON-RPC.
 
 - One attempt per call. Which validator, how many requests in flight, the request
@@ -79,8 +77,6 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   re-sends, and a batch item's refusal (zebrad's `-1` work queue full included) is
   that item's own outcome.
 - `LinkLimits`: `max_connections` = idle connections kept to the validator;
-  `max_bytes_per_sec` (`None` = unlimited) paces response bytes per body chunk as
-  they are read, so an exhausted budget slows the sender through TCP backpressure;
   `response_size_cap` (`ResponseSizeCap`: one full block's reply ..= 32 MiB) = the largest
   JSON-RPC reply buffered, and sets how many blocks one `getblock` batch asks.
 - Per-validator metrics carry a `validator` label: call duration by method,
@@ -305,7 +301,7 @@ assert_eq!(validator.calls("getblockheader"), 12);   // each batch item counted
   transaction, a coinbase claiming the next height (a v5 coinbase's txid skips `scriptSig`, so
   `WrongHeight` keeps a valid merkle root). Each fails the NFS body check by its rule.
 - The seam is `RpcClient`'s wire: HTTP in production, an in-process server under `testing` (no
-  socket, so a paused clock stays deterministic). Status, body cap and pacing over real HTTP
+  socket, so a paused clock stays deterministic). Status and body cap over real HTTP
   are `rpc/client.rs`'s own tests.
 
 `testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`

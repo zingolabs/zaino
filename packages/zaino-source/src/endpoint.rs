@@ -75,20 +75,18 @@ impl Default for Timeouts {
     }
 }
 
-/// One validator's link: idle connections kept, response bytes per second (`None` = unlimited)
+/// One validator's link: idle connections kept, largest reply buffered
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkLimits {
     pub max_connections: NonZeroU32,
-    pub max_bytes_per_sec: Option<NonZeroU32>,
     pub response_size_cap: ResponseSizeCap,
 }
 
-/// 32 connections (zebrad admits 100 across every client), unlimited bytes, full reply cap
+/// 32 connections (zebrad admits 100 across every client), full reply cap
 impl Default for LinkLimits {
     fn default() -> Self {
         Self {
             max_connections: const { NonZeroU32::new(32).expect("32 is non-zero") },
-            max_bytes_per_sec: None,
             response_size_cap: ResponseSizeCap::MAX,
         }
     }

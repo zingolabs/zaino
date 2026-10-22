@@ -1,13 +1,12 @@
-//! JSON-RPC 2.0 over HTTP to one validator: auth, capped body, response bytes paced as read
+//! JSON-RPC 2.0 over HTTP to one validator: auth, capped body
 //!
 //! - one attempt per call: which validator, how many in flight, retries = `zaino-traffic`'s
 //! - a batch item's refusal (work queue full included) = that item's outcome, never re-sent here
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
-use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use zaino_primitives::protocol::MAX_BLOCK_BYTES;
@@ -74,7 +73,6 @@ pub(crate) struct RpcClient {
     name: String,
     wire: Wire,
     id_counter: AtomicI64,
-    bytes: Option<DefaultDirectRateLimiter>,
     response_size_cap: ResponseSizeCap,
 }
 
@@ -118,14 +116,8 @@ impl RpcClient {
     }
 
     fn over(name: String, wire: Wire, limits: LinkLimits) -> Self {
-        let per_second = |rate: NonZeroU32| RateLimiter::direct(Quota::per_second(rate));
-        Self {
-            name,
-            wire,
-            id_counter: AtomicI64::new(0),
-            bytes: limits.max_bytes_per_sec.map(per_second),
-            response_size_cap: limits.response_size_cap,
-        }
+        let id_counter = AtomicI64::new(0);
+        Self { name, wire, id_counter, response_size_cap: limits.response_size_cap }
     }
 
     pub(crate) fn response_size_cap(&self) -> ResponseSizeCap {
@@ -137,14 +129,8 @@ impl RpcClient {
         &self.name
     }
 
-    /// `n` bytes received: counted, then paced against `max_bytes_per_sec` (unset = at once)
-    ///
-    /// - waiting = reading stops, the transport's flow control slows the sender
-    pub(crate) async fn received(&self, n: usize) {
+    pub(crate) fn received(&self, n: usize) {
         metrics::received(&self.name, n);
-        if let Some(bytes) = &self.bytes {
-            charge(bytes, n).await;
-        }
     }
 
     /// `result` deserialized straight off the body as `T` (no `Value` hop: a multi-MB hex block
@@ -190,7 +176,7 @@ impl RpcClient {
             Wire::Http { client, url, auth } => (client, url, auth),
             #[cfg(any(test, feature = "testing"))]
             Wire::Served(serve) => {
-                return self.read_served(serve(serde_json::to_vec(body)?).await?).await
+                return self.read_served(serve(serde_json::to_vec(body)?).await?)
             }
         };
         let mut request = client
@@ -209,21 +195,18 @@ impl RpcClient {
         self.read_body_capped(response).await
     }
 
-    /// An in-process reply under the same cap, counted and paced as one chunk
+    /// In-process reply under the same cap, counted as one chunk
     #[cfg(any(test, feature = "testing"))]
-    async fn read_served(&self, body: Vec<u8>) -> Result<Vec<u8>, RpcError> {
+    fn read_served(&self, body: Vec<u8>) -> Result<Vec<u8>, RpcError> {
         let max = self.response_size_cap.bytes();
         if body.len() > max {
             return Err(RpcError::ResponseBodyTooLarge { max });
         }
-        self.received(body.len()).await;
+        self.received(body.len());
         Ok(body)
     }
 
-    /// Chunk-wise (never allocates an oversized body)
-    ///
-    /// - Lying `Content-Length` caught by the running total
-    /// - each chunk [`received`](Self::received) as read (pacing, not after-the-fact accounting)
+    /// Chunk-wise (never allocates an oversized body; lying `Content-Length` caught by the total)
     async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<Vec<u8>, RpcError> {
         let max = self.response_size_cap.bytes();
         let too_large = RpcError::ResponseBodyTooLarge { max };
@@ -238,25 +221,10 @@ impl RpcClient {
             if body.len() + chunk.len() > max {
                 return Err(too_large);
             }
-            self.received(chunk.len()).await;
+            self.received(chunk.len());
             body.extend_from_slice(&chunk);
         }
         Ok(body)
-    }
-}
-
-/// `n` cells, in pieces no larger than the limiter's burst (one second's worth)
-async fn charge(limiter: &DefaultDirectRateLimiter, n: usize) {
-    let mut left = n;
-    while let Some(piece) = NonZeroU32::new(u32::try_from(left).unwrap_or(u32::MAX)) {
-        match limiter.until_n_ready(piece).await {
-            Ok(()) => return,
-            Err(governor::InsufficientCapacity(burst)) => {
-                let burst = NonZeroU32::new(burst).expect("a quota's burst is non-zero");
-                limiter.until_n_ready(burst).await.expect("the burst always fits");
-                left -= burst.get() as usize;
-            }
-        }
     }
 }
 
@@ -265,21 +233,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    /// Chunk > one-second burst → charged in burst-sized pieces (else `InsufficientCapacity`,
-    /// never read)
-    #[tokio::test]
-    async fn a_chunk_larger_than_the_burst_is_paced_not_refused() {
-        let limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(1_000).expect("nz")));
-        let started = Instant::now();
-        charge(&limiter, 2_500).await;
-        let took = started.elapsed();
-        assert!(
-            took >= Duration::from_millis(1_400),
-            "2.5 s of budget after a 1 s burst: {took:?}"
-        );
-        assert!(took < Duration::from_secs(3), "{took:?}");
-    }
 
     /// Real HTTP, validator answering out of order
     ///

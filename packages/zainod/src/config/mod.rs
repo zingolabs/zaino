@@ -87,8 +87,6 @@ pub(crate) struct TrustedValidatorConfig {
     pub(crate) read_timeout: Duration,
     /// The balancer's budget = the transport's pool (>= 5: poll + one per lane + one shared)
     pub(crate) max_connections: Limits,
-    /// Unset = unlimited (set for a remote/shared validator)
-    pub(crate) max_mib_per_sec: Option<NonZeroU32>,
     /// Largest JSON-RPC reply read: 4 (one full block) ..= 32 (batches split to fit)
     pub(crate) max_response_mib: ResponseMib,
     /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
@@ -110,7 +108,6 @@ impl Default for TrustedValidatorConfig {
             connect_timeout: timeouts.connect,
             read_timeout: timeouts.read,
             max_connections: Limits::default(),
-            max_mib_per_sec: None,
             max_response_mib: ResponseMib(LinkLimits::default().response_size_cap),
             indexer_address: None,
             indexer_tls: None,
@@ -141,12 +138,10 @@ impl From<ResponseMib> for u32 {
 }
 
 impl TrustedValidatorConfig {
-    /// The transport's: connection pool + response bytes paced as read
+    /// The transport's: connection pool + reply cap
     pub(crate) fn link(&self) -> LinkLimits {
-        let per_sec = |mib| NonZeroU32::try_from(bytes(mib)).unwrap_or(NonZeroU32::MAX);
         LinkLimits {
             max_connections: self.max_connections.max_connections(),
-            max_bytes_per_sec: self.max_mib_per_sec.map(per_sec),
             response_size_cap: self.max_response_mib.0,
         }
     }
@@ -1041,7 +1036,6 @@ jsonrpc_address = "zebra-eu:8232"
 user = "zaino"
 password = "secret"
 max_connections = 8
-max_mib_per_sec = 4
 max_response_mib = 8
 indexer_address = "zebra-eu:8230"
 priority = 1
@@ -1063,7 +1057,6 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             user: Some("zaino".to_owned()),
             password: Some("secret".to_owned()),
             max_connections: Limits::new(8).expect("8 ≥ MIN_CONNECTIONS"),
-            max_mib_per_sec: Some(n(4)),
             max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
             indexer_tls: Some(ZebraIndexerTls {
@@ -1079,7 +1072,6 @@ key_path = "/etc/zaino/indexer-client-key.pem"
 
         let link = LinkLimits {
             max_connections: n(8),
-            max_bytes_per_sec: Some(n(4 << 20)),
             response_size_cap: ResponseSizeCap::new(8 << 20).expect("in bounds"),
         };
         assert_eq!(eu.link(), link, "the transport's");

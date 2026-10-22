@@ -46,8 +46,7 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
   per lane + one shared. `Limits::default()` = 32. `max_connections()` reads it back (the
   transport's pool takes the same number). `Limits` (de)serializes as that bare number,
   refused at parse below 5: zainod's `[[trusted_validators]] max_connections`.
-- Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
-  transport. There is no request-rate limit.
+- Load on a validator = `max_connections` here ([architecture](../../docs/architecture.md#9-talking-to-validators-and-peers)).
 - `TrafficBalancer` is `Clone` (one `Arc`); hand the same one to every consumer.
 
 ## Asking

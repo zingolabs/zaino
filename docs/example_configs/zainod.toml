@@ -35,9 +35,8 @@ jsonrpc_address = "127.0.0.1:18232"
 # read_timeout_secs = 30
 # Link budget to this validator (zaino never exceeds it): at least 5 connections, one for the poll,
 # one reserved per lane (control, interactive, bulk) + one shared, the rest to whichever lane
-# waits; response bytes paced to max_mib_per_sec (unset = unlimited)
+# waits
 # max_connections = 32
-# max_mib_per_sec = 8
 # Largest JSON-RPC reply read, 4 (one full block) ..= 32; batches are split to fit
 # max_response_mib = 32
 # zebrad's indexer gRPC (its `indexer_listen_addr`): tip + mempool push streams wake polling at

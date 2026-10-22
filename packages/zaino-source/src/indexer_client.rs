@@ -118,7 +118,7 @@ impl ZebraIndexerGrpcClient {
                 }
                 Err(status) => return Err(QueryError::NonDomain(failed(status))),
             };
-            self.rpc.rpc.received(block.data.len()).await;
+            self.rpc.rpc.received(block.data.len());
             blocks.push(decode::served_block(&block.data)?);
         }
         Ok(())
@@ -186,7 +186,7 @@ impl ChainDataSource for ZebraIndexerGrpcClient {
             match self.within(zebra_indexer.get_block(request)).await? {
                 Ok(block) => {
                     let block = block.into_inner();
-                    self.rpc.rpc.received(block.data.len()).await;
+                    self.rpc.rpc.received(block.data.len());
                     decode::served_block(&block.data)
                 }
                 Err(status) if status.code() == Code::NotFound => {
