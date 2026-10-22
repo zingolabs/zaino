@@ -232,20 +232,24 @@ impl RpcClient {
 mod tests {
     use std::time::Duration;
 
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::task::JoinHandle;
+
     use super::*;
 
-    /// Real HTTP, validator answering out of order
-    ///
-    /// - one request: every outcome in call order, a work-queue-full item its own refusal (never
-    ///   re-sent here: the balancer's retry)
-    #[tokio::test]
-    async fn a_batch_answers_in_call_order_each_item_its_own_outcome() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    /// Window a re-sent request would arrive in (the client never re-sends: the balancer does)
+    const RESEND_WINDOW: Duration = Duration::from_millis(200);
 
+    /// Loopback HTTP validator for one exchange: request body → `answer` → `200` reply
+    ///
+    /// - task → (request body, whether a second connection came within `RESEND_WINDOW`)
+    async fn validator_answering(
+        answer: fn(&Value) -> Value,
+    ) -> (String, JoinHandle<(Value, bool)>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let url = format!("http://{}", listener.local_addr().expect("bound"));
-        // "x" → "a", "y" → busy, "z" → not found
-        let validator = tokio::spawn(async move {
+        let exchange = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
             let mut request = Vec::new();
             let body = loop {
@@ -261,43 +265,56 @@ mod tests {
                     })
                     .expect("content-length");
                 if body.len() == length {
-                    break serde_json::from_str::<Value>(body).expect("json batch");
+                    break serde_json::from_str::<Value>(body).expect("json body");
                 }
             };
-            let mut replies: Vec<Value> = body
-                .as_array()
-                .expect("a batch")
-                .iter()
-                .map(|call| match call["params"][0].as_str().expect("param") {
-                    "x" => serde_json::json!({ "id": call["id"], "result": "a" }),
-                    "y" => serde_json::json!({ "id": call["id"], "error": { "code": -1, "message": "busy" } }),
-                    _ => serde_json::json!({ "id": call["id"], "error": { "code": -5, "message": "gone" } }),
-                })
-                .collect();
-            replies.reverse();
-            let reply = serde_json::to_string(&replies).expect("reply");
+            let reply = answer(&body).to_string();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             );
             stream.write_all(response.as_bytes()).await.expect("write");
-            let next = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
-            (body, next.is_ok())
+            let resent = tokio::time::timeout(RESEND_WINDOW, listener.accept()).await.is_ok();
+            (body, resent)
         });
+        (url, exchange)
+    }
 
+    fn client(name: &str, url: String) -> RpcClient {
+        let limits = LinkLimits::default();
         let config = RpcClientConfig {
             url,
-            name: "validator".to_owned(),
+            name: name.to_owned(),
             auth: None,
             timeouts: Timeouts::default(),
-            limits: LinkLimits::default(),
+            limits,
         };
-        let client = RpcClient::new(config).expect("client");
+        RpcClient::new(config).expect("client")
+    }
+
+    /// Batch replies reversed by the validator: outcomes still in call order, `-1` busy = that
+    /// item's own refusal (never re-sent here: the balancer's retry)
+    #[tokio::test]
+    async fn a_batch_answers_in_call_order_each_item_its_own_outcome() {
+        let (url, validator) = validator_answering(|batch| {
+            let reply = |call: &Value| match call["params"][0].as_str() {
+                Some("x") => json!({ "id": call["id"], "result": "a" }),
+                Some("y") => {
+                    json!({ "id": call["id"], "error": { "code": -1, "message": "busy" } })
+                }
+                _ => json!({ "id": call["id"], "error": { "code": -5, "message": "gone" } }),
+            };
+            let calls = batch.as_array().expect("a batch");
+            Value::Array(calls.iter().rev().map(reply).collect())
+        })
+        .await;
         let calls = ["x", "y", "z"]
             .map(|param| Call { method: "getrawtransaction", params: vec![Value::from(param)] })
             .to_vec();
+
         let outcomes: Vec<Result<String, RpcError>> =
-            client.call_batch("getrawtransaction", calls).await.expect("batch");
+            client("validator", url).call_batch("getrawtransaction", calls).await.expect("batch");
+
         let outcomes: Vec<String> = outcomes
             .into_iter()
             .map(|outcome| match outcome {
@@ -306,8 +323,7 @@ mod tests {
                 Err(other) => format!("{other}"),
             })
             .collect();
-        assert_eq!(outcomes, ["a", "rpc -1", "rpc -5"]);
-
+        assert_eq!(outcomes, ["a", "rpc -1", "rpc -5"], "outcomes for calls x, y, z");
         let (received, resent) = validator.await.expect("validator task");
         let sent: Vec<&str> = received
             .as_array()
@@ -315,53 +331,34 @@ mod tests {
             .iter()
             .map(|call| call["params"][0].as_str().expect("param"))
             .collect();
-        assert_eq!((sent, resent), (vec!["x", "y", "z"], false), "one request, nothing re-sent");
+        assert_eq!(sent, ["x", "y", "z"], "one request, call order");
+        assert!(!resent, "busy item not re-sent within {RESEND_WINDOW:?}");
     }
 
-    /// Latency = round trips the validator answered:
-    ///
-    /// - an error reply (`-8`) = answered: timed + counted `rpc_-8`
-    /// - a refused connection = no answer: counted `connection`, never timed
+    /// Latency = round trips the validator answered: an error reply (`-8`) = timed + counted
+    /// `rpc_-8`, a refused connection = counted `connection`, never timed
     #[tokio::test]
     async fn only_an_answered_attempt_is_timed_a_refused_one_is_only_counted() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let rendered = recorder.handle();
         let _recording = ::metrics::set_default_local_recorder(&recorder);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let answering = format!("http://{}", listener.local_addr().expect("bound"));
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept");
-            let mut request = [0u8; 4096];
-            let _ = stream.read(&mut request).await.expect("read");
-            let reply = r#"{"id":0,"error":{"code":-8,"message":"above the tip"}}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                reply.len()
-            );
-            stream.write_all(response.as_bytes()).await.expect("write");
-        });
+        let (answering, _) = validator_answering(
+            |call| json!({ "id": call["id"], "error": { "code": -8, "message": "above the tip" } }),
+        )
+        .await;
         // bound then dropped: nothing listens
         let refusing = {
             let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             format!("http://{}", gone.local_addr().expect("bound"))
         };
 
-        for (name, url) in [("answering", answering), ("refusing", refusing)] {
-            let config = RpcClientConfig {
-                url,
-                name: name.to_owned(),
-                auth: None,
-                timeouts: Timeouts::default(),
-                limits: LinkLimits::default(),
-            };
-            let client = RpcClient::new(config).expect("client");
-            let settled = client.call::<Value>("getblock", vec![Value::from("99")]).await;
-            assert!(settled.is_err(), "{name}: {settled:?}");
-        }
+        let answered =
+            client("answering", answering).call::<Value>("getblock", vec!["99".into()]).await;
+        let refused =
+            client("refusing", refusing).call::<Value>("getblock", vec!["99".into()]).await;
 
+        assert!(matches!(answered, Err(RpcError::Rpc { code: -8, .. })), "answering: {answered:?}");
+        assert!(matches!(refused, Err(RpcError::Http(_))), "refusing: {refused:?}");
         let scrape = rendered.render();
         let missing: Vec<&str> = [
             r#"zaino_validator_rpc_duration_seconds_count{validator="answering",method="getblock"} 1"#,

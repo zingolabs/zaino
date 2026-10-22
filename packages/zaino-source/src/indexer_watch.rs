@@ -116,13 +116,17 @@ enum Session {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
 
     use futures::Stream;
+    use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa};
+    use rcgen::{Issuer, KeyPair};
     use tokio::sync::mpsc;
-    use tonic::transport::{Certificate, Identity};
+    use tokio::task::JoinHandle;
+    use tonic::transport::server::TcpIncoming;
+    use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
     use tonic::{Request, Response, Status};
     use zaino_proto::proto::zebra_indexer::indexer_server::{Indexer, IndexerServer};
     use zaino_proto::proto::zebra_indexer::{
@@ -133,11 +137,26 @@ mod tests {
     use super::*;
 
     type Events<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+    type Feed<T> = mpsc::Sender<Result<T, Status>>;
+
+    /// Bound on each awaited event (real sockets, real clock: a failure, never a pass, waits it)
+    const EVENT_WITHIN: Duration = Duration::from_secs(10);
 
     /// zebrad's indexer: each subscription drains a channel the test feeds (one session at a time)
     struct FakeIndexer {
         tips: Mutex<Option<mpsc::Receiver<Result<BlockHashAndHeight, Status>>>>,
         mempool: Mutex<Option<mpsc::Receiver<Result<MempoolChangeMessage, Status>>>>,
+    }
+
+    impl FakeIndexer {
+        /// Next session's two streams, fed by the returned senders
+        fn next_session(&self) -> (Feed<BlockHashAndHeight>, Feed<MempoolChangeMessage>) {
+            let (tips, tips_rx) = mpsc::channel(8);
+            let (mempool, mempool_rx) = mpsc::channel(8);
+            *self.tips.lock().expect("fake") = Some(tips_rx);
+            *self.mempool.lock().expect("fake") = Some(mempool_rx);
+            (tips, mempool)
+        }
     }
 
     fn drain<T: Send + 'static>(receiver: Option<mpsc::Receiver<Result<T, Status>>>) -> Events<T> {
@@ -192,91 +211,136 @@ mod tests {
         }
     }
 
-    /// - Nothing listening = refused, retried, no edge
-    /// - Up: one `link true`, every event a hint
-    /// - zebrad ending a lagged stream (error, then close) = one `link false`, then reconnected
-    #[tokio::test]
-    async fn events_wake_and_a_lagged_stream_drops_the_link_then_reconnects() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let address = listener.local_addr().expect("bound").to_string();
-        drop(listener);
+    /// `FakeIndexer` served on a loopback port (`tls` = mutual TLS) → (address, indexer)
+    async fn serve_fake_indexer(tls: Option<ServerTlsConfig>) -> (String, Arc<FakeIndexer>) {
+        let indexer = Arc::new(FakeIndexer { tips: Mutex::new(None), mempool: Mutex::new(None) });
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = socket.local_addr().expect("bound").to_string();
+        let mut server = Server::builder();
+        if let Some(tls) = tls {
+            server = server.tls_config(tls).expect("server tls");
+        }
+        let server = server
+            .add_service(IndexerServer::from_arc(Arc::clone(&indexer)))
+            .serve_with_incoming(TcpIncoming::from(socket));
+        tokio::spawn(server);
+        (address, indexer)
+    }
 
-        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
-        let (changes, links) = (Arc::clone(&seen), Arc::clone(&seen));
+    /// Loopback front: each connection reported, then piped to `backend` (`None` = dropped)
+    async fn counting_front(backend: Option<String>) -> (String, mpsc::UnboundedReceiver<()>) {
+        let front = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = front.local_addr().expect("bound").to_string();
+        let (connected, connections) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = front.accept().await {
+                let _ = connected.send(());
+                let Some(backend) = backend.clone() else { continue };
+                tokio::spawn(async move {
+                    let mut outbound = tokio::net::TcpStream::connect(backend).await?;
+                    tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await
+                });
+            }
+        });
+        (address, connections)
+    }
+
+    /// `ZebraIndexerWatch` on `address`, every callback → one line on the returned channel
+    fn watching(
+        address: &str,
+        tls: Option<&ZebraIndexerTls>,
+    ) -> (mpsc::UnboundedReceiver<String>, CancellationToken, JoinHandle<()>) {
+        let (seen, events) = mpsc::unbounded_channel::<String>();
+        let links = seen.clone();
         let cancel = CancellationToken::new();
-        let watch = ZebraIndexerWatch::new(&address, None, Timeouts::default()).expect("address");
+        let watch = ZebraIndexerWatch::new(address, tls, Timeouts::default()).expect("endpoint");
         let watching = tokio::spawn(watch.run(
             cancel.clone(),
-            move || changes.lock().expect("seen").push("change".to_owned()),
-            move |up| links.lock().expect("seen").push(format!("link {up}")),
+            move || seen.send("change".to_owned()).expect("test listening"),
+            move |up| links.send(format!("link {up}")).expect("test listening"),
         ));
-        let events = || seen.lock().expect("seen").clone();
-        let until = |want: usize| {
-            let seen = Arc::clone(&seen);
-            async move {
-                for _ in 0..200 {
-                    if seen.lock().expect("seen").len() >= want {
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                panic!("never {want} events: {:?}", seen.lock().expect("seen"));
-            }
-        };
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        assert_eq!(events(), Vec::<String>::new(), "refused twice: retries are no edge");
+        (events, cancel, watching)
+    }
 
-        let (tip_tx, tip_rx) = mpsc::channel(8);
-        let (pool_tx, pool_rx) = mpsc::channel(8);
-        let indexer = Arc::new(FakeIndexer {
-            tips: Mutex::new(Some(tip_rx)),
-            mempool: Mutex::new(Some(pool_rx)),
-        });
-        let socket = tokio::net::TcpListener::bind(&address).await.expect("rebind");
-        let server = tonic::transport::Server::builder()
-            .add_service(IndexerServer::from_arc(Arc::clone(&indexer)))
-            .serve_with_incoming(tonic::transport::server::TcpIncoming::from(socket));
-        tokio::spawn(server);
+    async fn next(events: &mut mpsc::UnboundedReceiver<String>, expected: &str) -> String {
+        let next = tokio::time::timeout(EVENT_WITHIN, events.recv()).await;
+        let next = next.unwrap_or_else(|_| panic!("no event within {EVENT_WITHIN:?}, {expected}"));
+        next.unwrap_or_else(|| panic!("watch ended before {expected}"))
+    }
 
-        until(1).await;
-        assert_eq!(events(), ["link true"]);
-        tip_tx.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
-        pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("open");
-        pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("open");
-        until(4).await;
-        let hints = events().split_off(1);
-        assert_eq!(hints, ["change", "change", "change"], "two streams, every event once");
+    async fn nth_connection(connections: &mut mpsc::UnboundedReceiver<()>, nth: usize) {
+        let connected = tokio::time::timeout(EVENT_WITHIN, connections.recv()).await;
+        let reason = format!("connection {nth} within {EVENT_WITHIN:?}");
+        connected.expect(&reason).expect(&reason);
+    }
 
-        let (fresh_tip_tx, fresh_tip_rx) = mpsc::channel(8);
-        let (fresh_pool_tx, fresh_pool_rx) = mpsc::channel(8);
-        *indexer.tips.lock().expect("fake") = Some(fresh_tip_rx);
-        *indexer.mempool.lock().expect("fake") = Some(fresh_pool_rx);
-        let lagged = Status::unavailable("mempool_change channel has closed");
-        pool_tx.send(Err(lagged)).await.expect("open");
-        until(6).await;
-        fresh_pool_tx.send(Ok(MempoolChangeMessage::default())).await.expect("resubscribed");
-        until(7).await;
-        assert_eq!(events()[4..], ["link false", "link true", "change"], "lag = one reconnect");
-        assert!(!fresh_tip_tx.is_closed(), "the new session holds the fresh tip stream");
+    /// Two refused sessions (the first + its retry) seen at the front
+    #[tokio::test]
+    async fn a_refused_connect_is_retried_and_no_link_edge() {
+        let (address, mut connections) = counting_front(None).await;
 
+        let (mut events, cancel, watching) = watching(&address, None);
+        nth_connection(&mut connections, 1).await;
+        nth_connection(&mut connections, 2).await;
+        cancel.cancel();
+        watching.await.expect("only cancel ends the watch");
+
+        assert_eq!(events.try_recv().ok(), None, "two refused sessions: no link, no event");
+    }
+
+    #[tokio::test]
+    async fn once_both_streams_open_one_link_edge_and_every_event_a_hint() {
+        let (address, indexer) = serve_fake_indexer(None).await;
+        let (tips, mempool) = indexer.next_session();
+        let (mut events, cancel, watching) = watching(&address, None);
+        assert_eq!(next(&mut events, "the link").await, "link true", "both streams open");
+
+        tips.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
+        mempool.send(Ok(MempoolChangeMessage::default())).await.expect("open");
+        mempool.send(Ok(MempoolChangeMessage::default())).await.expect("open");
+
+        for event in ["1 tip", "mempool 1", "mempool 2"] {
+            assert_eq!(next(&mut events, event).await, "change", "{event}: a hint");
+        }
+        cancel.cancel();
+        watching.await.expect("only cancel ends the watch");
+        assert_eq!(events.try_recv().ok(), None, "three events, three hints");
+    }
+
+    /// zebrad ends a lagged stream (error, then close)
+    #[tokio::test]
+    async fn a_lagged_stream_drops_the_link_once_then_reconnects() {
+        let (address, indexer) = serve_fake_indexer(None).await;
+        let (_tips, mempool) = indexer.next_session();
+        let (mut events, cancel, watching) = watching(&address, None);
+        assert_eq!(next(&mut events, "the first link").await, "link true");
+        let (fresh_tips, fresh_mempool) = indexer.next_session();
+
+        mempool
+            .send(Err(Status::unavailable("mempool_change channel has closed")))
+            .await
+            .expect("open");
+
+        assert_eq!(next(&mut events, "the drop").await, "link false", "lag = link down");
+        assert_eq!(next(&mut events, "the relink").await, "link true", "then reconnected");
+        fresh_mempool.send(Ok(MempoolChangeMessage::default())).await.expect("resubscribed");
+        assert_eq!(next(&mut events, "a fresh event").await, "change", "fresh session's event");
+        assert!(!fresh_tips.is_closed(), "fresh session holds the fresh tip stream");
         cancel.cancel();
         watching.await.expect("only cancel ends the watch");
     }
 
-    /// zakurad's `[rpc.indexer_tls]` (mutual TLS):
-    /// - a client certificate from another CA = refused in the handshake, never linked
-    /// - one the server's client CA signed, server verified by our CA = linked, events flow
-    /// - an unreadable PEM = refused at construction, naming the file
-    #[tokio::test]
-    async fn mutual_tls_links_only_with_a_client_certificate_the_server_trusts() {
-        use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa};
-        use rcgen::{Issuer, KeyPair};
-        use tonic::transport::server::TcpIncoming;
-        use tonic::transport::{Server, ServerTlsConfig};
+    /// CA + server/client leaves under it, and a stranger CA's client leaf (PEM files in `dir`)
+    struct Pki {
+        ca: PathBuf,
+        server: (PathBuf, PathBuf),
+        client: (PathBuf, PathBuf),
+        stranger: (PathBuf, PathBuf),
+    }
 
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn pki(dir: &Path) -> Pki {
         let write = |name: &str, pem: String| {
-            let path = dir.path().join(name);
+            let path = dir.join(name);
             std::fs::write(&path, pem).expect(name);
             path
         };
@@ -297,73 +361,82 @@ mod tests {
         };
         let (ca_path, ours) = ca("ca");
         let (_, theirs) = ca("stranger-ca");
-        let (server_cert, server_key) = leaf("server", ExtendedKeyUsagePurpose::ServerAuth, &ours);
-        let (client_cert, client_key) = leaf("client", ExtendedKeyUsagePurpose::ClientAuth, &ours);
-        let (stranger_cert, stranger_key) =
-            leaf("stranger", ExtendedKeyUsagePurpose::ClientAuth, &theirs);
+        Pki {
+            server: leaf("server", ExtendedKeyUsagePurpose::ServerAuth, &ours),
+            client: leaf("client", ExtendedKeyUsagePurpose::ClientAuth, &ours),
+            stranger: leaf("stranger", ExtendedKeyUsagePurpose::ClientAuth, &theirs),
+            ca: ca_path,
+        }
+    }
 
-        let (tip_tx, tip_rx) = mpsc::channel(8);
-        let (_pool_tx, pool_rx) = mpsc::channel(8);
-        let indexer =
-            FakeIndexer { tips: Mutex::new(Some(tip_rx)), mempool: Mutex::new(Some(pool_rx)) };
+    /// zakurad's `[rpc.indexer_tls]`: server identity + client CA = `pki.ca`
+    fn server_tls(pki: &Pki) -> ServerTlsConfig {
         let pem = |path: &PathBuf| std::fs::read(path).expect("pem");
-        let server_tls = ServerTlsConfig::new()
-            .identity(Identity::from_pem(pem(&server_cert), pem(&server_key)))
-            .client_ca_root(Certificate::from_pem(pem(&ca_path)));
-        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let address = socket.local_addr().expect("bound").to_string();
-        let mut server = Server::builder().tls_config(server_tls).expect("server tls");
-        let server = server
-            .add_service(IndexerServer::new(indexer))
-            .serve_with_incoming(TcpIncoming::from(socket));
-        tokio::spawn(server);
+        ServerTlsConfig::new()
+            .identity(Identity::from_pem(pem(&pki.server.0), pem(&pki.server.1)))
+            .client_ca_root(Certificate::from_pem(pem(&pki.ca)))
+    }
 
-        let client = |cert: &PathBuf, key: &PathBuf| ZebraIndexerTls {
-            ca_path: ca_path.clone(),
+    fn client_tls(pki: &Pki, (cert, key): &(PathBuf, PathBuf)) -> ZebraIndexerTls {
+        let server_name = Some("localhost".to_owned());
+        ZebraIndexerTls {
+            ca_path: pki.ca.clone(),
             cert_path: cert.clone(),
             key_path: key.clone(),
-            server_name: Some("localhost".to_owned()),
-        };
-        let watch = |tls: ZebraIndexerTls| {
-            let (seen_tx, seen_rx) = mpsc::unbounded_channel::<String>();
-            let links = seen_tx.clone();
-            let cancel = CancellationToken::new();
-            let watch =
-                ZebraIndexerWatch::new(&address, Some(&tls), Timeouts::default()).expect("pems");
-            let watching = tokio::spawn(watch.run(
-                cancel.clone(),
-                move || seen_tx.send("change".to_owned()).expect("test listening"),
-                move |up| links.send(format!("link {up}")).expect("test listening"),
-            ));
-            (seen_rx, cancel, watching)
-        };
+            server_name,
+        }
+    }
 
-        let (mut stranger_seen, cancel, watching) = watch(client(&stranger_cert, &stranger_key));
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        cancel.cancel();
-        watching.await.expect("only cancel ends the watch");
-        let stranger = stranger_seen.try_recv().ok();
-        assert_eq!(stranger, None, "another CA's client: no link, no event");
+    /// Mutual TLS: two handshakes (the first + its retry) seen at the front
+    #[tokio::test]
+    async fn a_client_certificate_from_another_ca_never_links() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pki = pki(dir.path());
+        let (server, _indexer) = serve_fake_indexer(Some(server_tls(&pki))).await;
+        let (address, mut connections) = counting_front(Some(server)).await;
 
-        let (mut seen, cancel, watching) = watch(client(&client_cert, &client_key));
-        let in_time = Duration::from_secs(10);
-        let linked = tokio::time::timeout(in_time, seen.recv()).await.expect("linked in time");
-        assert_eq!(linked.as_deref(), Some("link true"), "our CA's client: linked");
-        tip_tx.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
-        let tip = tokio::time::timeout(in_time, seen.recv()).await.expect("the tip in time");
-        assert_eq!(tip.as_deref(), Some("change"), "events flow over TLS");
+        let (mut events, cancel, watching) =
+            watching(&address, Some(&client_tls(&pki, &pki.stranger)));
+        nth_connection(&mut connections, 1).await;
+        nth_connection(&mut connections, 2).await;
         cancel.cancel();
         watching.await.expect("only cancel ends the watch");
 
+        assert_eq!(events.try_recv().ok(), None, "stranger CA's client, 2 handshakes: no link");
+    }
+
+    #[tokio::test]
+    async fn a_client_certificate_our_ca_signed_links_and_events_flow() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pki = pki(dir.path());
+        let (address, indexer) = serve_fake_indexer(Some(server_tls(&pki))).await;
+        let (tips, _mempool) = indexer.next_session();
+
+        let (mut events, cancel, watching) =
+            watching(&address, Some(&client_tls(&pki, &pki.client)));
+
+        assert_eq!(next(&mut events, "the link").await, "link true", "our CA's client: linked");
+        tips.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
+        assert_eq!(next(&mut events, "the tip").await, "change", "events flow over TLS");
+        cancel.cancel();
+        watching.await.expect("only cancel ends the watch");
+    }
+
+    #[test]
+    fn an_unreadable_pem_is_refused_at_construction_naming_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pki = pki(dir.path());
         let missing = ZebraIndexerTls {
             ca_path: dir.path().join("missing.pem"),
-            ..client(&client_cert, &client_key)
+            ..client_tls(&pki, &pki.client)
         };
-        let refused = ZebraIndexerWatch::new(&address, Some(&missing), Timeouts::default());
-        let named = matches!(
-            refused,
-            Err(EndpointError::TlsFile { role: "CA", ref path, .. }) if path.ends_with("missing.pem")
+
+        let refused = ZebraIndexerWatch::new("127.0.0.1:1", Some(&missing), Timeouts::default());
+
+        let refused = refused.map(|watch| watch.address);
+        assert!(
+            matches!(&refused, Err(EndpointError::TlsFile { role: "CA", path, .. }) if path.ends_with("missing.pem")),
+            "missing CA file: {refused:?}"
         );
-        assert!(named, "an unreadable PEM names itself at construction");
     }
 }
