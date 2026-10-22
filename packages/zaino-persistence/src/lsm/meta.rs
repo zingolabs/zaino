@@ -117,13 +117,11 @@ mod tests {
             let mut bytes = Vec::new();
             encode_list(&listed, &mut bytes);
 
-            let error = decode_list(&mut BodyReader::new(&bytes)).expect_err(refused);
+            let decoded = decode_list(&mut BodyReader::new(&bytes));
 
-            assert_eq!(
-                error.to_string(),
-                format!("malformed manifest body: {refused}"),
-                "{listed:?}"
-            );
+            let error = decoded.map_err(|error| error.to_string());
+            let want = Err(format!("malformed manifest body: {refused}"));
+            assert_eq!(error, want, "{listed:?}");
         }
     }
 }

@@ -1,7 +1,12 @@
 //! `DiskEngine` on `SimFs` against [`Model`]: random histories of applies, commits, reorgs above
 //! durable, merges, reopens, power loss and pinned views
 
-use std::{cell::Cell, fmt, panic, sync::Once};
+use std::{
+    cell::{Cell, RefCell},
+    fmt,
+    panic::{self, AssertUnwindSafe},
+    sync::Once,
+};
 
 use proptest::{prelude::*, strategy::Union};
 
@@ -210,10 +215,11 @@ fn steps() -> impl Strategy<Value = Vec<Step>> {
 
 thread_local! {
     static QUIET: Cell<bool> = const { Cell::new(false) };
+    static PANICKED: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// Panic hook silent on this thread while held: proptest reports the minimal case's panic once,
-/// not every shrink step's
+/// Panic hook silent on this thread while held, keeping the last panic's location + message:
+/// proptest reports the minimal case's panic once, not every shrink step's
 struct QuietPanics;
 
 impl QuietPanics {
@@ -221,10 +227,9 @@ impl QuietPanics {
         static INSTALL: Once = Once::new();
         INSTALL.call_once(|| {
             let previous = panic::take_hook();
-            panic::set_hook(Box::new(move |info| {
-                if !QUIET.get() {
-                    previous(info);
-                }
+            panic::set_hook(Box::new(move |info| match QUIET.get() {
+                true => PANICKED.set(info.to_string()),
+                false => previous(info),
             }));
         });
         QUIET.set(true);
@@ -238,14 +243,23 @@ impl Drop for QuietPanics {
     }
 }
 
+/// [`run`] with any panic re-raised as `panicked at <location>: <message>` (proptest's report
+/// keeps only the message)
+fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
+    let _quiet = QuietPanics::hold();
+    let ran = panic::catch_unwind(AssertUnwindSafe(|| run(fanout, flush_device, steps)));
+    if ran.is_err() {
+        panic!("{}", PANICKED.take());
+    }
+}
+
 /// History against `Oracle`, after every step:
 ///
 /// - `durable()` = durable prefix, `applied()` = durable + buffered, buffered bytes >= applied
 /// - each node's layer over the view = its contents, pinned views = their models
 /// - crash or reopen = exactly the durable nodes
 /// - [`assert_tiers`] + `Overlay::check` + `WriteBuffer::check` hold
-fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
-    let _quiet = QuietPanics::hold();
+fn run(fanout: usize, flush_device: bool, steps: &[Step]) {
     let mut fs = sim_fs(flush_device);
     let mut store = open(&DiskEngine::with_fanout(fs.clone(), fanout));
     let mut oracle = Oracle::default();
@@ -322,10 +336,12 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
 
 proptest! {
     // - 64 cases ≈ seconds (heavy run after any change: docs/testing.md "Heavy run")
-    // - shrinking past the default 4 × cases (a 100-seq removal shrinks to the seqs that matter)
+    // - shrinking past the default 4 × cases (a 100-seq removal shrinks to the seqs that matter),
+    //   for at most 20 s (inside the default profile's 60 s kill)
     #![proptest_config(ProptestConfig {
         cases: 64,
         max_shrink_iters: 4_096,
+        max_shrink_time: 20_000,
         ..ProptestConfig::default()
     })]
 
