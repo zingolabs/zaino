@@ -374,41 +374,62 @@ impl TrafficCore {
         use crate::member::MIN_POLL_SPACING;
 
         for (id, member) in &self.members {
+            let (in_flight, permits) = (member.in_flight, &member.permits);
             assert!(
-                member.permits.holds(&member.in_flight),
-                "T1: in flight within max_connections, reserves never borrowed"
+                permits.holds(&in_flight),
+                "in flight within max_connections, reserves never borrowed (T1): {id:?} in flight \
+                 {in_flight:?} (control, interactive, bulk) over {permits:?}"
             );
             let mut counted = [0u32; LANES];
             for ask in self.asks.values() {
                 counted[ask.class.lane().index()] +=
                     ask.sends.iter().filter(|s| s.member == *id).count() as u32;
             }
-            assert_eq!(member.in_flight, counted, "T4: in flight = open asks' sends");
+            assert_eq!(
+                in_flight, counted,
+                "in flight = open asks' sends (T4): {id:?} recorded vs counted per lane"
+            );
             if let Some(poller) = &member.poller {
-                let spaced = poller.previous.zip(poller.last);
+                if let Some((previous, last)) = poller.previous.zip(poller.last) {
+                    assert!(
+                        last >= previous + MIN_POLL_SPACING,
+                        "polls of one member at least 200 ms apart (T10): {id:?} polled {:?} apart",
+                        last - previous
+                    );
+                }
+                let due = poller.due(member.failures, self.now);
                 assert!(
-                    spaced.is_none_or(|(previous, last)| last >= previous + MIN_POLL_SPACING),
-                    "T10: polls of one member at least 200 ms apart"
-                );
-                assert!(
-                    poller.in_flight || poller.due(member.failures, self.now) > self.now,
-                    "T10: a due poll is sent"
+                    poller.in_flight || due > self.now,
+                    "a due poll is sent (T10): {id:?} due {:?} ago, none in flight",
+                    self.now - due
                 );
             }
         }
-        for ask in self.asks.values() {
+        for (ask_id, ask) in &self.asks {
+            let (class, route) = (ask.class, &ask.route);
             let mut asked = BTreeSet::new();
             for sent in &ask.sends {
-                assert!(self.members.contains_key(&sent.member), "a send's member");
-                let kind =
-                    matches!(sent.member, MemberId::TrustedValidator(_)) || ask.class.peers();
+                let member = sent.member;
                 assert!(
-                    kind && ask.route.admits(sent.member),
-                    "T2: a class reaches only the member kinds its row allows"
+                    self.members.contains_key(&member),
+                    "a send's member configured: {ask_id:?} {class:?} sent to {member:?}"
+                );
+                let kind = matches!(member, MemberId::TrustedValidator(_)) || class.peers();
+                assert!(
+                    kind && route.admits(member),
+                    "a class reaches only the member kinds its route allows (T2): {ask_id:?} \
+                     {class:?} via {route:?} sent to {member:?}"
                 );
                 assert!(
-                    asked.insert(sent.member) && ask.tried.contains(&sent.member),
-                    "T5: a round asks each member once"
+                    asked.insert(member),
+                    "a round asks each member once (T5): {ask_id:?} {class:?} sent to {member:?} \
+                     twice"
+                );
+                assert!(
+                    ask.tried.contains(&member),
+                    "a round asks each member once (T5): {ask_id:?} {class:?} sent to {member:?}, \
+                     absent from this round's tried {:?} (a re-ask could reach it)",
+                    ask.tried
                 );
             }
         }
