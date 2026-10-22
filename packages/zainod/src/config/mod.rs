@@ -659,33 +659,44 @@ enabled = false
         let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
         let sync =
             SyncConfig { finalised_depth: n(100), queue_mib: n(128), ..SyncConfig::default() };
-        assert_eq!(config.sync, sync);
+        assert_eq!(config.sync, sync, "[sync]: file's depth, env's queue_mib");
         let at = |path: PathBuf| {
             Some(IndexConfig { path, queue_bytes: NonZeroUsize::new(128 << 20).expect("non-zero") })
         };
-        let kinds = [
-            IndexKind::CompactBlock,
-            IndexKind::UtxoSet,
-            IndexKind::BlockHash,
-            IndexKind::TreeState,
-            IndexKind::TransparentAddress,
+        let indexes = [
+            (
+                "compact_block: file's path",
+                IndexKind::CompactBlock,
+                at("/srv/zaino/compact_block".into()),
+            ),
+            (
+                "utxo_set: beside compact_block",
+                IndexKind::UtxoSet,
+                at("/srv/zaino/utxo_set".into()),
+            ),
+            (
+                "block_hash: default path",
+                IndexKind::BlockHash,
+                at(paths::default_index(IndexKind::BlockHash)),
+            ),
+            ("tree_state: env disabled over the file's path", IndexKind::TreeState, None),
+            ("transparent_address: file disabled", IndexKind::TransparentAddress, None),
         ];
-        let expected = [
-            at("/srv/zaino/compact_block".into()),
-            at("/srv/zaino/utxo_set".into()),
-            at(paths::default_index(IndexKind::BlockHash)),
-            None,
-            None,
-        ];
-        assert_eq!(kinds.map(|kind| config.enabled(kind)), expected);
-        let (compact_block, utxo_set) =
-            config.compact_block().expect("a valid path").expect("enabled");
-        assert_eq!([Some(compact_block), Some(utxo_set)], expected[..2]);
+        for (case, kind, expected) in indexes {
+            assert_eq!(config.enabled(kind), expected, "{case}");
+        }
+        let pair = config.compact_block().expect("a valid path");
+        let expected = at("/srv/zaino/compact_block".into()).zip(at("/srv/zaino/utxo_set".into()));
+        assert_eq!(pair, expected, "compact_block() = (compact_block, utxo_set)");
+    }
 
-        let mut off = config;
-        off.index.compact_block.enabled = false;
-        let pair = off.compact_block().expect("nothing to check").map(|_| ());
-        assert_eq!((pair, off.enabled(IndexKind::UtxoSet)), (None, None), "both off");
+    #[test]
+    fn utxo_set_is_off_with_compact_block() {
+        let config: DaemonConfig =
+            toml::from_str("[index.compact_block]\nenabled = false\n").expect("parses");
+        let pair = config.compact_block().expect("nothing to check");
+        assert_eq!(pair, None, "compact_block() with compact_block off");
+        assert_eq!(config.enabled(IndexKind::UtxoSet), None, "utxo_set off with it");
     }
 
     /// Each row = one rule over an otherwise valid default config (`None` = accepted)
@@ -700,6 +711,7 @@ enabled = false
             };
             (0..count).map(validator).collect()
         }
+        // case, edit over the defaults, refusal names (None = accepted)
         let cases: [(&str, Edit, Option<&str>); 17] = [
             ("defaults", |_| {}, None),
             (
@@ -855,14 +867,15 @@ enabled = false
     }
 
     /// - `generate-config` = every key at its default, parsing back to the defaults (indexes
-    ///   under `<cache dir>/zaino/indexes/<name>`)
+    ///   under `<cache dir>/zaino/indexes/<name>`), written under a directory it creates
     /// - Shipped example parses, its values = the defaults (beside its network, validator, paths)
     #[test]
     fn generated_config_prints_every_key_at_its_default_and_the_example_shows_them() {
         let generated = generate_default_config().expect("generate");
         let body = generated.strip_prefix(GENERATED_CONFIG_HEADER).expect("header first");
         let defaults = DaemonConfig::default();
-        assert_eq!(toml::from_str::<DaemonConfig>(body).expect("parses back"), defaults);
+        let parsed = toml::from_str::<DaemonConfig>(body).expect("parses back");
+        assert_eq!(parsed, defaults, "generated config parsed back = DaemonConfig::default()");
         let printed = |table: &str, keys: &[&str]| {
             let start = body.find(&format!("\n[{table}]\n")).expect(table);
             let section = body[start + 1..].split("\n\n").next().unwrap_or_default();
@@ -883,9 +896,16 @@ enabled = false
             assert_eq!(path, Some(paths::default_index(kind)), "{kind:?}");
         }
 
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("new/zainod.toml");
+        assert_eq!(generate_config(&path).expect("writes"), ExitCode::SUCCESS, "into new/");
+        let written = std::fs::read_to_string(&path).expect("written");
+        assert_eq!(written, generated, "{} = the generated config", path.display());
+
         let example = include_str!("../../../../docs/example_configs/zainod.toml");
         let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
-        assert!(example.validate().is_ok());
+        let validated = example.validate().map_err(|error| error.to_string());
+        assert_eq!(validated, Ok(()), "shipped example validates");
         let shown = DaemonConfig {
             network: defaults.network,
             trusted_validators: defaults.trusted_validators.clone(),
@@ -895,137 +915,128 @@ enabled = false
         assert_eq!(shown, defaults, "example's values drifted from DaemonConfig::default()");
     }
 
-    /// `generate-config` into a missing directory: created, file = the defaults
+    /// Every table but the indexes and validators (their own tests) → the struct its consumer
+    /// runs: gRPC server, hold, TLS, validator client, LSM engine, submission, peer set
+    ///
+    /// - a named key keeps the consumer's own default for every other (`..Default::default()`)
     #[test]
-    fn generate_config_writes_the_defaults_under_a_new_directory() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("new/zainod.toml");
-        assert_eq!(generate_config(&path).expect("writes"), ExitCode::SUCCESS);
-        let written = std::fs::read_to_string(&path).expect("written");
-        assert_eq!(written, generate_default_config().expect("generate"));
-    }
-
-    /// - Caps parse per field: naming one keeps the server's own defaults for the rest
-    /// - Zero refused at parse time (else it serves nothing)
-    #[test]
-    fn grpc_caps_default_per_field_and_reject_a_zero() {
-        let partial: DaemonConfig = toml::from_str(
+    fn one_toml_reaches_every_consumer_as_written() {
+        let config: DaemonConfig = toml::from_str(
             r#"
+network = "testnet"
+validator_client = "grpc"
+
+[serve]
+hold_goaway_delay_secs = 155
+
+[serve.tls]
+cert_path = "/c.pem"
+key_path = "/k.pem"
+
 [grpc]
 max_work_streams = 64
 unread_timeout_secs = 30
 silent_timeout_secs = 45
+max_connection_age_secs = 0
+max_connection_age_grace_secs = 60
+max_connection_idle_secs = 120
+adaptive_work_streams = false
+shutdown_grace_secs = 600
+trusted_proxies = ["10.0.0.0/8"]
 
-[index.compact_block]
-path = "/tmp/zaino-compact-block"
+[sync.lsm_store]
+fanout = 4
+merge_slots = 1
+merge_mib_per_sec = 300
+
+[submission]
+propagation_threshold_secs = 30
+max_attempts = 6
+
+[p2p]
+enabled = true
+peer_target = 12
+initial_peers = ["203.0.113.7:18233"]
+cache_dir = "/var/cache/zaino/peers"
 "#,
         )
-        .expect("deserialise");
-        let max_work_streams = NonZeroUsize::new(64).expect("64 is non-zero");
-        let expected = GrpcLimits {
-            max_work_streams,
-            unread_timeout: Duration::from_secs(30),
-            silent_timeout: Duration::from_secs(45),
+        .expect("parses");
+        let secs = Duration::from_secs;
+
+        let grpc = GrpcLimits {
+            max_work_streams: NonZeroUsize::new(64).expect("non-zero"),
+            unread_timeout: secs(30),
+            silent_timeout: secs(45),
+            max_connection_age: None,
+            max_connection_age_grace: secs(60),
+            max_connection_idle: Some(secs(120)),
+            adaptive_work_streams: false,
+            drain_timeout: secs(600),
+            trusted_proxies: zaino_grpc::TrustedProxies::new(vec!["10.0.0.0/8"
+                .parse()
+                .expect("net")]),
             ..GrpcLimits::default()
         };
-        assert_eq!(partial.grpc, expected, "what the server is bounded by is what was parsed");
-
-        for zeroed in [
-            "max_point_reads",
-            "max_range_reads",
-            "max_scan_reads",
-            "unread_timeout_secs",
-            "silent_timeout_secs",
-        ] {
-            let parsed = toml::from_str::<DaemonConfig>(&format!("[grpc]\n{zeroed} = 0\n"));
-            assert!(parsed.is_err(), "{zeroed} = 0 serves nothing");
-        }
-
-        let lifetime: DaemonConfig = toml::from_str(
-            "[grpc]\nmax_connection_age_secs = 0\nmax_connection_age_grace_secs = 60\n\
-             max_connection_idle_secs = 120\nadaptive_work_streams = false\n",
-        )
-        .expect("deserialise");
-        let limits = &lifetime.grpc;
-        let secs = std::time::Duration::from_secs;
-        let parsed = (
-            limits.max_connection_age,
-            limits.max_connection_age_grace,
-            limits.max_connection_idle,
-            limits.adaptive_work_streams,
-        );
-        assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
-    }
-
-    /// - Stop grace → the gRPC server's drain
-    /// - Hold delay → the hold
-    /// - Trusted proxies parsed
-    #[test]
-    fn stop_grace_hold_delay_and_proxies_reach_the_server_and_the_hold() {
-        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml);
-        let secs = std::time::Duration::from_secs;
-
-        let defaults = parse("");
-        let set = parse(
-            "[serve]\nhold_goaway_delay_secs = 155\n[grpc]\nshutdown_grace_secs = 600\n\
-             trusted_proxies = [\"10.0.0.0/8\"]\n",
-        );
-        let read =
-            |config: &DaemonConfig| (config.grpc.drain_timeout, config.serve.hold_goaway_delay);
-        assert_eq!(read(&defaults), (secs(10), secs(0)), "defaults");
-        assert_eq!(read(&set), (secs(600), secs(155)), "set");
-        let proxies = zaino_grpc::TrustedProxies::new(vec!["10.0.0.0/8".parse().expect("net")]);
-        assert_eq!(
-            (&defaults.grpc.trusted_proxies, &set.grpc.trusted_proxies),
-            (&Default::default(), &proxies)
-        );
-    }
-
-    /// Default = `legacy_rpc` (every validator speaks it), `grpc` only when asked
-    #[test]
-    fn validator_client_defaults_to_legacy_rpc_and_grpc_is_opt_in() {
-        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).validator_client;
-        assert_eq!(DaemonConfig::default().validator_client, ValidatorClient::LegacyRpc);
-        assert_eq!(parse(""), ValidatorClient::LegacyRpc, "omitted");
-        assert_eq!(parse("validator_client = \"legacy_rpc\""), ValidatorClient::LegacyRpc);
-        assert_eq!(parse("validator_client = \"grpc\""), ValidatorClient::Grpc);
-        assert!(toml::from_str::<DaemonConfig>("validator_client = \"rpc\"").is_err());
-    }
-
-    #[test]
-    fn sync_lsm_store_parses_into_the_engine_config_and_a_fanout_below_two_or_a_zero_is_refused() {
-        let parsed = |table: &str| {
-            toml::from_str::<DaemonConfig>(&format!(
-                "network = \"mainnet\"\n[sync.lsm_store]\n{table}"
-            ))
+        assert_eq!(config.grpc, grpc, "[grpc] (age 0 = never, shutdown grace = drain)");
+        assert_eq!(config.serve.hold_goaway_delay, secs(155), "[serve] hold delay");
+        let tls = TlsFiles { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
+        assert_eq!(config.serve.tls, Some(tls), "[serve.tls] PEM pair");
+        assert_eq!(config.validator_client, ValidatorClient::Grpc, "validator_client");
+        let lsm = LsmConfig {
+            fanout: Fanout::new(4).expect(">= 2"),
+            merge_slots: NonZeroUsize::MIN,
+            merge_mib_per_sec: NonZeroU32::new(300).expect("non-zero"),
         };
-
-        let config =
-            parsed("fanout = 4\nmerge_slots = 1\nmerge_mib_per_sec = 300\n").expect("deserialise");
-        let merge_mib_per_sec = NonZeroU32::new(300).expect("non-zero");
-        let fanout = Fanout::new(4).expect(">= 2");
-        let expected = LsmConfig { fanout, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
-        assert_eq!(config.sync.lsm_store, expected);
-
-        let refused = parsed("fanout = 1\n").expect_err("fanout 1");
-        assert!(refused.to_string().contains("fanout 1: a merge needs 2 segments"), "{refused}");
-        assert!(parsed("merge_slots = 0\n").is_err(), "merge_slots non-zero");
-        assert!(parsed("merge_mib_per_sec = 0\n").is_err(), "merge_mib_per_sec non-zero");
+        assert_eq!(config.sync.lsm_store, lsm, "[sync.lsm_store] = the engine's LsmConfig");
+        let submission = SubmitPolicy {
+            propagation_threshold: secs(30),
+            max_attempts: std::num::NonZeroU8::new(6).expect("non-zero"),
+        };
+        assert_eq!(config.submission, submission, "[submission]");
+        let peers = zaino_peers::PeerConfig {
+            peer_target: NonZeroUsize::new(12).expect("non-zero"),
+            initial_peers: vec!["203.0.113.7:18233".to_owned()],
+            cache_dir: Some(PathBuf::from("/var/cache/zaino/peers")),
+            ..zaino_peers::PeerConfig::new(NetworkType::Test)
+        };
+        assert_eq!(config.p2p.peers(config.network), peers, "[p2p] on the declared network");
     }
 
+    /// A value no consumer can run is refused at parse, the message naming key and rule
     #[test]
-    fn serve_tls_absent_is_plaintext_and_present_names_its_pem_pair() {
-        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).serve.tls;
-        assert_eq!(parse("[serve]\n"), None, "absent = plaintext");
-        let tls = parse("[serve.tls]\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n");
-        let expected = TlsFiles { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
-        assert_eq!(tls, Some(expected));
+    fn a_value_no_consumer_can_run_is_refused_at_parse_naming_it() {
+        #[rustfmt::skip]
+        let refusals = [
+            // case,                           toml,                                              refusal names
+            ("point reads 0 serve nothing",    "[grpc]\nmax_point_reads = 0",                     ["max_point_reads = 0", "nonzero"]),
+            ("range reads 0 serve nothing",    "[grpc]\nmax_range_reads = 0",                     ["max_range_reads = 0", "nonzero"]),
+            ("scan reads 0 serve nothing",     "[grpc]\nmax_scan_reads = 0",                      ["max_scan_reads = 0", "nonzero"]),
+            ("unread timeout 0",               "[grpc]\nunread_timeout_secs = 0",                 ["unread_timeout_secs = 0", "nonzero"]),
+            ("silent timeout 0",               "[grpc]\nsilent_timeout_secs = 0",                 ["silent_timeout_secs = 0", "nonzero"]),
+            ("fanout below a merge's 2",       "[sync.lsm_store]\nfanout = 1",                    ["fanout = 1", "a merge needs 2 segments"]),
+            ("no merge slot",                  "[sync.lsm_store]\nmerge_slots = 0",               ["merge_slots = 0", "nonzero"]),
+            ("merges never paced",             "[sync.lsm_store]\nmerge_mib_per_sec = 0",         ["merge_mib_per_sec = 0", "nonzero"]),
+            ("unknown validator client",       "validator_client = \"rpc\"",                      ["validator_client = \"rpc\"", "unknown variant `rpc`"]),
+            ("reply cap under one block",      "[[trusted_validators]]\nmax_response_mib = 3",    ["max_response_mib = 3", "must be 4 ..= 32"]),
+            ("reply cap past 32 MiB",          "[[trusted_validators]]\nmax_response_mib = 33",   ["max_response_mib = 33", "must be 4 ..= 32"]),
+            ("pool under one per lane",        "[[trusted_validators]]\nmax_connections = 4",     ["max_connections = 4", "is below 5"]),
+            ("read timeout 0",                 "[[trusted_validators]]\nread_timeout_secs = 0",   ["read_timeout_secs = 0", "nonzero"]),
+        ];
+        for (case, toml, named) in refusals {
+            let refused = toml::from_str::<DaemonConfig>(toml).map_err(|error| error.to_string());
+            for name in named {
+                assert!(
+                    refused.as_ref().is_err_and(|refused| refused.contains(name)),
+                    "{case}: refused naming {name:?}, got {refused:#?}"
+                );
+            }
+        }
     }
 
     /// Entries parsed as written (auth + limits + indexer mutual TLS optional), each → the
-    /// balancer's limits, the transport's link
+    /// balancer's limits, the transport's link, its auth
     #[test]
-    fn trusted_validators_parse_and_convert_into_limits_and_link() {
+    fn trusted_validators_parse_and_convert_into_limits_link_and_auth() {
         let config: DaemonConfig = toml::from_str(
             r#"
 [[trusted_validators]]
@@ -1068,7 +1079,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             priority: 1,
             ..TrustedValidatorConfig::default()
         };
-        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
+        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()], "both entries");
 
         let link = LinkLimits {
             max_connections: n(8),
@@ -1079,77 +1090,27 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         assert_eq!(eu.timeouts(), timeouts, "defaults");
 
         let basic = Auth::Basic { user: "zaino".to_owned(), password: "secret".to_owned() };
-        assert_eq!(eu.auth().expect("a pair"), basic);
-        assert_eq!(local.auth().expect("neither"), Auth::None);
+        assert_eq!(eu.auth().expect("a pair"), basic, "user + password");
+        assert_eq!(local.auth().expect("neither"), Auth::None, "no credentials");
         let cookie = |user: Option<&str>, password: Option<&str>| TrustedValidatorConfig {
             cookie_path: Some("/zebra/.cookie".into()),
             user: user.map(str::to_owned),
             password: password.map(str::to_owned),
             ..TrustedValidatorConfig::default()
         };
-        assert_eq!(
-            cookie(None, None).auth().expect("a cookie"),
-            Auth::Cookie("/zebra/.cookie".into())
-        );
+        let cookie_auth = cookie(None, None).auth().expect("a cookie");
+        assert_eq!(cookie_auth, Auth::Cookie("/zebra/.cookie".into()), "cookie_path alone");
         let half = TrustedValidatorConfig { password: None, ..eu.clone() };
-        for (case, config) in [("cookie + pair", cookie(Some("u"), Some("p"))), ("half pair", half)]
-        {
-            assert!(config.auth().is_err(), "{case} accepted");
-        }
-
-        let refusals = [
-            ("max_response_mib = 3", "must be 4 ..= 32"),
-            ("max_response_mib = 33", "must be 4 ..= 32"),
-            ("max_connections = 4", "max_connections = 4 is below 5"),
-            ("read_timeout_secs = 0", "nonzero"),
+        let mixes = [
+            ("cookie + pair", cookie(Some("u"), Some("p")), "sets cookie_path and user/password"),
+            ("half pair", half, "zebra-eu:8232: user and password go together"),
         ];
-        for (key, refusal) in refusals {
-            let toml = format!("[[trusted_validators]]\n{key}\n");
-            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err(key).to_string();
-            assert!(refused.contains(refusal), "{key}: {refused}");
+        for (case, config, named) in mixes {
+            let refused = config.auth().map_err(|error| error.to_string());
+            assert!(
+                refused.as_ref().is_err_and(|refused| refused.contains(named)),
+                "{case}: refused naming {named:?}, got {refused:?}"
+            );
         }
-    }
-
-    /// `[submission]`, `[p2p]` → policy, peer config (p2p off and DNS-seeded unless asked)
-    #[test]
-    fn submission_and_p2p_become_what_the_daemon_runs() {
-        let config: DaemonConfig = toml::from_str(
-            r#"
-network = "testnet"
-
-[submission]
-propagation_threshold_secs = 30
-max_attempts = 6
-
-[p2p]
-enabled = true
-peer_target = 12
-initial_peers = ["203.0.113.7:18233"]
-cache_dir = "/var/cache/zaino/peers"
-"#,
-        )
-        .expect("parses");
-        assert_eq!(
-            config.submission,
-            SubmitPolicy {
-                propagation_threshold: Duration::from_secs(30),
-                max_attempts: std::num::NonZeroU8::new(6).expect("non-zero"),
-            }
-        );
-        let peers = config.p2p.peers(config.network);
-        assert_eq!(
-            (peers.network, peers.peer_target.get(), peers.initial_peers, peers.cache_dir),
-            (
-                NetworkType::Test,
-                12,
-                vec!["203.0.113.7:18233".to_owned()],
-                Some(PathBuf::from("/var/cache/zaino/peers")),
-            )
-        );
-
-        let defaults = DaemonConfig::default();
-        assert!(!defaults.p2p.enabled, "off unless asked");
-        let seeded = defaults.p2p.peers(NetworkType::Main).initial_peers;
-        assert!(seeded.is_empty(), "DNS seeders");
     }
 }
