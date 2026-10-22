@@ -9,7 +9,7 @@
 //!
 //! - commits → [`Buffer`] (RAM) → [`Engine::write`]: every namespace written + sealed in
 //!   parallel → manifest (commit point) → readable
-//! - a failed write poisons the backend (`docs/durability.md` §6): recovery = reopen
+//! - a failed write poisons the backend (`docs/durability.md` §5): recovery = reopen
 
 use std::{path::Path, sync::Arc, time::Instant};
 

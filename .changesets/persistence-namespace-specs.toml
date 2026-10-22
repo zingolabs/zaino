@@ -53,3 +53,47 @@ description = """
 whole-namespace read for maintenance, tests and tooling, never for serving \
 clients (its memory grows with the namespace). Client paths use `scan_range`.
 """
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`CommitError` gains `MergeFailed`, a backend's background merge that failed or \
+failed to start (nothing of the commit applied, the backend stays usable: \
+retry), and `Corrupted`, stored bytes that failed their integrity check while \
+writing (the backend refuses writes: stop, verify, resync).
+"""
+migration = "Match the two new `CommitError` variants wherever `CommitError` is matched exhaustively."
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+`check_commit` is split into `check_shape`, every rule that needs no stored \
+state, and `check_keys`, map keys against their state, both exported, so a \
+backend can run the cheap rules before reading any key. `check_commit` runs \
+both.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+The conformance suite also checks: every read of an undeclared namespace, over \
+any range, is `NamespaceNotFound`; a `scan_range` filter sees each entry once \
+in order, chunk budgets count kept entries only, and a chunk ends only where \
+the next entry would not fit; chunks keep coming after the reader handle is \
+dropped; a lower tip is refused and a higher one with any hash accepted; \
+`footprint` is zero when fresh and non-zero once a namespace holds flushed \
+data, one entry per namespace in declaration order. `Subject::settle` is \
+optional.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "fix"
+description = """
+The in-memory backend's `scan_range` over an empty or inverted range of an \
+undeclared namespace fails with `NamespaceNotFound` instead of returning \
+nothing.
+"""

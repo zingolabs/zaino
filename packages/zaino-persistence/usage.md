@@ -164,4 +164,5 @@ Behind the `testing` feature:
   `conformance::Subject` once, runs `contract` as a plain test and `history`
   under proptest (`PROPTEST_CASES=1000` for a heavy run).
 
-The on-disk backend lives in its own adapter crate, `zaino-persistence-lsm-tree`.
+The on-disk backend lives in its own adapter crate, `zaino-persistence-lsm-tree`
+(see [its usage guide](../zaino-persistence-lsm-tree/usage.md)).

@@ -1,0 +1,14 @@
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+New crate: the on-disk backend for the `zaino-persistence` port. Sequence \
+namespaces are positional files, map namespaces a size-tiered LSM of \
+immutable, filtered, read-only segments merged in the background, and one \
+two-slot checksummed manifest per index directory is the atomic commit point. \
+Every page is checksummed, readers are lock-free snapshots over memory maps, \
+commits are buffered in RAM up to `write_buffer` and visible at once, and no \
+production code panics: every failure is a typed port error. `verify_dir` \
+scrubs a directory offline beside a live backend, and `describe_metrics` \
+registers the `zaino.store.*` and `zaino.lsm.*` metrics.
+"""
