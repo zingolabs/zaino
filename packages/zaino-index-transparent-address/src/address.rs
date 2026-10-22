@@ -88,11 +88,10 @@ mod tests {
 
     use super::*;
 
-    /// - classification total
-    /// - queried address keys onto exactly the rows its librustzcash script was stored under (lets
-    ///   `GetAddressUtxos` return a script it never stored)
+    /// Queried address keys onto exactly the rows its librustzcash script was stored under (lets
+    /// `GetAddressUtxos` return a script it never stored)
     #[test]
-    fn standard_scripts_round_trip_and_everything_else_is_opaque() {
+    fn a_standard_address_keys_onto_the_script_librustzcash_writes_for_it() {
         let p2pkh = [&[0x76, 0xa9, 0x14][..], &[0x41; 20], &[0x88, 0xac]].concat();
         let p2sh = [&[0xa9, 0x14][..], &[0x42; 20], &[0x87]].concat();
 
@@ -100,25 +99,35 @@ mod tests {
             (TransparentAddress::PublicKeyHash([0x41; 20]), &p2pkh),
             (TransparentAddress::ScriptHash([0x42; 20]), &p2sh),
         ] {
-            assert_eq!(&address.script().to_bytes(), script, "{address:?}");
-            assert_eq!(AddressKey::of_script(script), AddressKey::from(&address), "{address:?}");
+            assert_eq!(&address.script().to_bytes(), script, "{address:?}: librustzcash script");
+            let keyed = AddressKey::of_script(script);
+            assert_eq!(keyed, AddressKey::from(&address), "{address:?}: script keys as address");
         }
+    }
 
-        // right shape, wrong length: not standard, whatever the prefix
-        let mut too_long = p2pkh.clone();
-        too_long.push(0x00);
-        assert_eq!(AddressKey::of_script(&too_long), AddressKey::opaque());
+    /// Classification total: anything not exactly a standard script = opaque
+    #[test]
+    fn every_non_standard_script_is_opaque() {
+        let p2pkh = |hash: [u8; 20]| [&[0x76, 0xa9, 0x14][..], &hash, &[0x88, 0xac]].concat();
+        let too_long = [p2pkh([0x41; 20]), vec![0x00]].concat();
+        let wrong_suffix = [&p2pkh([0x41; 20])[..24], &[0xad]].concat();
+        #[rustfmt::skip]
+        let cases = [
+            ("p2pkh shape, one byte too long", too_long),
+            ("p2pkh ending OP_CHECKSIGVERIFY", wrong_suffix),
+            // keying it as standard = an address nobody controls
+            ("[tag][hash20]", [&[0x00u8][..], &[0x43; 20]].concat()),
+            ("empty", vec![]),
+            ("4 arbitrary bytes", vec![0xde, 0xad, 0xbe, 0xef]),
+            ("80 × OP_RETURN", vec![0x6a; 80]),
+        ];
 
-        let mut wrong_suffix = p2pkh.clone();
-        wrong_suffix[24] = 0xad;
-        assert_eq!(AddressKey::of_script(&wrong_suffix), AddressKey::opaque());
-
-        // `[tag][hash20]`: opaque (keying it as standard = an address nobody controls)
-        let tagged = [&[0x00u8][..], &[0x43; 20]].concat();
-        assert_eq!(AddressKey::of_script(&tagged), AddressKey::opaque());
-
-        for script in [&[][..], &[0xde, 0xad, 0xbe, 0xef][..], &[0x6a; 80][..]] {
-            assert_eq!(AddressKey::of_script(script), AddressKey::opaque());
+        for (case, script) in cases {
+            assert_eq!(
+                AddressKey::of_script(&script),
+                AddressKey::opaque(),
+                "{case}: {script:02x?}"
+            );
         }
     }
 }

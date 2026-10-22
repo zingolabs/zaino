@@ -136,11 +136,10 @@ mod tests {
         decode_receive(&key, &5u64.to_le_bytes());
     }
 
-    /// - `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
-    ///   bytes: a disagreement silently reorders a scan)
-    /// - golden bytes of both maps' rows
+    /// `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
+    /// bytes: a disagreement silently reorders a scan)
     #[test]
-    fn encoded_order_is_key_order_and_every_field_round_trips() {
+    fn receive_keys_sort_like_their_encoded_bytes() {
         let addr = AddressKey::p2pkh([0x11; HASH160]);
         let txid = TxId::from_bytes([0x22; TXID]);
         let zat = |n| Zatoshis::from_u64(n).expect("in supply");
@@ -161,34 +160,68 @@ mod tests {
             let (low_bytes, high_bytes) = (encode_receive_key(&low), encode_receive_key(&high));
             assert!(low_bytes < high_bytes, "encoding != Ord: {low:?} vs {high:?}");
             let row = ReceiveRow { key: low, value: zat(5) };
-            assert_eq!(decode_receive(&low_bytes, &5u64.to_le_bytes()), row);
+            assert_eq!(decode_receive(&low_bytes, &5u64.to_le_bytes()), row, "{low:?} round trip");
         }
+    }
 
+    /// `receives` row: hash ‖ kind ‖ height ‖ txid ‖ vout (big-endian) → zats (little-endian, a
+    /// quantity)
+    #[test]
+    fn a_receive_row_is_its_golden_bytes_and_round_trips() {
         let receive = ReceiveRow {
             key: ReceiveKey {
                 address: AddressKey::p2sh([0x09; HASH160]),
-                height: 900,
-                txid,
-                vout: 3,
+                height: 0x0102_0304,
+                txid: TxId::from_bytes([0x22; TXID]),
+                vout: 0x0506_0708,
             },
-            value: zat(1_234_567),
+            value: Zatoshis::from_u64(0x0a0b_0c0d).expect("in supply"),
         };
-        let golden_key =
-            [&[0x09; HASH160][..], &[0x01], &[0, 0, 0x03, 0x84], &[0x22; TXID], &[0, 0, 0, 3]]
-                .concat();
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
         let (key, value) = encode_receive(&receive);
-        assert_eq!(key.as_slice(), golden_key, "hash ‖ kind ‖ height ‖ txid ‖ vout, big-endian");
-        assert_eq!(value, [0x87, 0xd6, 0x12, 0, 0, 0, 0, 0], "zats little-endian (a quantity)");
-        assert_eq!(decode_receive(&key, &value), receive);
 
-        let spent_key = [&[0x22; TXID][..], &[0x01, 0x02, 0x03, 0x04]].concat();
-        let ordered = encode_spent_key(&txid, 0x0102_0304) < encode_spent_key(&txid, 0x0102_0305);
-        assert_eq!(encode_spent_key(&txid, 0x0102_0304).as_slice(), spent_key, "txid ‖ vout");
-        assert!(ordered, "vout big-endian: byte order = output order");
+        let row = [&key[..], &value[..]].concat();
+        let golden: [(&str, String); 6] = [
+            ("key: address hash", "09".repeat(HASH160)),
+            ("key: kind p2sh", "01".into()),
+            ("key: height BE", "01020304".into()),
+            ("key: txid", "22".repeat(TXID)),
+            ("key: vout BE", "05060708".into()),
+            ("value: zats LE", "0d0c0b0a00000000".into()),
+        ];
+        let mut at = 0;
+        for (field, expected) in golden {
+            let width = expected.len() / 2;
+            assert_eq!(row.get(at..at + width).map(hex), Some(expected), "{field} at byte {at}");
+            at += width;
+        }
+        assert_eq!(hex(&row[at..]), "", "trailing bytes after byte {at}");
+        assert_eq!(decode_receive(&key, &value), receive, "decode(encode(receive))");
+    }
 
-        let spend = Spend { height: 900, spender: TxId::from_bytes([0x44; TXID]) };
-        let golden = [&[0, 0, 0x03, 0x84][..], &[0x44; TXID]].concat();
-        assert_eq!(encode_spend(&spend).as_slice(), golden, "height ‖ spender, big-endian");
-        assert_eq!(decode_spend(&encode_spend(&spend)), spend);
+    /// `spent` row: txid ‖ vout (big-endian) → height ‖ spender
+    #[test]
+    fn a_spent_row_is_its_golden_bytes_and_round_trips() {
+        let (txid, vout) = (TxId::from_bytes([0x22; TXID]), 0x0102_0304);
+        let spend = Spend { height: 0x0506_0708, spender: TxId::from_bytes([0x44; TXID]) };
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+        let row = [&encode_spent_key(&txid, vout)[..], &encode_spend(&spend)[..]].concat();
+
+        let golden: [(&str, String); 4] = [
+            ("key: spent txid", "22".repeat(TXID)),
+            ("key: spent vout BE", "01020304".into()),
+            ("value: height BE", "05060708".into()),
+            ("value: spender txid", "44".repeat(TXID)),
+        ];
+        let mut at = 0;
+        for (field, expected) in golden {
+            let width = expected.len() / 2;
+            assert_eq!(row.get(at..at + width).map(hex), Some(expected), "{field} at byte {at}");
+            at += width;
+        }
+        assert_eq!(hex(&row[at..]), "", "trailing bytes after byte {at}");
+        assert_eq!(decode_spend(&encode_spend(&spend)), spend, "decode(encode(spend))");
     }
 }
