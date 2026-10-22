@@ -327,8 +327,8 @@ archive's `phase` (`downloading` → `verifying` → `unpacking`), archives alre
 whole. `bytes_per_sec` while downloading only (else `null`). The `IndexSnapshot` component logs progress every 30 s:
 
 ```text
-INFO  IndexSnapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
-INFO  IndexSnapshot:  Index snapshot installed    indexes=5 height=3,501,802 elapsed=7m12s
+… INFO component{component=IndexSnapshot}: zainod::daemon::index_snapshot: Downloading index snapshot done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
+… INFO component{component=IndexSnapshot}: zainod::daemon::index_snapshot: Index snapshot installed indexes=5 height=3501802 elapsed=7m12s
 ```
 
 ## `zainod verify`
@@ -413,25 +413,23 @@ only their report or state). Everything is read from the environment:
 | `RUST_LOG`          | Standard tracing filter. Unset, only zaino crates log at `info`; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=info,zaino_persistence=debug,tonic=warn`). |
 | `ZAINOLOG_FORMAT`   | `terminal` (default, one line per event) or `json` (machine-parseable, spans included).                                                                                                 |
 | `ZAINOLOG_COLOR`    | `true`/`false` to force ANSI colour, `auto` (default) to colour only when stdout is a terminal.                                                                                         |
-| `ZAINOLOG_LOCATION` | `true` adds each event's source as `at=file:line`. Off by default.                                                                                                                      |
+| `ZAINOLOG_LOCATION` | `true` adds each event's source file and line. Off by default.                                                                                                                          |
 
 An unrecognised value for any `ZAINOLOG_*` variable, or a malformed `RUST_LOG`,
 stops startup with an error that names the variable. There is no fallback
 format.
 
-The `terminal` format follows go-ethereum's layout, with a component column:
+Both formats are `tracing-subscriber`'s stock `fmt` output (`terminal` = its default "full"
+format):
 
 ```text
-WARN  [09-28|17:29:15.175] ChainView:           Validator mempool inactive     validator=zebrad:18232 height=3,434,171 behind=65,512 hash=…1a76bf89
-INFO  [09-28|17:29:42.659] ZainoNFS:            Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
-INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        applied=3,501,900 durable=3,501,802 size=31.0GB
-INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        applied=3,501,900 durable=3,501,802  size=134MB
+2026-09-28T17:29:42.659204Z  INFO component{component=ZainoNFS}: zainod::telemetry::progress: Syncing blocks height=3503023 target=3506659 bps=10 eta=5m49s
+2026-09-28T17:29:42.659311Z  INFO component{component=CompactBlockIdx}: zainod::telemetry::progress: Syncing applied=3501900 durable=3501802 size=31.0GB
 ```
 
-- Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
-  component that logged it, and the message, padded to 30 columns when fields
-  follow, so repeated lines align. Index `durable` heights and `size` are padded
-  into columns (between fields, never inside a value).
+- Each line has an RFC 3339 UTC timestamp, the level, the component span, the target (module
+  path) and the message, then the event's fields as `key=value`. An absent height is left out,
+  and an error field is followed by its `.sources` chain.
 - Components: `Zainod` (lifecycle), `Admin` (the admin listener: `/metrics`, `/livez`, `/readyz`,
   heartbeat),
   `IndexSnapshot` (the `[snapshot]` bootstrap),
@@ -439,15 +437,9 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
   submission), `ZainoSync` (the finalized-stream follower), `ZainoNFS` (tip-path fetch and folds,
   the served tip, reorgs, sync progress), `GrpcSnapshot` (the snapshot publisher), `Grpc`, and
   one per index (`UtxoSetIdx`, `CompactBlockIdx`, `BlockHashIdx`, `TreeStateIdx`,
-  `TransparentAddrIdx`), which also owns that index's commits and compactions. In `json` the component is the `component` field of
-  the event's enclosing span.
-- Fields are `key=value` logfmt, parseable by Loki and `hl`. Integers from
-  1,000 up, heights included, are grouped with commas (`json` keeps them plain
-  numbers). A 64-hex hash shows its last 8 digits (`json` keeps it
-  whole). A value containing a space or `=` is quoted, and an error field
-  carries its whole source chain. A path in a message longer than 48 columns
-  keeps its tail (`…/zaino/indexes/compact_block`).
-- Fields from enclosing spans follow the event's own fields.
+  `TransparentAddrIdx`, `TxidLocationIdx`), which also owns that index's commits and
+  compactions. A component span is always a root, so each line carries exactly one. In `json`
+  it is the `component` field of the event's `span`.
 
 What an operator sees at `info`:
 

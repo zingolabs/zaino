@@ -8,8 +8,8 @@ Commands: `start`, `generate-config [-o FILE]`, `verify`, `hold` and `resume`. `
 is accepted before or after any command (default `$XDG_CONFIG_HOME/zaino/zainod.toml`), and
 `generate-config` without `-o` writes to that path.
 
-Logs are one line per event: level, `[MM-DD|HH:MM:SS.mmm]` UTC, a component column, the message,
-then logfmt fields.
+Logs are `tracing-subscriber`'s stock `fmt` output, one line per event: RFC 3339 UTC timestamp,
+level, `component{component=…}` span, target, message, then `key=value` fields.
 
 | Variable | 0.11 values |
 | --- | --- |

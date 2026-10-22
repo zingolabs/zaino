@@ -16,10 +16,8 @@ use zaino_grpc_snapshot::{GrpcSnapshots, Tips};
 use zaino_persistence::DiskView;
 use zaino_primitives::display::{ByteSize, Human};
 use zaino_sync::SyncProgress;
-use zcash_protocol::consensus::BlockHeight;
 
 use super::disk::{self, disk_bytes};
-use super::logging::HeightCol;
 use crate::daemon::OpenedIndex;
 use crate::error::IndexerError;
 
@@ -129,12 +127,11 @@ pub(crate) async fn run(
             report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
         if matches!(phase, Some(Phase::Finalized { .. })) {
-            let column = |height: Option<BlockHeight>| HeightCol(height.map(u32::from));
             for index in &indexes {
-                let applied = column(index.handle.applied_height());
-                let durable = column(index.handle.durable_height());
+                let applied = index.handle.applied_height().map(u32::from);
+                let durable = index.handle.durable_height().map(u32::from);
                 let size = disk.get(index.kind.name()).map(|bytes| display(ByteSize(*bytes)));
-                index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
+                index.span.in_scope(|| info!(applied, durable, size, "Syncing"));
             }
         }
         (before_last, last, last_phase) = (last, now, phase);
@@ -152,10 +149,10 @@ fn report(phase: Phase, advanced: u64, over: Duration, idle: Duration) {
     let stalled = (idle >= REPORT_INTERVAL).then(|| display(Human(idle)));
     match (phase, stalled) {
         (Phase::Finalized { done, target }, None) => {
-            info!(height = %HeightCol(done), target, bps, eta, "Syncing blocks");
+            info!(height = done, target, bps, eta, "Syncing blocks");
         }
         (Phase::Finalized { done, target }, Some(stalled)) => {
-            warn!(height = %HeightCol(done), target, %stalled, "Block fetch stalled");
+            warn!(height = done, target, %stalled, "Block fetch stalled");
         }
         (Phase::Window { fetched, total }, None) => {
             info!(fetched, total, bps, eta, "Fetching non-finalized blocks");
@@ -199,7 +196,7 @@ mod tests {
     #[test]
     fn the_phase_is_finalized_blocks_then_the_non_finalized_window_then_nothing() {
         use zaino_primitives::types::BlockRef;
-        use zcash_protocol::BlockHash;
+        use zcash_protocol::{consensus::BlockHeight, BlockHash};
         let at =
             |height: u32| BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(height) };
         let tips = |finalized_tip: u32, served: u32, best: u32, synced: bool| Tips {

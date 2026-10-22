@@ -1,18 +1,13 @@
-//! Tracing subscriber + panic-at-origin hook, configured from the environment
+//! Stock `tracing_subscriber::fmt` subscriber + panic-at-origin hook, configured from the env
 //!
 //! - `RUST_LOG` (unset → zaino crates at `info`), `ZAINOLOG_FORMAT` = terminal / json
 //! - `ZAINOLOG_COLOR` = bool / auto (default auto), `ZAINOLOG_LOCATION` = bool (default off)
 //! - Unrecognised value = startup error (a typo never silently picks another format)
 
-mod terminal;
-
 use std::env;
-use std::fmt;
 use std::io::IsTerminal;
 
-use tracing_subscriber::{
-    fmt::time::UtcTime, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use zaino_persistence::IndexKind;
 
 /// Operator filter when `RUST_LOG` is unset (`zaino` prefix = every `zaino_*` crate)
@@ -110,11 +105,12 @@ fn install_panic_logger() {
     }));
 }
 
-/// Span owning every line under it: the terminal's component column, a span field in JSON
+/// Span owning every line under it (`component{component=ZainoNFS}:`)
 ///
+/// - root (a component opened inside another = one prefix per line, not the chain)
 /// - ERROR level: created under any filter that lets a zainod line through
 pub(crate) fn component(name: &str) -> tracing::Span {
-    tracing::error_span!("component", component = name)
+    tracing::error_span!(parent: None, "component", component = %name)
 }
 
 pub(crate) fn index_component(kind: IndexKind) -> tracing::Span {
@@ -128,18 +124,6 @@ pub(crate) fn index_component(kind: IndexKind) -> tracing::Span {
     })
 }
 
-/// Height column: grouped (`3,501,802`), `—` when absent (terminal pads it to the column)
-pub(crate) struct HeightCol(pub(crate) Option<u32>);
-
-impl fmt::Display for HeightCol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Some(height) => f.write_str(&terminal::grouped(u64::from(height))),
-            None => f.write_str("—"),
-        }
-    }
-}
-
 fn install(config: LogConfig) -> Result<(), LogConfigError> {
     let filter = match env::var_os(EnvFilter::DEFAULT_ENV) {
         Some(_) => EnvFilter::try_from_default_env()?,
@@ -148,25 +132,13 @@ fn install(config: LogConfig) -> Result<(), LogConfigError> {
     // `panic` target outside `zaino*` → forced on (else any zaino-only filter drops it)
     let filter = filter
         .add_directive("panic=error".parse().expect("static `panic=error` directive is valid"));
+    let layer = tracing_subscriber::fmt::layer()
+        .with_file(config.location)
+        .with_line_number(config.location);
     let registry = tracing_subscriber::registry().with(filter);
-
     let installed = match config.format {
-        LogFormat::Terminal => registry
-            .with(terminal::Components)
-            .with(tracing_subscriber::fmt::layer().fmt_fields(terminal::Logfmt).event_format(
-                terminal::Terminal { color: config.color, location: config.location },
-            ))
-            .try_init(),
-        LogFormat::Json => registry
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_timer(UtcTime::rfc_3339())
-                    .with_target(true)
-                    .with_file(config.location)
-                    .with_line_number(config.location),
-            )
-            .try_init(),
+        LogFormat::Terminal => registry.with(layer.with_ansi(config.color)).try_init(),
+        LogFormat::Json => registry.with(layer.json()).try_init(),
     };
     installed.expect("global tracing subscriber already set");
     Ok(())
