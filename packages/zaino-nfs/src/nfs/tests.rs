@@ -22,7 +22,7 @@ use zaino_persistence::{
     View,
 };
 use zaino_primitives::types::Block;
-use zaino_source::testing::{p2pkh, Lie, MockChain};
+use zaino_source::testing::{h, p2pkh, Lie, MockChain};
 use zaino_source::ZcashLegacyRpcClient;
 use zaino_sync::{FinalizedFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, TrustedValidator};
@@ -36,23 +36,46 @@ use crate::{fold, schema, writer, FeeWiring};
 pub(crate) const NETWORK: NetworkType = NetworkType::Regtest;
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 
-/// Every record and row, table by table (engine-agnostic equality)
-type Tables = Vec<Vec<Vec<u8>>>;
+/// Every record and row, by table name (engine-agnostic equality)
+type Tables = Vec<(String, Vec<Vec<u8>>)>;
 
-/// Every record and row of `view`, table by table
+/// Every record and row of `view`, table by table (maps by schema position)
 fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
     let schema = *view.schema();
     let sequences = schema.sequences().iter().map(|&table| {
-        let table = view.sequence(table);
-        let records = table.records(0..table.len());
-        records.iter().map(|record| record.to_vec()).collect()
+        let sequence = view.sequence(table);
+        let records = sequence.records(0..sequence.len());
+        (table.name.to_owned(), records.iter().map(|record| record.to_vec()).collect())
     });
-    let maps = schema.maps().iter().map(|&table| {
+    let maps = schema.maps().iter().enumerate().map(|(at, &table)| {
         let past = vec![0xff; table.key.get() as usize + 1];
         let rows = view.map(table).range(&[], &past, usize::MAX).expect("under the limit");
-        rows.iter().map(|(key, value)| [&key[..], &value[..]].concat()).collect()
+        let rows = rows.iter().map(|(key, value)| [&key[..], &value[..]].concat());
+        (format!("map #{at}"), rows.collect())
     });
     sequences.chain(maps).collect()
+}
+
+/// First row `got` and the oracle differ at, by table name (`None` = equal)
+fn first_difference(got: &Tables, oracle: &Tables) -> Option<String> {
+    let hex = |row: Option<&Vec<u8>>| match row {
+        None => "absent".to_owned(),
+        Some(row) => {
+            let shown: String = row.iter().take(24).map(|byte| format!("{byte:02x}")).collect();
+            format!("{shown}… ({} B)", row.len())
+        }
+    };
+    for ((name, rows), (_, expected)) in got.iter().zip(oracle) {
+        let (count, wanted) = (rows.len(), expected.len());
+        let at = (0..count.max(wanted)).find(|at| rows.get(*at) != expected.get(*at));
+        if let Some(at) = at {
+            let (row, oracle) = (hex(rows.get(at)), hex(expected.get(at)));
+            return Some(format!(
+                "{name} row {at} of {count} (oracle {wanted}): {row} vs {oracle}"
+            ));
+        }
+    }
+    None
 }
 
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
@@ -94,12 +117,17 @@ fn verify(
     context: &str,
 ) {
     let (chain, tip) = (indexed.chain(), indexed.served().tip());
-    assert!(chain.on_best(tip), "{context}: N4 tip {tip:?} off best");
+    let best = chain.best();
+    assert!(
+        chain.on_best(tip),
+        "{context}: served tip on best (N4): served {tip:?}, best {best:?}"
+    );
     let durable: Vec<(IndexKind, Option<BlockRef>)> = indexed.durable().collect();
     let views = indexed.served().views();
     let lowest = durable.iter().filter_map(|(kind, _)| views.view(*kind)?.tip());
     if let Some(lowest) = lowest.map(|at| at.height).min() {
-        assert_eq!(lowest, tip.height, "{context}: N4 the tip = the lowest view served");
+        let message = "lowest served view (left) = the served tip (right) (N4)";
+        assert_eq!(lowest, tip.height, "{context}: {message}");
     }
     let above_root = indexed.root().map_or(0, |root| u32::from(root.height) as usize + 1);
     let path = blocks.blocks(tip);
@@ -107,7 +135,7 @@ fn verify(
         path[above_root..].iter().rev().map(|b| b.header().hash).collect();
     let above_root: Vec<BlockHash> =
         indexed.served_above_durable().map(|b| b.header().hash).collect();
-    let message = "served_above_durable = served's own path above the root";
+    let message = "served_above_durable (left) = served's own path above the root, tip first";
     assert_eq!(above_root, expected, "{context}: {message}");
 
     for hash in mined {
@@ -123,19 +151,27 @@ fn verify(
         assert_eq!(block.hash, *hash, "{context}: N7 at({hash:?})");
         for (kind, durable) in &durable {
             let name = kind.name();
+            let at_block = format!("{context}: {name} at {:?}", block.height);
             let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
             let view = at.views().view(*kind);
-            let view = view.unwrap_or_else(|| panic!("{context}: {name} unreadable at {block:?}"));
+            let view = view.unwrap_or_else(|| panic!("{at_block}: every enabled index readable"));
             assert_eq!(view.tip(), Some(through), "{context}: N7 {name} at {block:?}");
             let reach = if on_best { through.height } else { block.height };
             let answers = at.answers_through(*kind);
-            assert_eq!(answers, reach, "{context}: {name} answers_through, at {block:?}");
+            let message =
+                "answers_through (left) = durable tip on best, the block on a side branch";
+            assert_eq!(answers, reach, "{at_block} (on best: {on_best}): {message}");
             let expected =
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.blocks(through)));
             let (_, expected) =
                 expected.iter().find(|(each, _)| each == kind).expect("every index");
             let got = tables(&view);
-            assert!(got == *expected, "{context}: N6 {name} at {through:?} != folded from genesis");
+            let differs = first_difference(&got, expected);
+            assert_eq!(
+                differs, None,
+                "{at_block}: read through {:?} = folded from genesis (N6)",
+                through.height
+            );
         }
     }
 }
@@ -220,18 +256,25 @@ impl Pipeline {
                 if durable && seen.as_ref().is_some_and(|seen| seen.served().tip() == best) {
                     return;
                 }
-                assert!(!self.nfs.is_finished(), "{context}: NFS stopped");
-                assert!(!self.follower.is_finished(), "{context}: follower stopped");
+                if self.nfs.is_finished() {
+                    panic!("{context}: NFS stopped: {:?}", (&mut self.nfs).await);
+                }
+                if self.follower.is_finished() {
+                    panic!("{context}: follower stopped: {:?}", (&mut self.follower).await);
+                }
                 tokio::select! {
                     Ok(()) = self.indexed.changed() => {}
                     () = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
             }
         };
-        if tokio::time::timeout(Duration::from_secs(86_400), settled).await.is_err() {
-            let durable = self.durable();
+        let deadline = tokio::time::timeout(Duration::from_secs(86_400), settled).await;
+        if deadline.is_err() {
+            let served = seen.map(|seen| seen.served().tip());
             panic!(
-                "{context}: never settled: {best:?}, durable {durable:?} != {finalized_height:?}"
+                "{context}: within a virtual day, every index durable through {finalized_height:?} \
+                 and best {best:?} served: durable {:?}, last served {served:?}",
+                self.durable()
             );
         }
     }
@@ -274,14 +317,18 @@ fn mine(
     mined
 }
 
-/// Two pipelines over the same stores, each move settled (durable through finalized, served = best)
+/// One header-chain move: `headers` verified, then finalized when `finalize`
+struct Move<'a> {
+    headers: &'a [Arc<Block>],
+    finalize: bool,
+}
+
+/// Each move settled (durable through finalized, served = best):
 ///
-/// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20
-/// - run 1: restart, E21..=24
+/// - A1..=12, B10..=13 off A9 (longer), C13 off B12 (same height), D12 off B11 (retreat), E13..=20
 /// - bodies from an honest member + a `Lie::Poisoned` liar (each lie reported, never folded)
 #[tokio::test(start_paused = true)]
-async fn every_publication_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart()
-{
+async fn every_publication_answers_like_folding_from_genesis_through_reorgs_and_finality() {
     let miner = p2pkh([0xad; 20]);
     let mut blocks =
         MockChain::regtest().varied_work().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
@@ -290,25 +337,19 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
     let trunk_a =
         [blocks.blocks(genesis), mine(&mut blocks, &mut tag, genesis, 12, false)].concat();
     let longer_b = mine(&mut blocks, &mut tag, trunk_a[9].block_ref(), 4, true);
-    let same_height_c13 = mine(&mut blocks, &mut tag, longer_b[2].block_ref(), 1, true).remove(0);
-    let retreat_d12 = mine(&mut blocks, &mut tag, longer_b[1].block_ref(), 1, true).remove(0);
-    let extension_e = mine(&mut blocks, &mut tag, retreat_d12.block_ref(), 12, false);
+    let same_height_c13 = mine(&mut blocks, &mut tag, longer_b[2].block_ref(), 1, true);
+    let retreat_d12 = mine(&mut blocks, &mut tag, longer_b[1].block_ref(), 1, true);
+    let extension_e = mine(&mut blocks, &mut tag, retreat_d12[0].block_ref(), 8, false);
     let blocks = blocks;
-    let side = [same_height_c13.clone(), retreat_d12.clone()];
-    let tree = [&trunk_a[..], &longer_b, &side, &extension_e];
+    let tree = [&trunk_a[..], &longer_b, &same_height_c13, &retreat_d12, &extension_e];
     let mined: Vec<BlockHash> = tree.iter().flat_map(|run| run.iter().map(hash)).collect();
-    type Added<'a> = (&'a [Arc<Block>], bool);
-    // (headers added, finalize)
-    let runs: [&[Added]; 2] = [
-        &[
-            (&trunk_a[1..], true),
-            (&longer_b, false),
-            (std::slice::from_ref(&same_height_c13), false),
-            (std::slice::from_ref(&retreat_d12), false),
-            (&extension_e[..4], true),
-            (&extension_e[4..8], true),
-        ],
-        &[(&[], false), (&extension_e[8..], true)],
+    let moves = [
+        Move { headers: &trunk_a[1..], finalize: true },
+        Move { headers: &longer_b, finalize: false },
+        Move { headers: &same_height_c13, finalize: false },
+        Move { headers: &retreat_d12, finalize: false },
+        Move { headers: &extension_e[..4], finalize: true },
+        Move { headers: &extension_e[4..], finalize: true },
     ];
 
     let mut headers = HeaderChain::anchored(&blocks, DEPTH);
@@ -335,33 +376,83 @@ async fn every_publication_answers_like_folding_from_genesis_through_reorgs_fina
         verify(indexed, &blocks, &mined, &mut oracles, context)
     };
 
-    for (run, moves) in runs.iter().enumerate() {
-        let mut pipeline =
-            Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
-        let booted_at = pipeline.durable().into_iter().min().flatten();
-        for (at, &(added, finalize)) in moves.iter().enumerate() {
-            let context = format!("run {run} move {at}");
-            insert(&mut headers, added).expect("valid headers");
-            if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
-                headers.finalize(boundary);
-            }
-            if let Some(tip) = added.last() {
-                members.iter().for_each(|member| member.follow(&blocks, tip.block_ref()));
-            }
-            verified.send_replace(headers.snapshot().map(Arc::new));
-            let best = headers.best().expect("verified").block;
-            let finalized_height = headers.finalized_tip().map(|tip| tip.height);
-            pipeline.settle(best, finalized_height, |_| {}, &mut check, &context).await;
-            let sent_since_boot =
-                finalized_height.filter(|finalized_height| Some(*finalized_height) > booted_at);
-            let handed = pipeline.progress.handed();
-            assert_eq!(
-                handed, sent_since_boot,
-                "{context}: finalized path handed through finalized"
-            );
+    let mut pipeline = Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
+    for (at, Move { headers: added, finalize }) in moves.iter().enumerate() {
+        let tip = added.last().expect("every move adds headers").block_ref();
+        let context = format!("move {at} (to {:?})", tip.height);
+        insert(&mut headers, added).expect("valid headers");
+        if let Some(boundary) = headers.finalizable().filter(|_| *finalize) {
+            headers.finalize(boundary);
         }
-        pipeline.stop().await;
+        members.iter().for_each(|member| member.follow(&blocks, tip));
+        verified.send_replace(headers.snapshot().map(Arc::new));
+        let best = headers.best().expect("verified").block;
+        let finalized_height = headers.finalized_tip().map(|tip| tip.height);
+
+        pipeline.settle(best, finalized_height, |_| {}, &mut check, &context).await;
+
+        let handed = pipeline.progress.handed();
+        let message = "finalized path handed (left) through the finalized tip (right)";
+        assert_eq!(handed, finalized_height, "{context}: {message}");
     }
+    pipeline.stop().await;
+    stop_balancing.cancel();
+}
+
+/// - Run 0: every index synced through A12 (finalized 9), stopped
+/// - Run 1 over the same stores: serves A12 from the durable tips with nothing handed, then A13..=16
+///   handed past the durable tips only
+#[tokio::test(start_paused = true)]
+async fn a_restart_resumes_from_the_durable_tips_handing_only_newly_finalized_blocks() {
+    let miner = p2pkh([0xad; 20]);
+    let mut blocks = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
+    let genesis = blocks.genesis();
+    let trunk = [blocks.blocks(genesis), mine(&mut blocks, &mut 0, genesis, 16, false)].concat();
+    let blocks = blocks;
+    let mined: Vec<BlockHash> = trunk.iter().map(|block| block.header().hash).collect();
+    let mut headers = HeaderChain::anchored(&blocks, DEPTH);
+    let member = blocks.validator(genesis);
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let (address, source) = ("member".to_owned(), Arc::new(member.client()));
+    let trusted = vec![TrustedValidator { address, source, priority: 0, limits }];
+    let (balancer, balancing) = TrafficBalancer::new(trusted, None);
+    let stop_balancing = CancellationToken::new();
+    tokio::spawn(balancing.run(stop_balancing.clone()));
+    let (verified, verified_rx) = watch::channel(headers.snapshot().map(Arc::new));
+    let params = ChainParams::of(&blocks);
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
+    let mut oracles = HashMap::new();
+    let mut check = |indexed: &NfsPublication<DiskView>, context: &str| {
+        verify(indexed, &blocks, &mined, &mut oracles, context)
+    };
+    let mut add = |added: &[Arc<Block>]| {
+        insert(&mut headers, added).expect("valid headers");
+        if let Some(boundary) = headers.finalizable() {
+            headers.finalize(boundary);
+        }
+        member.follow(&blocks, headers.best().expect("verified").block);
+        verified.send_replace(headers.snapshot().map(Arc::new));
+        (headers.best().expect("verified").block, headers.finalized_tip().map(|tip| tip.height))
+    };
+
+    let mut pipeline = Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
+    let (best, finalized_height) = add(&trunk[1..=12]);
+    assert_eq!((best.height, finalized_height), (h(12), Some(h(9))), "run 0: headers");
+    pipeline.settle(best, finalized_height, |_| {}, &mut check, "run 0").await;
+    pipeline.stop().await;
+
+    let mut pipeline = Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
+    let booted = pipeline.durable();
+    assert_eq!(booted, vec![Some(h(9)); IndexKind::ALL.len()], "run 1: booted at the durable tips");
+    pipeline.settle(best, finalized_height, |_| {}, &mut check, "run 1 at A12").await;
+    let handed = pipeline.progress.handed();
+    assert_eq!(handed, None, "run 1 at A12: nothing handed (every index durable through A9)");
+
+    let (best, finalized_height) = add(&trunk[13..]);
+    pipeline.settle(best, finalized_height, |_| {}, &mut check, "run 1 at A16").await;
+    let handed = pipeline.progress.handed();
+    assert_eq!(handed, Some(h(13)), "run 1 at A16: handed A10..=13 (finalized 13)");
+    pipeline.stop().await;
     stop_balancing.cancel();
 }
 
@@ -424,7 +515,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
         let (best, finalized_height) = add(&trunk[at..=at]);
         let each = |indexed: &NfsPublication<DiskView>| {
             let tip = indexed.served().tip().height;
-            assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
+            assert!(tip >= served, "{context}: served tip never back: {tip:?} after {served:?}");
             served = tip;
             let readable = indexed.served().views().tree_state().is_some();
             assert!(readable, "{context}: tree-state readable at {tip:?}");
@@ -462,8 +553,11 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let mut sink = zaino_sync::FinalizedStream::new();
     let blocks = sink.subscribe(IndexKind::BlockHash.name(), NonZeroUsize::MAX);
     let run = tokio::spawn(nfs.run(CancellationToken::new()));
+
     sink.shutdown();
     write(blocks).await;
+
     let stopped = run.await.expect("nfs task").expect_err("writer gone");
-    assert!(matches!(stopped, NfsError::IndexGone("block_hash")), "{stopped}");
+    let named = matches!(stopped, NfsError::IndexGone("block_hash"));
+    assert!(named, "stopped as IndexGone(\"block_hash\"), got {stopped:?}");
 }

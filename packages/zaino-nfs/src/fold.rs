@@ -58,14 +58,12 @@ mod tests {
     use super::*;
 
     /// Genesis (a 50 000 coinbase), then block 1 (a coinbase + a spend of it paying 1 000 in fees,
-    /// with one sapling output and one orchard action), folded twice by `fold_block`: once with
-    /// every index, once with block-hash and transparent-address disabled
+    /// with one sapling output and one orchard action), both folded by every index
     ///
-    /// - compact-block's record carries utxo-set's fees (utxo-set folded first)
     /// - each layer = parent layer + the block (tip = block 1, genesis read through it)
-    /// - disabled indexes: no layer, no reader
+    /// - compact-block's record carries utxo-set's fees (utxo-set folded first)
     #[test]
-    fn utxo_set_folds_first_and_disabled_indexes_fold_nothing() {
+    fn every_index_folds_the_block_onto_its_parent_layer_compact_block_with_utxo_set_fees() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain =
             MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
@@ -80,9 +78,31 @@ mod tests {
             })
         });
         let (genesis, block) = (chain.block(chain.genesis().hash), chain.block(one.hash));
-        let h1 = h(1);
+        let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
+        let (mut stores, mut durable, mut root) =
+            (Vec::new(), PerIndex::default(), PerIndex::default());
+        for kind in IndexKind::ALL {
+            let schema = crate::schema(kind, crate::nfs::tests::NETWORK);
+            let store = engine
+                .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
+                .expect("fresh store");
+            durable.insert(kind, store.durable());
+            root.insert(kind, Overlay::empty(&schema));
+            stores.push(store);
+        }
+
+        let every = &IndexKind::ALL;
+        let folded = fold_block(&Views::new(&durable, &root), genesis, every).expect("folds");
+        let folded =
+            fold_block(&Views::new(&durable, &folded.layers), block, every).expect("folds");
+
+        let views = Views::new(&durable, &folded.layers);
+        for kind in IndexKind::ALL {
+            let tip = folded.layers.get(kind).map(Overlay::tip);
+            assert_eq!(tip, Some(Some(one)), "{}: layer tip = block 1", kind.name());
+        }
         let fees = BlockFees {
-            height: h1,
+            height: h(1),
             hash: one.hash,
             fees: vec![Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(1_000).expect("in supply"))],
         };
@@ -92,48 +112,64 @@ mod tests {
             ironwood: TreeSize::from(0),
         };
         let record = zaino_index_compact_block::encode_compact_block(block, &fees, &sizes);
+        let compact_block = views.compact_block().expect("enabled").block(h(1));
+        assert_eq!(compact_block, Some(record), "compact-block 1 = utxo-set's fees + tree sizes");
+        let block_hash = views.block_hash().expect("enabled");
+        let located = [chain.genesis().hash, one.hash].map(|hash| block_hash.height_of(&hash));
+        assert_eq!(
+            located,
+            [Some(H0), Some(h(1))],
+            "block-hash: genesis and 1 through both layers"
+        );
+    }
 
-        use IndexKind::*;
-        let all: &[IndexKind] = &IndexKind::ALL;
-        for enabled in [all, &[UtxoSet, CompactBlock, TreeState]] {
-            let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
-            let (mut stores, mut durable, mut root) =
-                (Vec::new(), PerIndex::default(), PerIndex::default());
-            for &kind in enabled {
-                let schema = crate::schema(kind, crate::nfs::tests::NETWORK);
-                let store = engine
-                    .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
-                    .expect("fresh store");
-                durable.insert(kind, store.durable());
-                root.insert(kind, Overlay::empty(&schema));
-                stores.push(store);
-            }
-            let folded = fold_block(&Views::new(&durable, &root), genesis, enabled).expect("folds");
-            let folded =
-                fold_block(&Views::new(&durable, &folded.layers), block, enabled).expect("folds");
-            let views = Views::new(&durable, &folded.layers);
-
-            let reader = views.compact_block().expect("enabled");
-            assert_eq!(
-                reader.block(h1),
-                Some(record.clone()),
-                "{enabled:?}: block 1 = its fees + sizes"
-            );
-            for &kind in all {
-                let tip = folded.layers.get(kind).map(Overlay::tip);
-                let expected = enabled.contains(&kind).then_some(Some(one));
-                assert_eq!(tip, expected, "{enabled:?}: {}", kind.name());
-            }
-            let located = views
-                .block_hash()
-                .map(|reader| [chain.genesis().hash, one.hash].map(|hash| reader.height_of(&hash)));
-            let expected = enabled.contains(&BlockHash).then_some([Some(H0), Some(h1)]);
-            assert_eq!(located, expected, "{enabled:?}: block-hash through both layers");
-            assert_eq!(
-                views.transparent_address().is_some(),
-                enabled.contains(&TransparentAddress)
-            );
-            assert_eq!(views.view(TreeState).map(|view| view.tip()), Some(Some(one)));
+    /// Same two blocks, only utxo-set, compact-block and tree-state enabled
+    #[test]
+    fn disabled_indexes_get_no_layer_and_no_reader() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain =
+            MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
+        let funding = chain.output(chain.genesis(), 0, 0);
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 10_000)).tx(|t| {
+                t.spend(funding)
+                    .pay(&alice, 49_000)
+                    .fee(1_000)
+                    .sapling_output(1)
+                    .orchard_action(0x04, 1)
+            })
+        });
+        let (genesis, block) = (chain.block(chain.genesis().hash), chain.block(one.hash));
+        let enabled = [IndexKind::UtxoSet, IndexKind::CompactBlock, IndexKind::TreeState];
+        let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
+        let (mut stores, mut durable, mut root) =
+            (Vec::new(), PerIndex::default(), PerIndex::default());
+        for kind in enabled {
+            let schema = crate::schema(kind, crate::nfs::tests::NETWORK);
+            let store = engine
+                .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
+                .expect("fresh store");
+            durable.insert(kind, store.durable());
+            root.insert(kind, Overlay::empty(&schema));
+            stores.push(store);
         }
+
+        let folded = fold_block(&Views::new(&durable, &root), genesis, &enabled).expect("folds");
+        let folded =
+            fold_block(&Views::new(&durable, &folded.layers), block, &enabled).expect("folds");
+
+        let views = Views::new(&durable, &folded.layers);
+        let layers: Vec<&str> = folded.layers.iter().map(|(kind, _)| kind.name()).collect();
+        assert_eq!(layers, ["utxo_set", "compact_block", "tree_state"], "one layer per enabled");
+        let readers = [
+            ("block_hash", views.block_hash().is_some()),
+            ("transparent_address", views.transparent_address().is_some()),
+            ("compact_block", views.compact_block().is_some()),
+        ];
+        let expected =
+            [("block_hash", false), ("transparent_address", false), ("compact_block", true)];
+        assert_eq!(readers, expected, "(reader, present)");
+        let tree_state = views.view(IndexKind::TreeState).map(|view| view.tip());
+        assert_eq!(tree_state, Some(Some(one)), "tree-state read through block 1's layer");
     }
 }
