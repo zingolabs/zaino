@@ -194,17 +194,30 @@ mod tests {
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
+    /// `outputs` key decoded (failure output names the outpoint, not 36 raw bytes)
+    #[derive(Debug, PartialEq)]
+    struct Outpoint {
+        txid: TxId,
+        vout: u32,
+    }
+
+    fn outpoint(key: &[u8]) -> Outpoint {
+        let (txid, vout) = key.split_at(32);
+        Outpoint {
+            txid: TxId::from_bytes(txid.try_into().expect("outputs key: 32-byte txid")),
+            vout: u32::from_be_bytes(vout.try_into().expect("outputs key: 4-byte vout")),
+        }
+    }
+
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0
     ///
     /// - each prevout resolves from the parent, its own block or an earlier run block
     /// - fees = the stated ones
-    /// - rows = golden bytes: block 1 inserts what it leaves unspent (its tx 1's vout 1 created +
-    ///   spent in it: neither row), removes genesis's coinbase:0
+    /// - block 1 inserts what it leaves unspent (its tx 1's vout 1 created + spent in it: neither
+    ///   row), removes genesis's coinbase:0
     /// - block 2 removes tx 1's vout 0
-    /// - the run = the same blocks folded one at a time (rows + fees records) = their fees read
-    ///   back once held
     #[test]
-    fn fees_resolve_through_the_parent_and_the_run_and_a_run_folds_like_single_blocks() {
+    fn a_run_resolves_prevouts_through_the_parent_and_itself_into_rows_and_fees() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain =
             MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
@@ -215,6 +228,7 @@ mod tests {
                     t.spend(genesis_paid.clone()).pay(&alice, 60_000).pay(&alice, 39_000).fee(1_000)
                 })
                 .tx(|t| {
+                    // tx 1's vout 1, created earlier in this block
                     t.spend_in_block(1, 1)
                         .pay(&alice, 30_000)
                         .sapling_output(1)
@@ -232,55 +246,87 @@ mod tests {
             })
         });
         let blocks = chain.blocks(two);
-        let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].block_ref());
         let genesis_fees = fold(&UtxoSetReader::new(store.applied()), &blocks[0], &mut genesis);
-        assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
+        assert_eq!(genesis_fees.map(|fees| fees.fees), Ok(vec![Fee::Coinbase]), "block 0");
         store.apply(genesis);
 
         let run = [&*blocks[1], &*blocks[2]];
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.block_ref())).collect();
-        let parent = UtxoSetReader::new(store.applied());
-        let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
-        assert_eq!(run_fees, expected);
-        let rows: Vec<(&[u8], &[u8])> = out[0].inserts(OUTPUTS).collect();
-        let key =
-            |outpoint: &OutPoint| [&outpoint.hash()[..], &outpoint.n().to_be_bytes()].concat();
-        let row = |slot: usize, value: [u8; 8]| (key(&chain.output(one, slot, 0)), value);
-        let golden = [
-            row(0, [0x50, 0xc3, 0, 0, 0, 0, 0, 0]),
-            row(1, [0x60, 0xea, 0, 0, 0, 0, 0, 0]),
-            row(2, [0x30, 0x75, 0, 0, 0, 0, 0, 0]),
-        ];
-        let golden: Vec<(&[u8], &[u8])> =
-            golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
-        assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value LE, block order");
-        let removed = |changes: &BlockChanges| -> Vec<Vec<u8>> {
-            changes.removes(OUTPUTS).map(<[u8]>::to_vec).collect()
-        };
-        assert_eq!(removed(&out[0]), [key(&genesis_paid)], "block 1 spends genesis's");
-        assert_eq!(removed(&out[1]), [key(&one_paid)], "block 2 spends block 1's");
+        let run_fees = fold_run(&UtxoSetReader::new(store.applied()), &run, &mut out);
 
-        for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
+        let expected = vec![chain.fees(one.hash), chain.fees(two.hash)];
+        assert_eq!(run_fees, Ok(expected.clone()), "fees of blocks 1, 2");
+        for (changes, fees) in out.iter().zip(&expected) {
+            let records: Vec<Vec<u8>> = changes.appends(FEES).map(<[u8]>::to_vec).collect();
+            let height = fees.height;
+            assert_eq!(records, [encode_fees(&fees.fees)], "{height:?}: one fees record, its fees");
+        }
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let rows: Vec<(Outpoint, String)> =
+            out[0].inserts(OUTPUTS).map(|(key, value)| (outpoint(key), hex(value))).collect();
+        let row = |slot: usize, zats_le: &str| {
+            (Outpoint { txid: chain.tx(one, slot).txid, vout: 0 }, zats_le.to_owned())
+        };
+        let golden = vec![
+            row(0, "50c3000000000000"),
+            row(1, "60ea000000000000"),
+            row(2, "3075000000000000"),
+        ];
+        assert_eq!(rows, golden, "block 1's inserts: (tx slot's vout 0, zats LE), block order");
+        let removed = |changes: &BlockChanges| -> Vec<Outpoint> {
+            changes.removes(OUTPUTS).map(outpoint).collect()
+        };
+        let genesis_coinbase = Outpoint { txid: chain.tx(chain.genesis(), 0).txid, vout: 0 };
+        assert_eq!(removed(&out[0]), [genesis_coinbase], "block 1 spends genesis's");
+        let one_tx = Outpoint { txid: chain.tx(one, 1).txid, vout: 0 };
+        assert_eq!(removed(&out[1]), [one_tx], "block 2 spends block 1's tx 1");
+    }
+
+    /// Everything one block's fold writes (rows hex, key ‖ value)
+    #[derive(Debug, PartialEq)]
+    struct Folded {
+        fees: Result<BlockFees, FoldError>,
+        inserted: Vec<String>,
+        removed: Vec<String>,
+        fees_records: Vec<String>,
+    }
+
+    /// 1 pays alice, 2 spends it: 1 and 2 as one run onto 0 = each folded alone onto its parent
+    #[test]
+    fn a_run_folds_exactly_like_its_blocks_folded_one_at_a_time() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
+        let one_paid = chain.output(one, 0, 0);
+        let two = chain.mine(|b| b.tx(|t| t.spend(one_paid).pay(&alice, 99_000).fee(1_000)));
+        let blocks = chain.blocks(two);
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let folded = |changes: &BlockChanges, fees: Result<BlockFees, FoldError>| Folded {
+            fees,
+            inserted: changes.inserts(OUTPUTS).map(|(key, value)| hex(key) + &hex(value)).collect(),
+            removed: changes.removes(OUTPUTS).map(hex).collect(),
+            fees_records: changes.appends(FEES).map(hex).collect(),
+        };
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut genesis = store.changes(blocks[0].block_ref());
+        fold(&UtxoSetReader::new(store.applied()), &blocks[0], &mut genesis).expect("coinbase");
+        store.apply(genesis);
+        let run = [&*blocks[1], &*blocks[2]];
+        let mut out: Vec<BlockChanges> =
+            run.iter().map(|block| store.changes(block.block_ref())).collect();
+        let run_fees = fold_run(&UtxoSetReader::new(store.applied()), &run, &mut out)
+            .expect("every prevout held");
+
+        for ((block, in_run), run_fees) in run.iter().zip(&out).zip(run_fees) {
             let mut changes = store.changes(block.block_ref());
-            let block_fees = fold(&UtxoSetReader::new(store.applied()), block, &mut changes);
+            let alone = fold(&UtxoSetReader::new(store.applied()), block, &mut changes);
             let height = block.header().height;
-            assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
-            let rows = |changes: &BlockChanges| {
-                let inserted = changes.inserts(OUTPUTS).map(|(key, value)| [key, value].concat());
-                let fees = changes.appends(FEES).map(<[u8]>::to_vec);
-                (inserted.collect::<Vec<_>>(), removed(changes), fees.collect())
-            };
-            let (single, in_run): (_, (_, _, Vec<_>)) = (rows(&changes), rows(run_changes));
-            assert_eq!(single, in_run, "{height:?}: inserts, removes, fees record");
-            assert_eq!(in_run.2, [encode_fees(&run_fees.fees)], "{height:?}: one fees record");
+            assert_eq!(folded(&changes, alone), folded(in_run, Ok(run_fees)), "{height:?}");
             store.apply(changes);
         }
-        let held = UtxoSetReader::new(store.applied());
-        let stored: Vec<_> = run.iter().map(|block| held.block_fees(block)).collect();
-        assert_eq!(stored, expected.map(Ok), "held: fees read back as folded");
     }
 
     /// Every rejection names its block and tx
@@ -331,43 +377,57 @@ mod tests {
         };
         let never_mined = OutPoint::new([0x99; 32], 3);
         let later = chain.output(three, 0, 0);
+        struct Case {
+            case: &'static str,
+            after_genesis: Vec<Arc<Block>>,
+            refused: FoldError,
+        }
         let cases = [
-            ("never mined", vec![block(one), spends(never_mined.clone())], missing(&never_mined)),
-            (
-                "spends a later run block's output",
-                vec![block(one), spends(later.clone()), block(three)],
-                missing(&later),
-            ),
-            ("one prevout twice in a tx", vec![block(one), spends_twice], missing(&one_paid)),
-            (
-                "a prevout an earlier run block spent",
-                vec![block(one), block(two), respends],
-                FoldError::MissingPrevout {
+            Case {
+                case: "never mined",
+                after_genesis: vec![block(one), spends(never_mined.clone())],
+                refused: missing(&never_mined),
+            },
+            Case {
+                case: "spends a later run block's output",
+                after_genesis: vec![block(one), spends(later.clone()), block(three)],
+                refused: missing(&later),
+            },
+            Case {
+                case: "one prevout twice in a tx",
+                after_genesis: vec![block(one), spends_twice],
+                refused: missing(&one_paid),
+            },
+            Case {
+                case: "a prevout an earlier run block spent",
+                after_genesis: vec![block(one), block(two), respends],
+                refused: FoldError::MissingPrevout {
                     height: h(3),
                     txid: spender_at_3,
                     spent: chain.tx(one, 0).txid,
                     vout: 0,
                 },
-            ),
-            (
-                "transparent outputs > inputs",
-                vec![block(one), overpaid],
-                FoldError::NegativeFee { height: h(2), txid: spender_at_2 },
-            ),
-            (
-                "value into sapling past the inputs",
-                vec![block(one), block(two), overshielded],
-                FoldError::NegativeFee { height: h(3), txid: spender_at_3 },
-            ),
+            },
+            Case {
+                case: "transparent outputs > inputs",
+                after_genesis: vec![block(one), overpaid],
+                refused: FoldError::NegativeFee { height: h(2), txid: spender_at_2 },
+            },
+            Case {
+                case: "value into sapling past the inputs",
+                after_genesis: vec![block(one), block(two), overshielded],
+                refused: FoldError::NegativeFee { height: h(3), txid: spender_at_3 },
+            },
         ];
 
-        for (case, blocks, expected) in cases {
+        for Case { case, after_genesis, refused } in cases {
             let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-            let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
+            let run: Vec<&Block> =
+                [&genesis].into_iter().chain(&after_genesis).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
                 run.iter().map(|block| store.changes(block.block_ref())).collect();
             let folded = fold_run(&UtxoSetReader::new(store.applied()), &run, &mut out);
-            assert_eq!(folded.err(), Some(expected), "{case}");
+            assert_eq!(folded, Err(refused), "{case}");
         }
     }
 
@@ -396,11 +456,13 @@ mod tests {
         let longer = Block::new(blocks[1].header().clone(), txs);
 
         let held = UtxoSetReader::new(store.applied());
-        assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "as folded");
+        assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "held 1: as folded");
         let missing = held.block_fees(chain.block(two.hash));
-        assert_eq!(missing, Err(FoldError::StoredFeesMissing { height: h(2) }));
+        let expected = Err(FoldError::StoredFeesMissing { height: h(2) });
+        assert_eq!(missing, expected, "2 never folded: no record");
         let mismatched = held.block_fees(&longer);
-        assert_eq!(mismatched, Err(FoldError::StoredFeesUnreadable { height: h(1) }));
+        let expected = Err(FoldError::StoredFeesUnreadable { height: h(1) });
+        assert_eq!(mismatched, expected, "1 with a third tx: record holds two fees");
     }
 
     /// Writer over `store` (`queue` bytes = one run's) + the fee stream it publishes
@@ -466,27 +528,26 @@ mod tests {
         writer.stop().await.expect("clean stop");
         let first = &expected[..4];
         assert_eq!(drained(&mut consumer).await, first, "one fee step per block, Shutdown last");
-        let tip_after = |commits: u64| (commits > 0).then(|| (commits - 1).min(3) as u32);
 
         let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
-            let crashed = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
-            let tip = tip_of(&store.durable());
-            let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
-            assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
+            // one block per commit: blocks held = commits recovered
+            let count = tip_of(&store.durable()).map_or(0, |tip| tip + 1);
+            let label = format!("{}: recovered {count} blocks, next height {count}", state.label);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(4));
+            assert!(acked.contains(&u64::from(count)), "{label}: acknowledged {acked:?}");
 
-            let next = tip.map_or(0, |tip| tip + 1);
             let (writer, mut consumer) = start(store, QUEUE);
-            writer.send(step(&blocks[next as usize])).await;
+            writer.send(step(&blocks[count as usize])).await;
             let handle = writer
                 .stop()
                 .await
-                .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
+                .unwrap_or_else(|error| panic!("{label}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
-            assert_eq!(resolved, [expected[next as usize].clone()], "{crashed}");
-            assert_eq!(tip_of(&handle.durable_view()), Some(next), "{crashed}: durable");
+            assert_eq!(resolved, [expected[count as usize].clone()], "{label}: next block's fees");
+            assert_eq!(tip_of(&handle.durable_view()), Some(count), "{label}: next durable");
         }
     }
 

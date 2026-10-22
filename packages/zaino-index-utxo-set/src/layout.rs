@@ -69,19 +69,27 @@ mod tests {
     /// - out-of-supply refused
     #[test]
     fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
-        let key = OutPoint::new([0xab; 32], 0x0102_0304);
+        let outpoint = OutPoint::new([0xab; 32], 0x0102_0304);
         let value = Zatoshis::from_u64(0x0506_0708).expect("in supply");
-        let row = [&encode_outpoint(&key)[..], &encode_value(value)].concat();
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
 
-        let golden = [
-            vec![0xab; 32],
-            vec![0x01, 0x02, 0x03, 0x04],
-            vec![0x08, 0x07, 0x06, 0x05, 0, 0, 0, 0],
-        ]
-        .concat();
-        assert_eq!(row, golden);
-        assert_eq!(decode_value(&[0x08, 0x07, 0x06, 0x05, 0, 0, 0, 0]), Ok(value));
-        assert!(decode_value(&u64::MAX.to_le_bytes()).is_err(), "value past supply");
+        let row = [&encode_outpoint(&outpoint)[..], &encode_value(value)].concat();
+
+        let golden: [(&str, String); 3] = [
+            ("key: txid", "ab".repeat(32)),
+            ("key: vout BE", "01020304".into()),
+            ("value: zats LE", "0807060500000000".into()),
+        ];
+        let mut at = 0;
+        for (field, expected) in golden {
+            let width = expected.len() / 2;
+            assert_eq!(row.get(at..at + width).map(hex), Some(expected), "{field} at byte {at}");
+            at += width;
+        }
+        assert_eq!(hex(&row[at..]), "", "trailing bytes after byte {at}");
+        assert_eq!(decode_value(&encode_value(value)), Ok(value), "decode(encode(value))");
+        let past_supply = decode_value(&u64::MAX.to_le_bytes());
+        assert_eq!(past_supply, Err(BalanceError::Overflow), "u64::MAX zats: past supply");
     }
 
     /// - `fees` record = tag ‖ value LE per fee, round-trips
@@ -89,19 +97,35 @@ mod tests {
     #[test]
     fn a_fees_record_is_its_golden_bytes_and_a_malformed_one_is_refused() {
         let fees = [Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(0x0102).expect("in supply"))];
-        let golden = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0x02, 0x01, 0, 0, 0, 0, 0, 0]].concat();
-        assert_eq!(encode_fees(&fees), golden);
-        assert_eq!(decode_fees(&golden), Some(fees.to_vec()));
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+        let record = encode_fees(&fees);
+
+        let golden = [
+            ("fee 0: tag coinbase", "00"),
+            ("fee 0: zats LE", "0000000000000000"),
+            ("fee 1: tag paid", "01"),
+            ("fee 1: zats LE", "0201000000000000"),
+        ];
+        let mut at = 0;
+        for (field, expected) in golden {
+            let width = expected.len() / 2;
+            let got = record.get(at..at + width).map(hex);
+            assert_eq!(got.as_deref(), Some(expected), "{field} at byte {at}");
+            at += width;
+        }
+        assert_eq!(hex(&record[at..]), "", "trailing bytes after byte {at}");
+        assert_eq!(decode_fees(&record), Some(fees.to_vec()), "decode(encode(fees))");
         assert_eq!(decode_fees(&[]), Some(Vec::new()), "no transactions");
 
         let past_supply = [&[1][..], &u64::MAX.to_le_bytes()].concat();
         for (malformed, record) in [
-            ("short", &golden[..17]),
+            ("short: 17 of 18 bytes", &record[..17]),
             ("unknown tag", &[2, 0, 0, 0, 0, 0, 0, 0, 0][..]),
             ("coinbase with a value", &[0, 1, 0, 0, 0, 0, 0, 0, 0][..]),
             ("past supply", &past_supply[..]),
         ] {
-            assert_eq!(decode_fees(record), None, "{malformed}");
+            assert_eq!(decode_fees(record), None, "{malformed}: {}", hex(record));
         }
     }
 }
