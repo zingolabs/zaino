@@ -481,4 +481,8 @@ impl MapRead for DiskView {
 }
 
 #[cfg(test)]
+mod model;
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod tests;

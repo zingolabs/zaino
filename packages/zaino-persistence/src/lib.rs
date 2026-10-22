@@ -9,6 +9,8 @@ mod changes;
 mod disk;
 mod error;
 pub mod fs;
+#[cfg(test)]
+mod golden;
 mod index_dir;
 mod lsm;
 mod manifest;
