@@ -311,18 +311,17 @@ mod tests {
         buffer.check("drill");
     }
 
-    /// Index rebuilt pointing each key at the next row
+    /// Index rebuilt pointing each key's hash at a row past the buffer (no probe can match it)
     #[test]
     #[should_panic(expected = "ids row 0 found by its key")]
-    fn check_catches_an_index_pointing_a_key_at_another_row() {
+    fn check_catches_an_index_naming_a_row_no_key_is_in() {
         let mut buffer = buffered();
         let hasher = buffer.hasher.clone();
         let rows = &mut buffer.maps[0];
         let mut by_key = HashTable::with_capacity(3);
         for row in 0..3 {
             let hash = hasher.hash_one(key_at(&rows.keys, IDS, row));
-            let rehash = |&other: &usize| hasher.hash_one(key_at(&rows.keys, IDS, other));
-            by_key.insert_unique(hash, (row + 1) % 3, rehash);
+            by_key.insert_unique(hash, row + 3, |_| unreachable!("capacity 3: never rehashed"));
         }
         rows.by_key = by_key;
         buffer.check("drill");
