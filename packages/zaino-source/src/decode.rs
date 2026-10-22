@@ -302,79 +302,108 @@ pub fn mined_transaction(raw: &[u8], at: BlockRef, index: u32, txid: TxId) -> Op
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
+    use proptest::{prop_assert, prop_assert_eq};
+    use zcash_primitives::block::BlockHeader;
+    use zcash_primitives::transaction::Transaction as Librustzcash;
+
     use super::*;
     use crate::testing::fixtures::{self, HEIGHTS};
-    use zcash_primitives::block::BlockHeader;
+    use crate::testing::raw_transaction;
 
     /// Mainnet 2,000,000 (every pool): each tx decoded alone = its decode inside the block
     #[test]
     fn each_tx_of_a_mainnet_block_decodes_alone_identically() {
         let raw = fixtures::block(2_000_000);
+
         let block = decode_block(&raw).expect("block decodes");
-        let standalone: Vec<Transaction> = tx_spans(&raw)
-            .expect("spans")
-            .into_iter()
-            .map(|span| decode_transaction(&raw[span]).expect("standalone decodes"))
-            .collect();
-        assert_eq!(format!("{standalone:?}"), format!("{:?}", block.transactions()));
+
+        let spans = tx_spans(&raw).expect("spans");
+        assert_eq!(spans.len(), block.transactions().len(), "one span per transaction");
+        for (index, (span, in_block)) in spans.into_iter().zip(block.transactions()).enumerate() {
+            let alone = decode_transaction(&raw[span]).expect("standalone decodes");
+            let txid = in_block.txid;
+            assert_eq!(format!("{alone:?}"), format!("{in_block:?}"), "tx {index} ({txid})");
+        }
     }
 
     #[test]
     fn garbage_and_trailing_bytes_are_refused() {
         let raw = fixtures::block(2_000_000);
         let first = tx_spans(&raw).expect("spans")[0].clone();
-        let padded_tx = [&raw[first], &[0]].concat();
-        let padded_block = [&raw[..], &[0]].concat();
-        assert!(matches!(decode_transaction(&[0u8; 8]), Err(DecodeError::Malformed(_))));
-        assert!(matches!(decode_transaction(&padded_tx), Err(DecodeError::Trailing(1))));
-        assert!(matches!(decode_block(&padded_block), Err(DecodeError::Trailing(1))));
+
+        let garbage = decode_transaction(&[0u8; 8]);
+        let padded_tx = decode_transaction(&[&raw[first], &[0]].concat());
+        let padded_block = decode_block(&[&raw[..], &[0]].concat());
+
+        assert!(matches!(garbage, Err(DecodeError::Malformed(_))), "8 zero bytes: {garbage:?}");
+        let padded_tx = padded_tx.map(|tx| tx.txid);
+        assert!(matches!(padded_tx, Err(DecodeError::Trailing(1))), "tx + 1 byte: {padded_tx:?}");
+        let padded_block = padded_block.map(|block| block.block_ref());
+        assert!(
+            matches!(padded_block, Err(DecodeError::Trailing(1))),
+            "block + 1 byte: {padded_block:?}"
+        );
     }
 
-    /// Mainnet 2,000,000: each transaction cut from its block by position = its own bytes, and
-    /// nothing for another block, another txid or a body its header does not commit to
+    /// Mainnet 2,000,000: each transaction cut from its block by position = its own bytes
     #[test]
-    fn a_mined_transaction_comes_out_of_its_block_only_when_block_txid_and_body_match() {
+    fn a_mined_transaction_comes_out_of_its_block_by_position() {
         let raw = fixtures::block(2_000_000);
         let block = decode_block(&raw).expect("block decodes");
         let at = block.block_ref();
-        let txs = block.transactions();
-        for (index, (tx, bytes)) in (0u32..).zip(txs.iter().zip(fixtures::transactions(2_000_000)))
-        {
-            assert_eq!(mined_transaction(&raw, at, index, tx.txid), Some(bytes), "tx {index}");
+
+        let own = fixtures::transactions(2_000_000);
+
+        for (index, tx) in (0u32..).zip(block.transactions()) {
+            let cut = mined_transaction(&raw, at, index, tx.txid);
+            let matches = cut.as_deref() == own.get(index as usize).map(Vec::as_slice);
+            assert!(matches, "tx {index} ({}): cut bytes = its own", tx.txid);
         }
-        let mut tampered = raw.clone();
-        tampered[tx_spans(&raw).expect("spans")[1].start + 40] ^= 1;
-        let elsewhere = BlockRef { height: at.height + 1, ..at };
-        let refused = [
-            mined_transaction(&raw, elsewhere, 1, txs[1].txid),
-            mined_transaction(&raw, at, 1, txs[2].txid),
-            mined_transaction(&tampered, at, 1, txs[1].txid),
-            mined_transaction(&raw, at, txs.len() as u32, txs[1].txid),
-        ];
-        assert_eq!(refused, [None, None, None, None], "other block, txid, body, position");
     }
 
-    /// - header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)
-    /// - hash = SHA-256d of it, `encode_header` round-trips it, txids rebuild its merkle root
+    /// Nothing for another block, another txid, a body its header does not commit to, a position
+    /// past the last tx
+    #[test]
+    fn a_mined_transaction_is_absent_unless_block_txid_body_and_position_match() {
+        const INSIDE_TX_ONE: usize = 40;
+        let raw = fixtures::block(2_000_000);
+        let block = decode_block(&raw).expect("block decodes");
+        let (at, txs) = (block.block_ref(), block.transactions());
+        let mut tampered = raw.clone();
+        tampered[tx_spans(&raw).expect("spans")[1].start + INSIDE_TX_ONE] ^= 1;
+        let elsewhere = BlockRef { height: at.height + 1, ..at };
+        let past_last = u32::try_from(txs.len()).expect("a small block");
+
+        let absent = |cut: Option<Vec<u8>>| cut.map(|bytes| bytes.len());
+        assert_eq!(absent(mined_transaction(&raw, elsewhere, 1, txs[1].txid)), None, "other block");
+        assert_eq!(absent(mined_transaction(&raw, at, 1, txs[2].txid)), None, "tx 2's txid at 1");
+        assert_eq!(absent(mined_transaction(&tampered, at, 1, txs[1].txid)), None, "body edited");
+        assert_eq!(absent(mined_transaction(&raw, at, past_last, txs[1].txid)), None, "past last");
+    }
+
+    const PREV_HASH: Range<usize> = 4..36;
+
+    /// Header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)
     #[test]
     fn each_fixture_header_hashes_links_reencodes_and_roots_its_txids() {
         for height in HEIGHTS {
             let raw = fixtures::block(height);
             let mut cursor = Cursor::new(raw.as_slice());
             BlockHeader::read(&mut cursor).expect("header");
-            let header = &raw[..cursor.position() as usize];
-            let prev: [u8; 32] = header[4..36].try_into().expect("32");
+            let header_bytes = &raw[..cursor.position() as usize];
 
             let decoded = decode_block(&raw).expect("block decodes");
-            let got = (
-                decoded.header().hash,
-                decoded.header().prev_hash,
-                crate::testing::encode_header(decoded.header()),
-                decoded.check_body(),
-            );
-            let hash = BlockHash(zaino_primitives::sha256d(header));
-            let want = (hash, BlockHash(prev), header.to_vec(), Ok(()));
-            assert_eq!(got, want, "height {height}");
+
+            let header = decoded.header();
+            let sha256d = BlockHash(zaino_primitives::sha256d(header_bytes));
+            assert_eq!(header.hash, sha256d, "{height}: hash = SHA-256d of the header bytes");
+            let prev: [u8; 32] = header_bytes[PREV_HASH].try_into().expect("32 bytes");
+            assert_eq!(header.prev_hash, BlockHash(prev), "{height}: prev_hash at bytes 4..36");
+            let reencoded = crate::testing::encode_header(header);
+            assert!(reencoded == header_bytes, "{height}: encode_header round-trips the header");
+            assert_eq!(decoded.check_body(), Ok(()), "{height}: txids rebuild the merkle root");
         }
     }
 
@@ -422,8 +451,72 @@ mod tests {
         tx.write(&mut raw).expect("writes");
 
         let decoded = decode_transaction(&raw).expect("decodes");
-        assert_eq!(i64::from(decoded.sprout.value_balance), 6_500);
+
+        let balance = i64::from(decoded.sprout.value_balance);
+        assert_eq!(balance, 6_500, "(10 000 + 0) − (3 000 + 500)");
     }
+
+    /// ZIP 203: expiry ≤ 499 999 999 prepares, one above is refused naming it
+    #[test]
+    fn expiry_at_the_zip_203_ceiling_prepares_and_one_above_is_refused() {
+        let (_, at_ceiling) = raw_transaction(0, MAX_EXPIRY_HEIGHT);
+        let (_, above) = raw_transaction(0, MAX_EXPIRY_HEIGHT + 1);
+
+        let at_ceiling = prepare_transaction(&at_ceiling).map(|prepared| prepared.expiry_height);
+        let above = prepare_transaction(&above).map(|prepared| prepared.expiry_height);
+
+        let ceiling = BlockHeight::from(MAX_EXPIRY_HEIGHT);
+        assert!(matches!(at_ceiling, Ok(Some(e)) if e == ceiling), "at ceiling: {at_ceiling:?}");
+        assert!(
+            matches!(above, Err(DecodeError::ExpiryHeight(e)) if e == MAX_EXPIRY_HEIGHT + 1),
+            "ceiling + 1: {above:?}"
+        );
+    }
+
+    /// `arb_tx` draw, its Debug a one-line summary (a full `Debug` = pages per shrink step)
+    struct Arb(Librustzcash);
+
+    impl std::fmt::Debug for Arb {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let tx = &self.0;
+            let transparent =
+                tx.transparent_bundle().map_or((0, 0), |b| (b.vin.len(), b.vout.len()));
+            let sapling = tx
+                .sapling_bundle()
+                .map_or((0, 0), |b| (b.shielded_spends().len(), b.shielded_outputs().len()));
+            let orchard = tx.orchard_bundle().map_or(0, |b| b.actions().len());
+            let ironwood = tx.ironwood_bundle().map_or(0, |b| b.actions().len());
+            write!(
+                f,
+                "{:?} {:?} txid {} expiry {}: vin/vout {transparent:?}, sapling spends/outputs \
+                 {sapling:?}, orchard actions {orchard}, ironwood actions {ironwood}",
+                tx.version(),
+                tx.consensus_branch_id(),
+                tx.txid(),
+                u32::from(tx.expiry_height()),
+            )
+        }
+    }
+
+    fn arb_any_served_format() -> impl proptest::strategy::Strategy<Value = Arb> {
+        use proptest::strategy::Strategy;
+        use zcash_primitives::transaction::testing::arb_tx;
+        proptest::prop_oneof![
+            arb_tx(BranchId::Sapling),
+            arb_tx(BranchId::Nu5),
+            arb_tx(BranchId::Nu6_3),
+        ]
+        .prop_map(Arb)
+    }
+
+    fn written(tx: &Librustzcash) -> Vec<u8> {
+        let mut raw = Vec::new();
+        tx.write(&mut raw).expect("a Vec takes every write");
+        raw
+    }
+
+    /// `(nullifier, cmx)` per action + the bundle's value balance
+    type Actions = (Vec<([u8; 32], [u8; 32])>, i64);
 
     proptest::proptest! {
         // arb_tx filters ~80 draws per case (signing-key prop_filter): reject cap scales w/ cases
@@ -435,122 +528,108 @@ mod tests {
         /// librustzcash-written txs of every format Zaino serves (Sapling v4, NU5 v5, NU6.3 v5 +
         /// v6 with Ironwood) decode to their source
         #[test]
-        fn transactions_decode_to_their_source(
-            tx in proptest::prop_oneof![
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Sapling),
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu5),
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu6_3),
-            ]
-        ) {
-            let mut raw = Vec::new();
-            tx.write(&mut raw).expect("writes");
+        fn transactions_decode_to_their_source(tx in arb_any_served_format()) {
+            let (tx, raw) = (&tx.0, written(&tx.0));
+
             let decoded = decode_transaction(&raw).expect("decodes");
 
-            let source_actions = |bundle: Option<&orchard::Bundle<_, ZatBalance>>| {
-                let actions: Vec<_> = bundle
-                    .map(|b| {
-                        b.actions()
-                            .iter()
-                            .map(|a| (a.nullifier().to_bytes(), a.cmx().to_bytes()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (actions, bundle.map_or(0, |b| i64::from(*b.value_balance())))
-            };
-            let decoded_actions = |pool: &OrchardData| {
-                let actions: Vec<_> = pool
-                    .actions
-                    .iter()
-                    .map(|a| (a.nullifier.0, a.cmx.0))
-                    .collect();
-                (actions, i64::from(pool.value_balance))
-            };
-            let sapling = tx.sapling_bundle();
-            let vout: Vec<_> = decoded.transparent.outputs.iter().map(|o| o.value.into_u64()).collect();
-            let source_vout: Vec<_> = tx
+            // bytes = the truth: librustzcash's reference parse of them = txid oracle
+            let reference = Librustzcash::read(&raw[..], tx.consensus_branch_id())
+                .expect("librustzcash reads its own bytes");
+            prop_assert_eq!(decoded.txid, reference.txid(), "txid");
+            let vout: Vec<u64> =
+                decoded.transparent.outputs.iter().map(|o| o.value.into_u64()).collect();
+            let source_vout: Vec<u64> = tx
                 .transparent_bundle()
                 .map_or(vec![], |b| b.vout.iter().map(|o| o.value().into_u64()).collect());
-            let spends: Vec<_> =
-                decoded.sapling.spends.iter().map(|s| s.nullifier.0).collect();
-            let source_spends: Vec<_> =
-                sapling.map_or(vec![], |b| b.shielded_spends().iter().map(|s| s.nullifier().0).collect());
+            prop_assert_eq!(vout, source_vout, "transparent output values");
+            let sapling = tx.sapling_bundle();
+            let spends: Vec<_> = decoded.sapling.spends.iter().map(|s| s.nullifier.0).collect();
+            let source_spends: Vec<_> = sapling
+                .map_or(vec![], |b| b.shielded_spends().iter().map(|s| s.nullifier().0).collect());
+            prop_assert_eq!(spends, source_spends, "sapling spend nullifiers");
             let cmus: Vec<_> = decoded.sapling.outputs.iter().map(|o| o.cmu.0).collect();
-            let source_cmus: Vec<_> = sapling
-                .map_or(vec![], |b| b.shielded_outputs().iter().map(|o| o.cmu().to_bytes()).collect());
+            let source_cmus: Vec<_> = sapling.map_or(vec![], |b| {
+                b.shielded_outputs().iter().map(|o| o.cmu().to_bytes()).collect()
+            });
+            prop_assert_eq!(cmus, source_cmus, "sapling output cmus");
             let sapling_balance = sapling.map_or(0, |b| i64::from(*b.value_balance()));
-
-            // bytes = the truth: librustzcash's reference parse of them = txid oracle
-            let reference = zcash_primitives::transaction::Transaction::read(
-                &raw[..],
-                tx.consensus_branch_id(),
-            )
-            .expect("librustzcash reads its own bytes");
-            use proptest::prop_assert_eq;
-            prop_assert_eq!(decoded.txid, reference.txid());
-            prop_assert_eq!(vout, source_vout);
-            prop_assert_eq!(spends, source_spends);
-            prop_assert_eq!(cmus, source_cmus);
-            prop_assert_eq!(i64::from(decoded.sapling.value_balance), sapling_balance);
-            prop_assert_eq!(decoded_actions(&decoded.orchard), source_actions(tx.orchard_bundle()));
-            prop_assert_eq!(decoded_actions(&decoded.ironwood), source_actions(tx.ironwood_bundle()));
+            let decoded_balance = i64::from(decoded.sapling.value_balance);
+            prop_assert_eq!(decoded_balance, sapling_balance, "sapling value balance");
+            let source_actions = |bundle: Option<&orchard::Bundle<_, ZatBalance>>| -> Actions {
+                let actions = bundle.map_or(vec![], |b| {
+                    b.actions().iter().map(|a| (a.nullifier().to_bytes(), a.cmx().to_bytes())).collect()
+                });
+                (actions, bundle.map_or(0, |b| i64::from(*b.value_balance())))
+            };
+            let decoded_actions = |pool: &OrchardData| -> Actions {
+                let actions = pool.actions.iter().map(|a| (a.nullifier.0, a.cmx.0)).collect();
+                (actions, i64::from(pool.value_balance))
+            };
+            prop_assert_eq!(
+                decoded_actions(&decoded.orchard),
+                source_actions(tx.orchard_bundle()),
+                "orchard (nullifier, cmx) per action, value balance"
+            );
+            prop_assert_eq!(
+                decoded_actions(&decoded.ironwood),
+                source_actions(tx.ironwood_bundle()),
+                "ironwood (nullifier, cmx) per action, value balance"
+            );
         }
 
-        /// Sapling (v4), NU5, NU6.3 (v5 + v6)
-        ///
         /// - submission facts = the source's own: txid, expiry (`0` = none), branch id only where
         ///   the format embeds one
-        /// - refused: expiry past ZIP-203's ceiling, trailing or truncated bytes
+        /// - refused: expiry past ZIP 203's ceiling, trailing or truncated bytes
         #[test]
         fn a_prepared_transaction_carries_its_own_txid_expiry_and_branch(
-            tx in proptest::prop_oneof![
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Sapling),
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu5),
-                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu6_3),
-            ]
+            tx in arb_any_served_format()
         ) {
-            use proptest::{prop_assert, prop_assert_eq};
-            let mut raw = Vec::new();
-            tx.write(&mut raw).expect("writes");
+            let (tx, raw) = (&tx.0, written(&tx.0));
             let expiry = u32::from(tx.expiry_height());
+
+            let prepared = prepare_transaction(&raw);
+
             if expiry > MAX_EXPIRY_HEIGHT {
-                let refused = prepare_transaction(&raw);
-                prop_assert!(matches!(refused, Err(DecodeError::ExpiryHeight(e)) if e == expiry));
+                let refused = prepared.map(|p| p.txid);
+                let named = matches!(refused, Err(DecodeError::ExpiryHeight(e)) if e == expiry);
+                prop_assert!(named, "expiry {} past the ceiling: {:?}", expiry, refused);
                 return Ok(());
             }
-            let prepared = prepare_transaction(&raw).expect("prepares");
+            let prepared = prepared.expect("expiry within ZIP 203: prepares");
+            let reference = Librustzcash::read(&raw[..], tx.consensus_branch_id())
+                .expect("librustzcash reads its own bytes");
+            prop_assert_eq!(prepared.txid, reference.txid(), "txid");
+            let stated = (expiry != 0).then_some(expiry);
+            prop_assert_eq!(prepared.expiry_height.map(u32::from), stated, "expiry (0 = none)");
             let embeds = matches!(tx.version(), TxVersion::V5 | TxVersion::V6);
-            let reference = zcash_primitives::transaction::Transaction::read(
-                &raw[..],
-                tx.consensus_branch_id(),
-            )
-            .expect("librustzcash reads its own bytes");
-
-            prop_assert_eq!(prepared.txid, reference.txid());
-            prop_assert_eq!(prepared.expiry_height.map(u32::from), (expiry != 0).then_some(expiry));
             let branch = embeds.then(|| tx.consensus_branch_id());
-            prop_assert_eq!(prepared.branch, branch);
-            let mut padded = raw.clone();
-            padded.push(0);
-            prop_assert!(matches!(prepare_transaction(&padded), Err(DecodeError::Trailing(1))));
-            prop_assert!(prepare_transaction(&raw[..raw.len() - 1]).is_err(), "truncated");
+            prop_assert_eq!(prepared.branch, branch, "branch id, embedded by v5 / v6 only");
+            let padded = prepare_transaction(&[&raw[..], &[0]].concat()).map(|p| p.txid);
+            let padded_named = matches!(padded, Err(DecodeError::Trailing(1)));
+            prop_assert!(padded_named, "padded by 1 byte: {:?}", padded);
+            let truncated = prepare_transaction(&raw[..raw.len() - 1]).map(|p| p.txid);
+            let truncated_named = matches!(truncated, Err(DecodeError::Malformed(_)));
+            prop_assert!(truncated_named, "last byte cut: {:?}", truncated);
         }
     }
 
     /// Push forms zcashd/zebra emit: `OP_n` for 1–16, minimal LE bytes above (sign byte at 128)
     #[test]
     fn bip34_heights_decode_in_every_push_form() {
+        #[rustfmt::skip]
         let cases: [(&[u8], Option<u32>); 8] = [
-            (&[0x51], Some(1)),
-            (&[0x60], Some(16)),
-            (&[0x01, 0x11], Some(17)),
-            (&[0x02, 0x80, 0x00], Some(128)),
-            (&[0x03, 0x40, 0x42, 0x0f], Some(1_000_000)),
+            (&[0x51],                         Some(1)),
+            (&[0x60],                         Some(16)),
+            (&[0x01, 0x11],                   Some(17)),
+            (&[0x02, 0x80, 0x00],             Some(128)),
+            (&[0x03, 0x40, 0x42, 0x0f],       Some(1_000_000)),
             (&[0x04, 0x2f, 0x4f, 0x34, 0x00], Some(3_428_143)),
-            (&[0x03, 0x40, 0x42], None),
-            (&[0x00], None),
+            (&[0x03, 0x40, 0x42],             None),
+            (&[0x00],                         None),
         ];
         for (script, height) in cases {
-            assert_eq!(bip34_height(script), height, "{script:02x?}");
+            assert_eq!(bip34_height(script), height, "script {script:02x?}");
         }
     }
 }
