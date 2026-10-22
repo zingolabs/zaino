@@ -22,9 +22,9 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use super::DaemonStatus;
 use crate::error::IndexerError;
-use crate::metrics::Format;
-use crate::status::DaemonStatus;
+use crate::telemetry::metrics::{install_recorder, scrape, Format};
 
 /// Bounds `AtomicBucket` growth between scrapes (`render` drains itself, upkeep covers no scraper)
 const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
@@ -78,7 +78,7 @@ fn is_fresh(age: Option<Duration>) -> bool {
 /// - Bind first (recorder before listener = undrained samples), bind failure fails startup
 pub(crate) fn start(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
     let listener = bind(endpoint)?;
-    let handle = crate::metrics::install_recorder()?;
+    let handle = install_recorder()?;
     spawn(listener, handle, status)?;
     info!(%endpoint, "Listening");
     Ok(())
@@ -175,7 +175,7 @@ async fn route(
         "/metrics" => {
             let handle = handle.clone();
             let format = negotiate(request.headers().get(hyper::header::ACCEPT));
-            let scrape = move || crate::metrics::scrape(&handle, &status, format);
+            let scrape = move || scrape(&handle, &status, format);
             match tokio::task::spawn_blocking(scrape).await {
                 Ok(scrape) => body(StatusCode::OK, format.content_type(), scrape),
                 Err(e) => {
@@ -236,7 +236,8 @@ mod tests {
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing, scrape negotiation
     #[tokio::test]
     async fn the_admin_surface_answers_metrics_and_probes() {
-        let (recorder, handle) = crate::metrics::recorder().expect("native config is valid");
+        let (recorder, handle) =
+            crate::telemetry::metrics::recorder().expect("native config is valid");
         metrics::with_local_recorder(&recorder, || {
             metrics::counter!("zaino.test.total").increment(7);
             metrics::histogram!("zaino.test.seconds").record(0.042);

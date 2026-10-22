@@ -11,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 use tracing::warn;
 
-use crate::status::{DaemonStatus, Startup};
+use super::{DaemonStatus, Readiness};
 
 const TICK: Duration = Duration::from_secs(10);
 
@@ -24,6 +24,33 @@ enum Message {
     ExtendTimeout(Duration),
 }
 
+/// Readiness + a progress fingerprint (fingerprint moved = startup advanced)
+///
+/// - `started` = serving or held (a node started held must not fail its start job waiting on a
+///   readiness the operator withholds)
+struct Startup {
+    started: bool,
+    progress: Vec<Option<u64>>,
+}
+
+/// - Booted: handed + served heights + every index's durable one
+/// - Before boot: bootstrap phase + bytes
+fn startup(status: &DaemonStatus) -> Startup {
+    let readiness = status.current_readiness();
+    let started = readiness.ready() || matches!(readiness, Readiness::Held(_));
+    let Some(sources) = status.sources.get() else {
+        let bootstrap = status.current_bootstrap();
+        let progress = bootstrap.map(|at| vec![Some(at.phase as u64), Some(at.bytes)]);
+        return Startup { started, progress: progress.unwrap_or_default() };
+    };
+    let grpc_snapshot = sources.grpc_snapshots.load();
+    let durable = grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable());
+    let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
+    let heights = [sources.progress.handed(), grpc_snapshot.tips().served.map(|tip| tip.height)];
+    let progress = heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
+    Startup { started, progress: progress.collect() }
+}
+
 /// Reports startup until `READY=1`
 pub(crate) fn spawn(status: Arc<DaemonStatus>) {
     tokio::spawn(async move {
@@ -31,7 +58,7 @@ pub(crate) fn spawn(status: Arc<DaemonStatus>) {
         let mut tick = tokio::time::interval(TICK);
         loop {
             tick.tick().await;
-            let message = reporter.observe(status.startup());
+            let message = reporter.observe(startup(&status));
             if let Some(message) = &message {
                 send(message);
             }

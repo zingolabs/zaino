@@ -6,7 +6,6 @@
 //! - until up: view hears no peer, every submission relays through a trusted validator, every
 //!   ask of the peer set fails (`Connection`)
 
-use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -29,15 +28,20 @@ pub(crate) struct ZebraPeers {
     network: watch::Receiver<Option<Arc<PeerNetwork>>>,
 }
 
-/// The port + the future that starts the network behind it (spawn it beside the view)
-pub(crate) fn start(config: PeerConfig) -> (Arc<ZebraPeers>, impl Future<Output = ()>) {
+/// `[p2p]` on: the port + the future bringing its network up (spawn it beside the view)
+pub(crate) struct P2p {
+    pub(crate) port: Arc<ZebraPeers>,
+    pub(crate) start: BoxFuture<'static, ()>,
+}
+
+pub(crate) fn start(config: PeerConfig) -> P2p {
     let (up, network) = watch::channel(None);
-    let starting = async move {
+    let start = async move {
         let started = PeerNetwork::start(config).await;
         info!(live = started.live().len(), "Peer network up");
         up.send_replace(Some(Arc::new(started)));
     };
-    (Arc::new(ZebraPeers { network }), starting)
+    P2p { port: Arc::new(ZebraPeers { network }), start: Box::pin(start) }
 }
 
 impl ZebraPeers {

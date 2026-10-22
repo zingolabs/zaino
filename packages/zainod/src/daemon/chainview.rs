@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use futures::FutureExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zaino_chainview::{ChainView, HeaderSync, ObservationMerge, PeerSource, PeerWatch};
@@ -21,32 +20,36 @@ use zaino_traffic::{
 };
 use zcash_protocol::local_consensus::LocalNetwork;
 
+use super::peers::{self, P2p};
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
-use crate::peers::ZebraPeers;
 
 /// Balancer + the tasks driving it (spawn every one)
 ///
 /// - View only once the upgrade schedule known ([`view`]: regtest's = a poll's)
 /// - `balancing` = the balancer's driver (every poll included)
 /// - `watches`: push streams of each validator naming an `indexer_address`
-/// - `p2p`: `[p2p]` on = the port + the future starting the network behind it
 pub(crate) struct Wiring<S: ChainDataSource> {
     pub(crate) balancer: TrafficBalancer<S>,
     pub(crate) balancing: TrafficDriver<S>,
     pub(crate) watches: Vec<(TrustedValidatorId, ZebraIndexerWatch)>,
-    pub(crate) p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
+    pub(crate) p2p: Option<P2p>,
 }
 
 /// View + the tasks feeding it (spawn every one)
 ///
 /// - `merge` = polls into the view
-/// - `peers`: `[p2p]` on = network start + block `inv` merge
 pub(crate) struct Viewed<S: ChainDataSource> {
     pub(crate) view: Arc<ChainView<S>>,
     pub(crate) merge: ObservationMerge<S>,
     pub(crate) header_sync: HeaderSync<S>,
-    pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
+    pub(crate) peers: Option<PeerTasks>,
+}
+
+/// `[p2p]` on, once viewed: the network's start + its block `inv` merge (one task)
+pub(crate) struct PeerTasks {
+    pub(crate) start: BoxFuture<'static, ()>,
+    pub(crate) watch: PeerWatch,
 }
 
 /// One unprobed `client` per trusted validator ([`legacy_client`] / [`grpc_client`]) and the
@@ -66,9 +69,9 @@ pub(crate) fn connect<S: ChainDataSource>(
         })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
-    let p2p = config.p2p.enabled.then(|| crate::peers::start(config.p2p.peers(config.network)));
-    let peers = p2p.as_ref().map(|(port, _)| Peers {
-        transport: Arc::clone(port) as Arc<dyn PeerTransport>,
+    let p2p = config.p2p.enabled.then(|| peers::start(config.p2p.peers(config.network)));
+    let peers = p2p.as_ref().map(|p2p| Peers {
+        transport: Arc::clone(&p2p.port) as Arc<dyn PeerTransport>,
         in_flight: u32::try_from(config.p2p.peer_target.get()).unwrap_or(u32::MAX),
     });
     let (balancer, balancing) = TrafficBalancer::new(trusted, peers);
@@ -80,7 +83,6 @@ pub(crate) fn connect<S: ChainDataSource>(
         Some(watch.map(|watch| (id, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
-    let p2p = p2p.map(|(port, start)| (port, start.boxed()));
     Ok(Wiring { balancer, balancing, watches, p2p })
 }
 
@@ -88,19 +90,18 @@ pub(crate) fn connect<S: ChainDataSource>(
 pub(crate) fn view<S: ChainDataSource>(
     config: &DaemonConfig,
     balancer: &TrafficBalancer<S>,
-    p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
+    p2p: Option<P2p>,
     schedule: LocalNetwork,
     shutdown: CancellationToken,
 ) -> Viewed<S> {
     let depth = FinalityDepth::new(config.sync.finalised_depth);
     let view = ChainView::new(balancer.clone(), depth, schedule, shutdown);
     let mut view = view.with_submit_policy(config.submission);
-    let mut starting = None;
-    if let Some((port, start)) = p2p {
+    let mut peers = None;
+    if let Some(P2p { port, start }) = p2p {
         view = view.with_peers(port as Arc<dyn PeerSource>);
-        starting = Some(start);
+        peers = view.peer_watch().map(|watch| PeerTasks { start, watch });
     }
-    let peers = starting.zip(view.peer_watch());
 
     let header_sync = view.header_sync(HeaderChain::new(depth));
     let merge = view.observation_merge();

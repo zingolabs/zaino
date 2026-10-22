@@ -41,7 +41,7 @@ pub(super) enum Command {
     /// read at all.
     Verify,
     #[command(flatten)]
-    Hold(crate::hold::Action),
+    Hold(crate::command::hold::Action),
     /// Override when this node reports `Overloaded`, across restarts: markers in `[serve]
     /// state_dir`/overload over `[grpc.overload]`, read by the running zainod within a second.
     ///
@@ -49,6 +49,6 @@ pub(super) enum Command {
     /// value, or an unreadable config or state directory.
     Overload {
         #[command(subcommand)]
-        action: crate::overload::Action,
+        action: crate::command::overload::Action,
     },
 }

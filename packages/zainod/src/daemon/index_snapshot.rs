@@ -28,9 +28,9 @@ use zaino_persistence::IndexKind;
 use zaino_primitives::display::{ByteSize, Human};
 
 use crate::config::{DaemonConfig, IndexSnapshotConfig};
-use crate::disk_monitor::disk_bytes;
 use crate::error::IndexerError;
-use crate::status::DaemonStatus;
+use crate::health::DaemonStatus;
+use crate::telemetry::disk::disk_bytes;
 use aria2::{Aria2, State};
 
 mod aria2;
@@ -44,20 +44,16 @@ const UNPACKED_DONE: &str = "unpacked.done";
 const LOG_EVERY: Duration = Duration::from_secs(30);
 const POLL_EVERY: Duration = Duration::from_secs(1);
 
-/// Install progress, read by [`DaemonStatus`] before the indexer boots
+/// Install progress = `/readyz`'s provisioning detail
 ///
-/// - `source` = archive host, `indexes` archives fetched, `total` = Σ their bytes
-/// - `phase` = slowest archive's, `done` = its bytes (archives past it whole)
-/// - `rate` = bytes/s (`downloading` only)
-#[derive(Debug, Clone, PartialEq)]
+/// - `phase` = slowest archive's, `bytes` = its bytes (archives past it whole)
+/// - `bytes_per_sec` = `downloading` only
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct SnapshotProgress {
     pub(crate) phase: SnapshotPhase,
-    source: String,
-    height: u32,
-    indexes: usize,
-    pub(crate) done: u64,
-    pub(crate) total: u64,
-    pub(crate) rate: Option<u64>,
+    pub(crate) bytes: u64,
+    pub(crate) total_bytes: u64,
+    pub(crate) bytes_per_sec: Option<u64>,
 }
 
 /// Declared in pipeline order (`Ord`: earliest = slowest)
@@ -163,7 +159,7 @@ pub(crate) async fn install(
             }
         });
     }
-    let board = Board::new(&fetches, source, manifest.height);
+    let board = Board::new(&fetches);
     let installs = fetches
         .iter()
         .zip(queued)
@@ -316,7 +312,7 @@ struct Slot {
 /// Slowest step's bytes (archives past it counted whole)
 ///
 /// - `None` = every archive installed
-fn overall(slots: &[Slot], source: &str, height: u32) -> Option<SnapshotProgress> {
+fn overall(slots: &[Slot]) -> Option<SnapshotProgress> {
     let slowest = slots.iter().map(|slot| slot.step).min()?;
     let Step::Active(phase) = slowest else { return None };
     let done = |slot: &Slot| match slot.step > slowest {
@@ -327,24 +323,19 @@ fn overall(slots: &[Slot], source: &str, height: u32) -> Option<SnapshotProgress
     let rate = slots.iter().filter(downloading).map(|slot| slot.rate);
     Some(SnapshotProgress {
         phase,
-        source: source.to_owned(),
-        height,
-        indexes: slots.len(),
-        done: slots.iter().map(done).sum(),
-        total: slots.iter().map(|slot| slot.bytes).sum(),
-        rate: (phase == SnapshotPhase::Downloading).then(|| rate.sum()),
+        bytes: slots.iter().map(done).sum(),
+        total_bytes: slots.iter().map(|slot| slot.bytes).sum(),
+        bytes_per_sec: (phase == SnapshotPhase::Downloading).then(|| rate.sum()),
     })
 }
 
 /// Every archive's slot, folded by [`overall`] into [`DaemonStatus`] every [`POLL_EVERY`]
 struct Board {
-    source: String,
-    height: u32,
     slots: Mutex<Vec<Slot>>,
 }
 
 impl Board {
-    fn new(fetches: &[Fetch], source: String, height: u32) -> Self {
+    fn new(fetches: &[Fetch]) -> Self {
         let slot = |fetch: &Fetch| {
             let (phase, done) = match fetch.unpacked() {
                 true => (SnapshotPhase::Unpacking, fetch.archive.archive_bytes),
@@ -354,7 +345,7 @@ impl Board {
             let (bytes, done) = (fetch.archive.archive_bytes, Arc::new(AtomicU64::new(done)));
             Slot { step, bytes, rate: 0, done }
         };
-        Self { source, height, slots: Mutex::new(fetches.iter().map(slot).collect()) }
+        Self { slots: Mutex::new(fetches.iter().map(slot).collect()) }
     }
 
     /// Poison-tolerant: plain data, every update a field swap
@@ -395,7 +386,7 @@ impl Board {
         let mut logged = Instant::now();
         loop {
             ticks.tick().await;
-            let progress = overall(&self.slots(), &self.source, self.height);
+            let progress = overall(&self.slots());
             if let Some(progress) = progress.as_ref().filter(|_| logged.elapsed() >= LOG_EVERY) {
                 logged = Instant::now();
                 log(progress);
@@ -406,18 +397,15 @@ impl Board {
 }
 
 fn log(progress: &SnapshotProgress) {
-    let (done, total) = (ByteSize(progress.done), ByteSize(progress.total));
+    let (done, total) = (ByteSize(progress.bytes), ByteSize(progress.total_bytes));
     match progress.phase {
         SnapshotPhase::Downloading => {
-            let rate = progress.rate.unwrap_or(0);
+            let rate = progress.bytes_per_sec.unwrap_or(0);
             info!(
-                from = %progress.source,
-                to = progress.height,
-                indexes = progress.indexes,
                 done = %done,
                 total = %total,
                 rate = %format_args!("{}/s", ByteSize(rate)),
-                eta = %eta(progress.total.saturating_sub(progress.done), rate),
+                eta = %eta(progress.total_bytes.saturating_sub(progress.bytes), rate),
                 "Downloading index snapshot"
             )
         }
@@ -488,14 +476,11 @@ mod tests {
             rate,
             done: Arc::new(AtomicU64::new(done)),
         };
-        let at = |phase, done, rate| SnapshotProgress {
+        let at = |phase, bytes, bytes_per_sec| SnapshotProgress {
             phase,
-            source: "snapshots.example".to_owned(),
-            height: 7,
-            indexes: 3,
-            done,
-            total: 600,
-            rate,
+            bytes,
+            total_bytes: 600,
+            bytes_per_sec,
         };
         let cases = [
             (
@@ -554,7 +539,7 @@ mod tests {
             ),
         ];
         for (case, slots, expected) in cases {
-            assert_eq!(overall(&slots, "snapshots.example", 7), expected, "{case}");
+            assert_eq!(overall(&slots), expected, "{case}");
         }
     }
 

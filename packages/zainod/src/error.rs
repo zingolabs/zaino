@@ -17,7 +17,7 @@ pub(crate) enum IndexerError {
         "grpc.max_connections = {max_connections} needs {needed} open files ({reserved} kept for \
          indexes and the validator) and the limit is {limit}: raise the hard limit (systemd \
          LimitNOFILE=, docker --ulimit nofile=) or lower grpc.max_connections",
-        reserved = crate::fd_limit::RESERVED
+        reserved = crate::daemon::fd_limit::RESERVED
     )]
     FdLimit { max_connections: NonZeroUsize, needed: u64, limit: u64 },
     #[error(transparent)]

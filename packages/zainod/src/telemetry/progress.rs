@@ -18,10 +18,10 @@ use zaino_primitives::display::{ByteSize, Human};
 use zaino_sync::SyncProgress;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::boot::OpenedIndex;
-use crate::disk_monitor::disk_bytes;
+use super::disk::{self, disk_bytes};
+use super::logging::HeightCol;
+use crate::daemon::OpenedIndex;
 use crate::error::IndexerError;
-use crate::logging::HeightCol;
 
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 const WALK_EVERY: Duration = Duration::from_secs(120);
@@ -105,12 +105,12 @@ pub(crate) async fn run(
         if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
             disk = walk(&indexes).await?;
             for (index, bytes) in &disk {
-                crate::disk_monitor::walked(index, *bytes);
+                disk::walked(index, *bytes);
             }
             walked = Some(Instant::now());
         }
-        let views = crate::disk_monitor::views(&indexes);
-        tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
+        let views = disk::views(&indexes);
+        tokio::task::spawn_blocking(move || disk::sample(&views)).await?;
         let tips = grpc_snapshots.load().tips();
         let now = sample(&tips);
         let durable = indexes

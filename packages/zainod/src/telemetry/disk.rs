@@ -15,7 +15,7 @@ use metrics::Unit;
 use zaino_persistence::IndexKind;
 use zaino_primitives::metric::Metric;
 
-use crate::boot::OpenedIndex;
+use crate::daemon::OpenedIndex;
 
 mod names {
     pub(super) const COMMITTED_BYTES: &str = "zaino.disk.committed_bytes";

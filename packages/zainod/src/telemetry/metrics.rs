@@ -18,7 +18,7 @@ use metrics_exporter_prometheus::{
 use zaino_primitives::metric::Metric;
 
 use crate::error::IndexerError;
-use crate::status::DaemonStatus;
+use crate::health::DaemonStatus;
 
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
@@ -34,8 +34,8 @@ const TABLES: &[&[Metric]] = &[
     zaino_sync::METRICS,
     zaino_persistence::METRICS,
     zaino_peers::METRICS,
-    crate::status::METRICS,
-    crate::disk_monitor::METRICS,
+    crate::health::METRICS,
+    super::disk::METRICS,
 ];
 
 /// ~9% wide buckets (schema 3 = Prometheus' default native resolution)
@@ -65,7 +65,7 @@ impl Format {
     }
 }
 
-/// Global recorder + every `# HELP` (served by [`crate::admin::start`], which binds first)
+/// Global recorder + every `# HELP` (served by [`crate::health::admin::start`], which binds first)
 pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
     let (recorder, handle) = recorder()?;
     metrics::set_global_recorder(recorder)

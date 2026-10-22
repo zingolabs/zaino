@@ -52,6 +52,8 @@ grpc_snapshots.changed().await?;                       // next publish
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
   `no trusted validator holds the verified tip {h} (of {n} configured)`, `the indexes are syncing:
   nothing served yet`.
+- `GrpcSnapshots` = chainview's `UnspentOutputs` (the peer mempool's prevouts): the served
+  utxo-set, one load per ask; `None` before the first publish or with utxo-set off.
 - Feature `testing`: `GrpcSnapshots::fixed(indexed, view)` = one snapshot for good, no publisher
   (`changed()` errs, a tail ends after its opening): route tests over `NfsPublication::fixed` +
   `ChainViewSnapshot::fixed`.

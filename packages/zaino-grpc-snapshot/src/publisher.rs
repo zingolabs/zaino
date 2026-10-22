@@ -15,9 +15,12 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zaino_chainview::{ChainViewSnapshot, ChainViewSubscriber};
+use zaino_chainview::{ChainViewSnapshot, ChainViewSubscriber, UnspentOutputs};
 use zaino_nfs::{NfsPublication, Published};
+use zaino_persistence::{MapRead, SequenceRead};
 use zaino_primitives::types::FinalityDepth;
+use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 use crate::compose::compose;
 use crate::grpc_snapshot::GrpcSnapshot;
@@ -50,6 +53,14 @@ impl<V> GrpcSnapshots<V> {
     /// Next publish (`Err` = the publisher stopped)
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.changed.changed().await
+    }
+}
+
+/// UTXO set at the served tip, one load per ask (`None` = nothing served yet, or utxo-set off)
+impl<V: SequenceRead + MapRead + Send + Sync + 'static> UnspentOutputs for GrpcSnapshots<V> {
+    fn values(&self, outpoints: &[OutPoint]) -> Option<Vec<Option<Zatoshis>>> {
+        let grpc_snapshot = self.load();
+        Some(grpc_snapshot.served().ok()?.views().utxo_set()?.values(outpoints))
     }
 }
 

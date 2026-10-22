@@ -49,10 +49,17 @@ use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
 
+use crate::command::overload;
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
 use crate::error::IndexerError;
-use crate::logging::component;
-use crate::status::DaemonStatus;
+use crate::health::{admin, DaemonStatus, Sources};
+use crate::telemetry::logging::{self, component};
+use crate::telemetry::{egress, progress};
+
+mod chainview;
+pub(crate) mod fd_limit;
+pub(crate) mod index_snapshot;
+mod peers;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
@@ -72,14 +79,12 @@ pub(crate) async fn start(
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     warn!("In development, not for production mainnet use");
     let signals = shutdown_signals();
-    crate::fd_limit::raise_for(config.grpc.max_connections)?;
+    fd_limit::raise_for(config.grpc.max_connections)?;
     match config.validator_client {
         ValidatorClient::LegacyRpc => {
-            start_over(config, crate::chainview::legacy_client, status, signals).await
+            start_over(config, chainview::legacy_client, status, signals).await
         }
-        ValidatorClient::Grpc => {
-            start_over(config, crate::chainview::grpc_client, status, signals).await
-        }
+        ValidatorClient::Grpc => start_over(config, chainview::grpc_client, status, signals).await,
     }
 }
 
@@ -89,13 +94,13 @@ async fn start_over<S: ChainDataSource>(
     status: Arc<DaemonStatus>,
     mut signals: mpsc::Receiver<&'static str>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    let wiring = component("ChainView").in_scope(|| crate::chainview::connect(&config, client))?;
+    let wiring = component("ChainView").in_scope(|| chainview::connect(&config, client))?;
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
     let booting = async {
         let serving = listen(&config, &status, &cancel, &mut tasks).await?;
         if let Some(snapshot) = &config.snapshot {
-            let install = crate::index_snapshot::install(snapshot, &config, &status);
+            let install = index_snapshot::install(snapshot, &config, &status);
             install.instrument(component("IndexSnapshot")).await?;
         }
         boot_over(&config, wiring, serving, &status, &cancel, &mut tasks).await
@@ -139,8 +144,7 @@ async fn listen<S: ChainDataSource>(
         server = server.with_tls(Tls::load(tls.clone())?);
     }
     let serving = Serving { routing: server.routing(), admission: server.admission() };
-    let overload = config.grpc.overload.clone();
-    crate::overload::spawn(server.admission(), &config.serve.state_dir, overload);
+    overload::spawn(server.admission(), &config.serve.state_dir, config.grpc.overload.clone());
     let server = server.bind().await?;
     let span = component("Grpc");
     let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));
@@ -197,14 +201,14 @@ async fn regtest_schedule<S: ChainDataSource>(
     }
 }
 
-/// Chain view over the trusted validators ([`crate::chainview::connect`]'s `wiring`) → pipeline
+/// Chain view over the trusted validators ([`chainview::connect`]'s `wiring`) → pipeline
 /// over it, routed into `serving` → every task spawned beside the gRPC server's
 ///
 /// - One balancer over every validator
 /// - Balancer's driver first (regtest's upgrade schedule = a poll's)
 async fn boot_over<S: ChainDataSource>(
     config: &DaemonConfig,
-    wiring: crate::chainview::Wiring<S>,
+    wiring: chainview::Wiring<S>,
     serving: Serving<S>,
     status: &Arc<DaemonStatus>,
     cancel: &CancellationToken,
@@ -217,7 +221,7 @@ async fn boot_over<S: ChainDataSource>(
     let schedule = upgrade_schedule(config.network, &wiring.balancer, validators, status);
     let schedule = schedule.instrument(chainview_span.clone()).await?;
     let viewed = chainview_span.in_scope(|| {
-        crate::chainview::view(config, &wiring.balancer, wiring.p2p, schedule, cancel.child_token())
+        chainview::view(config, &wiring.balancer, wiring.p2p, schedule, cancel.child_token())
     });
     let inputs = Inputs {
         fs: RealFs::shared(),
@@ -238,11 +242,11 @@ async fn boot_over<S: ChainDataSource>(
     };
     let run = header_sync.run(cancel.child_token());
     spawn_infallible(tasks, "header-sync", chainview_span.clone(), run);
-    if let Some((starting, watch)) = viewed.peers {
+    if let Some(chainview::PeerTasks { start, watch }) = viewed.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
         let token = cancel.child_token();
         let run = async move {
-            tokio::join!(token.run_until_cancelled(starting), watch.run(token.clone()));
+            tokio::join!(token.run_until_cancelled(start), watch.run(token.clone()));
         };
         spawn_infallible(tasks, "peers", chainview_span.clone(), run);
     }
@@ -255,7 +259,7 @@ async fn boot_over<S: ChainDataSource>(
         let run = watch.run(cancel.child_token(), on_change, on_link);
         spawn_infallible(tasks, "push-stream", chainview_span.clone(), run);
     }
-    let heartbeat = crate::admin::beat(Arc::clone(status), cancel.child_token());
+    let heartbeat = admin::beat(Arc::clone(status), cancel.child_token());
     spawn(tasks, "heartbeat", component("Admin"), heartbeat);
     Ok(())
 }
@@ -361,8 +365,7 @@ fn run_pipeline<S: ChainDataSource>(
         max_address_rows: config.serve.max_address_rows,
         indexes: opened.iter().map(|index| index.kind).collect(),
     });
-    let utxos = Arc::new(crate::utxos::ServedUtxos(grpc_snapshots.clone()));
-    if let Some(polling) = inputs.view.peer_mempool(utxos) {
+    if let Some(polling) = inputs.view.peer_mempool(Arc::new(grpc_snapshots.clone())) {
         if config.enabled(IndexKind::CompactBlock).is_none() {
             warn!(
                 "p2p.enabled without index.compact_block: no UTXO set, peers admit no transaction"
@@ -372,18 +375,13 @@ fn run_pipeline<S: ChainDataSource>(
         spawn_infallible(tasks, "peer-mempool", component("ChainView"), run);
     }
     let (rate, block_rate) = watch::channel(None);
-    let reporting = crate::progress::run(
-        grpc_snapshots.clone(),
-        progress.clone(),
-        opened,
-        rate,
-        cancel.child_token(),
-    );
+    let reporting =
+        progress::run(grpc_snapshots.clone(), progress.clone(), opened, rate, cancel.child_token());
     spawn(tasks, "progress", component("ZainoNFS"), reporting);
     let (egress, egress_windows) = watch::channel(None);
-    let measuring = crate::egress::run(egress, cancel.child_token());
+    let measuring = egress::run(egress, cancel.child_token());
     spawn(tasks, "egress", component("Grpc"), measuring);
-    status.publish(crate::status::Sources {
+    status.publish(Sources {
         grpc_snapshots,
         progress,
         block_rate,
@@ -421,9 +419,9 @@ impl<S: ChainDataSource> Indexes<S> {
         fees: &mut FeeWiring,
     ) -> Result<(), IndexerError> {
         let (schema, write_buffer) = (zaino_nfs::schema(kind, self.network), write_buffer(kind));
-        let span = crate::logging::index_component(kind.name());
+        let span = logging::index_component(kind);
         let store = span.in_scope(|| {
-            debug!("Opening from {}", crate::logging::shown_path(&config.path));
+            debug!(path = %config.path.display(), "Opening");
             self.engine.open(&config.path, &schema, write_buffer)
         })?;
         let (handle, run) = writer(kind, store, fees);
@@ -715,9 +713,10 @@ mod tests {
         use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
-        let (recorder, rendered) = crate::metrics::recorder().expect("native config is valid");
+        use crate::telemetry::metrics::{describe_all, recorder, scrape, Format};
+        let (recorder, rendered) = recorder().expect("native config is valid");
         let _recording = metrics::set_default_local_recorder(&recorder);
-        crate::metrics::describe_all();
+        describe_all();
 
         let mut blocks = MockChain::regtest().varied_work();
         let a8 = blocks.mine_empty(8);
@@ -843,7 +842,6 @@ mod tests {
         let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
         assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");
 
-        use crate::metrics::{scrape, Format};
         let text = String::from_utf8(scrape(&rendered, &status, Format::Text));
         let text = text.expect("text exposition is UTF-8");
         let per_index = |family: &'static str| {

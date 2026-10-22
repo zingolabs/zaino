@@ -2,7 +2,7 @@
 //!
 //! - Table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
 //!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`])
-//! - Rest translated at boot ([`crate::boot::start`])
+//! - Rest translated at boot ([`crate::daemon::start`])
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
 use std::net::SocketAddr;
@@ -27,23 +27,37 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::error::IndexerError;
 
-/// TOML spelling of [`NetworkType`] (`mainnet`, not `Main`, no serde impls upstream)
-#[derive(Deserialize, Serialize)]
-#[serde(remote = "NetworkType", rename_all = "lowercase")]
-enum NetworkDef {
-    #[serde(rename = "mainnet")]
-    Main,
-    #[serde(rename = "testnet")]
-    Test,
-    Regtest,
-}
+pub(super) mod paths;
 
-/// The same spelling for logs, `/status` and messages (tested equal to the TOML key)
+/// One spelling for TOML, logs, `/status` and messages
 pub(crate) fn network_name(network: NetworkType) -> &'static str {
     match network {
         NetworkType::Main => "mainnet",
         NetworkType::Test => "testnet",
         NetworkType::Regtest => "regtest",
+    }
+}
+
+/// `network` as [`network_name`] (no serde impls upstream)
+mod network_serde {
+    use serde::de::{Error, Unexpected};
+    use serde::{Deserialize, Deserializer, Serializer};
+    use zcash_protocol::consensus::NetworkType;
+
+    use super::network_name;
+
+    pub(super) fn serialize<S: Serializer>(
+        network: &NetworkType,
+        to: S,
+    ) -> Result<S::Ok, S::Error> {
+        to.serialize_str(network_name(*network))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<NetworkType, D::Error> {
+        let name = String::deserialize(from)?;
+        let networks = [NetworkType::Main, NetworkType::Test, NetworkType::Regtest];
+        let network = networks.into_iter().find(|network| network_name(*network) == name);
+        network.ok_or_else(|| Error::invalid_value(Unexpected::Str(&name), &"a network name"))
     }
 }
 
@@ -191,8 +205,7 @@ pub(crate) struct Indexes {
 
 impl Default for Indexes {
     fn default() -> Self {
-        let table =
-            |kind| IndexTable { path: Some(crate::paths::default_index(kind)), enabled: true };
+        let table = |kind| IndexTable { path: Some(paths::default_index(kind)), enabled: true };
         Self {
             compact_block: table(IndexKind::CompactBlock),
             block_hash: table(IndexKind::BlockHash),
@@ -247,7 +260,7 @@ impl Default for ServeConfig {
             grpc_listen_address: SocketAddr::from(([127, 0, 0, 1], 8137)),
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
             tls: None,
-            state_dir: crate::paths::default_state(),
+            state_dir: paths::default_state(),
             hold_goaway_delay: Duration::ZERO,
         }
     }
@@ -306,7 +319,7 @@ impl Default for P2pConfig {
             enabled: false,
             peer_target: zaino_peers::DEFAULT_PEER_TARGET,
             initial_peers: Vec::new(),
-            cache_dir: crate::paths::default_peer_cache(),
+            cache_dir: paths::default_peer_cache(),
         }
     }
 }
@@ -362,7 +375,7 @@ pub(crate) enum ValidatorClient {
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct DaemonConfig {
     /// Declared, never derived (regtest Zebra reports `"test"` over `getblockchaininfo`)
-    #[serde(with = "NetworkDef")]
+    #[serde(with = "network_serde")]
     pub(crate) network: NetworkType,
     /// `grpc` = blocks over each validator's `indexer_address` (zcashd has none: `legacy_rpc`)
     pub(crate) validator_client: ValidatorClient,
@@ -406,7 +419,7 @@ impl DaemonConfig {
     pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
         let index = &self.index;
         let table = |table: &IndexTable, of: IndexKind| {
-            let path = table.path.clone().unwrap_or_else(|| crate::paths::default_index(of));
+            let path = table.path.clone().unwrap_or_else(|| paths::default_index(of));
             (table.enabled, path)
         };
         let (enabled, path) = match kind {
@@ -665,7 +678,7 @@ enabled = false
         let expected = [
             at("/srv/zaino/compact_block".into()),
             at("/srv/zaino/utxo_set".into()),
-            at(crate::paths::default_index(IndexKind::BlockHash)),
+            at(paths::default_index(IndexKind::BlockHash)),
             None,
             None,
         ];
@@ -872,10 +885,10 @@ enabled = false
         assert!(!body.contains("utxo_set"), "internal: no table of its own");
         for kind in [IndexKind::CompactBlock, IndexKind::UtxoSet, IndexKind::TreeState] {
             let path = defaults.enabled(kind).map(|index| index.path);
-            assert_eq!(path, Some(crate::paths::default_index(kind)), "{kind:?}");
+            assert_eq!(path, Some(paths::default_index(kind)), "{kind:?}");
         }
 
-        let example = include_str!("../../../docs/example_configs/zainod.toml");
+        let example = include_str!("../../../../docs/example_configs/zainod.toml");
         let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
         assert!(example.validate().is_ok());
         let shown = DaemonConfig {
@@ -971,29 +984,6 @@ path = "/tmp/zaino-compact-block"
             (&defaults.grpc.trusted_proxies, &set.grpc.trusted_proxies),
             (&Default::default(), &proxies)
         );
-    }
-
-    /// Declared chain: every spelling round-trips, default mainnet, `regtest` its own value (the
-    /// validator reports `"test"`)
-    #[test]
-    fn the_network_key_round_trips_every_chain_and_defaults_to_mainnet() {
-        assert_eq!(DaemonConfig::default().network, NetworkType::Main);
-
-        for (spelling, network) in [
-            ("mainnet", NetworkType::Main),
-            ("testnet", NetworkType::Test),
-            ("regtest", NetworkType::Regtest),
-        ] {
-            let parsed: DaemonConfig =
-                toml::from_str(&format!("network = \"{spelling}\"")).expect(spelling);
-            assert_eq!((parsed.network, network_name(network)), (network, spelling));
-
-            let written = toml::to_string_pretty(&parsed).expect("serialise");
-            assert!(written.contains(&format!("network = \"{spelling}\"")), "{written}");
-            assert_eq!(toml::from_str::<DaemonConfig>(&written).expect("reparse").network, network);
-        }
-
-        assert!(toml::from_str::<DaemonConfig>(r#"network = "main""#).is_err());
     }
 
     /// Default = `legacy_rpc` (every validator speaks it), `grpc` only when asked

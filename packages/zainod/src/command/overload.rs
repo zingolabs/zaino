@@ -13,6 +13,8 @@ use std::time::Duration;
 use tracing::warn;
 use zaino_grpc::{AdmissionState, OverloadLimits};
 
+use super::{remove_marker, write_marker, MarkerError};
+
 const OFF: &str = "off";
 
 #[derive(Debug, Clone, PartialEq, Eq, clap::Subcommand)]
@@ -82,65 +84,29 @@ fn read(dir: &Path, config: &OverloadLimits) -> Result<Settings, String> {
     Ok(Settings { limits, detection, overrides })
 }
 
-/// The marker `action` names written or removed (`Set` validated first), its directory synced: it
-/// must survive a reboot right after the command
-fn apply(dir: &Path, config: &OverloadLimits, action: &Action) -> Result<(), String> {
+/// The marker `action` names written or removed (`Set` validated first)
+fn apply(dir: &Path, config: &OverloadLimits, action: &Action) -> Result<(), MarkerError> {
     match action {
-        Action::Off => write(dir, OFF, "")?,
+        Action::Off => write_marker(dir, OFF, ""),
         Action::Set { key, value } => {
-            merged(config, &[(key.clone(), value.clone())])?;
-            write(dir, key, value)?;
+            merged(config, &[(key.clone(), value.clone())]).map_err(MarkerError::Invalid)?;
+            write_marker(dir, key, value)
         }
-        Action::On => remove(dir, OFF)?,
-        Action::Unset { key } => remove(dir, key)?,
+        Action::On => remove_marker(dir, OFF).map(drop),
+        Action::Unset { key } => remove_marker(dir, key).map(drop),
     }
-    absent_ok(dir, std::fs::File::open(dir).and_then(|dir| dir.sync_all()))
-}
-
-fn write(dir: &Path, name: &str, value: &str) -> Result<(), String> {
-    let path = dir.join(name);
-    let written = std::fs::create_dir_all(dir)
-        .and_then(|()| std::fs::write(&path, format!("{value}\n")))
-        .and_then(|()| std::fs::File::open(&path)?.sync_all());
-    written.map_err(|error| format!("{}: {error}", path.display()))
-}
-
-fn remove(dir: &Path, name: &str) -> Result<(), String> {
-    let path = dir.join(name);
-    absent_ok(&path, std::fs::remove_file(&path))
-}
-
-/// `result` at `path`, a missing file counting as done
-fn absent_ok(path: &Path, result: std::io::Result<()>) -> Result<(), String> {
-    match result {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            Err(format!("{}: {error}", path.display()))
-        }
-        _ => Ok(()),
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(super) enum OverloadError {
-    #[error(transparent)]
-    Config(#[from] crate::error::IndexerError),
-    #[error("{0}")]
-    Marker(String),
 }
 
 /// `zainod overload …`: prints the settings now in force
-pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, OverloadError> {
+pub(crate) fn command(config_path: &Path, action: Action) -> Result<ExitCode, MarkerError> {
     let config = crate::config::load_config(config_path)?;
     let dir = config.serve.state_dir.join("overload");
     let limits = &config.grpc.overload;
-    apply(&dir, limits, &action).map_err(OverloadError::Marker)?;
-    let settings = read(&dir, limits).map_err(OverloadError::Marker)?;
+    apply(&dir, limits, &action)?;
+    let settings = read(&dir, limits).map_err(MarkerError::Invalid)?;
+    let printed = toml::to_string(&settings.limits);
     println!("detection = {}", settings.detection);
-    print!(
-        "{}",
-        toml::to_string(&settings.limits)
-            .map_err(|error| OverloadError::Marker(error.to_string()))?
-    );
+    print!("{}", printed.map_err(|error| MarkerError::Invalid(error.to_string()))?);
     eprintln!(
         "overridden: [{}] in {} (a running zainod applies within 1 s)",
         settings.overrides.join(", "),

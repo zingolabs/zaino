@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use zaino_persistence::IndexKind;
 
 /// `<config dir>/zaino/zainod.toml`
-pub(super) fn default_config() -> PathBuf {
+pub(crate) fn default_config() -> PathBuf {
     under(dirs::config_dir(), ".config").join("zaino/zainod.toml")
 }
 

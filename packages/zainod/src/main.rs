@@ -11,32 +11,19 @@ use clap::Parser;
 use tracing::{error, info, Instrument as _};
 
 use crate::cli::{Cli, Command};
+use crate::command::{hold, overload, verify};
 use crate::config::load_config;
 use crate::error::IndexerError;
-use crate::status::DaemonStatus;
+use crate::health::{admin, notify, state_log, DaemonStatus};
+use crate::telemetry::logging;
 
-mod admin;
-mod boot;
-mod chainview;
 mod cli;
+mod command;
 mod config;
-mod disk_monitor;
-mod egress;
+mod daemon;
 mod error;
-mod fd_limit;
-mod hold;
-mod index_snapshot;
-mod logging;
-mod metrics;
-mod notify;
-mod overload;
-mod paths;
-mod peers;
-mod progress;
-mod state_log;
-mod status;
-mod utxos;
-mod verify;
+mod health;
+mod telemetry;
 
 fn main() -> ExitCode {
     // a panic anywhere = a violated invariant: print it, then die (never unwound into a task
@@ -65,10 +52,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let config = cli.config.unwrap_or_else(paths::default_config);
+    let config = cli.config.unwrap_or_else(config::paths::default_config);
     let code = runtime.block_on(async {
         match cli.command {
-            Command::Start => exit(run(config).await.map(|()| ExitCode::SUCCESS), 1),
+            Command::Start => {
+                let run = start(config).instrument(logging::component("Zainod"));
+                exit(run.await.map(|()| ExitCode::SUCCESS), 1)
+            }
             Command::GenerateConfig { output } => {
                 exit(config::generate_config(&output.unwrap_or(config)), 1)
             }
@@ -94,11 +84,7 @@ fn exit(outcome: Result<ExitCode, impl Display>, failure: u8) -> ExitCode {
 ///
 /// - no in-process restart: failure ends the process, the service manager restarts it, next boot
 ///   proves its state from disk (`zaino-persistence/usage.md` "The commit and crash contract")
-async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    daemon(config_path).instrument(logging::component("Zainod")).await
-}
-
-async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
+async fn start(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
     // Before any startup work (a bad `[snapshot]` must fail before it downloads)
@@ -120,7 +106,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
         logging::component("Admin").in_scope(|| admin::start(endpoint, status))?;
     }
     // After the admin listener (`/readyz` reports the index-snapshot install inside)
-    let running = boot::start(config, status).await.inspect_err(|error| {
+    let running = daemon::start(config, status).await.inspect_err(|error| {
         error!(%error, "Startup failed");
     })?;
     match running.await? {

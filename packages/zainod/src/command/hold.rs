@@ -10,7 +10,6 @@
 //!   returns once the GOAWAYs went out
 //! - no write endpoint: holding takes the state dir, not network reach to the admin listener
 
-use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,7 +18,8 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::status::{DaemonReason, DaemonStatus};
+use super::{remove_marker, write_marker, MarkerError};
+use crate::health::{DaemonReason, DaemonStatus};
 
 /// Marker check cadence (a `zainod hold` lands within this)
 const POLL: Duration = Duration::from_secs(1);
@@ -52,14 +52,6 @@ pub(crate) enum Action {
     Resume,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(super) enum HoldError {
-    #[error(transparent)]
-    Config(#[from] crate::error::IndexerError),
-    #[error("{}: {source}", marker.display())]
-    Marker { marker: PathBuf, source: io::Error },
-}
-
 /// What a command found, the marker now matching what was asked
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Changed {
@@ -69,38 +61,26 @@ enum Changed {
     NotHeld,
 }
 
-/// Marker written (synced, with its directory) or removed (idempotent)
-fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
-    let marker = state_dir.join(MARKER);
-    let changed = match action {
-        Action::Hold => {
-            if marker.try_exists()? {
-                return Ok(Changed::AlreadyHeld);
-            }
-            std::fs::create_dir_all(state_dir)?;
-            std::fs::File::create(&marker)?.sync_all()?;
-            Changed::Held
-        }
-        Action::Resume => match std::fs::remove_file(&marker) {
-            Ok(()) => Changed::Resumed,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Changed::NotHeld),
-            Err(error) => return Err(error),
+/// Marker written or removed (idempotent)
+fn apply(state_dir: &Path, action: Action) -> Result<Changed, MarkerError> {
+    match action {
+        Action::Hold if state_dir.join(MARKER).exists() => Ok(Changed::AlreadyHeld),
+        Action::Hold => write_marker(state_dir, MARKER, "").map(|()| Changed::Held),
+        Action::Resume => match remove_marker(state_dir, MARKER)? {
+            true => Ok(Changed::Resumed),
+            false => Ok(Changed::NotHeld),
         },
-    };
-    // the marker's own entry durable: a hold must survive a reboot right after the command
-    std::fs::File::open(state_dir)?.sync_all()?;
-    Ok(changed)
+    }
 }
 
 /// `zainod hold` / `zainod resume`: prints the resulting state
 ///
 /// - `Ok` = marker says what was asked (hold: and a running zainod's connections GOAWAY'd, or the
 ///   longest that can take waited)
-pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
+pub(crate) fn command(config_path: &Path, action: Action) -> Result<ExitCode, MarkerError> {
     let config = crate::config::load_config(config_path)?;
     let state_dir = &config.serve.state_dir;
-    let marker_failed = |source| HoldError::Marker { marker: state_dir.join(MARKER), source };
-    let changed = apply(state_dir, action).map_err(marker_failed)?;
+    let changed = apply(state_dir, action)?;
     let (state, note) = match changed {
         Changed::Held => ("held", "hold marker written"),
         Changed::AlreadyHeld => ("held", "already held"),

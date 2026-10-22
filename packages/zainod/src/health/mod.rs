@@ -15,17 +15,22 @@ use tokio::sync::watch;
 use zaino_grpc::{Hold, OverloadCause, Retire};
 use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus};
 use zaino_persistence::{DiskView, IndexKind};
+use zaino_primitives::metric::Metric;
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::admin::Heartbeat;
-use crate::egress::Egress;
-use crate::index_snapshot::{SnapshotPhase, SnapshotProgress};
+use crate::daemon::index_snapshot::SnapshotProgress;
+use crate::telemetry::egress::Egress;
+use admin::Heartbeat;
+
+pub(crate) mod admin;
+pub(super) mod notify;
+pub(super) mod state_log;
 
 /// One process's status: config facts, then what each stage sets as it starts
 ///
-/// - `retire` = the operator hold (`hold.rs` sets it, the gRPC service reads it from boot)
+/// - `retire` = the operator hold (`command::hold` sets it, the gRPC service reads it from boot)
 /// - `sources` set once the pipeline boots (`provisioning` until then)
 /// - Second `sources` set panics
 pub(crate) struct DaemonStatus {
@@ -50,46 +55,18 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// [`Readiness`] without its detail: metric + log labels
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonState {
-    Provisioning,
-    Syncing,
-    Serving,
-    Degraded,
-    Held,
-    Down,
-}
-
 /// One-hot by `state` (every state each scrape: 1 = now, 0 = the rest; no series left stale)
 const STATE: &str = "zaino.state";
 /// One-hot by `reason` as STATE (all 0 = none: serving, syncing, provisioning)
 const REASON: &str = "zaino.state_reason";
 
-impl DaemonState {
-    const ALL: [Self; 6] =
-        [Self::Provisioning, Self::Syncing, Self::Serving, Self::Degraded, Self::Held, Self::Down];
-
-    /// = [`Readiness`]'s `state` spelling (tested equal)
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Provisioning => "provisioning",
-            Self::Syncing => "syncing",
-            Self::Serving => "serving",
-            Self::Degraded => "degraded",
-            Self::Held => "held",
-            Self::Down => "down",
-        }
-    }
-}
-
-pub(crate) const METRICS: &[zaino_primitives::metric::Metric] = &[
-    zaino_primitives::metric::Metric::gauge(
+pub(crate) const METRICS: &[Metric] = &[
+    Metric::gauge(
         STATE,
         "Daemon state, one-hot by state (= /readyz's: provisioning, syncing, serving, degraded, \
          held, down)",
     ),
-    zaino_primitives::metric::Metric::gauge(
+    Metric::gauge(
         REASON,
         "Why down, degraded or held, one-hot by reason (= /readyz's detail.reason; overloaded = \
          its cause in zaino_grpc_overload_latched)",
@@ -103,7 +80,7 @@ pub(crate) const METRICS: &[zaino_primitives::metric::Metric] = &[
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "state", content = "detail", rename_all = "snake_case")]
 pub(crate) enum Readiness {
-    Provisioning(Option<Download>),
+    Provisioning(Option<SnapshotProgress>),
     Syncing(Option<Catchup>),
     Serving(Option<Egress>),
     Degraded(DaemonReason),
@@ -112,14 +89,19 @@ pub(crate) enum Readiness {
 }
 
 impl Readiness {
-    pub(crate) fn state(&self) -> DaemonState {
+    /// Every [`Self::label`], for the one-hot gauge
+    const LABELS: [&'static str; 6] =
+        ["provisioning", "syncing", "serving", "degraded", "down", "held"];
+
+    /// = the serialized `state` tag
+    pub(crate) fn label(&self) -> &'static str {
         match self {
-            Self::Provisioning(_) => DaemonState::Provisioning,
-            Self::Syncing(_) => DaemonState::Syncing,
-            Self::Serving(_) => DaemonState::Serving,
-            Self::Degraded(_) => DaemonState::Degraded,
-            Self::Down(_) => DaemonState::Down,
-            Self::Held(_) => DaemonState::Held,
+            Self::Provisioning(_) => "provisioning",
+            Self::Syncing(_) => "syncing",
+            Self::Serving(_) => "serving",
+            Self::Degraded(_) => "degraded",
+            Self::Down(_) => "down",
+            Self::Held(_) => "held",
         }
     }
 
@@ -134,15 +116,6 @@ impl Readiness {
     pub(crate) fn ready(&self) -> bool {
         matches!(self, Self::Serving(_) | Self::Degraded(_))
     }
-}
-
-/// Index-snapshot bootstrap (`bytes_per_sec` = downloading only)
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct Download {
-    phase: SnapshotPhase,
-    bytes: u64,
-    total_bytes: u64,
-    bytes_per_sec: Option<u64>,
 }
 
 /// `height` = served (else handed), `target` = [`GrpcSnapshot::sync_target`]
@@ -216,7 +189,7 @@ impl Serialize for DaemonReason {
 
 /// Where the process is: before boot (index-snapshot bootstrap, first validator answer) or booted
 enum Stage {
-    Starting { bootstrap: Option<Download>, awaiting_validator: bool },
+    Starting { bootstrap: Option<SnapshotProgress>, awaiting_validator: bool },
     Booted(Booted),
 }
 
@@ -300,7 +273,7 @@ impl DaemonStatus {
         self.heartbeat.live()
     }
 
-    /// Operator hold (`hold.rs`, from its marker): `held` above every other state, and the gRPC
+    /// Operator hold (`command::hold`, from its marker): `held` above every other state, and the gRPC
     /// service's GOAWAYs
     pub(crate) fn retire(&self) -> &Retire {
         &self.retire
@@ -326,7 +299,7 @@ impl DaemonStatus {
         let stage = match booted {
             Some((sources, grpc_snapshot)) => Stage::Booted(Booted::of(sources, grpc_snapshot)),
             None => Stage::Starting {
-                bootstrap: self.bootstrap_download(),
+                bootstrap: self.current_bootstrap(),
                 awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
             },
         };
@@ -363,66 +336,29 @@ impl DaemonStatus {
     /// scrape renders
     pub(crate) fn emit_gauges(&self) {
         let readiness = self.current_readiness();
-        for state in DaemonState::ALL {
-            let now = u8::from(state == readiness.state());
-            metrics::gauge!(STATE, "state" => state.label()).set(f64::from(now));
+        for state in Readiness::LABELS {
+            let now = u8::from(state == readiness.label());
+            metrics::gauge!(STATE, "state" => state).set(f64::from(now));
         }
         let reason = readiness.reason().map(DaemonReason::label);
         for label in DaemonReason::LABELS {
-            metrics::gauge!(REASON, "reason" => label)
-                .set(f64::from(u8::from(Some(label) == reason)));
+            let now = u8::from(Some(label) == reason);
+            metrics::gauge!(REASON, "reason" => label).set(f64::from(now));
         }
         if let Some(sources) = self.sources.get() {
             zaino_grpc_snapshot::emit_gauges(&sources.grpc_snapshots.load(), &sources.progress);
         }
     }
 
-    /// - Booted: handed + served heights + every index's durable one
-    /// - Before boot: bootstrap phase + bytes
-    pub(crate) fn startup(&self) -> Startup {
-        let readiness = self.current_readiness();
-        let started = readiness.ready() || readiness.state() == DaemonState::Held;
-        let Some(sources) = self.sources.get() else {
-            return Startup { started, progress: self.bootstrap_progress() };
-        };
-        let grpc_snapshot = sources.grpc_snapshots.load();
-        let durable = grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable());
-        let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
-        let heights =
-            [sources.progress.handed(), grpc_snapshot.tips().served.map(|tip| tip.height)];
-        let progress =
-            heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
-        Startup { started, progress: progress.collect() }
-    }
-
     /// `None` = bootstrap over (the indexer's own status takes over)
+    ///
+    /// - poison-tolerant: the lock only guards a value swap
     pub(crate) fn bootstrap(&self, progress: Option<SnapshotProgress>) {
-        *self.bootstrap_lock() = progress;
-    }
-
-    /// Poison-tolerant: the lock only guards a value swap
-    fn bootstrap_lock(&self) -> std::sync::MutexGuard<'_, Option<SnapshotProgress>> {
-        self.bootstrap.lock().expect("bootstrap progress mutex poisoned")
+        *self.bootstrap.lock().expect("bootstrap progress mutex poisoned") = progress;
     }
 
     pub(crate) fn current_bootstrap(&self) -> Option<SnapshotProgress> {
-        self.bootstrap_lock().clone()
-    }
-
-    fn bootstrap_download(&self) -> Option<Download> {
-        self.current_bootstrap().map(|bootstrap| Download {
-            phase: bootstrap.phase,
-            bytes: bootstrap.done,
-            total_bytes: bootstrap.total,
-            bytes_per_sec: bootstrap.rate,
-        })
-    }
-
-    fn bootstrap_progress(&self) -> Vec<Option<u64>> {
-        let progress = self.current_bootstrap();
-        progress.map_or_else(Vec::new, |bootstrap| {
-            vec![Some(bootstrap.phase as u64), Some(bootstrap.done)]
-        })
+        self.bootstrap.lock().expect("bootstrap progress mutex poisoned").clone()
     }
 }
 
@@ -516,22 +452,14 @@ fn public_status(readiness: Readiness, chain: Chain, configured: &[IndexKind]) -
     }
 }
 
-/// Readiness + a progress fingerprint for [`crate::notify`] (fingerprint moved = startup advanced)
-///
-/// - `started` = serving or held (a node started held must not fail its start job waiting on a
-///   readiness the operator withholds)
-pub(crate) struct Startup {
-    pub(crate) started: bool,
-    pub(crate) progress: Vec<Option<u64>>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::index_snapshot::SnapshotPhase;
 
     /// Every state rule, first match wins, as `/readyz` serializes it
     ///
-    /// - `state` = its [`DaemonState`] label, `ready` ⇔ serving or degraded
+    /// - `state` = its [`Readiness::label`], `ready` ⇔ serving or degraded
     /// - held = the operator's intent over every condition, detail = its GOAWAYs
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_own_detail() {
@@ -550,7 +478,7 @@ mod tests {
         let stalled = because("runtime_stalled", "Runtime stalled");
         let saturated = because("overloaded", "Overloaded: network saturated");
         let unvouched = because("tip_unvouched", "No trusted validator vouches for the tip");
-        let downloading = Download {
+        let downloading = SnapshotProgress {
             phase: SnapshotPhase::Downloading,
             bytes: 4 << 30,
             total_bytes: 9 << 30,
@@ -700,8 +628,8 @@ mod tests {
         for (case, hold, live, stage, expected) in cases {
             let readiness = readiness(hold, live, stage);
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            assert_eq!(expected["state"], readiness.state().label(), "{case}: label = serde");
-            let serving = matches!(readiness.state(), DaemonState::Serving | DaemonState::Degraded);
+            assert_eq!(expected["state"], readiness.label(), "{case}: label = serde");
+            let serving = matches!(readiness, Readiness::Serving(_) | Readiness::Degraded(_));
             assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
         }
     }
@@ -759,11 +687,11 @@ mod tests {
 
     /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail reason, each one-hot
     ///
-    /// - every reason variant labelled
     /// - not booted = provisioning, no reason; a zero-delay operator hold = held, its GOAWAYs sent
     #[test]
     fn the_state_gauges_are_readyz_one_hot() {
-        let (recorder, rendered) = crate::metrics::recorder().expect("native config is valid");
+        let (recorder, rendered) =
+            crate::telemetry::metrics::recorder().expect("native config is valid");
         let _recording = metrics::set_default_local_recorder(&recorder);
         let status = DaemonStatus::new(NetworkType::Regtest, []);
         // sorted: the exporter renders a family's series in no fixed order
@@ -786,17 +714,7 @@ mod tests {
             lines
         };
 
-        let states = DaemonState::ALL.map(DaemonState::label);
-        let reasons = [
-            DaemonReason::NoValidatorReachable,
-            DaemonReason::TipUnvouched,
-            DaemonReason::RuntimeStalled,
-            DaemonReason::Overloaded(OverloadCause::CpuPressure),
-            DaemonReason::GoawayPending,
-            DaemonReason::GoawaySent,
-        ];
-        assert_eq!(reasons.map(DaemonReason::label), DaemonReason::LABELS, "every reason labelled");
-
+        let states = Readiness::LABELS;
         let reasons = &DaemonReason::LABELS;
         assert_eq!(
             scraped("zaino_state"),

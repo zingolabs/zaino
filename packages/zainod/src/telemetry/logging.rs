@@ -6,21 +6,20 @@
 
 mod terminal;
 
-use std::borrow::Cow;
 use std::env;
 use std::fmt;
 use std::io::IsTerminal;
-use std::path::Path;
 
 use tracing_subscriber::{
     fmt::time::UtcTime, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
+use zaino_persistence::IndexKind;
 
 /// Operator filter when `RUST_LOG` is unset (`zaino` prefix = every `zaino_*` crate)
 const DEFAULT_FILTER: &str = "zaino=info,zainod=info";
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum LogConfigError {
+pub(crate) enum LogConfigError {
     #[error("{var}={value}: expected one of {expected}")]
     Unrecognised { var: &'static str, value: String, expected: &'static str },
     #[error("RUST_LOG: {0}")]
@@ -42,50 +41,42 @@ struct LogConfig {
 
 impl LogConfig {
     fn from_env() -> Result<Self, LogConfigError> {
-        let read = |var: &'static str| env::var(var).ok().map(|v| (var, v.to_lowercase()));
-        Self::parse(
-            read("ZAINOLOG_FORMAT"),
-            read("ZAINOLOG_COLOR"),
-            read("ZAINOLOG_LOCATION"),
-            std::io::stdout().is_terminal(),
-        )
+        Self::parse(|var| env::var(var).ok(), std::io::stdout().is_terminal())
     }
 
-    /// `(var, lowercased value)` per knob (`tty` = what `auto` colour resolves to)
-    fn parse(
-        format: Option<(&'static str, String)>,
-        color: Option<(&'static str, String)>,
-        location: Option<(&'static str, String)>,
-        tty: bool,
-    ) -> Result<Self, LogConfigError> {
-        let unrecognised = |(var, value): (&'static str, String), expected| {
-            LogConfigError::Unrecognised { var, value, expected }
+    /// `env` = a variable lookup, `tty` = what `auto` colour resolves to
+    fn parse(env: impl Fn(&str) -> Option<String>, tty: bool) -> Result<Self, LogConfigError> {
+        let read = |var| env(var).map(|value| value.to_lowercase());
+        let format = match read("ZAINOLOG_FORMAT").as_deref() {
+            None | Some("terminal") => LogFormat::Terminal,
+            Some("json") => LogFormat::Json,
+            Some(value) => return Err(unrecognised("ZAINOLOG_FORMAT", value, "terminal/json")),
         };
-        let flag = |setting: (&'static str, String)| match setting.1.as_str() {
-            "1" | "true" | "yes" | "on" => Ok(true),
-            "0" | "false" | "no" | "off" => Ok(false),
-            _ => Err(setting),
+        let color = match read("ZAINOLOG_COLOR").as_deref() {
+            None | Some("auto") => tty,
+            Some(value) => flag(value)
+                .ok_or_else(|| unrecognised("ZAINOLOG_COLOR", value, "true/false/auto"))?,
         };
-
-        let format = match format {
-            None => LogFormat::Terminal,
-            Some(setting) => match setting.1.as_str() {
-                "terminal" => LogFormat::Terminal,
-                "json" => LogFormat::Json,
-                _ => return Err(unrecognised(setting, "terminal/json")),
-            },
-        };
-        let color = match color {
-            None => tty,
-            Some(setting) if setting.1 == "auto" => tty,
-            Some(setting) => flag(setting).map_err(|s| unrecognised(s, "true/false/auto"))?,
-        };
-        let location = match location {
+        let location = match read("ZAINOLOG_LOCATION").as_deref() {
             None => false,
-            Some(setting) => flag(setting).map_err(|s| unrecognised(s, "true/false"))?,
+            Some(value) => {
+                flag(value).ok_or_else(|| unrecognised("ZAINOLOG_LOCATION", value, "true/false"))?
+            }
         };
         Ok(Self { format, color, location })
     }
+}
+
+fn flag(value: &str) -> Option<bool> {
+    match value {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn unrecognised(var: &'static str, value: &str, expected: &'static str) -> LogConfigError {
+    LogConfigError::Unrecognised { var, value: value.to_owned(), expected }
 }
 
 /// Global subscriber + panic hook
@@ -93,7 +84,7 @@ impl LogConfig {
 /// # Panics
 ///
 /// A global tracing subscriber already set
-pub(super) fn init() -> Result<(), LogConfigError> {
+pub(crate) fn init() -> Result<(), LogConfigError> {
     install(LogConfig::from_env()?)?;
     install_panic_logger();
     Ok(())
@@ -126,21 +117,15 @@ pub(crate) fn component(name: &str) -> tracing::Span {
     tracing::error_span!("component", component = name)
 }
 
-/// [`component`] named for an index: its `NAME` `compact_block` → `CompactBlockIdx`,
-/// `transparent_address` → `TransparentAddrIdx`
-pub(crate) fn index_component(name: &str) -> tracing::Span {
-    let camel: String = name
-        .split('_')
-        .map(|word| match word {
-            "address" => "addr",
-            word => word,
-        })
-        .flat_map(|word| {
-            let mut chars = word.chars();
-            chars.next().map(|first| first.to_ascii_uppercase()).into_iter().chain(chars)
-        })
-        .collect();
-    component(&format!("{camel}Idx"))
+pub(crate) fn index_component(kind: IndexKind) -> tracing::Span {
+    component(match kind {
+        IndexKind::CompactBlock => "CompactBlockIdx",
+        IndexKind::UtxoSet => "UtxoSetIdx",
+        IndexKind::BlockHash => "BlockHashIdx",
+        IndexKind::TreeState => "TreeStateIdx",
+        IndexKind::TransparentAddress => "TransparentAddrIdx",
+        IndexKind::TxidLocation => "TxidLocationIdx",
+    })
 }
 
 /// Height column: grouped (`3,501,802`), `—` when absent (terminal pads it to the column)
@@ -151,18 +136,6 @@ impl fmt::Display for HeightCol {
         match self.0 {
             Some(height) => f.write_str(&terminal::grouped(u64::from(height))),
             None => f.write_str("—"),
-        }
-    }
-}
-
-/// Paths in a message: past this many columns, the head elided (the tail names the index)
-const PATH_WIDTH: usize = 48;
-
-pub(crate) fn shown_path(path: &Path) -> Cow<'_, str> {
-    match path.to_string_lossy() {
-        Cow::Borrowed(text) => unicode_ellipsis::truncate_str_leading(text, PATH_WIDTH),
-        Cow::Owned(text) => {
-            Cow::Owned(unicode_ellipsis::truncate_str_leading(&text, PATH_WIDTH).into_owned())
         }
     }
 }
@@ -206,31 +179,30 @@ mod tests {
     /// Defaults, every accepted spelling, and an unrecognised value per knob refused by name
     #[test]
     fn config_parses_every_knob_and_refuses_what_it_does_not_know() {
-        let set = |var: &'static str, value: &str| Some((var, value.to_owned()));
-        let parse = |format, color, location, tty| LogConfig::parse(format, color, location, tty);
+        let parse = |vars: &[(&str, &str)], tty| {
+            let env =
+                |var: &str| vars.iter().find(|(name, _)| *name == var).map(|(_, v)| v.to_string());
+            LogConfig::parse(env, tty)
+        };
         let config = |format, color, location| LogConfig { format, color, location };
 
         use LogConfigError::Unrecognised;
         let (terminal, json) = (LogFormat::Terminal, LogFormat::Json);
-        let explicit = parse(
-            set("ZAINOLOG_FORMAT", "json"),
-            set("ZAINOLOG_COLOR", "auto"),
-            set("ZAINOLOG_LOCATION", "on"),
-            true,
-        );
+        let explicit =
+            [("ZAINOLOG_FORMAT", "JSON"), ("ZAINOLOG_COLOR", "auto"), ("ZAINOLOG_LOCATION", "on")];
 
-        assert_eq!(parse(None, None, None, true).expect("defaults"), config(terminal, true, false));
-        assert_eq!(parse(None, None, None, false).expect("piped"), config(terminal, false, false));
-        assert_eq!(explicit.expect("explicit"), config(json, true, true));
-        let forced_off = parse(None, set("ZAINOLOG_COLOR", "0"), None, true);
+        assert_eq!(parse(&[], true).expect("defaults"), config(terminal, true, false));
+        assert_eq!(parse(&[], false).expect("piped"), config(terminal, false, false));
+        assert_eq!(parse(&explicit, true).expect("explicit"), config(json, true, true));
+        let forced_off = parse(&[("ZAINOLOG_COLOR", "0")], true);
         assert_eq!(forced_off.expect("forced off"), config(terminal, false, false));
 
-        for (format, color, location, var) in [
-            (set("ZAINOLOG_FORMAT", "stream"), None, None, "ZAINOLOG_FORMAT"),
-            (None, set("ZAINOLOG_COLOR", "maybe"), None, "ZAINOLOG_COLOR"),
-            (None, None, set("ZAINOLOG_LOCATION", "auto"), "ZAINOLOG_LOCATION"),
+        for (var, value) in [
+            ("ZAINOLOG_FORMAT", "stream"),
+            ("ZAINOLOG_COLOR", "maybe"),
+            ("ZAINOLOG_LOCATION", "auto"),
         ] {
-            let refused = parse(format, color, location, true);
+            let refused = parse(&[(var, value)], true);
             assert!(matches!(refused, Err(Unrecognised { var: v, .. }) if v == var), "{var}");
         }
     }
