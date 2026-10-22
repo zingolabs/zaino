@@ -140,14 +140,16 @@ mod tests {
                 Err(_) => frames.push(("trailers", 0, false)),
             }
         }
+        let joined = TARGET.div_ceil(100) * 100;
+        // (frame, bytes, the big chunk's own buffer)
         let expected = [
-            ("data", 16_400, false),
-            ("data", 600, false),
+            ("data", joined, false),
+            ("data", 170 * 100 - joined, false),
             ("data", 200, false),
             ("data", TARGET, true),
             ("data", 100, false),
             ("trailers", 0, false),
         ];
-        assert_eq!(frames, expected);
+        assert_eq!(frames, expected, "joined to TARGET {TARGET}, rest flushed at the Pending");
     }
 }

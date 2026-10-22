@@ -26,7 +26,7 @@ impl Watch {
         Ticket { watch: Arc::clone(self), id, owing: false }
     }
 
-    fn oldest(&self) -> Option<Instant> {
+    pub(crate) fn oldest(&self) -> Option<Instant> {
         self.owing.lock().expect("stall watch poisoned").values().min().copied()
     }
 
@@ -81,37 +81,49 @@ impl Drop for Ticket {
 mod tests {
     use super::*;
 
-    /// - frame handed, never pulled → watch trips at the timeout, not before
-    /// - pull / dropped stream clears it
-    /// - quiet connection never trips
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// Paused clock: the stuck stream, not the one still reading
     #[tokio::test(start_paused = true)]
-    async fn only_data_left_unpulled_for_the_timeout_trips_the_watch() {
-        let timeout = Duration::from_secs(300);
+    async fn a_frame_left_unpulled_for_the_timeout_trips_the_watch() {
         let watch = Arc::new(Watch::default());
-        let tripped = |watch: &Arc<Watch>| {
-            let watch = Arc::clone(watch);
-            tokio::spawn(async move { watch.stalled(timeout).await })
-        };
-
-        let quiet = tripped(&watch);
-        tokio::time::sleep(timeout * 3).await;
-        assert!(!quiet.is_finished(), "no stream owes: never stalled");
-        quiet.abort();
-
         let (mut reading, mut stuck) = (watch.ticket(), watch.ticket());
+        let start = Instant::now();
         reading.handed();
         stuck.handed();
-        let watching = tripped(&watch);
-        tokio::time::sleep(timeout / 2).await;
+        let stalled = tokio::spawn({
+            let watch = Arc::clone(&watch);
+            async move { watch.stalled(TIMEOUT).await }
+        });
+
+        tokio::time::sleep(TIMEOUT / 2).await;
         reading.pulled();
         reading.handed();
-        tokio::time::sleep(timeout / 2 - Duration::from_secs(1)).await;
-        assert!(!watching.is_finished(), "1 s short of the timeout");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        watching.await.expect("the stuck stream trips it at the timeout");
+        stalled.await.expect("stalled");
 
+        assert_eq!(start.elapsed(), TIMEOUT, "the stuck stream's frame, unpulled for TIMEOUT");
         drop(stuck);
         reading.pulled();
         assert_eq!(watch.oldest(), None, "a dropped or pulled stream owes nothing");
+    }
+
+    /// Paused clock: tripped only after a frame handed at 3 × TIMEOUT (rechecks every TIMEOUT)
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_with_nothing_owed_never_trips() {
+        let watch = Arc::new(Watch::default());
+        let start = Instant::now();
+        let stalled = tokio::spawn({
+            let watch = Arc::clone(&watch);
+            async move { watch.stalled(TIMEOUT).await }
+        });
+
+        tokio::time::sleep(TIMEOUT * 3).await;
+        let mut late = watch.ticket();
+        late.handed();
+        stalled.await.expect("stalled");
+
+        let tripped_at = start.elapsed();
+        let window = TIMEOUT * 4..=TIMEOUT * 5;
+        assert!(window.contains(&tripped_at), "quiet 3 × TIMEOUT, tripped at {tripped_at:?}");
     }
 }

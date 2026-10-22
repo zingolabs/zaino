@@ -56,37 +56,45 @@ impl<V, K: Eq + Hash, T: Clone> PerView<V, K, T> {
 mod tests {
     use super::*;
 
-    /// - one computation per (view, key) however many ask at once
-    /// - new view starts empty
-    /// - uncomputed key != `cached`
     #[test]
-    fn each_view_computes_each_key_once_and_a_new_view_starts_fresh() {
+    fn concurrent_askers_of_one_key_share_one_computation() {
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
         let memo: PerView<u32, &str, usize> = PerView::default();
+        let view = Arc::new(1u32);
         let computed = AtomicUsize::new(0);
-        let (first, second) = (Arc::new(1u32), Arc::new(2u32));
-        let compute = |value: usize| {
+        let compute = || {
             computed.fetch_add(1, SeqCst);
+            // held open while the other askers arrive
             std::thread::sleep(std::time::Duration::from_millis(20));
-            value
+            10
         };
+        assert_eq!(memo.cached(&view, &"tip"), None, "nothing computed yet");
 
-        assert_eq!(memo.cached(&first, &"tip"), None, "nothing computed yet");
         let herd: Vec<usize> = std::thread::scope(|scope| {
             let askers: Vec<_> = (0..8)
-                .map(|_| scope.spawn(|| memo.get_or_compute(&first, "tip", || compute(10))))
+                .map(|_| scope.spawn(|| memo.get_or_compute(&view, "tip", compute)))
                 .collect();
             askers.into_iter().map(|asker| asker.join().expect("asker")).collect()
         });
-        assert_eq!(herd, [10; 8]);
-        assert_eq!(computed.load(SeqCst), 1, "eight concurrent askers, one computation");
-        assert_eq!(memo.cached(&first, &"tip"), Some(10), "then served inline");
-        assert_eq!(memo.cached(&first, &"roots"), None, "another key is its own computation");
 
-        assert_eq!(memo.cached(&second, &"tip"), None, "a new publication knows nothing");
-        assert_eq!(memo.get_or_compute(&second, "tip", || compute(20)), 20);
-        assert_eq!(computed.load(SeqCst), 2);
-        assert_eq!(memo.cached(&first, &"tip"), None, "the older publication is dropped");
+        assert_eq!(herd, [10; 8], "every asker answered");
+        assert_eq!(computed.load(SeqCst), 1, "eight concurrent askers, one computation");
+        assert_eq!(memo.cached(&view, &"tip"), Some(10), "then served inline");
+        assert_eq!(memo.cached(&view, &"roots"), None, "another key = its own computation");
+    }
+
+    #[test]
+    fn a_new_view_starts_empty_and_drops_the_older_one() {
+        let memo: PerView<u32, &str, usize> = PerView::default();
+        let (first, second) = (Arc::new(1u32), Arc::new(2u32));
+        memo.get_or_compute(&first, "tip", || 10);
+
+        let fresh = memo.cached(&second, &"tip");
+        let computed = memo.get_or_compute(&second, "tip", || 20);
+
+        assert_eq!(fresh, None, "a new publication knows nothing");
+        assert_eq!(computed, 20, "computed for the new publication");
+        assert_eq!(memo.cached(&first, &"tip"), None, "the older publication dropped");
     }
 }

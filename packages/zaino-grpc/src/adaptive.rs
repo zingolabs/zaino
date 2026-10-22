@@ -144,62 +144,72 @@ impl Gradient {
 mod tests {
     use super::*;
 
-    /// Paused clock, ceiling 2048, 10 ms baseline:
-    /// - loaded at a steady RTT: grows (≈ +√limit / 5 per window) toward the ceiling
-    /// - RTT 4× the baseline under load: shrinks within seconds, never below the floor
-    /// - RTT back to the baseline: grows again
-    /// - app-limited (peak in flight < limit / 2): unchanged even as RTT rises
-    /// - not adaptive: the ceiling, whatever the samples
-    #[tokio::test(start_paused = true)]
-    async fn the_limit_tracks_latency_under_load_and_holds_while_app_limited() {
-        let ms = Duration::from_millis;
-        // one window passed, then filled with `rtt` samples: the limit after it
-        let window = async |limiter: &Limiter, rtt, in_flight| {
+    const CEILING: usize = 2048;
+    /// In flight past any limit here: every window loaded
+    const LOADED: usize = 2 * CEILING;
+
+    /// `count` windows passed (paused clock), each filled with `rtt` samples at `in_flight`: the
+    /// limit after each
+    async fn windows(limiter: &Limiter, count: usize, rtt_ms: u64, in_flight: usize) -> Vec<usize> {
+        let mut limits = Vec::with_capacity(count);
+        for _ in 0..count {
             tokio::time::advance(WINDOW).await;
             for _ in 0..WINDOW_SAMPLES {
-                limiter.sample(rtt, in_flight);
+                limiter.sample(Duration::from_millis(rtt_ms), in_flight);
             }
-            limiter.limit()
-        };
-        let limiter = Limiter::new(2048, true);
-        assert_eq!(limiter.limit(), INITIAL, "starts at INITIAL");
-
-        let mut grown = Vec::new();
-        for _ in 0..20 {
-            grown.push(window(&limiter, ms(10), 4_096).await);
+            limits.push(limiter.limit());
         }
-        assert!(grown.windows(2).all(|pair| pair[1] >= pair[0]), "steady RTT: never shrinks");
-        assert!(*grown.last().expect("20 windows") > INITIAL + 40, "grew: {grown:?}");
+        limits
+    }
 
-        let before = limiter.limit();
-        let mut shrunk = Vec::new();
-        for _ in 0..10 {
-            shrunk.push(window(&limiter, ms(40), 4_096).await);
-        }
+    /// ≈ +√limit / 5 per window
+    #[tokio::test(start_paused = true)]
+    async fn a_loaded_limiter_at_a_steady_rtt_grows_from_initial() {
+        let limiter = Limiter::new(CEILING, true);
+        assert_eq!(limiter.limit(), INITIAL, "cold start");
+
+        let grown = windows(&limiter, 20, 10, LOADED).await;
+
+        let shrank = grown.windows(2).find(|pair| pair[1] < pair[0]);
+        assert_eq!(shrank, None, "steady 10 ms RTT never shrinks: {grown:?}");
+        let last = *grown.last().expect("20 windows");
+        assert!(last > INITIAL + 40, "20 windows from {INITIAL}: {grown:?}");
+    }
+
+    /// Baseline 10 ms; floor = `FLOOR`
+    #[tokio::test(start_paused = true)]
+    async fn rtt_past_the_tolerance_shrinks_the_limit_to_the_floor_and_recovery_grows_it() {
+        let limiter = Limiter::new(CEILING, true);
+        let before = *windows(&limiter, 20, 10, LOADED).await.last().expect("20 windows");
+
+        let shrunk = windows(&limiter, 10, 40, LOADED).await;
+        let floored = windows(&limiter, 200, 400, LOADED).await;
+        let recovered = windows(&limiter, 20, 10, LOADED).await;
+
         let after = *shrunk.last().expect("10 windows");
         assert!(after < before / 2, "5 s at 4× the RTT: {before} → {shrunk:?}");
-        for _ in 0..200 {
-            window(&limiter, ms(400), 4_096).await;
-        }
-        assert_eq!(limiter.limit(), FLOOR, "never below the floor");
+        assert_eq!(floored.last(), Some(&FLOOR), "100 s at 40× the RTT");
+        let regrown = *recovered.last().expect("20 windows");
+        assert!(regrown > FLOOR, "RTT back to 10 ms: grows from {FLOOR}: {recovered:?}");
+    }
 
-        let floor = limiter.limit();
-        for _ in 0..20 {
-            window(&limiter, ms(10), 4_096).await;
-        }
-        assert!(limiter.limit() > floor, "RTT recovered: grows again");
+    /// Peak in flight < limit / 2: a quiet node never inflates or deflates
+    #[tokio::test(start_paused = true)]
+    async fn an_app_limited_limiter_holds_its_limit_as_rtt_rises() {
+        let limiter = Limiter::new(CEILING, true);
+        let quiet = windows(&limiter, 1, 10, 1).await;
 
-        // the open window still carries busy samples: closed once before measuring quiet
-        let quiet = window(&limiter, ms(10), 1).await;
-        for _ in 0..20 {
-            window(&limiter, ms(400), 1).await;
-        }
-        assert_eq!(limiter.limit(), quiet, "app-limited: unchanged");
+        let slow = windows(&limiter, 20, 400, 1).await;
 
-        let fixed = Limiter::new(2048, false);
-        for _ in 0..20 {
-            window(&fixed, ms(400), 4_096).await;
-        }
-        assert_eq!(fixed.limit(), 2048, "not adaptive: the ceiling");
+        assert_eq!(slow, vec![quiet[0]; 20], "1 in flight under {}", quiet[0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fixed_limiter_stays_at_its_ceiling() {
+        let fixed = Limiter::new(CEILING, false);
+
+        let limits = windows(&fixed, 20, 400, LOADED).await;
+
+        assert_eq!(limits, vec![CEILING; 20], "adaptive off, 40× RTT under load");
     }
 }

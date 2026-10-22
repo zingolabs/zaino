@@ -174,8 +174,9 @@ mod tests {
     fn each_connection_ages_within_ten_percent_either_way() {
         let age = Duration::from_secs(30 * 60);
         let ages: Vec<_> = (0..1_000).map(|_| jittered(age)).collect();
-        let (low, high) = (age.mul_f64(0.9), age.mul_f64(1.1));
-        assert!(ages.iter().all(|at| (low..=high).contains(at)), "within ±10%");
+        let band = age.mul_f64(1.0 - JITTER)..=age.mul_f64(1.0 + JITTER);
+        let outside: Vec<_> = ages.iter().filter(|at| !band.contains(*at)).collect();
+        assert_eq!(outside, Vec::<&Duration>::new(), "ages outside {band:?}");
         let spread = *ages.iter().max().expect("1,000") - *ages.iter().min().expect("1,000");
         assert!(spread > age.mul_f64(0.15), "spread across the band: {spread:?}");
     }

@@ -172,6 +172,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
     struct Fixed {
         ready: bool,
     }
@@ -203,46 +204,49 @@ mod tests {
         (status, String::from_utf8(body.to_vec()).expect("utf-8"))
     }
 
-    /// Paused clock:
-    ///
-    /// - `/readyz` = 200 serving / 503 not, `/status` = 200, both over HTTP/1.1 and h2
-    /// - non-GET health request = 405, any other path over HTTP/1.1 = 404, over h2 = passed on
-    /// - no `Health` wired = every path passed on (h2) or 404 (HTTP/1.1)
-    /// - 10 at once, the 11th = 429, then one more per second
-    #[tokio::test(start_paused = true)]
-    async fn health_is_answered_beside_grpc_and_rate_limited_per_connection() {
-        let h1 = Version::HTTP_11;
-        let h2 = Version::HTTP_2;
+    /// "passed" = handed on to the gRPC stack
+    #[tokio::test]
+    async fn health_paths_are_answered_beside_grpc_over_both_http_versions() {
+        let (h1, h2) = (Version::HTTP_11, Version::HTTP_2);
+        let (serving, syncing) = (Some(Fixed { ready: true }), Some(Fixed { ready: false }));
         let grpc = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo";
-        let mut serving = HealthRoute::new(Passed, Some(Arc::new(Fixed { ready: true }) as _));
+
+        #[rustfmt::skip]
         let cases = [
-            (Method::GET, READYZ, h1, (200, r#"{"state":"serving"}"#)),
-            (Method::GET, STATUS, h2, (200, r#"{"public":true}"#)),
-            (Method::POST, READYZ, h1, (405, "")),
-            (Method::GET, grpc, h1, (404, "")),
-            (Method::POST, grpc, h2, (200, "passed")),
+            ("ready /readyz",            serving, Method::GET,  READYZ, h1, 200, r#"{"state":"serving"}"#),
+            ("not ready /readyz",        syncing, Method::GET,  READYZ, h1, 503, r#"{"state":"syncing"}"#),
+            ("/status over h2",          serving, Method::GET,  STATUS, h2, 200, r#"{"public":true}"#),
+            ("POST to a health path",    serving, Method::POST, READYZ, h1, 405, ""),
+            ("gRPC path over HTTP/1.1",  serving, Method::GET,  grpc,   h1, 404, ""),
+            ("gRPC path over h2",        serving, Method::POST, grpc,   h2, 200, "passed"),
+            ("no Health wired, h2",      None,    Method::GET,  READYZ, h2, 200, "passed"),
+            ("no Health wired, HTTP/1.1", None,   Method::GET,  READYZ, h1, 404, ""),
         ];
-        for (method, path, version, (status, body)) in cases {
-            let got = send(&mut serving, method, path, version).await;
-            assert_eq!(got, (status, body.to_owned()), "{path} {version:?}");
+        for (case, health, method, path, version, status, body) in cases {
+            let health = health.map(|fixed| Arc::new(fixed) as Arc<dyn Health>);
+            let mut route = HealthRoute::new(Passed, health);
+
+            let answered = send(&mut route, method, path, version).await;
+
+            assert_eq!(answered, (status, body.to_owned()), "{case}: {path} {version:?}");
         }
+    }
 
-        let mut syncing = HealthRoute::new(Passed, Some(Arc::new(Fixed { ready: false }) as _));
-        let got = send(&mut syncing, Method::GET, READYZ, h1).await;
-        assert_eq!(got, (503, r#"{"state":"syncing"}"#.to_owned()), "not ready = 503");
+    /// Paused clock: `BURST` at once, then one back per `PER_SECOND`
+    #[tokio::test(start_paused = true)]
+    async fn health_requests_are_rate_limited_per_connection() {
+        let mut route = HealthRoute::new(Passed, Some(Arc::new(Fixed { ready: true }) as _));
+        let mut readyz = async || send(&mut route, Method::GET, READYZ, Version::HTTP_11).await.0;
+        let burst = BURST as usize;
 
-        let mut bare = HealthRoute::new(Passed, None);
-        assert_eq!(send(&mut bare, Method::GET, READYZ, h2).await.1, "passed", "no Health wired");
-        assert_eq!(send(&mut bare, Method::GET, READYZ, h1).await.0, 404);
-
-        let mut burst = HealthRoute::new(Passed, Some(Arc::new(Fixed { ready: true }) as _));
         let mut codes = Vec::new();
-        for _ in 0..11 {
-            codes.push(send(&mut burst, Method::GET, READYZ, h1).await.0);
+        for _ in 0..=burst {
+            codes.push(readyz().await);
         }
-        assert_eq!(codes, [[200; 10].as_slice(), &[429]].concat(), "10 at once, then 429");
-        tokio::time::advance(Duration::from_secs(1)).await;
-        assert_eq!(send(&mut burst, Method::GET, READYZ, h1).await.0, 200, "one back per second");
-        assert_eq!(send(&mut burst, Method::GET, READYZ, h1).await.0, 429);
+        tokio::time::advance(Duration::from_secs_f64(1.0 / PER_SECOND)).await;
+        let refilled = [readyz().await, readyz().await];
+
+        assert_eq!(codes, [vec![200; burst], vec![429]].concat(), "{burst} at once, then 429");
+        assert_eq!(refilled, [200, 429], "one back a second later");
     }
 }

@@ -92,3 +92,66 @@ impl Drop for ConnectionGuard {
         metrics::connection_closed();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use super::*;
+
+    fn caps(max_connections: usize, max_connections_per_ip: usize) -> ConnectionCaps {
+        let non_zero = |cap| NonZeroUsize::new(cap).expect("non-zero cap");
+        ConnectionCaps::new(&GrpcLimits {
+            max_connections: non_zero(max_connections),
+            max_connections_per_ip: non_zero(max_connections_per_ip),
+            ..GrpcLimits::default()
+        })
+    }
+
+    #[test]
+    fn a_client_is_admitted_up_to_max_connections_per_ip_then_refused() {
+        let caps = caps(8, 2);
+        let (alice, bob): (IpAddr, IpAddr) = ([203, 0, 113, 1].into(), [203, 0, 113, 2].into());
+        let admit = |client| caps.reserve().and_then(|reserved| caps.admit(reserved, client));
+
+        let mut alices: Vec<_> = (0..3).map(|_| admit(alice)).collect();
+        let bobs = admit(bob);
+
+        let admitted: Vec<_> = alices.iter().map(Option::is_some).collect();
+        assert_eq!(
+            admitted,
+            [true, true, false],
+            "alice's 1st..=3rd under max_connections_per_ip 2"
+        );
+        assert!(bobs.is_some(), "bob counted apart from alice: {bobs:?}");
+        assert_eq!(caps.held(), 3, "a refused client's reservation returned");
+        alices.remove(0);
+        assert!(admit(alice).is_some(), "one of alice's closed: her next admitted");
+    }
+
+    /// An unbounded IP table would be the cap's own leak
+    #[test]
+    fn a_clients_entry_is_removed_with_its_last_connection() {
+        let caps = caps(8, 2);
+        let alice: IpAddr = [203, 0, 113, 1].into();
+        let connection = caps.reserve().and_then(|reserved| caps.admit(reserved, alice));
+
+        drop(connection);
+
+        let clients: Vec<_> =
+            caps.per_client.lock().expect("per-client table").keys().copied().collect();
+        assert_eq!(clients, Vec::<IpAddr>::new(), "no connection left, no entry");
+        assert_eq!(caps.held(), 0, "total slot returned");
+    }
+
+    #[test]
+    fn a_connection_past_max_connections_is_refused_at_reserve() {
+        let caps = caps(2, 8);
+
+        let reserved: Vec<_> = (0..3).map(|_| caps.reserve()).collect();
+
+        let reserved: Vec<_> = reserved.iter().map(Option::is_some).collect();
+        assert_eq!(reserved, [true, true, false], "1st..=3rd under max_connections 2");
+        assert_eq!(caps.held(), 2, "{reserved:?}");
+    }
+}

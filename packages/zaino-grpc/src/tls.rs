@@ -241,9 +241,8 @@ mod tests {
         tls.certs.reload_if_changed();
         assert_eq!(presented().await, *b.cert.der(), "mismatched renewal keeps the last good pair");
 
-        assert!(
-            matches!(Tls::load(files), Err(TlsError::Key { .. })),
-            "mismatched pair refuses to boot"
-        );
+        let refused = Tls::load(files).err();
+        let mismatched = matches!(refused, Some(TlsError::Key { .. }));
+        assert!(mismatched, "booting cert b + key a refused for its key: {refused:?}");
     }
 }

@@ -214,91 +214,128 @@ impl Overload {
 mod tests {
     use super::*;
 
-    /// One-minute windows of 100 work admissions/s:
-    /// - 5 % refused for 10 min: never overloaded (under 10 %)
-    /// - 30 % refused (one window dipping to 25 %): overloaded after exactly 5 min
-    /// - back to 0 %: cleared after exactly 5 min under 2 %
-    /// - 50 % of 1 admission/s (0.5 refusals/s): under the 1/s floor, never overloaded
-    /// - tick = its window's refusals, subscriptions included
-    /// - `refused_per_s` = work only
-    #[test]
-    fn overload_latches_after_five_sustained_minutes_and_clears_after_five_quiet() {
-        let minute = Duration::from_secs(60);
-        // one minute of `per_second` work admissions, `refused_percent` of them refused
-        let window = |overload: &Overload, per_second: u64, refused_percent: u64| {
-            let total = per_second * 60;
-            for _ in 0..total * (100 - refused_percent) / 100 {
-                overload.admitted(Class::Work);
-            }
-            for _ in 0..total * refused_percent / 100 {
-                overload.refused(Class::Work);
-            }
-            overload.tick(minute, Signals::default());
-            overload.cause()
-        };
-        let new = || Overload::new(OverloadLimits::default());
-        let refusing = Some(OverloadCause::RefusingWork);
+    const MINUTE: Duration = Duration::from_secs(60);
 
-        let mild = new();
-        let mild: Vec<_> = (0..10).map(|_| window(&mild, 100, 5)).collect();
-        assert_eq!(mild, [None; 10], "5 % refused: not overloaded");
-
-        let overload = new();
-        let loaded = [30, 30, 25, 30, 30].map(|refused| window(&overload, 100, refused));
-        assert_eq!(loaded, [None, None, None, None, refusing], "latched at 5 min, dip included");
-        let quiet = [0; 5].map(|refused| window(&overload, 100, refused));
-        assert_eq!(quiet, [refusing, refusing, refusing, refusing, None], "cleared at 5 min");
-
-        let trickle = new();
-        let trickle: Vec<_> = (0..10).map(|_| window(&trickle, 1, 50)).collect();
-        assert_eq!(trickle, [None; 10], "0.5 refusals/s: under the floor");
-
-        let counted = new();
-        for _ in 0..120 {
-            counted.refused(Class::Work);
+    /// One minute of `per_second` work admissions, `refused_percent` of them refused → the cause
+    fn refusal_minute(
+        overload: &Overload,
+        per_second: u64,
+        refused_percent: u64,
+    ) -> Option<OverloadCause> {
+        let total = per_second * 60;
+        for _ in 0..total * (100 - refused_percent) / 100 {
+            overload.admitted(Class::Work);
         }
-        counted.refused(Class::Subscription);
-        assert_eq!(counted.tick(minute, Signals::default()), 121, "every class refused");
-        assert_eq!(counted.refused_per_s(), 2.0, "work only, per second of the window");
-        assert_eq!(counted.tick(minute, Signals::default()), 0, "a window starts at zero");
+        for _ in 0..total * refused_percent / 100 {
+            overload.refused(Class::Work);
+        }
+        overload.tick(MINUTE, Signals::default());
+        overload.cause()
     }
 
-    /// 10 ms / 2 % network, 25 % CPU, one-minute windows:
-    /// - 14 ms + 30 % CPU: both latch at 2 min, network named first
-    /// - 7 ms (not under 5) holds; 3 windows unmeasured clear network, CPU named
-    /// - 3 % loss without queueing latches network; 1.5 % (not under 1) holds, then clears
-    /// - detection off: nothing named; a limit of 0 = that cause off (clears by its exit)
+    /// Enter: >= 10 % refused at >= 1 refusal/s for 5 min; exit: < 2 % for 5 min
     #[test]
-    fn each_cause_latches_on_its_rule_and_the_operator_settings_apply() {
-        let minute = Duration::from_secs(60);
-        let window = |overload: &Overload, delay_ms: Option<u64>, loss: Option<f64>, cpu: f64| {
-            let network_delay = delay_ms.map(Duration::from_millis);
-            let (cpu, io) = (Some(cpu), Some(0.0));
-            overload.tick(minute, Signals { network_delay, network_loss: loss, cpu, io });
-            overload.cause()
-        };
-        let network = Some(OverloadCause::NetworkSaturated);
-        let cpu = Some(OverloadCause::CpuPressure);
+    fn refusing_work_latches_after_five_sustained_minutes_and_clears_after_five_quiet() {
+        let (none, refusing) = (None, Some(OverloadCause::RefusingWork));
+        let latched_5 = [vec![none; 4], vec![refusing]].concat();
+        // case, work admissions/s, % refused each minute, cause after each minute
+        #[rustfmt::skip]
+        let cases = [
+            ("9 % for 10 min",                100, vec![9; 10],                       vec![none; 10]),
+            ("10 % for 5 min",                100, vec![10; 5],                       latched_5.clone()),
+            ("30 %, one minute at 25 %",      100, vec![30, 30, 25, 30, 30],          latched_5.clone()),
+            ("50 % of 1/s = 0.5 refusals/s",  1,   vec![50; 10],                      vec![none; 10]),
+            ("latched, then 2 % for 5 min",   100, [vec![10; 5], vec![2; 5]].concat(), [latched_5.clone(), vec![refusing; 5]].concat()),
+            ("latched, then 1 % for 5 min",   100, [vec![10; 5], vec![1; 5]].concat(), [latched_5.clone(), vec![refusing; 4], vec![none]].concat()),
+        ];
+        for (case, per_second, refused_percent, causes) in cases {
+            let overload = Overload::new(OverloadLimits::default());
+
+            let latched: Vec<_> =
+                refused_percent.iter().map(|&p| refusal_minute(&overload, per_second, p)).collect();
+
+            assert_eq!(latched, causes, "{case}: cause after each minute");
+        }
+    }
+
+    #[test]
+    fn a_window_counts_every_refusal_and_reports_work_refusals_per_second() {
+        let overload = Overload::new(OverloadLimits::default());
+        for _ in 0..120 {
+            overload.refused(Class::Work);
+        }
+        overload.refused(Class::Subscription);
+
+        let refused = overload.tick(MINUTE, Signals::default());
+
+        assert_eq!(refused, 121, "120 work + 1 subscription refused");
+        assert_eq!(overload.refused_per_s(), 2.0, "120 work refusals over 60 s");
+        assert_eq!(overload.tick(MINUTE, Signals::default()), 0, "next window starts at zero");
+    }
+
+    /// One minute's signals (IO unloaded)
+    fn signals(delay_ms: Option<u64>, loss: Option<f64>, cpu: f64) -> Signals {
+        let network_delay = delay_ms.map(Duration::from_millis);
+        Signals { network_delay, network_loss: loss, cpu: Some(cpu), io: Some(0.0) }
+    }
+
+    /// Network 10 ms / 2 %, CPU 25 %: enter over the limit for 2 min, exit under half of it for 3
+    #[test]
+    fn each_pressure_cause_latches_over_its_limit_and_clears_under_half_of_it() {
+        let (none, network, cpu) =
+            (None, Some(OverloadCause::NetworkSaturated), Some(OverloadCause::CpuPressure));
         let limits = OverloadLimits {
             network_queue_delay_ms: 10,
             network_retransmit_percent: 2,
+            cpu_pressure_percent: 25,
             ..OverloadLimits::default()
         };
+        #[rustfmt::skip]
+        let cases = [
+            ("queueing 14 ms; 7 ms (not under 5) holds; unmeasured 3 min clears",
+                [signals(Some(14), None, 0.0), signals(Some(14), None, 0.0), signals(Some(7), None, 0.0),
+                 signals(None, None, 0.0), signals(None, None, 0.0), signals(None, None, 0.0)],
+                [none, network, network, network, network, none]),
+            ("loss 3 % unqueued; 1.5 % (not under 1) holds; 0 % 3 min clears",
+                [signals(Some(2), Some(0.03), 0.0), signals(Some(2), Some(0.03), 0.0), signals(Some(2), Some(0.015), 0.0),
+                 signals(Some(2), Some(0.0), 0.0), signals(Some(2), Some(0.0), 0.0), signals(Some(2), Some(0.0), 0.0)],
+                [none, network, network, network, network, none]),
+            ("queueing + CPU 30 % both latch: network named first, then CPU",
+                [signals(Some(14), None, 0.3), signals(Some(14), None, 0.3), signals(Some(7), None, 0.3),
+                 signals(None, None, 0.3), signals(None, None, 0.3), signals(None, None, 0.3)],
+                [none, network, network, network, network, cpu]),
+        ];
+        for (case, minutes, causes) in cases {
+            let overload = Overload::new(limits.clone());
 
+            let latched = minutes.map(|minute| {
+                overload.tick(MINUTE, minute);
+                overload.cause()
+            });
+
+            assert_eq!(latched, causes, "{case}: cause after each minute");
+        }
+    }
+
+    #[test]
+    fn operator_settings_apply_to_a_latched_cause_live() {
+        let cpu = Some(OverloadCause::CpuPressure);
+        let limits = OverloadLimits { cpu_pressure_percent: 25, ..OverloadLimits::default() };
         let overload = Overload::new(limits.clone());
-        let loaded = [Some(14), Some(14), Some(7), None, None, None]
-            .map(|ms| window(&overload, ms, None, 0.3));
-        assert_eq!(loaded, [None, network, network, network, network, cpu]);
-
-        let policed = Overload::new(limits.clone());
-        let dropping = [0.03, 0.03, 0.015, 0.0, 0.0, 0.0]
-            .map(|loss| window(&policed, Some(2), Some(loss), 0.0));
-        assert_eq!(dropping, [None, network, network, network, network, None]);
+        for _ in 0..2 {
+            overload.tick(MINUTE, signals(None, None, 0.3));
+        }
+        assert_eq!(overload.cause(), cpu, "CPU 30 % for 2 min: latched");
 
         overload.set(limits.clone(), false);
-        assert_eq!(overload.cause(), None, "detection off");
+        let detection_off = overload.cause();
         overload.set(OverloadLimits { cpu_pressure_percent: 0, ..limits }, true);
-        let off = [0; 3].map(|_| window(&overload, None, None, 1.0));
-        assert_eq!(off, [cpu, cpu, None], "0 = off");
+        let limit_off = [0; 3].map(|_| {
+            overload.tick(MINUTE, signals(None, None, 1.0));
+            overload.cause()
+        });
+
+        assert_eq!(detection_off, None, "detection off: latched, never reported");
+        assert_eq!(limit_off, [cpu, cpu, None], "CPU limit 0 = off: clears by its 3 min exit");
     }
 }

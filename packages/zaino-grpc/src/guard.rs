@@ -208,6 +208,7 @@ impl Drop for CloseOut {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::num::NonZeroUsize;
 
     use http::HeaderValue;
     use http_body_util::{BodyExt as _, Full, StreamBody};
@@ -264,50 +265,80 @@ mod tests {
         request
     }
 
-    /// - Frame handed over, never polled again (client stopped reading) → stall at the timeout
-    /// - Waiting on nothing never trips
-    /// - Poll clears it
+    /// Guard → ticket wiring (stall timing itself: `stall.rs`)
     #[tokio::test(start_paused = true)]
-    async fn an_unpulled_frame_trips_the_stall_watch_and_an_idle_stream_never_does() {
-        let timeout = Duration::from_secs(300);
+    async fn a_stream_owes_from_a_handed_data_frame_until_its_next_poll() {
         let stalls = Arc::new(stall::Watch::default());
         let admission = Arc::new(AdmissionState::new(&crate::GrpcLimits::default()));
         let mut guard = Guard::new(Answers, admission, Arc::clone(&stalls), Arc::default());
-        let watching = |stalls: &Arc<stall::Watch>| {
-            let stalls = Arc::clone(stalls);
-            tokio::spawn(async move { stalls.stalled(timeout).await })
-        };
 
         let idle = guard.call(request("/open")).await.expect("infallible");
         let mut idle = std::pin::pin!(idle.into_body());
-        let waiting = tokio::time::timeout(Duration::from_millis(1), idle.frame()).await;
-        assert!(waiting.is_err(), "nothing to send");
-        let quiet = watching(&stalls);
-        tokio::time::sleep(timeout * 3).await;
-        assert!(!quiet.is_finished(), "an idle stream owes nothing");
-        quiet.abort();
+        let waiting = futures::poll!(idle.frame());
+        assert!(waiting.is_pending(), "/open never sends: {waiting:?}");
+        assert_eq!(stalls.oldest(), None, "a pending body owes nothing");
 
         let data = guard.call(request("/data")).await.expect("infallible");
         let mut data = std::pin::pin!(data.into_body());
-        assert!(data.frame().await.expect("a frame").expect("ok").is_data());
-        let tripped = watching(&stalls);
-        tokio::time::sleep(timeout).await;
-        tripped.await.expect("unpulled for the timeout: stalled");
+        let first = data.frame().await.expect("a frame").expect("in-band");
+        assert!(first.is_data(), "/data's first frame: {first:?}");
+        let now = tokio::time::Instant::now();
+        assert_eq!(
+            stalls.oldest(),
+            Some(now),
+            "handed a data frame (paused clock): owing from now"
+        );
 
-        let pulled = tokio::time::timeout(Duration::from_millis(1), data.frame()).await;
-        assert!(pulled.is_err(), "polled again (and now waiting): no longer owing");
-        let cleared = watching(&stalls);
-        tokio::time::sleep(timeout * 3).await;
-        assert!(!cleared.is_finished(), "a pull clears it");
+        let pulled = futures::poll!(data.frame());
+        assert!(pulled.is_pending(), "/data waits after its one frame: {pulled:?}");
+        assert_eq!(stalls.oldest(), None, "polled again: pulled");
     }
 
-    /// - Slot lives as long as its *body* (back when a client walks away mid-stream)
-    /// - No slot → refused on the spot + pushback, never queued
-    /// - Subscriptions = own pool (full work pool admits one, full subscription pool refuses only
-    ///   subscriptions)
+    /// The body's drop = the only signal a client walked away mid-stream
     #[tokio::test]
-    async fn a_stream_slot_outlives_its_handler_and_a_refusal_never_queues() {
-        let one = std::num::NonZeroUsize::MIN;
+    async fn a_stream_slot_lives_as_long_as_its_body() {
+        let state = Arc::new(AdmissionState::new(&crate::GrpcLimits::default()));
+        let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
+        let in_flight = || state.report().in_flight;
+
+        let open = guard.call(request("/open")).await.expect("infallible");
+        assert_eq!(in_flight(), 1, "handler returned, stream still open");
+        drop(open);
+        assert_eq!(in_flight(), 0, "body dropped: returned");
+
+        let short = guard.call(request("/short")).await.expect("infallible");
+        let mut body = std::pin::pin!(short.into_body());
+        assert_eq!(in_flight(), 1, "unread");
+        while body.frame().await.is_some() {}
+        assert_eq!(in_flight(), 0, "read to its end: returned before the drop");
+    }
+
+    /// A queue would hang a wallet behind the open stream
+    #[tokio::test]
+    async fn a_full_work_pool_refuses_at_once_with_pushback() {
+        use futures::FutureExt as _;
+
+        let limits =
+            crate::GrpcLimits { max_work_streams: NonZeroUsize::MIN, ..Default::default() };
+        let state = Arc::new(AdmissionState::new(&limits));
+        let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
+        let _open = guard.call(request("/open")).await.expect("infallible");
+
+        let refused =
+            guard.call(request("/open")).now_or_never().expect("refused at once, never queued");
+
+        let refused = refused.expect("infallible");
+        let status = Status::from_header_map(refused.headers()).expect("Trailers-Only refusal");
+        let pushback = refused.headers().get("grpc-retry-pushback-ms");
+        let retry_after = HeaderValue::from_static("250");
+        let refusal = (status.code(), status.message(), pushback);
+        assert_eq!(refusal, (Code::Unavailable, "work stream limit reached", Some(&retry_after)));
+        assert_eq!(state.report().in_flight, 1, "a refusal takes no slot of its own");
+    }
+
+    #[tokio::test]
+    async fn subscriptions_have_their_own_pool_beside_work() {
+        let one = NonZeroUsize::MIN;
         let limits = crate::GrpcLimits {
             max_work_streams: one,
             max_subscriptions: one,
@@ -315,46 +346,25 @@ mod tests {
         };
         let state = Arc::new(AdmissionState::new(&limits));
         let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
-        let in_flight = || state.report().in_flight;
-
-        // Admitted: handler returned, stream still open
-        let open = guard.call(request("/open")).await.expect("infallible");
-        assert_eq!(in_flight(), 1, "the open stream holds it");
-
         let mempool = &Method::GetMempoolStream.path();
+        fn refusal<B>(response: &Response<B>) -> Option<Status> {
+            Status::from_header_map(response.headers())
+        }
+        let _work = guard.call(request("/open")).await.expect("infallible");
+
         let subscribed = guard.call(request(mempool)).await.expect("infallible");
-        let status = subscribed.headers().get("grpc-status");
-        assert_eq!(status, None, "a full work pool leaves subscriptions admitted");
+        assert_eq!(
+            refusal(&subscribed).map(|s| s.code()),
+            None,
+            "work pool full: subscription admitted"
+        );
         let second = guard.call(request(mempool)).await.expect("infallible");
-        let refusal = Status::from_header_map(second.headers()).expect("a status");
-        let refusal = (refusal.code(), refusal.message());
-        assert_eq!(refusal, (Code::Unavailable, "subscription limit reached"));
+        let refused = refusal(&second).map(|status| (status.code(), status.message().to_owned()));
+        let full = Some((Code::Unavailable, "subscription limit reached".to_owned()));
+        assert_eq!(refused, full, "second subscription over max_subscriptions 1");
         drop(subscribed);
         let third = guard.call(request(mempool)).await.expect("infallible");
-        assert_eq!(third.headers().get("grpc-status"), None, "returned on disconnect");
-
-        // Refused while held (a queue would hang here)
-        let refused =
-            tokio::time::timeout(Duration::from_millis(500), guard.call(request("/open")))
-                .await
-                .expect("a refusal is immediate, never queued behind the open stream")
-                .expect("infallible");
-        let headers = refused.headers();
-        let pushback = (headers.get("grpc-status"), headers.get("grpc-retry-pushback-ms"));
-        let (unavailable, retry_after) = (HeaderValue::from_static("14"), "250".parse().ok());
-        assert_eq!(pushback, (Some(&unavailable), retry_after.as_ref()), "refused + retry");
-        assert_eq!(in_flight(), 1, "a refusal takes no slot of its own");
-
-        // Client walks away: body drop = the only signal
-        drop(open);
-        assert_eq!(in_flight(), 0, "returned on disconnect");
-
-        // Read to its end: slot back at the end, not at the drop
-        let short = guard.call(request("/short")).await.expect("infallible");
-        let mut body = std::pin::pin!(short.into_body());
-        assert_eq!(in_flight(), 1);
-        while body.frame().await.is_some() {}
-        assert_eq!(in_flight(), 0, "returned at end of stream");
+        assert_eq!(refusal(&third).map(|s| s.code()), None, "slot back on disconnect");
     }
 
     /// Default limits (`max_work_streams` 2048, adaptive from 256):

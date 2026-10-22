@@ -51,20 +51,31 @@ impl Pressure {
 mod tests {
     use super::*;
 
-    /// `some total` parsed (`full` ignored); a window = Δ total / its length, capped at 1
+    fn psi(some_total_us: u64) -> String {
+        format!("some avg10=1.00 total={some_total_us}\nfull avg10=0.00 total=9\n")
+    }
+
+    #[test]
+    fn psi_reads_the_some_line_total_and_ignores_full() {
+        assert_eq!(some_total_us(&psi(42)), Some(42), "{:?}", psi(42));
+        assert_eq!(some_total_us("full avg10=0.00 total=1\n"), None, "no `some` line");
+    }
+
+    /// Window = Δ some total / its length, capped at 1; no PSI file = unmeasured
     #[test]
     fn a_window_is_the_stalled_share_of_its_length() {
-        let psi = |total: u64| format!("some avg10=1.00 total={total}\nfull avg10=0.00 total=9\n");
-        assert_eq!(some_total_us(&psi(42)), Some(42));
-        assert_eq!(some_total_us("full avg10=0.00 total=1\n"), None);
-
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("cpu.pressure");
         let mut cpu = Pressure { file: Some(file.clone()), last_us: Some(1_000_000) };
+        let minute = Duration::from_secs(60);
+
         std::fs::write(&file, psi(16_000_000)).expect("write");
-        assert_eq!(cpu.share(Duration::from_secs(60)), Some(0.25), "15 s of 60 s");
+        let quarter = cpu.share(minute);
         std::fs::write(&file, psi(136_000_000)).expect("write");
-        assert_eq!(cpu.share(Duration::from_secs(60)), Some(1.0), "capped");
-        assert_eq!(Pressure { file: None, last_us: None }.share(Duration::from_secs(60)), None);
+        let over = cpu.share(minute);
+
+        assert_eq!(quarter, Some(0.25), "15 s stalled of 60 s");
+        assert_eq!(over, Some(1.0), "120 s stalled of 60 s: capped");
+        assert_eq!(Pressure { file: None, last_us: None }.share(minute), None, "no PSI file");
     }
 }

@@ -153,7 +153,7 @@ mod tests {
             ("v2 local health check", v2_local, 1, Ok(None)),
             ("not a header", b"GET / HTTP/1.1\r\n\r\n".to_vec(), 1, Err("malformed PROXY header")),
             ("v1 past its 107 bytes", v1_long, 1, Err("malformed PROXY header")),
-            ("v2 past our cap", v2_huge, 1, Err("PROXY header over 4096 bytes")),
+            ("v2 past HEADER_MAX", v2_huge, 1, Err("PROXY header over 4096 bytes")),
         ];
 
         for (case, header, chunks, expected) in cases {
@@ -188,13 +188,24 @@ mod tests {
                 }
                 Err(message) => {
                     let error = read.expect_err(case).to_string();
-                    assert!(error.starts_with(message), "{case}: {error}");
+                    assert!(error.starts_with(message), "{case}: {error:?} vs {message:?}");
                 }
             }
         }
+    }
 
+    #[test]
+    fn a_peer_is_trusted_only_inside_a_trusted_network() {
         let trusted = TrustedProxies::new(vec!["10.0.0.0/8".parse().expect("net")]);
-        let peers: [IpAddr; 2] = [[10, 1, 2, 3].into(), [192, 168, 1, 1].into()];
-        assert_eq!(peers.map(|peer| trusted.trusts(peer)), [true, false]);
+        #[rustfmt::skip]
+        let peers: [(IpAddr, bool); 4] = [
+            ([10, 0, 0, 0].into(),       true),
+            ([10, 255, 255, 255].into(), true),
+            ([11, 0, 0, 0].into(),       false),
+            ([192, 168, 1, 1].into(),    false),
+        ];
+        for (peer, trusts) in peers {
+            assert_eq!(trusted.trusts(peer), trusts, "{peer} under 10.0.0.0/8");
+        }
     }
 }

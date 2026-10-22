@@ -179,18 +179,22 @@ mod tests {
     #[test]
     fn a_window_counts_refusals_failures_and_slow_requests() {
         let window = Window::new();
-        let ms = Duration::from_millis;
-        for latency in 1..=100 {
-            window.finished(Code::Ok, Some(ms(latency)));
-        }
-        window.finished(Code::Ok, Some(ms(1_500)));
+        window.finished(Code::Ok, Some(SLOW));
+        window.finished(Code::Ok, Some(SLOW + Duration::from_millis(1)));
         for code in [Code::NotFound, Code::Cancelled, Code::Unavailable, Code::Internal] {
             window.finished(code, None);
         }
 
-        let expected =
-            Counts { requests: 105, refused: 1, failed: 1, slow: 1, ..Counts::default() };
-        assert_eq!(window.take(), expected);
-        assert_eq!(window.take(), Counts::default());
+        let taken = window.take();
+
+        let expected = Counts {
+            requests: 6,
+            refused: 1, // Unavailable
+            failed: 1,  // Internal
+            slow: 1,    // SLOW + 1 ms (SLOW itself is not)
+            ..Counts::default()
+        };
+        assert_eq!(taken, expected, "NotFound + Cancelled = the client's, uncounted");
+        assert_eq!(window.take(), Counts::default(), "taken = zeroed");
     }
 }

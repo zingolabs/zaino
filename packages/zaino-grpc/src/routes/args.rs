@@ -98,19 +98,18 @@ mod tests {
             assert_eq!(got, (tonic::Code::InvalidArgument, expected.as_str()), "{raw:?}");
         }
 
-        let only = |sapling, orchard, ironwood, transparent| Pools {
-            sapling,
-            orchard,
-            ironwood,
-            transparent,
-        };
-        let (sapling_ironwood, every) = (
-            [PoolType::Sapling, PoolType::Ironwood],
-            [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood],
-        );
-        assert_eq!(pools(&[]), only(true, true, true, false), "none named = shielded only");
-        assert_eq!(pools(&[PoolType::Transparent]), only(false, false, false, true));
-        assert_eq!(pools(&sapling_ironwood), only(true, false, true, false), "exactly its members");
-        assert_eq!(pools(&every), Pools::ALL);
+        let none = Pools { sapling: false, orchard: false, ironwood: false, transparent: false };
+        let every =
+            [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood];
+        #[rustfmt::skip]
+        let cases = [
+            ("none named = shielded only", vec![],                                     Pools { transparent: false, ..Pools::ALL }),
+            ("transparent alone",          vec![PoolType::Transparent],                Pools { transparent: true, ..none }),
+            ("sapling + ironwood",         vec![PoolType::Sapling, PoolType::Ironwood], Pools { sapling: true, ironwood: true, ..none }),
+            ("all four",                   every.to_vec(),                             Pools::ALL),
+        ];
+        for (case, named, served) in cases {
+            assert_eq!(pools(&named), served, "{case}");
+        }
     }
 }
