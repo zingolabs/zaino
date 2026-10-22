@@ -7,14 +7,15 @@
 //! - Model = the caller: a lie answered → `report` (+ a block re-asked)
 //! - Peer set never benched
 //! - Own lanes, permits (poll's own outside them) and rounds: the oracle's ground truth
-//! - Per send: T2 kind + route, T3 bench + down, synced, T5 once per round, T6 pick, T7 priority
-//! - After every step: T7 no ready ask waits beside room
+//! - Per send: [`Ineligible`] (T2 kind + route, T3 bench + down, synced, T5), T6 pick, T7 priority
+//! - After every step: `check()`, T7 no ready ask waits beside room
 //! - At quiescence (10 min): T9, liars benched, T10 poll gaps ≤ the ladder's ceiling
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
 
 use super::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
 use crate::class::Class;
@@ -54,6 +55,8 @@ const PEER_IN_FLIGHT: u32 = 4;
 const PEER_TIER: u16 = u8::MAX as u16 + 1;
 const ASKED: [Class; 6] =
     [Class::Submit, Class::TipBlock, Class::Headers, Class::Lookup, Class::Bytes, Class::BulkBlock];
+/// Abandon targets: the first asks of a case (a closed or unmade one = no move)
+const ABANDONABLE: u64 = 16;
 
 /// Control, interactive, bulk (dispatch order)
 fn lane(class: Class) -> usize {
@@ -64,84 +67,148 @@ fn lane(class: Class) -> usize {
     }
 }
 
+fn trusted(index: usize) -> MemberId {
+    MemberId::TrustedValidator(TrustedValidatorId::new(index).expect("≤ 4"))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Trusted {
+    kind: Kind,
+    priority: u8,
+}
+
 #[derive(Debug, Clone)]
 enum Move {
-    Ask { class: u8, pick: u8 },
-    Abandon(u8),
-    Advance(u16),
-    Push { member: u8, push: Push },
+    Ask { class: Class, route: Route },
+    Abandon(AskId),
+    Advance(Duration),
+    Push { validator: TrustedValidatorId, push: Push },
+}
+
+#[derive(Debug, Clone)]
+struct Case {
+    trusted: Vec<Trusted>,
+    peers: Option<Kind>,
+    moves: Vec<Move>,
 }
 
 fn kind() -> impl Strategy<Value = Kind> {
-    (0..KINDS.len()).prop_map(|kind| KINDS[kind])
+    prop::sample::select(KINDS.to_vec())
 }
 
-fn moves() -> impl Strategy<Value = Vec<Move>> {
+/// Every member a route may name exists in the case
+fn route(class: Class, trusted_count: usize, peers: bool) -> BoxedStrategy<Route> {
+    let one = (0..trusted_count).prop_map(trusted);
+    match class {
+        Class::Submit => one.prop_map(Route::Only).boxed(),
+        Class::Headers => prop_oneof![one.prop_map(Route::Only), Just(Route::Peers)].boxed(),
+        Class::Bytes => {
+            let mut members: Vec<MemberId> = (0..trusted_count).map(trusted).collect();
+            members.extend(peers.then_some(MemberId::Peers));
+            let all = members.len();
+            prop::sample::subsequence(members, 0..=all).prop_map(Route::Prefer).boxed()
+        }
+        _ => Just(Route::Any).boxed(),
+    }
+}
+
+fn moves(trusted_count: usize, peers: bool) -> impl Strategy<Value = Vec<Move>> {
+    let ask = prop::sample::select(ASKED.to_vec()).prop_flat_map(move |class| {
+        route(class, trusted_count, peers).prop_map(move |route| Move::Ask { class, route })
+    });
     let push = prop_oneof![Just(Push::Changed), any::<bool>().prop_map(Push::Link)];
+    let push = (0..trusted_count, push).prop_map(|(index, push)| {
+        let validator = TrustedValidatorId::new(index).expect("≤ 4");
+        Move::Push { validator, push }
+    });
     let one = prop_oneof![
-        8 => (any::<u8>(), any::<u8>()).prop_map(|(class, pick)| Move::Ask { class, pick }),
-        2 => any::<u8>().prop_map(Move::Abandon),
-        8 => (0u16..=20_000).prop_map(Move::Advance),
-        1 => (any::<u8>(), push).prop_map(|(member, push)| Move::Push { member, push }),
+        8 => ask,
+        2 => (0..ABANDONABLE).prop_map(|ask| Move::Abandon(AskId(ask))),
+        8 => (0u64..=20_000).prop_map(|ms| Move::Advance(Duration::from_millis(ms))),
+        1 => push,
     ];
     prop::collection::vec(one, 1..64)
+}
+
+/// Swarm applied here: the shrunk case shows each member's kind as played
+fn case() -> impl Strategy<Value = Case> {
+    let trusted = prop::collection::vec((kind(), 0u8..=2), 1..=4);
+    // never lying: its transport drops what fails a check (`PeerTransport`)
+    let peers = prop::option::of(kind().prop_filter("checked", |kind| *kind != Kind::Lying));
+    let swarm = prop::array::uniform7(prop::bool::weighted(0.8));
+    (trusted, peers, swarm).prop_flat_map(|(trusted, peers, swarm)| {
+        let on = |kind: Kind| if swarm[kind as usize] { kind } else { Kind::Honest };
+        let trusted: Vec<Trusted> = trusted
+            .into_iter()
+            .map(|(kind, priority)| Trusted { kind: on(kind), priority })
+            .collect();
+        let peers = peers.map(on);
+        moves(trusted.len(), peers.is_some()).prop_map(move |moves| Case {
+            trusted: trusted.clone(),
+            peers,
+            moves,
+        })
+    })
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// - `check()` + T7 after every step (T1, T2, T4, T5, T10), the oracle (T3, T6) after every send
-    /// - Quiescence: T9, liars benched, T10 gaps
     #[test]
     fn every_ask_an_honest_member_may_serve_is_served_and_no_send_breaks_the_rules(
-        trusted in prop::collection::vec((kind(), 0u8..=2), 1..=4),
-        // never lying: its transport drops what fails a check (`PeerTransport`)
-        peers in prop::option::of(kind().prop_filter("checked", |kind| *kind != Kind::Lying)),
-        moves in moves(),
-        swarm in prop::array::uniform7(prop::bool::weighted(0.8)),
+        case in case(),
     ) {
-        let on = |kind: Kind| if swarm[kind as usize] { kind } else { Kind::Honest };
-        let trusted: Vec<(Kind, u8)> = trusted.into_iter().map(|(kind, p)| (on(kind), p)).collect();
-        let mut world = World::new(&trusted, peers.map(on));
-        for one in &moves {
-            world.play(one);
+        let configured: Vec<(Kind, u8)> =
+            case.trusted.iter().map(|trusted| (trusted.kind, trusted.priority)).collect();
+        let mut world = World::new(&configured, case.peers)?;
+        for one in &case.moves {
+            world.play(one)?;
         }
-        world.settle();
+        world.settle()?;
     }
 }
 
-/// Tier 0 stalls, fails or lacks it, tier 1 answers in 50 ms: each ask ends at its bound
+/// Tier 0 stalls, fails or lacks it, tier 1 answers in `FAST`: each ask ends at its bound
 #[test]
-fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
-    let ms = Duration::from_millis;
-    let [v0, v1] =
-        [0, 1].map(|i| MemberId::TrustedValidator(TrustedValidatorId::new(i).expect("small")));
+fn an_ask_ends_within_its_hedge_floor_plus_one_round() -> Result<(), TestCaseError> {
+    let hedge = |class: Class| class.hedge_floor().expect("a hedged class");
+    let (v0, v1) = (trusted(0), trusted(1));
+    #[rustfmt::skip]
     let cases = [
-        (Kind::Silent, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
-        (Kind::Slow, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
-        (Kind::Silent, Class::Lookup, Route::Any, ms(1_050), Some(v1)),
-        (Kind::Silent, Class::BulkBlock, Route::Any, ms(15_050), Some(v1)),
-        (Kind::Lagging, Class::Lookup, Route::Any, ms(100), Some(v1)),
-        (Kind::Down, Class::Bytes, Route::Prefer(Vec::new()), ms(100), Some(v1)),
-        (Kind::Silent, Class::Headers, Route::Only(v0), TIMEOUT, None),
-        (Kind::Down, Class::Submit, Route::Only(v0), FAST, None),
+        // case,                    tier 0,        class,            route,                 ends after,                      served by
+        ("hedged past a silence",   Kind::Silent,  Class::TipBlock,  Route::Any,            hedge(Class::TipBlock) + FAST,   Some(v1)),
+        ("hedged past a stall",     Kind::Slow,    Class::TipBlock,  Route::Any,            hedge(Class::TipBlock) + FAST,   Some(v1)),
+        ("hedged past a silence",   Kind::Silent,  Class::Lookup,    Route::Any,            hedge(Class::Lookup) + FAST,     Some(v1)),
+        ("hedged past a silence",   Kind::Silent,  Class::BulkBlock, Route::Any,            hedge(Class::BulkBlock) + FAST,  Some(v1)),
+        ("absent: the next member", Kind::Lagging, Class::Lookup,    Route::Any,            FAST + FAST,                     Some(v1)),
+        ("failed: the next member", Kind::Down,    Class::Bytes,     Route::Prefer(vec![]), FAST + FAST,                     Some(v1)),
+        ("pinned: its timeout",     Kind::Silent,  Class::Headers,   Route::Only(v0),       TIMEOUT,                         None),
+        ("pinned: its failure",     Kind::Down,    Class::Submit,    Route::Only(v0),       FAST,                            None),
     ];
-    for (kind, class, route, after, by) in cases {
-        let mut world = World::new(&[(kind, 0), (Kind::Honest, 1)], None);
+    for (case, kind, class, route, after, served_by) in cases {
+        let mut world = World::new(&[(kind, 0), (Kind::Honest, 1)], None)?;
         let asked_at = world.now;
-        let ask = world.ask(class, route.clone());
-        world.advance(asked_at + Duration::from_secs(60));
-        let ended = world.ends.get(&ask).copied();
-        assert_eq!(ended, Some((asked_at + after, by)), "{kind:?} tier 0, {class:?} {route:?}");
+        let ask = world.ask(class, route.clone())?;
+        world.advance(asked_at + Duration::from_secs(60))?;
+        let ended = world.ends.get(&ask).map(|(at, by)| Ended { after: *at - asked_at, by: *by });
+        let expected = Ended { after, by: served_by };
+        assert_eq!(ended, Some(expected), "{case}: {kind:?} tier 0, {class:?} via {route:?}");
     }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Ended {
+    after: Duration,
+    by: Option<MemberId>,
 }
 
 /// Every lane permit held by silent asks (headers + submit on control): T10, each due poll still
-/// sent at once (the failed poll's answer at 25 s, the next started in that same instant)
+/// sent at once (the failed poll's answer at `TIMEOUT`, the next started in that same instant)
 #[test]
-fn a_due_poll_never_waits_behind_other_asks() {
-    let v0 = MemberId::TrustedValidator(TrustedValidatorId::new(0).expect("small"));
-    let mut world = World::new(&[(Kind::Silent, 0)], None);
+fn a_due_poll_never_waits_behind_other_asks() -> Result<(), TestCaseError> {
+    let v0 = trusted(0);
+    let mut world = World::new(&[(Kind::Silent, 0)], None)?;
     let t0 = world.now;
     for (class, route) in [
         (Class::Headers, Route::Only(v0)),
@@ -149,12 +216,28 @@ fn a_due_poll_never_waits_behind_other_asks() {
         (Class::TipBlock, Route::Any),
         (Class::BulkBlock, Route::Any),
     ] {
-        world.ask(class, route);
+        world.ask(class, route)?;
     }
-    assert_eq!(world.flying[&v0], [2, 1, 1], "every lane permit of 5 − the poll's held");
-    world.advance(t0 + TIMEOUT);
+    let held = world.flying[&v0];
+    assert_eq!(held, [2, 1, 1], "v0's lane sends (control, interactive, bulk): all 4 permits");
+
+    world.advance(t0 + TIMEOUT)?;
+
     let polls = &world.polls[&TrustedValidatorId::new(0).expect("small")];
-    assert_eq!(polls[..2], [t0, t0 + TIMEOUT], "T10: the due poll sent beside full lanes");
+    let since_t0: Vec<Duration> = polls.iter().map(|at| *at - t0).collect();
+    assert_eq!(since_t0[..2], [Duration::ZERO, TIMEOUT], "v0's poll starts: the due one at once");
+    Ok(())
+}
+
+/// First rule keeping the oracle from a member: T2 = kind / route, T3 = benched / down, T5 = tried
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ineligible {
+    PeersNeverServeIt,
+    OutsideItsRoute,
+    Benched { for_another: Duration },
+    Down { failures: u32 },
+    CatchingUp,
+    TriedThisRound,
 }
 
 struct World {
@@ -189,12 +272,12 @@ struct Asked {
 }
 
 impl World {
-    fn new(trusted: &[(Kind, u8)], peers: Option<Kind>) -> Self {
+    /// `trusted[i]` = (kind, priority) of `TrustedValidatorId(i)`
+    fn new(trusted: &[(Kind, u8)], peers: Option<Kind>) -> Result<Self, TestCaseError> {
         let limits = Limits::new(CONNECTIONS).expect("MIN_CONNECTIONS");
         let config: Vec<(u8, Limits)> = trusted.iter().map(|(_, p)| (*p, limits)).collect();
         let t0 = Instant::now();
-        let ids = (0..trusted.len())
-            .map(|i| MemberId::TrustedValidator(TrustedValidatorId::new(i).expect("≤ 4")));
+        let ids = (0..trusted.len()).map(self::trusted);
         let mut kinds: BTreeMap<MemberId, Kind> =
             ids.clone().zip(trusted.iter().map(|(kind, _)| *kind)).collect();
         let mut tiers: BTreeMap<MemberId, u16> =
@@ -225,69 +308,44 @@ impl World {
             lies: Vec::new(),
             value_from: None,
         };
-        world.step(Input::Tick);
-        world
+        world.step(Input::Tick)?;
+        Ok(world)
     }
 
     fn members(&self) -> Vec<MemberId> {
         self.kinds.keys().copied().collect()
     }
 
-    fn trusted(&self, pick: u8) -> MemberId {
-        let trusted: Vec<MemberId> = self
-            .members()
-            .into_iter()
-            .filter(|m| matches!(m, MemberId::TrustedValidator(_)))
-            .collect();
-        trusted[usize::from(pick) % trusted.len()]
-    }
-
-    fn play(&mut self, one: &Move) {
-        match *one {
-            Move::Ask { class, pick } => {
-                let class = ASKED[usize::from(class) % ASKED.len()];
-                let route = match class {
-                    Class::Submit => Route::Only(self.trusted(pick)),
-                    Class::Headers if pick % 2 == 0 => Route::Only(self.trusted(pick / 2)),
-                    Class::Headers => Route::Peers,
-                    Class::Bytes => {
-                        let members = self.members().into_iter().enumerate();
-                        let preferred = members.filter(|(i, _)| pick & (1 << (i % 8)) != 0);
-                        Route::Prefer(preferred.map(|(_, m)| m).collect())
-                    }
-                    _ => Route::Any,
-                };
-                self.ask(class, route);
+    fn play(&mut self, one: &Move) -> Result<(), TestCaseError> {
+        match one {
+            Move::Ask { class, route } => {
+                self.ask(*class, route.clone())?;
             }
-            Move::Abandon(pick) => {
-                let open: Vec<AskId> = self.asks.keys().copied().collect();
-                if let Some(ask) = open.get(usize::from(pick) % open.len().max(1)).copied() {
-                    self.forget(ask);
-                    self.step(Input::Abandon(ask));
-                }
+            Move::Abandon(ask) if self.asks.contains_key(ask) => {
+                self.forget(*ask);
+                self.step(Input::Abandon(*ask))?;
             }
-            Move::Advance(ms) => self.advance(self.now + Duration::from_millis(u64::from(ms))),
-            Move::Push { member, push } => {
-                let MemberId::TrustedValidator(validator) = self.trusted(member) else {
-                    unreachable!("trusted")
-                };
-                self.step(Input::Push { validator, push });
+            Move::Abandon(_) => {}
+            Move::Advance(by) => self.advance(self.now + *by)?,
+            Move::Push { validator, push } => {
+                self.step(Input::Push { validator: *validator, push: *push })?;
             }
         }
+        Ok(())
     }
 
-    fn ask(&mut self, class: Class, route: Route) -> AskId {
+    fn ask(&mut self, class: Class, route: Route) -> Result<AskId, TestCaseError> {
         let ask = AskId(self.next_ask);
         self.next_ask += 1;
         let (round, flying) = (BTreeSet::new(), BTreeMap::new());
         let asked = Asked { class, route: route.clone(), round, flying, retry_at: None };
         self.asks.insert(ask, asked);
-        self.step(Input::Ask { ask, class, route });
-        ask
+        self.step(Input::Ask { ask, class, route })?;
+        Ok(ask)
     }
 
     /// Earliest due reply (one at a time: each may end asks) or core wake, until `until`
-    fn advance(&mut self, until: Instant) {
+    fn advance(&mut self, until: Instant) -> Result<(), TestCaseError> {
         loop {
             let reply = (0..self.pending.len()).min_by_key(|i| self.pending[*i].0);
             let reply_at = reply.map(|i| self.pending[i].0);
@@ -297,24 +355,26 @@ impl World {
             match reply.filter(|_| reply_at == Some(next)) {
                 Some(due) => {
                     let (_, input) = self.pending.remove(due);
-                    self.deliver(input);
+                    self.deliver(input)?;
                 }
                 None => {
-                    self.step(Input::Tick);
-                    let wake = self.core.wake();
-                    assert!(
-                        wake.is_none_or(|at| at > next),
-                        "a wake is in the future after a step"
+                    self.step(Input::Tick)?;
+                    let wake = self.core.wake().map(|at| at - self.t0);
+                    let stepped = next - self.t0;
+                    prop_assert!(
+                        wake.is_none_or(|at| at > stepped),
+                        "a wake lies in the future after a step: woken at {stepped:?}, next wake \
+                         {wake:?} (since t0)"
                     );
                 }
             }
         }
         self.now = until;
-        self.step(Input::Tick);
+        self.step(Input::Tick)
     }
 
     /// The model's own record first (as the driver frees before stepping), then the step
-    fn deliver(&mut self, input: Input) {
+    fn deliver(&mut self, input: Input) -> Result<(), TestCaseError> {
         match &input {
             Input::Reply { ticket, reply } => {
                 self.fly(ticket.member, ticket.class, false);
@@ -335,7 +395,7 @@ impl World {
             }
             _ => unreachable!("only replies and polls pend"),
         }
-        self.step(input);
+        self.step(input)
     }
 
     fn count(&mut self, member: MemberId, answered: bool) {
@@ -365,30 +425,31 @@ impl World {
     }
 
     /// Lies reported once the step's outputs are handled (a caller checks after delivery)
-    fn step(&mut self, input: Input) {
+    fn step(&mut self, input: Input) -> Result<(), TestCaseError> {
         let now = self.now;
         for asked in self.asks.values_mut() {
             asked.retry_at = asked.retry_at.filter(|at| *at > now);
         }
         for output in self.core.step(input, now) {
-            self.handle(output);
+            self.handle(output)?;
         }
         self.core.check();
         self.rounds_over();
-        self.conserving();
+        self.conserving()?;
         for (ticket, asked) in std::mem::take(&mut self.lies) {
-            self.report(ticket);
+            self.report(ticket)?;
             if asked.class.retries_rounds() {
-                self.ask(asked.class, asked.route);
+                self.ask(asked.class, asked.route)?;
             }
         }
+        Ok(())
     }
 
-    fn handle(&mut self, output: Output) {
+    fn handle(&mut self, output: Output) -> Result<(), TestCaseError> {
         let now = self.now;
         match output {
             Output::Send(ticket) => {
-                self.oracle(ticket);
+                self.oracle(ticket)?;
                 self.fly(ticket.member, ticket.class, true);
                 let asked = self.asks.get_mut(&ticket.ask).expect("oracle: an open ask");
                 asked.round.insert(ticket.member);
@@ -405,13 +466,18 @@ impl World {
                 self.pending.push((now + after, Input::Reply { ticket, reply }));
             }
             Output::Answered(ticket) => {
-                assert_eq!(
-                    self.value_from.take(),
+                let replied = self.value_from.take();
+                prop_assert_eq!(
+                    replied,
                     Some(ticket),
-                    "T4: the value just replied, once"
+                    "an answer delivers the value just replied, once (T4): replied vs answered"
                 );
-                assert!(self.asks.contains_key(&ticket.ask), "T4: an ask ends once");
-                let asked = self.asks[&ticket.ask].clone();
+                let asked = self.asks.get(&ticket.ask).cloned();
+                let Some(asked) = asked else {
+                    return Err(TestCaseError::fail(format!(
+                        "an ask ends once (T4): {ticket:?} answered a closed ask"
+                    )));
+                };
                 self.forget(ticket.ask);
                 self.ends.insert(ticket.ask, (now, Some(ticket.member)));
                 if self.kinds.get(&ticket.member) == Some(&Kind::Lying) {
@@ -420,10 +486,16 @@ impl World {
                 }
             }
             Output::Unanswered(ask) => {
-                let asked = self.asks.get(&ask).expect("T4: an ask ends once").clone();
-                assert!(
-                    !self.honest_may_serve(&asked),
-                    "T9: unanswered while an honest member may serve"
+                let Some(asked) = self.asks.get(&ask).cloned() else {
+                    return Err(TestCaseError::fail(format!(
+                        "an ask ends once (T4): {ask:?} unanswered after it ended"
+                    )));
+                };
+                let honest = self.honest_may_serve(&asked);
+                prop_assert!(
+                    honest.is_none(),
+                    "an ask an honest member may serve is answered (T9): {ask:?} {asked:?} \
+                     unanswered, {honest:?} honest"
                 );
                 self.forget(ask);
                 self.ends.insert(ask, (now, None));
@@ -431,7 +503,10 @@ impl World {
             Output::Poll(PollOrder { validator, .. }) => {
                 self.polls.entry(validator).or_default().push(now);
                 let member_id = MemberId::TrustedValidator(validator);
-                assert!(self.polling.insert(member_id), "T10: one poll per member in flight");
+                prop_assert!(
+                    self.polling.insert(member_id),
+                    "one poll per member in flight (T10): {member_id:?} polled again mid-poll"
+                );
                 let (after, read) = match self.kinds[&member_id] {
                     Kind::Honest | Kind::Lying => (FAST, Some(Synced::Live)),
                     Kind::Slow => (SLOW, Some(Synced::Live)),
@@ -444,6 +519,7 @@ impl World {
                 self.pending.push((now + after, Input::Polled { validator, read }));
             }
         }
+        Ok(())
     }
 
     fn up(&self) -> bool {
@@ -451,7 +527,7 @@ impl World {
     }
 
     /// T8: a trusted `ticket.member` benched once more, nobody else (the peer set: nobody)
-    fn report(&mut self, ticket: Ticket) {
+    fn report(&mut self, ticket: Ticket) -> Result<(), TestCaseError> {
         let times = |core: &TrafficCore| -> BTreeMap<MemberId, u32> {
             core.members.iter().map(|(id, m)| (*id, m.bench.map_or(0, |b| b.times))).collect()
         };
@@ -462,21 +538,42 @@ impl World {
             let span = Duration::from_secs(60 << count.min(6)).min(Duration::from_secs(3600));
             self.benched.insert(ticket.member, (self.now + span, count + 1));
         }
-        self.step(Input::Report(ticket));
-        assert_eq!(times(&self.core), expected, "T8: a misanswer charged to its sender alone");
+        self.step(Input::Report(ticket))?;
+        prop_assert_eq!(
+            times(&self.core),
+            expected,
+            "a misanswer charged to its sender alone (T8): times benched per member after \
+             reporting {:?}",
+            ticket
+        );
+        Ok(())
     }
 
-    /// Naive eligibility, `round` = members asked this round
-    fn eligible(&self, asked: &Asked, member: MemberId) -> bool {
-        let kind = matches!(member, MemberId::TrustedValidator(_)) || asked.class.peers();
-        let benched = self.benched.get(&member).is_some_and(|(until, _)| *until > self.now);
+    /// Naive eligibility, `round` = members asked this round; the first rule `member` fails
+    fn ineligible(&self, asked: &Asked, member: MemberId) -> Option<Ineligible> {
+        let is_trusted = matches!(member, MemberId::TrustedValidator(_));
+        if !is_trusted && !asked.class.peers() {
+            return Some(Ineligible::PeersNeverServeIt);
+        }
+        if !asked.route.admits(member) {
+            return Some(Ineligible::OutsideItsRoute);
+        }
+        if let Some((until, _)) = self.benched.get(&member).filter(|(until, _)| *until > self.now) {
+            return Some(Ineligible::Benched { for_another: *until - self.now });
+        }
         // down needs a poll probe back up: the peer set never goes down
-        let polled = matches!(member, MemberId::TrustedValidator(_));
-        let down = polled && self.failures.get(&member).is_some_and(|f| *f >= DOWN_AFTER);
-        let lagging =
-            asked.class.needs_synced() && self.synced.get(&member) == Some(&Synced::CatchingUp);
-        let untried = !asked.round.contains(&member);
-        kind && asked.route.admits(member) && !benched && !down && !lagging && untried
+        let failures = self.failures.get(&member).copied().unwrap_or(0);
+        if is_trusted && failures >= DOWN_AFTER {
+            return Some(Ineligible::Down { failures });
+        }
+        if asked.class.needs_synced() && self.synced.get(&member) == Some(&Synced::CatchingUp) {
+            return Some(Ineligible::CatchingUp);
+        }
+        asked.round.contains(&member).then_some(Ineligible::TriedThisRound)
+    }
+
+    fn eligible(&self, asked: &Asked, member: MemberId) -> bool {
+        self.ineligible(asked, member).is_none()
     }
 
     /// First in flight of a lane = its reserve, the rest from the shared connections (a trusted
@@ -501,13 +598,20 @@ impl World {
         }
     }
 
-    /// - T2, T3, synced, T5 (eligible)
+    /// - T2, T3, synced, T5 ([`Ineligible`])
     /// - T6 pick
     /// - T7 a shared permit never jumps a higher lane
-    fn oracle(&self, ticket: Ticket) {
-        let asked = self.asks.get(&ticket.ask).expect("T4: a send for an open ask");
+    fn oracle(&self, ticket: Ticket) -> Result<(), TestCaseError> {
+        let Some(asked) = self.asks.get(&ticket.ask) else {
+            return Err(TestCaseError::fail(format!("a send for an open ask (T4): {ticket:?}")));
+        };
         let member = ticket.member;
-        assert!(self.eligible(asked, member), "oracle: sent to an ineligible member ({ticket:?})");
+        if let Some(rule) = self.ineligible(asked, member) {
+            return Err(TestCaseError::fail(format!(
+                "sent to an ineligible member, {rule:?}: {member:?} for {:?} {:?} via {:?}",
+                ticket.ask, asked.class, asked.route
+            )));
+        }
         let own = lane(asked.class);
         let roomy: Vec<MemberId> = self
             .members()
@@ -526,19 +630,29 @@ impl World {
             lanes + u32::from(self.polling.contains(m))
         };
         let least = best.iter().min_by_key(|m| load(m)).copied();
-        assert_eq!(
+        prop_assert_eq!(
             Some(member),
             preferred.or(least),
-            "T6: pick = best tier with room, preferred, least in flight ({ticket:?})"
+            "pick = best tier with room, then preferred, then least in flight (T6): sent vs the \
+             oracle's pick for {:?} {:?} via {:?}, best tier {:?}",
+            ticket.ask,
+            asked.class,
+            asked.route,
+            best
         );
         let reserved = self.flying.get(&member).is_none_or(|f| f[own] == 0);
         if reserved {
-            return;
+            return Ok(());
         }
         let higher = self.asks.iter().find(|(_, other)| {
             lane(other.class) < own && self.ready(other) && self.eligible(other, member)
         });
-        assert!(higher.is_none(), "T7: {ticket:?} took a shared permit ahead of {higher:?}");
+        prop_assert!(
+            higher.is_none(),
+            "a shared permit never jumps a higher lane's waiting ask (T7): {ticket:?} ahead of \
+             {higher:?}"
+        );
+        Ok(())
     }
 
     /// Block ask with nothing in flight and nobody eligible left: next round after 1 s
@@ -562,46 +676,72 @@ impl World {
     }
 
     /// T7: no ready ask waits while an eligible member has room for its lane
-    fn conserving(&self) {
+    fn conserving(&self) -> Result<(), TestCaseError> {
         for (id, asked) in &self.asks {
             let room = self.members().into_iter().find(|m| {
                 self.ready(asked) && self.eligible(asked, *m) && self.room(*m, lane(asked.class))
             });
-            assert_eq!(room, None, "T7: {id:?} {asked:?} waits beside a member with room");
+            prop_assert_eq!(
+                room,
+                None,
+                "no ready ask waits beside a member with room (T7): {:?} {:?}",
+                id,
+                asked
+            );
         }
+        Ok(())
     }
 
-    fn honest_may_serve(&self, asked: &Asked) -> bool {
-        self.kinds.iter().any(|(member, kind)| {
-            let kind_ok = matches!(member, MemberId::TrustedValidator(_)) || asked.class.peers();
-            matches!(kind, Kind::Honest | Kind::Slow) && kind_ok && asked.route.admits(*member)
-        })
+    /// Some honest member (honest or slow) `asked` may reach, by kind and route
+    fn honest_may_serve(&self, asked: &Asked) -> Option<MemberId> {
+        self.kinds
+            .iter()
+            .find(|(member, kind)| {
+                let kind_ok =
+                    matches!(member, MemberId::TrustedValidator(_)) || asked.class.peers();
+                matches!(kind, Kind::Honest | Kind::Slow) && kind_ok && asked.route.admits(**member)
+            })
+            .map(|(member, _)| *member)
     }
 
-    fn settle(&mut self) {
+    fn settle(&mut self) -> Result<(), TestCaseError> {
         let quiet = self.now;
-        self.advance(quiet + SETTLE);
-        for asked in self.asks.values() {
-            assert!(
-                !self.honest_may_serve(asked),
-                "T9: an ask an honest member may serve still open: {asked:?}"
+        self.advance(quiet + SETTLE)?;
+        for (id, asked) in &self.asks {
+            let honest = self.honest_may_serve(asked);
+            prop_assert!(
+                honest.is_none(),
+                "an ask an honest member may serve is served (T9): {id:?} {asked:?} still open \
+                 after {SETTLE:?} quiet, {honest:?} honest"
             );
         }
         for liar in self.answered_lies.iter().filter(|m| matches!(m, MemberId::TrustedValidator(_)))
         {
             let member = self.core.members.get(liar).expect("a configured liar");
-            assert!(member.bench.is_some(), "every trusted liar that answered benched");
+            prop_assert!(
+                member.bench.is_some(),
+                "every trusted liar that answered benched: {liar:?}"
+            );
         }
-        let peers = self.core.members.get(&MemberId::Peers);
-        assert!(peers.is_none_or(|peers| peers.bench.is_none()), "the peer set never benched");
+        let peers = self.core.members.get(&MemberId::Peers).and_then(|peers| peers.bench);
+        prop_assert!(peers.is_none(), "the peer set never benched: {peers:?}");
         for (member, starts) in &self.polls {
             for gap in starts.windows(2).map(|w| w[1] - w[0]) {
-                assert!(gap >= MIN_POLL_SPACING, "T10: {member:?} polled {gap:?} apart");
+                prop_assert!(
+                    gap >= MIN_POLL_SPACING,
+                    "polls of one member ≥ {MIN_POLL_SPACING:?} apart (T10): {member:?} polled \
+                     {gap:?} apart"
+                );
             }
             let settled = starts.iter().filter(|at| **at >= quiet);
             let gaps: Vec<Duration> =
                 settled.collect::<Vec<_>>().windows(2).map(|w| *w[1] - *w[0]).collect();
-            assert!(gaps.iter().all(|gap| *gap <= LADDER_CEILING), "T10: {member:?} gaps {gaps:?}");
+            prop_assert!(
+                gaps.iter().all(|gap| *gap <= LADDER_CEILING),
+                "settled poll gaps ≤ the ladder's {LADDER_CEILING:?} ceiling (T10): {member:?} \
+                 gaps {gaps:?}"
+            );
         }
+        Ok(())
     }
 }
