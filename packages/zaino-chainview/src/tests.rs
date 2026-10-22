@@ -175,7 +175,7 @@ async fn the_mempool_opens_once_a_polled_validator_holds_the_verified_best_each_
     cancel.cancel();
 }
 
-/// Listing 1 and 2 when pinned; then 2 flaps out and back, 1 drops, 3 arrives
+/// Listing 1 and 2 when pinned, then 2 out and back, 1 dropped, 3 heard
 #[tokio::test(start_paused = true)]
 async fn arrivals_since_a_pinned_view_are_each_newly_held_transaction_once() {
     let mut chain = MockChain::regtest();
@@ -651,8 +651,8 @@ async fn an_unchecked_send_with_peers_spends_its_budget_on_peer_relays_then_one_
     cancel.cancel();
 }
 
-/// One trusted validator, seven live peers in seven netgroups; `a` listed by the validator and
-/// every peer, then the validator down
+/// Trusted validator + seven live peers in seven netgroups, all listing `a`, then the validator
+/// down
 #[tokio::test(start_paused = true)]
 async fn a_listing_handed_to_a_peer_quorum_keeps_its_sighting_when_the_validator_goes_down() {
     let alice = p2pkh([0xaa; 20]);
@@ -1213,7 +1213,7 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
 /// a, b at 30 (depth 10); a then serves a longer chain forked at 5, below our finalized 20
 #[tokio::test(start_paused = true)]
 async fn a_forked_validator_never_delays_the_honest_one() {
-    /// One poll + its header fetch
+    /// Poll + its header fetch
     const FOLLOWED_WITHIN: Duration = Duration::from_millis(1_500);
     /// Six stall back-offs: a forked claim fetched again would show here
     const REFETCH_WINDOW: Duration = Duration::from_secs(30);

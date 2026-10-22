@@ -237,7 +237,7 @@ async fn a_reported_liar_is_benched_and_the_re_ask_by_hash_or_height_goes_to_the
     cancel.cancel();
 }
 
-/// Ours stalls `STALL` per ask (polls at once), partner answers at once
+/// Ours: `STALL` per ask (polls at once); partner: at once
 #[tokio::test(start_paused = true)]
 async fn a_tip_block_is_hedged_to_another_member_at_its_floor_not_after_the_stall() {
     const STALL: Duration = Duration::from_secs(20);
@@ -536,7 +536,7 @@ async fn a_lookup_never_reaches_the_peer_set_and_ends_with_the_trusted_failure()
     cancel.cancel();
 }
 
-/// Peer set holds block 1, the trusted member down until it is asked: by height = trusted only
+/// Peer set holding block 1, the trusted member down: by height = trusted only
 #[tokio::test(start_paused = true)]
 async fn a_block_by_height_never_reaches_the_peer_set_and_waits_for_a_trusted_member() {
     let mut chain = MockChain::regtest();

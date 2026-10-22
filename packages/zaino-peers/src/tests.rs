@@ -171,7 +171,7 @@ async fn a_peers_mempool_is_its_own_listing_and_a_peer_not_in_the_set_is_a_failu
     );
 }
 
-/// Fake answers B's bytes when asked for A
+/// Fake: B's bytes for an ask of A
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lying_peers_answer_never_labels_the_asked_id_and_is_an_answer_not_a_failure() {
     let raws = [1, 2, 3].map(|lock_time| raw_transaction(lock_time, 0).1);

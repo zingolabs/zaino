@@ -205,7 +205,7 @@ impl Oracle {
     }
 }
 
-/// One case: the system + its oracle, moved in lockstep (`txs` in `TXS` order)
+/// System + its oracle, moved in lockstep (`txs` in `TXS` order)
 struct Run {
     core: ChainViewCore,
     chain: MockChain,

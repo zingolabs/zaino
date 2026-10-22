@@ -123,7 +123,7 @@ mod tests {
     /// Ids the model draws from: `id(0..IDS)`
     const IDS: u8 = 8;
 
-    /// One round: per peer, `None` = failed, else the ids (`id(n)`) it lists; then `wait`
+    /// Per peer `None` = failed, else the ids (`id(n)`) it lists; then `wait`
     #[derive(Debug, Clone)]
     struct Round {
         answers: Vec<Option<BTreeSet<u8>>>,
@@ -289,7 +289,7 @@ mod tests {
         assert!(listings.retains(&a.txid), "retained by txid, whatever the witness");
     }
 
-    /// Every peer lists `a` at `start`, then fails every round
+    /// Every peer listing `a` at `start`, then failing each round
     #[test]
     fn a_failed_peer_keeps_its_last_listing_for_15_s() {
         let a = id(1, Some(1));

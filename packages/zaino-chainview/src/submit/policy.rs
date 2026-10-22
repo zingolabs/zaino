@@ -379,7 +379,7 @@ mod tests {
         }
     }
 
-    /// One push as the job made it: `at` since start, `waits` = its answer starts a threshold,
+    /// Push as the job made it: `at` since start, `waits` = its answer starts a threshold,
     /// `seen` + `accepted` = the job's view as it pushed
     #[derive(Debug, Clone, Copy)]
     struct Push {
@@ -390,7 +390,7 @@ mod tests {
         accepted: bool,
     }
 
-    /// The job run to `Done` on a virtual clock (≤ 500 ms per wait step), times since start
+    /// Job run to `Done` on a virtual clock (≤ 500 ms per wait step), times since start
     ///
     /// - `ran_away` = still running past `(max_attempts + 1) × threshold + 1 s` (stopped there)
     #[derive(Debug)]
@@ -583,8 +583,8 @@ mod tests {
             );
         }
 
-        /// A trusted entry relaying within the threshold (+ one 500 ms clock step), an honest
-        /// reader never pushed to: it lists the transaction in time
+        /// Trusted entry relaying within the threshold (+ one 500 ms clock step), an honest reader
+        /// never pushed to: listed in time
         #[test]
         fn a_fast_relay_with_an_honest_reader_outside_the_entries_ends_spread(case in case()) {
             let run = run(&case);
