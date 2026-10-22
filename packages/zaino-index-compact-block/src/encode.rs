@@ -222,7 +222,10 @@ mod tests {
                 ironwood_commitment_tree_size: 30,
             }),
         };
-        assert_eq!(decoded, expected);
+        assert_eq!(
+            decoded, expected,
+            "decoded record vs the block + fees + sizes it was built from"
+        );
     }
 
     /// Wire `fee` = `uint32`, no presence: unknown (coinbase, unpriced mempool tx) and past

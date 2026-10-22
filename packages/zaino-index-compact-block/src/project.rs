@@ -262,9 +262,9 @@ mod tests {
         };
         let framed = encode_compact_block(chain.block(one.hash), &chain.fees(one.hash), &sizes);
 
-        assert_eq!(record_hash(&framed), Some(one.hash.0));
+        assert_eq!(record_hash(&framed), Some(one.hash.0), "whole record: its hash");
         assert_eq!(record_hash(&framed[..FRAME_HEADER + 4]), None, "cut before the hash");
-        assert_eq!(record_sizes(&framed), Some(sizes));
+        assert_eq!(record_sizes(&framed), Some(sizes), "whole record: its chainMetadata");
         assert_eq!(record_sizes(&framed[..framed.len() - 1]), None, "cut inside chainMetadata");
     }
 
@@ -318,19 +318,15 @@ mod tests {
         assert_eq!(projected(pools), expected, "orchard only");
     }
 
-    /// lightwalletd `FilterTxPool`
-    ///
-    /// - tx left with no component after projection dropped: every pool selection (`ALL`
-    ///   included), from a block and one at a time from the mempool
-    /// - block stays, even with no tx left
-    /// - stored record (`GetBlock`) keeps every tx
+    /// lightwalletd `FilterTxPool`: tx left with no component after projection dropped, every
+    /// pool selection (`ALL` included), from a block and one at a time from the mempool
     #[test]
     fn projection_drops_transactions_left_with_no_component() {
-        // slots: coinbase (transparent), component-less, sapling only, orchard only, transparent
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest();
         let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 1).pay(&alice, 1_100)));
         let paid = chain.output(one, 0, 1);
+        // slots: 0 coinbase (transparent), 1 component-less, 2 sapling, 3 orchard, 4 transparent
         let two = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 625))
                 .tx(|t| t)
@@ -338,60 +334,59 @@ mod tests {
                 .tx(|t| t.orchard_action(0x77, 0x78))
                 .tx(|t| t.spend(paid).pay(&alice, 100).fee(1_000))
         });
-        let three = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
-        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
-        let sizes = TreeSizes {
-            sapling: TreeSize::from(1),
-            orchard: TreeSize::from(1),
-            ironwood: TreeSize::from(0),
-        };
-        let stored = encode_compact_block(block, &fees, &sizes);
-        let indices = |pools| {
+        let block = chain.block(two.hash);
+        let stored = encode_compact_block(block, &chain.fees(two.hash), &TreeSizes::ZERO);
+        let none = Pools { sapling: false, orchard: false, ironwood: false, transparent: false };
+        let full = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
+        assert_eq!(full.vtx.len(), 5, "stored record (GetBlock) keeps every tx");
+
+        #[rustfmt::skip]
+        let cases = [
+            ("shielded (default)", Pools::default(),                    [2, 3].as_slice()),
+            ("all",                Pools::ALL,                          &[0, 2, 3, 4]),
+            ("transparent",        Pools { transparent: true, ..none }, &[0, 4]),
+            ("orchard",            Pools { orchard: true, ..none },     &[3]),
+        ];
+        for (selection, pools, kept) in cases {
             let projected = project(slice::from_ref(&stored), pools).expect("walks");
             let decoded =
                 compact_formats::CompactBlock::decode(&projected[FRAME_HEADER..]).expect("decodes");
-            decoded.vtx.iter().map(|tx| tx.index).collect::<Vec<_>>()
-        };
-        let transparent =
-            Pools { sapling: false, orchard: false, ironwood: false, transparent: true };
-        let orchard = Pools { sapling: false, orchard: true, ironwood: false, transparent: false };
+            let from_block: Vec<u64> = decoded.vtx.iter().map(|tx| tx.index).collect();
+            assert_eq!(from_block, kept, "{selection}: slots kept from the block");
 
-        let full = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-        assert_eq!(full.vtx.len(), 5, "stored record (GetBlock) keeps every tx");
-        assert_eq!(indices(Pools::default()), [2, 3], "shielded: coinbase + transparent-only gone");
-        assert_eq!(indices(Pools::ALL), [0, 2, 3, 4], "all: only the component-less tx gone");
-        assert_eq!(indices(transparent), [0, 4]);
-        assert_eq!(indices(orchard), [3]);
-
-        // the same transactions one at a time from the mempool: the same rule, each re-slotted
-        let mempool = |pools| {
             let fee = Some(Zatoshis::from_u64(1_000).expect("in range"));
-            let kept = block.transactions().iter().enumerate().filter_map(|(slot, tx)| {
+            let mut from_mempool = Vec::new();
+            for (slot, tx) in block.transactions().iter().enumerate() {
                 let rendered = compact_tx(0, tx, fee);
-                let framed = project_tx_at(&rendered.encode_to_vec(), slot as u64, pools)?;
+                let Some(framed) = project_tx_at(&rendered.encode_to_vec(), slot as u64, pools)
+                else {
+                    continue;
+                };
                 let decoded =
                     compact_formats::CompactTx::decode(&framed[FRAME_HEADER..]).expect("decodes");
-                let kept = (&decoded.txid, decoded.fee);
-                assert_eq!(kept, (&rendered.txid, 1_000), "slot {slot}: identity + fee");
-                Some(decoded.index)
-            });
-            kept.collect::<Vec<_>>()
-        };
-        assert_eq!(mempool(Pools::default()), [2, 3], "shielded: as from a block");
-        assert_eq!(mempool(Pools::ALL), [0, 2, 3, 4]);
-        assert_eq!(mempool(transparent), [0, 4]);
-        assert_eq!(mempool(orchard), [3]);
+                assert_eq!(decoded.txid, rendered.txid, "{selection}: slot {slot} txid");
+                assert_eq!(decoded.fee, 1_000, "{selection}: slot {slot} fee");
+                from_mempool.push(decoded.index);
+            }
+            assert_eq!(from_mempool, kept, "{selection}: slots kept one at a time (mempool)");
+        }
+    }
 
-        let coinbase_only = chain.block(three.hash);
-        let stored = encode_compact_block(coinbase_only, &chain.fees(three.hash), &sizes);
+    /// Coinbase-only block projected to shielded: every tx gone, the block still sent
+    #[test]
+    fn a_block_left_with_no_transaction_is_still_projected() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
+        let stored =
+            encode_compact_block(chain.block(one.hash), &chain.fees(one.hash), &TreeSizes::ZERO);
+
         let shielded = project(slice::from_ref(&stored), Pools::default()).expect("walks");
+
         let decoded =
             compact_formats::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
         let full = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-        assert_eq!(
-            decoded,
-            compact_formats::CompactBlock { vtx: vec![], ..full },
-            "block kept, no tx left"
-        );
+        let expected = compact_formats::CompactBlock { vtx: vec![], ..full };
+        assert_eq!(decoded, expected, "the stored block with no tx");
     }
 }

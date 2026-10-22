@@ -102,27 +102,35 @@ pub fn fold<V: SequenceRead>(
     let sizes = parent.tip_sizes().advance(block);
     out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
 }
-
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
 
+    use proptest::prelude::{prop_assert, prop_assert_eq, Strategy as _, TestCaseError};
     use prost::Message as _;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::types::{TreeSize, TreeSizes};
+    use zaino_primitives::types::{PerPool, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
     use zaino_source::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::{
-        block_on_paused, finalized, moves, open, step, write_buffers, FinalizedStreamFixture, Move,
-        Writer, QUEUE,
+        block_on_paused, moves, open, step, write_buffers, FinalizedStreamFixture, Move, Writer,
+        QUEUE,
     };
     use zaino_sync::FeeSink;
-    use zcash_protocol::consensus::{NetworkType, H0};
+    use zcash_protocol::{
+        consensus::{NetworkType, H0},
+        BlockHash,
+    };
 
     use super::*;
+    use crate::project::{record_hash, record_sizes};
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
+
+    fn sizes(sapling: u32, orchard: u32, ironwood: u32) -> TreeSizes {
+        PerPool { sapling, orchard, ironwood }.map(TreeSize::from)
+    }
 
     /// Genesis ..= tip + each block's fees as utxo-set derives them
     fn blocks_and_fees(chain: &MockChain) -> (Vec<Arc<Block>>, Vec<BlockFees>) {
@@ -131,19 +139,10 @@ mod tests {
         (blocks, fees)
     }
 
-    /// Genesis + three blocks folded one onto the next
-    ///
-    /// - each record = the block encoded with the running sizes
-    /// - parent record claiming near-`u32::MAX` seeds the next fold → one block more overflows
-    ///   (sizes read, not carried)
+    /// Genesis + three blocks folded one onto the next: each record = the block encoded with the
+    /// running sizes
     #[test]
-    fn sizes_advance_from_the_parent_record_and_overflow_past_u32() {
-        let sizes = |sapling: u32, orchard: u32, ironwood: u32| TreeSizes {
-            sapling: TreeSize::from(sapling),
-            orchard: TreeSize::from(orchard),
-            ironwood: TreeSize::from(ironwood),
-        };
-        // coinbases commit (sapling, orchard, ironwood) = (2, 1, 0), (3, 0, 4), (0, 5, 1)
+    fn sizes_advance_from_the_parent_record() {
         let mut chain = MockChain::regtest();
         let one = chain
             .mine(|b| b.coinbase(|c| c.sapling_output(1).sapling_output(2).orchard_action(1, 1)));
@@ -161,28 +160,47 @@ mod tests {
                 c.orchard_action(6, 6).ironwood_action(5, 5)
             })
         });
-        let fees = |block: &Block| chain.fees(block.header().hash);
-        let folded = |store: &DiskStore, block: &Block| {
-            let mut changes = store.changes(block.block_ref());
-            let parent = CompactBlockReader::new(store.applied());
-            fold(&parent, block, &fees(block), &mut changes);
-            changes
-        };
-        let mut through_three = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+
         for (at, after) in [
             (chain.genesis(), sizes(0, 0, 0)),
             (one, sizes(2, 1, 0)),
             (two, sizes(5, 1, 4)),
             (three, sizes(5, 6, 5)),
         ] {
-            let block = chain.block(at.hash);
-            let changes = folded(&through_three, block);
+            let (block, fees) = (chain.block(at.hash), chain.fees(at.hash));
+            let mut changes = store.changes(block.block_ref());
+            fold(&CompactBlockReader::new(store.applied()), block, &fees, &mut changes);
             let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
-            let expected = encode_compact_block(block, &fees(block), &after);
-            assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
-            through_three.apply(changes);
-            assert_eq!(CompactBlockReader::new(through_three.applied()).tip_sizes(), after);
+            let expected = encode_compact_block(block, &fees, &after);
+            assert!(records == [&expected[..]], "{at:?}: one record, encoded with {after:?}");
+            store.apply(changes);
+            let tip = CompactBlockReader::new(store.applied()).tip_sizes();
+            assert_eq!(tip, after, "{at:?}: tip sizes after its fold");
         }
+    }
+
+    /// Parent record claiming `u32::MAX` sapling leaves + one more leaf = past a depth-32 tree
+    /// (sizes read off the record, not carried)
+    #[test]
+    #[should_panic(expected = "Sapling commitment tree past 2^32 leaves")]
+    fn a_fold_onto_a_full_sapling_tree_record_panics() {
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.coinbase(|c| c.sapling_output(1)));
+        let (genesis, one) = (chain.block(chain.genesis().hash), chain.block(one.hash));
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut changes = store.changes(genesis.block_ref());
+        let full = encode_compact_block(
+            genesis,
+            &chain.fees(genesis.header().hash),
+            &sizes(u32::MAX, 0, 0),
+        );
+        changes.sequence(BLOCKS).append(&full);
+        store.apply(changes);
+
+        let mut changes = store.changes(one.block_ref());
+        let parent = CompactBlockReader::new(store.applied());
+        fold(&parent, one, &chain.fees(one.header().hash), &mut changes);
     }
 
     /// Writer as zainod runs it: the finalized stream + utxo-set's fee stream, one fee per step
@@ -219,72 +237,31 @@ mod tests {
         }
     }
 
-    /// `(sapling, orchard, ironwood)` sizes and per-tx fees of the record at `height`
-    fn record(view: &DiskView, height: u32) -> ((u32, u32, u32), Vec<u32>) {
-        let reader = CompactBlockReader::new(view.clone());
-        let record = reader.block(h(height)).expect("record");
-        let decoded =
-            compact_formats::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
-        let meta = decoded.chain_metadata.expect("carries metadata");
-        let sizes = (
-            meta.sapling_commitment_tree_size,
-            meta.orchard_commitment_tree_size,
-            meta.ironwood_commitment_tree_size,
-        );
-        (sizes, decoded.vtx.iter().map(|tx| tx.fee).collect())
+    /// One stored record, decoded to what the model predicts
+    #[derive(Debug, PartialEq)]
+    struct Stored {
+        hash: BlockHash,
+        sizes: TreeSizes,
+        fees: Vec<u32>,
     }
 
-    /// Tree sizes accumulate block by block, and a restart resending held heights (their fees
-    /// popped, their records untouched) folds the next block onto the durable tip record (not
-    /// zero)
-    #[tokio::test]
-    async fn tree_sizes_and_fees_accumulate_across_blocks_and_a_restart() {
-        let fs = SimFs::new();
-        let miner = p2pkh([0xc0; 20]);
-        let mut mock = MockChain::regtest();
-        // block h: coinbase pays 1 000 × h, spent whole by one tx (fee distinct per height: a
-        // pairing slip = a wrong fee in the record) committing (sapling, orchard, ironwood)
-        for (at, (sapling, orchard, ironwood)) in
-            (1u32..).zip([(2, 1, 0), (3, 2, 1), (0, 0, 4), (1, 1, 1)])
-        {
-            let fee = 1_000 * u64::from(at);
-            mock.mine(|b| {
-                b.coinbase(|c| c.pay(&miner, fee)).tx(|t| {
-                    let t = t.spend_in_block(0, 0).fee(fee);
-                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
-                    let t = (0..orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
-                    (0..ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
-                })
-            });
+    fn stored(record: &[u8]) -> Stored {
+        let decoded =
+            compact_formats::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
+        Stored {
+            hash: BlockHash(record_hash(record).expect("carries its hash")),
+            sizes: record_sizes(record).expect("carries its chainMetadata"),
+            fees: decoded.vtx.iter().map(|tx| tx.fee).collect(),
         }
-        let (blocks, fees_by_height) = blocks_and_fees(&mock);
+    }
 
-        let mut index = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MAX), &fees_by_height);
-        for block in &blocks[..3] {
-            index.send(step(block)).await;
-        }
-        index.send(finalized(&blocks[3])).await;
-        index.writer.durable_at(h(3)).await;
-        let view = index.stop().await;
-        let stored = [0, 1, 2, 3].map(|height| record(&view, height));
-        let fees = |height: u32| vec![0, 1_000 * height];
-        let expected = [
-            ((0, 0, 0), vec![0]),
-            ((2, 1, 0), fees(1)),
-            ((5, 3, 1), fees(2)),
-            ((5, 3, 5), fees(3)),
-        ];
-        assert_eq!(stored, expected, "cumulative sizes, each block's own fees");
-
-        let mut resumed = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MAX), &fees_by_height);
-        for block in &blocks[2..4] {
-            resumed.send(step(block)).await;
-        }
-        resumed.send(finalized(&blocks[4])).await;
-        resumed.writer.durable_at(h(4)).await;
-        let view = resumed.stop().await;
-        assert_eq!(record(&view, 3), expected[3], "held: untouched");
-        assert_eq!(record(&view, 4), ((6, 4, 6), fees(4)), "folded onto 3's record");
+    /// Commitments one block adds, per pool (0..=3 each)
+    fn commits() -> impl proptest::strategy::Strategy<Value = PerPool<u32>> {
+        (0u32..=3, 0u32..=3, 0u32..=3).prop_map(|(sapling, orchard, ironwood)| PerPool {
+            sapling,
+            orchard,
+            ironwood,
+        })
     }
 
     proptest::proptest! {
@@ -301,41 +278,49 @@ mod tests {
         /// - full range read = those records in order
         #[test]
         fn random_histories_serve_records_with_the_models_tree_sizes_and_fees(
-            counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
+            per_block in proptest::collection::vec(commits(), 1..10),
             moves in moves(),
             write_buffer in write_buffers(),
         ) {
-            block_on_paused(random_history(counts, moves, write_buffer));
+            block_on_paused(random_history(per_block, moves, write_buffer))?;
         }
     }
 
     async fn random_history(
-        counts: Vec<(usize, usize, usize)>,
+        per_block: Vec<PerPool<u32>>,
         moves: Vec<Move>,
         write_buffer: NonZeroUsize,
-    ) {
-        // genesis, then block h: coinbase pays 1 000 × h, spent whole by one tx committing
-        // `counts[h - 1]` (sapling, orchard, ironwood)
+    ) -> Result<(), TestCaseError> {
+        // block h: coinbase pays 1 000 × h, spent whole (tx 0 output 0) by one tx paying it all as
+        // fee and committing `per_block[h - 1]`
         let miner = p2pkh([0xc0; 20]);
         let mut mock = MockChain::regtest();
-        for (at, &(sapling, orchard, ironwood)) in (1u32..).zip(&counts) {
+        for (at, adds) in (1u32..).zip(&per_block) {
             let fee = 1_000 * u64::from(at);
-            let [sapling, orchard, ironwood] =
-                [sapling, orchard, ironwood].map(|count| u32::try_from(count).expect("≤ 3"));
             mock.mine(|b| {
                 b.coinbase(|c| c.pay(&miner, fee)).tx(|t| {
                     let t = t.spend_in_block(0, 0).fee(fee);
-                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
-                    let t = (0..orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
-                    (0..ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
+                    let t = (0..adds.sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
+                    let t = (0..adds.orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
+                    (0..adds.ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
                 })
             });
         }
         let (blocks, fees_by_height) = blocks_and_fees(&mock);
-        let sizes_at = |height: usize| {
-            counts[..height].iter().fold((0u32, 0u32, 0u32), |(s, o, i), &(ds, d_o, di)| {
-                (s + ds as u32, o + d_o as u32, i + di as u32)
-            })
+        let model = |height: usize| Stored {
+            hash: blocks[height].header().hash,
+            sizes: per_block[..height]
+                .iter()
+                .fold(PerPool::<u32>::default(), |sum, adds| PerPool {
+                    sapling: sum.sapling + adds.sapling,
+                    orchard: sum.orchard + adds.orchard,
+                    ironwood: sum.ironwood + adds.ironwood,
+                })
+                .map(TreeSize::from),
+            fees: match height {
+                0 => vec![0],
+                paid => vec![0, 1_000 * paid as u32],
+            },
         };
 
         let fs = SimFs::new();
@@ -352,57 +337,51 @@ mod tests {
             index.writer.durable_at(stream.tip()).await;
 
             let case = format!("move {at} {next:?}");
-            let view = index.writer.handle().durable_view();
-            let reader = CompactBlockReader::new(view.clone());
-            let sent = stream.sent();
+            let reader = CompactBlockReader::new(index.writer.handle().durable_view());
             let mut records = Vec::new();
-            for height in 0..sent as u32 {
-                let (sizes, fees) = record(&view, height);
-                let stored = reader.block(h(height)).expect("record");
-                let decoded = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..])
-                    .expect("decodes");
-                let hash = blocks[height as usize].header().hash.0;
-                assert_eq!(decoded.hash, hash.to_vec(), "{case}: record {height}");
-                assert_eq!(sizes, sizes_at(height as usize), "{case}: record {height}");
-                let own = match height {
-                    0 => vec![0],
-                    paid => vec![0, 1_000 * paid],
-                };
-                assert_eq!(fees, own, "{case}: its own fees");
-                records.extend_from_slice(&stored);
+            for height in 0..stream.sent() {
+                let record = reader.block(h(height as u32));
+                prop_assert!(record.is_some(), "{case}: no record at {height}");
+                let record = record.expect("checked above");
+                prop_assert_eq!(stored(&record), model(height), "{}: record {}", case, height);
+                records.extend_from_slice(&record);
             }
-            if let Some(last) = sent.checked_sub(1) {
-                let (window, reach) = reader.range(H0, h(last as u32), usize::MAX);
-                assert_eq!(reach, h(last as u32), "{case}");
-                assert_eq!(window.concat(), records[..window.concat().len()], "{case}: in order");
+            if let Some(last) = stream.tip() {
+                let (window, reach) = reader.range(H0, last, usize::MAX);
+                let window = window.concat();
+                prop_assert_eq!(reach, last, "{}: range reach", case);
+                prop_assert!(
+                    window[..] == records[..window.len()],
+                    "{case}: range 0..={last:?} = the records read one by one, in order"
+                );
             }
         }
         index.stop().await;
+        Ok(())
     }
 
-    /// Genesis + four bulk blocks, each its own commit, crashed after every operation: each state
+    /// Genesis + five bulk blocks, each its own commit, crashed after every operation: each state
     /// reopens to an acknowledged or the attempted commit, serves those records byte for byte,
     /// and the next block's tree sizes fold onto its tip record (not from zero)
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_durable_prefix_the_next_block_folds_onto() {
-        // (sapling, orchard, ironwood) per block from 1: cumulative sizes distinct at every height
-        let counts = [(1u8, 0u8, 2u8), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
+        // cumulative sizes distinct at every height
+        let per_block = [(1, 0, 2), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)]
+            .map(|(sapling, orchard, ironwood)| PerPool { sapling, orchard, ironwood });
         let mut mock = MockChain::regtest();
-        for (at, (sapling, orchard, ironwood)) in (1u32..).zip(counts) {
+        for (at, adds) in (1u32..).zip(per_block) {
             mock.mine(|b| {
                 b.tx(|t| {
-                    let t = (0..u32::from(sapling)).fold(t, |t, i| t.sapling_output(16 * at + i));
-                    let t =
-                        (0..u32::from(orchard)).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
-                    (0..u32::from(ironwood)).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
+                    let t = (0..adds.sapling).fold(t, |t, i| t.sapling_output(16 * at + i));
+                    let t = (0..adds.orchard).fold(t, |t, i| t.orchard_action(16 * at + i, 1));
+                    (0..adds.ironwood).fold(t, |t, i| t.ironwood_action(16 * at + i, 1))
                 })
             });
         }
         let (blocks, fees_by_height) = blocks_and_fees(&mock);
-        let sizes_at = |height: usize| {
-            counts[..height].iter().fold((0, 0, 0), |(s, o, i), &(ds, d_o, di)| {
-                (s + u32::from(ds), o + u32::from(d_o), i + u32::from(di))
-            })
+        let sizes_after = |count: usize| {
+            let added = |pool: fn(&PerPool<u32>) -> u32| per_block[..count].iter().map(pool).sum();
+            sizes(added(|p| p.sapling), added(|p| p.orchard), added(|p| p.ironwood))
         };
         let (fs, recording) = SimFs::recording();
         let mut index = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MIN), &fees_by_height);
@@ -417,20 +396,29 @@ mod tests {
         let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
-            let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
-            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
-            assert!(acked.contains(&count), "{label}: recovered {count} blocks");
+            let recovered =
+                store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let acknowledged = (state.tag as usize).min(5);
+            let attempted = (acknowledged + 1).min(5);
+            let case =
+                format!("{}: recovered {recovered} blocks, next height {recovered}", state.label);
+            assert!(
+                [acknowledged, attempted].contains(&recovered),
+                "{case}: acknowledged {acknowledged}, attempted {attempted}"
+            );
             let reader = CompactBlockReader::new(store.durable());
-            let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
-            assert_eq!(served, records[..count], "{label}: byte-identical records");
+            for (height, acked) in (0u32..).zip(&records[..recovered]) {
+                let served = reader.block(h(height));
+                assert!(served == *acked, "{case}: record {height} byte-identical");
+            }
 
             let mut index = Running::start(store, &fees_by_height);
-            index.send(step(&blocks[count])).await;
-            index.writer.durable_at(blocks[count].header().height).await;
-            let (sizes, _) = record(&index.stop().await, count as u32);
-            assert_eq!(sizes, sizes_at(count), "{label}: folded onto the tip record");
+            index.send(step(&blocks[recovered])).await;
+            index.writer.durable_at(blocks[recovered].header().height).await;
+            let next = CompactBlockReader::new(index.stop().await).block(h(recovered as u32));
+            let next = stored(&next.expect("next block's record"));
+            assert_eq!(next.sizes, sizes_after(recovered), "{case}: folded onto the tip record");
         }
     }
 }
