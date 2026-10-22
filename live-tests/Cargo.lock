@@ -847,6 +847,7 @@ name = "e2e"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "rstest",
  "serde_json",
  "tokio",
  "zaino-testutils",
