@@ -9,28 +9,6 @@ const READY: Duration = Duration::from_secs(90);
 mod chain_query_interface {
     use super::*;
 
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(5).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let tip_u32 = u32::from(validator.chain_height().await?);
-        let range =
-            indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip_u32)).await?;
-        assert_eq!(range.len(), tip_u32 as usize, "every block over [1, tip]");
-        for (offset, block) in range.iter().enumerate() {
-            assert_eq!(block.height, (offset + 1) as u64, "contiguous from height 1");
-            assert_eq!(block.hash.len(), 32, "block hash width");
-        }
-        Ok(())
-    }
-
     fn validator_subtrees(reply: &Value) -> Result<Vec<(Vec<u8>, u64)>> {
         reply
             .get("subtrees")
@@ -42,7 +20,8 @@ mod chain_query_interface {
                     .get("root")
                     .and_then(Value::as_str)
                     .context("subtree root from validator is not a string")?;
-                let bytes = zaino_testutils::hex::decode(root_hex, "z_getsubtreesbyindex root")?;
+                let bytes = hex::decode(root_hex)
+                    .with_context(|| format!("z_getsubtreesbyindex root `{root_hex}`"))?;
                 let end_height = subtree
                     .get("end_height")
                     .and_then(Value::as_u64)

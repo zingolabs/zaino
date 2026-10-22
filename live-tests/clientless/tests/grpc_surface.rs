@@ -1,165 +1,88 @@
-//! Smoke over zaino's block, tree-state and info gRPC RPCs against a regtest zebrad
+//! Smoke over zaino's block, tree-state and info gRPC reads against a regtest zebrad
+//!
+//! - Transparent miner → every coinbase carries a vout (pool filters observable on the wire)
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(60);
 
-/// Blocks each `get` test mines → a two-block chain (`TestEnv::build` mines the warm-up block)
-const BASELINE: u32 = 1;
+/// One chain through every read: info, tip, block by height / hash, ranges (pool filters,
+/// nullifiers, out-of-range drains), tree state; validator = oracle wherever it answers
+#[ztest::qos::integration]
+#[tokio::test(flavor = "multi_thread")]
+async fn read_surface_serves_the_validators_chain() -> Result<()> {
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator =
+        env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
 
-mod launch {
-    use super::*;
+    let tip = validator.generate_blocks(10).await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+    let height = u64::from(u32::from(tip));
 
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn regtest_no_cache() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let _validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    let info = indexer.indexer_info().await?;
+    assert!(!info.chain_name.is_empty(), "chain_name set: {info:?}");
+    assert_eq!(info.block_height, height, "lightd info height = tip");
+    assert_eq!(indexer.latest_block().await?, validator.tip().await?, "served tip = validator's");
 
-        let info = indexer.indexer_info().await?;
-        assert!(!info.chain_name.is_empty(), "indexer chain_name must be set: {info:?}");
-        Ok(())
-    }
-}
+    let by_height = indexer.get_block(BlockHeight::from(1u32)).await?;
+    let hash = BlockHash::from_wire(&by_height.hash).context("block hash must be 32 bytes")?;
+    let (_, truth) = validator.get_block(BlockHeight::from(1u32)).await?;
+    assert_eq!((by_height.height, hash), (1, truth), "block 1 (display-order hash) = validator's");
+    let by_hash = indexer.get_block_by_hash(hash).await?;
+    assert_eq!(by_hash, by_height, "by hash = by height");
 
-mod get {
-    use super::*;
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn latest_block() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let indexer_tip = indexer.latest_block_height().await?;
-        let validator_tip = validator.chain_height().await?;
-        assert_eq!(indexer_tip, validator_tip, "indexer tip = validator tip");
-        Ok(())
+    // From 1 (non-standard genesis coinbase script unservable: zingolabs/zaino#818)
+    let start = BlockHeight::from(1u32);
+    let shielded = indexer.get_block_range(start, tip).await?;
+    assert_eq!(shielded.len() as u64, height, "every height in [1, {tip:?}]");
+    for (offset, block) in shielded.iter().enumerate() {
+        assert_eq!(block.height, offset as u64 + 1, "contiguous from 1");
+        assert_eq!(block.hash.len(), 32, "block hash width at {}", block.height);
+        let transparent: usize = block.vtx.iter().map(|tx| tx.vin.len() + tx.vout.len()).sum();
+        assert_eq!(transparent, 0, "default filter = shielded only, at {}", block.height);
     }
 
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let by_height = indexer.get_block(BlockHeight::from(1u32)).await?;
-        assert_eq!(by_height.height, 1, "get_block(1).height");
-        let hash = BlockHash::from_wire(&by_height.hash).context("block hash must be 32 bytes")?;
-        let (_, truth) = validator.get_block(BlockHeight::from(1u32)).await?;
-        assert_eq!(hash, truth, "served hash, display order = validator's");
-        let by_hash = indexer.get_block_by_hash(hash).await?;
-        assert_eq!(by_height.height, by_hash.height, "by-hash height round-trip");
-        assert_eq!(by_height.hash, by_hash.hash, "by-hash hash round-trip");
-        Ok(())
+    // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4
+    let all_pools = vec![1, 2, 3, 4];
+    let full = indexer.get_block_range_with_pools(start, tip, all_pools.clone()).await?;
+    assert_eq!(full.len(), shielded.len(), "same heights, all pools");
+    for block in &full {
+        for tx in &block.vtx {
+            let vout = tx.vout.first().context("transparent vout present")?;
+            assert!(!vout.script_pub_key.is_empty(), "vout carries a script at {}", block.height);
+        }
     }
 
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_range() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 10).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let _blocks =
-            indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(10u32)).await?;
-        Ok(())
+    let nullifiers = indexer.get_block_range_nullifiers(start, tip).await?;
+    let ids = |blocks: &[CompactBlock]| -> Vec<(u64, Vec<u8>)> {
+        blocks.iter().map(|block| (block.height, block.hash.clone())).collect()
+    };
+    assert_eq!(ids(&nullifiers), ids(&shielded), "nullifier range = same blocks");
+    for block in &nullifiers {
+        let stripped = block.vtx.iter().all(|tx| tx.vin.is_empty() && tx.vout.is_empty());
+        assert!(stripped, "nullifiers only at {}: {block:?}", block.height);
     }
 
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn block_range_nullifiers() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
+    // Past the tip → served up to it, then an error (not a clean end)
+    let past = BlockHeight::from(u32::from(tip) + 6);
+    let (blocks, errored) = indexer.drain_block_range(start, past, all_pools.clone()).await?;
+    let last = blocks.last().map(|block| block.height);
+    assert_eq!((blocks.len() as u64, last), (height, Some(height)), "drain stops at the tip");
+    assert!(errored, "drain past the tip ends in an error");
+    let (blocks, errored) = indexer.drain_block_range(past, start, all_pools).await?;
+    assert!(blocks.is_empty(), "descending from past the tip serves nothing: {blocks:?}");
+    assert!(errored, "descending drain from past the tip ends in an error");
 
-        let tip = validator.generate_blocks(BASELINE + 10).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let _blocks = indexer
-            .get_block_range_nullifiers(BlockHeight::from(1u32), BlockHeight::from(10u32))
-            .await?;
-        Ok(())
-    }
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn tree_state() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let chain_tip = validator.chain_height().await?;
-        let _ts = indexer.get_tree_state(chain_tip).await?;
-        Ok(())
-    }
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn latest_tree_state() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let _ts = indexer.get_latest_tree_state().await?;
-        Ok(())
-    }
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn subtree_roots() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE + 1).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let _roots = indexer.get_subtree_roots(0, ShieldedProtocol::Sapling, 0).await?;
-        Ok(())
-    }
-
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn lightd_info() -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let tip = validator.generate_blocks(BASELINE).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-
-        let _info = indexer.indexer_info().await?;
-        Ok(())
-    }
+    let tree = indexer.get_tree_state(tip).await?;
+    let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
+    let best = best.as_str().context("getbestblockhash returns a hex string")?;
+    assert_eq!((tree.height, tree.hash.as_str()), (height, best), "tree state at the tip");
+    assert_eq!(indexer.get_latest_tree_state().await?, tree, "latest tree state = tip's");
+    Ok(())
 }

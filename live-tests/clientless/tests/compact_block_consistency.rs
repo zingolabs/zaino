@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use rstest::rstest;
 use serde_json::{json, Value};
 use ztest::prelude::*;
 
@@ -97,11 +98,16 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     Ok(())
 }
 
-/// NU6.3 never active → every post-NU5 coinbase Orchard, no ironwood anywhere
+/// One orchard-receiver miner: Orchard coinbases from NU5, Ironwood from NU6.3 (`None` = never)
+///
+/// - Mis-timed flip fails on both sides: zebrad's raw coinbase and zaino's served actions
+#[rstest]
+#[case::orchard_only(None)]
+#[case::ironwood_only(Some(2))]
+#[case::orchard_to_ironwood(Some(NU6_3_TRANSITION_BOUNDARY))]
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
-    // Explicit schedule (zebrad default = NU6.3 at 2)
+async fn coinbase_pool_follows_nu6_3_activation_zebrad(#[case] nu6_3: Option<u32>) -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
         ActivationHeights::builder()
             .set_overwinter(Some(1))
@@ -113,163 +119,14 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
             .set_nu6(Some(2))
             .set_nu6_1(Some(2))
             .set_nu6_2(Some(2))
+            .set_nu6_3(nu6_3)
             .build(),
     );
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
-
-    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
-    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
-
-    // - Raw-block predicate = zebrad's routing; raw-vs-served = zaino's (both collected per run)
-    // - <https://github.com/zingolabs/zaino/issues/1368>
-    let vrpc = validator.json_rpc().await?;
-    let mut violations: Vec<String> = Vec::new();
-    for (index, served) in blocks.iter().enumerate() {
-        let height = index as u64 + 1;
-        assert_eq!(served.height, height, "served blocks must be contiguous");
-
-        let block = vrpc.call_value("getblock", json!([height.to_string(), 2])).await?;
-        let coinbase = &block["tx"][0];
-        let count = |v: &Value| v.as_array().map_or(0, Vec::len);
-
-        let is_coinbase =
-            count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
-        let version = coinbase["version"]
-            .as_u64()
-            .context("every block carries a versioned coinbase transaction")?;
-        let sapling = count(&coinbase["vShieldedOutput"]);
-        let orchard = count(&coinbase["orchard"]["actions"]);
-        let ironwood = count(&coinbase["ironwood"]["actions"]);
-
-        // Reward in exactly one pool, else `None` (fails)
-        let observed = match (version, sapling, orchard, ironwood) {
-            (4, 1.., 0, 0) => Some(CoinbaseEra::Sapling),
-            (5, 0, 1.., 0) => Some(CoinbaseEra::Orchard),
-            (6, 0, 0, 1..) => Some(CoinbaseEra::Ironwood),
-            _ => None,
-        };
-
-        let expected = match height {
-            h if h >= 2 => CoinbaseEra::Orchard,
-            _ => CoinbaseEra::Sapling,
-        };
-
-        let served_orchard: usize = served.vtx.iter().map(|tx| tx.actions.len()).sum();
-        let served_ironwood: usize = served.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
-        let wire_ok = served_orchard == orchard && served_ironwood == ironwood;
-
-        if !is_coinbase || observed != Some(expected) || !wire_ok {
-            violations.push(format!(
-                "height {height}: want {expected:?}, raw is {observed:?} \
-                 (is_coinbase {is_coinbase}, v{version}, sapling {sapling}, \
-                 orchard {orchard}, ironwood {ironwood}); \
-                 zaino served orchard {served_orchard}, ironwood {served_ironwood}"
-            ));
-        }
-    }
-    let (bad, of) = (violations.len(), blocks.len());
-    assert!(violations.is_empty(), "coinbase routing ({bad}/{of}):\n{}", violations.join("\n"));
-
-    Ok(())
-}
-
-/// NU6.3 active from 2 → every post-activation coinbase Ironwood, never Orchard
-#[ztest::qos::integration]
-#[tokio::test(flavor = "multi_thread")]
-async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
-
-    let tip = validator.generate_blocks(6).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
-
-    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
-    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
-
-    // - Raw-block predicate = zebrad's routing; raw-vs-served = zaino's (both collected per run)
-    // - <https://github.com/zingolabs/zaino/issues/1368>
-    let vrpc = validator.json_rpc().await?;
-    let mut violations: Vec<String> = Vec::new();
-    for (index, served) in blocks.iter().enumerate() {
-        let height = index as u64 + 1;
-        assert_eq!(served.height, height, "served blocks must be contiguous");
-
-        let block = vrpc.call_value("getblock", json!([height.to_string(), 2])).await?;
-        let coinbase = &block["tx"][0];
-        let count = |v: &Value| v.as_array().map_or(0, Vec::len);
-
-        let is_coinbase =
-            count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
-        let version = coinbase["version"]
-            .as_u64()
-            .context("every block carries a versioned coinbase transaction")?;
-        let sapling = count(&coinbase["vShieldedOutput"]);
-        let orchard = count(&coinbase["orchard"]["actions"]);
-        let ironwood = count(&coinbase["ironwood"]["actions"]);
-
-        // Reward in exactly one pool, else `None` (fails)
-        let observed = match (version, sapling, orchard, ironwood) {
-            (4, 1.., 0, 0) => Some(CoinbaseEra::Sapling),
-            (5, 0, 1.., 0) => Some(CoinbaseEra::Orchard),
-            (6, 0, 0, 1..) => Some(CoinbaseEra::Ironwood),
-            _ => None,
-        };
-
-        let expected = match height {
-            h if h >= 2 => CoinbaseEra::Ironwood,
-            _ => CoinbaseEra::Sapling,
-        };
-
-        let served_orchard: usize = served.vtx.iter().map(|tx| tx.actions.len()).sum();
-        let served_ironwood: usize = served.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
-        let wire_ok = served_orchard == orchard && served_ironwood == ironwood;
-
-        if !is_coinbase || observed != Some(expected) || !wire_ok {
-            violations.push(format!(
-                "height {height}: want {expected:?}, raw is {observed:?} \
-                 (is_coinbase {is_coinbase}, v{version}, sapling {sapling}, \
-                 orchard {orchard}, ironwood {ironwood}); \
-                 zaino served orchard {served_orchard}, ironwood {served_ironwood}"
-            ));
-        }
-    }
-    let (bad, of) = (violations.len(), blocks.len());
-    assert!(violations.is_empty(), "coinbase routing ({bad}/{of}):\n{}", violations.join("\n"));
-
-    Ok(())
-}
-
-/// One orchard-receiver miner: Orchard coinbases below NU6.3, Ironwood from it (a mis-timed
-/// flip fails on both sides)
-#[ztest::qos::integration]
-#[tokio::test(flavor = "multi_thread")]
-async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-            .build(),
-    );
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
-
-    // Two past the boundary (each era > 1 block)
+    // Two past the transition boundary (each era > 1 block)
     let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
@@ -306,7 +163,7 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
         };
 
         let expected = match height {
-            h if h >= u64::from(NU6_3_TRANSITION_BOUNDARY) => CoinbaseEra::Ironwood,
+            h if nu6_3.is_some_and(|nu6_3| h >= u64::from(nu6_3)) => CoinbaseEra::Ironwood,
             h if h >= 2 => CoinbaseEra::Orchard,
             _ => CoinbaseEra::Sapling,
         };
