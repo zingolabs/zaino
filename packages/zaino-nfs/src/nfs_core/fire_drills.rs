@@ -179,7 +179,7 @@ fn check_catches_a_node_whose_parent_is_gone() {
 }
 
 #[test]
-#[should_panic(expected = "G8: every node on the best chain or a side branch it holds")]
+#[should_panic(expected = "N8: every node on the best chain or a side branch it holds")]
 fn check_catches_a_node_on_a_branch_the_chain_does_not_hold() {
     let world = World::new();
     let mut core = world.valid();
@@ -188,7 +188,7 @@ fn check_catches_a_node_on_a_branch_the_chain_does_not_hold() {
 }
 
 #[test]
-#[should_panic(expected = "G8: every node on the best chain or a side branch it holds")]
+#[should_panic(expected = "N8: every node on the best chain or a side branch it holds")]
 fn check_catches_a_side_node_past_what_the_chain_holds() {
     let world = World::new();
     let mut core = world.valid();

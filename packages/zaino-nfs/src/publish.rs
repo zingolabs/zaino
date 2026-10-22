@@ -3,7 +3,7 @@
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the durable view
 //! - Layers rebased onto the durable views they pair with, at build
-//! - [`NfsPublication::at`]: any folded node or the root, side branches included (G7)
+//! - [`NfsPublication::at`]: any folded node or the root, side branches included (N7)
 
 use std::sync::Arc;
 

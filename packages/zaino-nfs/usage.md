@@ -95,12 +95,14 @@ folds and publishes pair layers with exactly the tips the core knows.
 
 | ID | Invariant |
 | --- | --- |
-| N1 | every node's block = its own header + merkle root, on the best chain or a held side |
+| N1 | every node's block = its own header + merkle root |
 | N2 | nodes above the root, on a held parent |
 | N3 | durable tips never move back |
 | N4 | served tip = deepest folded best node, else the root |
 | N5 | nothing folded, held or fetched outside the window |
 | N6 | every index read through a publication = that index folded from genesis along best |
+| N7 | `at(h)` is `Some` iff `h` is folded or the root, and reads = folding genesis..h along h's branch |
+| N8 | every node on the best chain or a side branch the chain holds (`HeaderChainSnapshot::holds`) |
 
 ## Tests
 

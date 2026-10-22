@@ -137,7 +137,7 @@ enum Due {
 }
 
 /// - `fetching` = blocks with a `Fetch` out, neither answered nor abandoned
-/// - `decoy` = a block off every chain (G7: `at` of it = `None`)
+/// - `decoy` = a block off every chain (N7: `at` of it = `None`)
 /// - `published` = last published tip
 /// - `told` = the durable tips last given to the core
 struct Sim {
@@ -344,7 +344,7 @@ impl Sim {
     }
 
     /// - N4: on its chain's best, every index = the oracle (node) or durable at or past it
-    /// - G7: `at` of every node, the root and the decoy = the naive answer
+    /// - N7: `at` of every node, the root and the decoy = the naive answer
     fn served(&mut self, tip: Publication<Toys>, context: &str) {
         let at = tip.tip;
         assert!(tip.chain.on_best(at), "{context}: N4 served {at:?} off its best");
@@ -365,7 +365,7 @@ impl Sim {
             let got = tip.graph.at(&tip.chain, tip.root, &hash);
             let got = got.map(|base| (base.at, base.on_best, base.folded.is_some()));
             let expected = self.at(&tip, hash);
-            assert_eq!(got, expected, "{context}: G7 at {hash:?}");
+            assert_eq!(got, expected, "{context}: N7 at {hash:?}");
         }
         self.published = Some(at);
     }

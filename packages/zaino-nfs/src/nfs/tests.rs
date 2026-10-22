@@ -81,9 +81,9 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
 }
 
 /// - N4: tip on its chain's best = the lowest view (a root publication: the lowest durable tip)
-/// - G7: `at` of every mined block, served included: `Some` iff folded or the root
-/// - G7 branch = the block's path vs the chain's
-/// - G7 every enabled index readable, through the block or (durable at or past it) its durable tip
+/// - N7: `at` of every mined block, served included: `Some` iff folded or the root
+/// - N7 branch = the block's path vs the chain's
+/// - N7 every enabled index readable, through the block or (durable at or past it) its durable tip
 ///   alone, either = the oracle there
 /// - `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
@@ -114,19 +114,19 @@ fn verify(
         let Some(at) = indexed.at(hash) else {
             let held =
                 indexed.folded(hash) || indexed.root().is_some_and(|root| root.hash == *hash);
-            assert!(!held, "{context}: G7 at({hash:?}) = None for a folded block or the root");
+            assert!(!held, "{context}: N7 at({hash:?}) = None for a folded block or the root");
             continue;
         };
         let block = at.tip();
         let path = blocks.blocks(blocks.block(*hash).block_ref());
         let on_best = path.iter().all(|block| chain.on_best(block.block_ref()));
-        assert_eq!(block.hash, *hash, "{context}: G7 at({hash:?})");
+        assert_eq!(block.hash, *hash, "{context}: N7 at({hash:?})");
         for (kind, durable) in &durable {
             let name = kind.name();
             let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
             let view = at.views().view(*kind);
             let view = view.unwrap_or_else(|| panic!("{context}: {name} unreadable at {block:?}"));
-            assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
+            assert_eq!(view.tip(), Some(through), "{context}: N7 {name} at {block:?}");
             let reach = if on_best { through.height } else { block.height };
             let answers = at.answers_through(*kind);
             assert_eq!(answers, reach, "{context}: {name} answers_through, at {block:?}");

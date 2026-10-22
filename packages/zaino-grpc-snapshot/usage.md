@@ -41,12 +41,12 @@ grpc_snapshots.changed().await?;                       // next publish
 | `chain()`               | the chain view's `HeaderChainSnapshot`                                        |
 | `served()`              | the NFS's served `IndexesAtBlock` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
-| `mempool()`             | the servable mempool while a `Live` validator holds best or `peers_quorate()`; else `NoChain` / `NotHeld` |
+| `mempool()`             | the servable mempool behind [the gate](../../docs/architecture.md#5-the-mempool-view); else `NoChain` / `NotHeld` |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `IndexesAtBlock`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `chain_view()`          | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `serving_status(now_unix)` | first match: best more than one block past the last vouched (`HeaderChainSnapshot::vouched`), or every trusted validator `Down` under a stale best (`[p2p]` off: a frozen tip) → `Degraded` while synced to a fresh best (its block time within `zaino_chainview::STALE_TIP_BLOCKS` (24) target spacings of `now_unix`: peers carried the tip), else `Down`; `Syncing` (not synced, or a validator `CatchingUp` and none `Live`: zebrad's mempool off after a catch-up); `Serving` |
+| `serving_status(now_unix)` | `Down` / `Degraded` / `Syncing` / `Serving`: zainod's [state rules](../../docs/running.md#states) past boot, fresh = within `zaino_chainview::STALE_TIP_BLOCKS` target spacings of `now_unix` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
@@ -79,8 +79,7 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 - Never a transaction of the served tip's own chain: the opening and every arrival skip the
   txids of `NfsPublication::served_above_durable()`, collected once per epoch (the chain view's listings
   trail a block by up to a poll, so its mempool still lists what the new tip mined).
-- Contract S1–S4 (bound to the tip hash, never mined, once per stream, `height: 0`):
-  [architecture §8](../../docs/architecture.md#getmempoolstream).
+- The stream's contract: [architecture §8](../../docs/architecture.md#getmempoolstream).
 
 ## Reporting
 
@@ -95,13 +94,9 @@ metrics::with_local_recorder(&recorder, || {
 ```
 
 - `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `chain.alarms`).
-- Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
-  `zaino_fetch_height` (`handed`), `zaino_index_synced{index}`, and the chain view's
-  `zaino_chainview_*` state:
-  `endpoint_state{endpoint,state}`, `agreement{endpoint,agreement}`, `tip_height{endpoint}`,
-  `stale_blocks{endpoint}`, `peers{endpoint,direction}`, `push_stream{endpoint}`,
-  `release{endpoint,build,user_agent}`, `end_of_service_height{endpoint}`, `tip_holders`,
-  `finality_paused`, `mempool_transactions{state}` (`verified`, `quorum`, `ours_unverified`).
+- Every gauge in `METRICS` (`zaino_best_tip`, `zaino_fetch_height`, `zaino_index_synced`, the
+  chain view's `zaino_chainview_*`) is set at scrape from one load. The names are ztest's
+  `zainod` families: renaming one breaks its runs.
 - Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
   tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
   ([architecture §11](../../docs/architecture.md#11-telemetry)).
@@ -116,8 +111,6 @@ metrics::with_local_recorder(&recorder, || {
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `invariants::check`; model |
 | G5 | epoch opened at `tips.served`; rotates iff served moved; open → store → seal | `invariants::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in the view's `held_by()`, or `peers_quorate()`; each servable tx streamed once per epoch | `invariants::check`; model |
-| G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
-| G8 | every NFS node on best or a side branch the chain holds (`HeaderChainSnapshot::holds`) | `Graph::check` |
 | G9 | `/readyz`, `/status`, gauges = f(one snapshot, counters) | types; gauge golden |
 | G10 | an epoch carries no txid of a block in `served_above_durable()` | `invariants::check`; model |
 

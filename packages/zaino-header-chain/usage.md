@@ -57,11 +57,9 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 
 ## The tree, the best tip, finality
 
-- Every branch above the finalized tip is kept, within bounds (H4): at most `4 · depth` side-branch
-  nodes and 32 side-branch tips; past either, the lowest-work side leaf goes (last received on a
-  tie). A driver fetching nothing above `ceiling(batch)` keeps the best branch within
-  `depth + batch` of the finalized tip (H9).
-- The best tip is the leaf with the most cumulative work; a tie keeps the first received (H1).
+- Every branch above the finalized tip is kept within bounds (H4); past either bound, the
+  lowest-work side leaf goes (last received on a tie). `ceiling(batch)` bounds the best branch
+  (H9).
 - Witnesses (H7): `witness(hash, by)` records that `by` once had the block on its best chain: it
   and every ancestor, for good, a no-op unless held above the finalized tip. A block is
   **vouched** once any trusted validator witnessed it, **peer-quorate** once peers in more than
@@ -71,8 +69,8 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   [why](../../docs/architecture.md#finality)). Peers never move that difficulty reference.
   `finalizable()` names the best-chain block at `min(highest settled, best − depth)`;
   `finalize(block)` moves every best-chain header up to it into the finalized headers and prunes
-  every branch not descending from it. Finalizing a block off the best branch, shallower than
-  `depth` (H2) or above the highest settled (H6) is a caller bug: it panics naming the invariant.
+  every branch not descending from it. Finalizing anything else is a caller bug: it panics
+  naming the invariant (H2, H6).
 - Memory only: the newest max(`2 · depth`, `CONTEXT`) finalized headers stay, answering by height;
   older finalized headers are finalized by definition (`on_best` = true) and a header whose parent is one of
   them = `Orphan`.
@@ -94,10 +92,19 @@ holder's answers never change (H5).
 
 ## Invariants, checked
 
-`HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finalized headers contiguous and at most
-max(`2 · depth`, `CONTEXT`), every node descends from the finalized tip), H4, H5, H7 (a parent
-holds every witness of its child, or is peer-quorate) and the tree's bookkeeping (cumulative
-work, child counts, leaf set), naming the invariant in its panic. `finalize` asserts H2 and H6.
+| ID | Invariant |
+| --- | --- |
+| H1 | best = the max-work leaf, the first received on a tie |
+| H2 | the tree descends from the finalized tip: nothing held before an anchor, each node one height above its parent, finalized headers one height apart and at most max(`2 · depth`, `CONTEXT`); only a best-branch block at least `depth` below best becomes finalized |
+| H4 | at most `4 · depth` side-branch nodes and 32 side-branch tips |
+| H5 | a published snapshot never changes; the best path is a held chain from the finalized tip |
+| H6 | only a settled block (or an ancestor of one) becomes finalized |
+| H7 | a parent holds every witness of its child, or is peer-quorate |
+| H9 | a driver fetching nothing above `ceiling(batch)` keeps best − finalized ≤ `depth + batch` |
+
+`HeaderChain::check()` asserts H1, H2, H4, H5, H7 and the tree's bookkeeping (cumulative work,
+child counts, leaf set), naming the invariant in its panic; `finalize` asserts H2 and H6. H9 is
+`zaino-chainview`'s header-sync test.
 
 ## Tests
 

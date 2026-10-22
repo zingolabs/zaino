@@ -98,7 +98,7 @@ impl<F> Graph<F> {
         run.map_while(|hash| self.nodes.get(&hash?)).last()
     }
 
-    /// Kept iff above `root` (every index holds the rest) and held by `chain` (G8)
+    /// Kept iff above `root` (every index holds the rest) and held by `chain` (N8)
     pub(crate) fn prune(&mut self, chain: &HeaderChainSnapshot, root: Option<BlockRef>) {
         let root_height = root.map(|root| root.height);
         self.nodes.retain(|_, node| Some(node.at.height) > root_height && chain.holds(node.at));
@@ -120,7 +120,7 @@ impl<F> Graph<F> {
         Some(Base { at: node.at, on_best: chain.on_best(node.at), folded })
     }
 
-    /// N1, N2, G8 (panics naming the invariant broken)
+    /// N1, N2, N8 (panics naming the invariant broken)
     #[cfg(test)]
     pub(crate) fn check(&self, chain: &HeaderChainSnapshot, root: Option<BlockRef>) {
         for node in self.nodes.values() {
@@ -135,7 +135,7 @@ impl<F> Graph<F> {
             let held = self.holds_parent(root, node.parent, node.at.height);
             assert!(held, "N2: every node folds on a held parent");
             let held = chain.holds(node.at);
-            assert!(held, "G8: every node on the best chain or a side branch it holds");
+            assert!(held, "N8: every node on the best chain or a side branch it holds");
         }
     }
 }
