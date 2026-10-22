@@ -65,6 +65,12 @@ struct MockSourceState {
 #[derive(Clone)]
 struct MockSource {
     state: Arc<Mutex<MockSourceState>>,
+    /// When set, the txid listing parks instead of answering, so a test can
+    /// cancel the service while a poll is in flight rather than between polls.
+    hang_listing: Arc<std::sync::atomic::AtomicBool>,
+    /// Signalled as the listing parks, so a test waits for the poll to be
+    /// genuinely in flight instead of sleeping and hoping.
+    listing_entered: Arc<tokio::sync::Notify>,
     /// Push-path wake, as the `zaino-state` sync loop supplies in production
     /// (§6). `fire_block_wake` models a block landing.
     block_wake: Arc<tokio::sync::watch::Sender<()>>,
@@ -74,6 +80,8 @@ impl MockSource {
     fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(MockSourceState::default())),
+            hang_listing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            listing_entered: Arc::new(tokio::sync::Notify::new()),
             block_wake: Arc::new(tokio::sync::watch::channel(()).0),
         }
     }
@@ -92,6 +100,17 @@ impl MockSource {
 
     fn set_tip(&self, tip: BlockRef) {
         self.lock().tip = Some(tip);
+    }
+
+    /// Park the txid listing forever, so a poll that reaches it stays in flight.
+    fn hang_the_listing(&self) {
+        self.hang_listing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Resolves once a poll has parked in the listing.
+    async fn listing_entered(&self) {
+        self.listing_entered.notified().await;
     }
 
     fn set_error(&self, message: Option<&str>) {
@@ -140,6 +159,13 @@ impl zaino_source::OneShotGetMempoolTxids for MockSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
+        if self
+            .hang_listing
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.listing_entered.notify_waiters();
+            std::future::pending::<()>().await;
+        }
         if let Some(message) = self.error_message() {
             return Err(outage(message));
         }
@@ -1064,6 +1090,44 @@ mod core {
 
 // ============================ COHERENCE ============================
 #[cfg(feature = "tip_aware_mempool")]
+    /// Cancelling during a poll does not wait the poll out.
+    ///
+    /// A poll fans out raw fetches through the source's retry ladder, so it can
+    /// outlast a supervisor's teardown budget. If the loop only checked its
+    /// token between polls, a shutdown would be hostage to whatever the
+    /// validator is doing — and this service would be the reason the teardown
+    /// overran. The gate parks the listing so the cancellation lands while the
+    /// poll is genuinely in flight, which is the case a between-polls check
+    /// cannot cover.
+    #[tokio::test]
+    async fn cancelling_during_a_poll_does_not_wait_the_poll_out() {
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        source.set_mempool(vec![mtx(1, 100)]);
+        source.hang_the_listing();
+
+        // Two tokens on purpose: the service keeps one for `close`, and the
+        // supervisor drives the run with its own.
+        let service = MempoolService::new(
+            ValidatorClient::new(source.clone(), one_attempt()),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let cancel = CancellationToken::new();
+        let run = tokio::spawn(Arc::clone(&service).run_until(cancel.clone()));
+
+        tokio::time::timeout(Duration::from_secs(5), source.listing_entered())
+            .await
+            .expect("a poll reached the listing and parked there");
+
+        cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(2), run)
+            .await
+            .expect("the run returns without waiting the parked poll out")
+            .expect("the run task did not panic");
+    }
+
 mod coherence {
     use super::*;
 

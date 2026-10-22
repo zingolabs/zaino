@@ -68,7 +68,11 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     return;
                 }
                 _ = interval.tick() => {
-                    self.tick(&mut state).await;
+                    if !self.tick_unless_cancelled(&mut state, &cancel).await {
+                        tracing::debug!("mempool poll loop cancelled mid-poll; publishing Closing");
+                        self.publish_closing();
+                        return;
+                    }
                 }
                 _ = async {
                     match block_wake.as_mut() {
@@ -78,9 +82,30 @@ impl<S: MempoolSource> super::MempoolService<S> {
                         None => std::future::pending::<()>().await,
                     }
                 } => {
-                    self.tick(&mut state).await;
+                    if !self.tick_unless_cancelled(&mut state, &cancel).await {
+                        tracing::debug!("mempool poll loop cancelled mid-poll; publishing Closing");
+                        self.publish_closing();
+                        return;
+                    }
                 }
             }
+        }
+    }
+
+    /// Run one poll, abandoning it if `cancel` fires first.
+    ///
+    /// `false` means cancellation won. A poll fans out raw-transaction fetches
+    /// through the source's retry ladder, so it can outlast a supervisor's
+    /// teardown budget; waiting one out would make this component the reason a
+    /// shutdown overran. The abandoned poll leaves nothing behind — the set is
+    /// published whole or not at all, and the caller returns rather than looping.
+    ///
+    /// Biased so a pending cancellation is taken before another poll starts.
+    async fn tick_unless_cancelled(&self, state: &mut PollState, cancel: &CancellationToken) -> bool {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => false,
+            () = self.tick(state) => true,
         }
     }
 

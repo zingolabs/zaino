@@ -1,0 +1,14 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a16481-b5d9-741d-92f8-23fae9ad149b"
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "fix"
+description = """
+The mempool poll loop now observes its cancellation token during a poll, not \
+only between polls. A poll fans out raw-transaction fetches through the \
+source's retry ladder, so a shutdown used to wait out whatever the validator \
+was doing; it now abandons the in-flight poll, publishes `Closing` and returns. \
+The abandoned poll leaves nothing behind, since a set is published whole or not \
+at all.
+"""
