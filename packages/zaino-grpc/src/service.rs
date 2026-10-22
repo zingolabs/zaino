@@ -40,7 +40,7 @@ const SERVICE: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/";
 
 /// One served method (variant name = wire name = `method` metric label)
 ///
-/// - new RPC = a variant, then its [`Method::route`] arm + its [`Routed::handle`] arm
+/// - new RPC = a variant, then its [`Method::route`] arm + its `Wired::handle` arm
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr, strum::VariantArray,
 )]
@@ -180,21 +180,17 @@ pub(crate) const STARTING: &str = "starting: not routed yet";
 
 /// [`RouteDeps`] + what every request shares, one `Arc` (a request clones one pointer)
 ///
-/// - `routed` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
+/// - `routes` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
 struct Wired<S: ChainDataSource, V> {
-    routed: OnceLock<Routed<S, V>>,
+    routes: OnceLock<RouteDeps<S, V>>,
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
     silent_timeout: Duration,
 }
 
-/// [`RouteDeps`], fixed at [`Routing::route`]
-struct Routed<S: ChainDataSource, V> {
-    routes: RouteDeps<S, V>,
-}
-
-/// Every `CompactTxStreamer` method, dispatched by path (the tower service each connection runs)
+/// Every `CompactTxStreamer` method, dispatched by path (the tower service each connection runs;
+/// [`Routing`] = its owner's handle on the same `Arc`)
 pub(crate) struct Dispatch<S: ChainDataSource, V>(Arc<Wired<S, V>>);
 
 impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
@@ -206,8 +202,8 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
 impl<S: ChainDataSource, V: PinnedView> Dispatch<S, V> {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
         let (reads, silent_timeout) = (ReadLanes::new(limits), limits.silent_timeout);
-        let routed = OnceLock::new();
-        Self(Arc::new(Wired { routed, reads, tree_states: Arc::default(), silent_timeout }))
+        let routes = OnceLock::new();
+        Self(Arc::new(Wired { routes, reads, tree_states: Arc::default(), silent_timeout }))
     }
 
     pub(crate) fn routing(&self) -> Routing<S, V> {
@@ -230,8 +226,7 @@ impl<S: ChainDataSource, V> Routing<S, V> {
     ///
     /// - once per server (twice = a bug, panics)
     pub fn route(&self, routes: RouteDeps<S, V>) {
-        let routed = Routed { routes };
-        assert!(self.0.routed.set(routed).is_ok(), "gRPC server routed twice");
+        assert!(self.0.routes.set(routes).is_ok(), "gRPC server routed twice");
     }
 }
 
@@ -242,35 +237,35 @@ impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
-        let answered = match (self.routed.get(), method) {
+        let answered = match (self.routes.get(), method) {
             (None, _) => Err(Status::unavailable(STARTING)),
             (Some(_), None) => Err(Status::unimplemented(format!("{path}: no such method"))),
-            (Some(routed), Some(method)) => match method.route().index {
-                Some(index) if !routed.routes.indexes.contains(&index) => {
-                    Err(disabled(method, index))
-                }
-                _ => routed.handle(method, self, body).await,
+            (Some(routes), Some(method)) => match method.route().index {
+                Some(index) if !routes.indexes.contains(&index) => Err(disabled(method, index)),
+                _ => self.handle(routes, method, body).await,
             },
         };
         answered.unwrap_or_else(Status::into_http)
     }
-}
 
-impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
     /// The registry's handler column: one arm per [`Method`], off one `GrpcSnapshot`
+    ///
+    /// - body collected once (its method's cap), decoded here to the handler's message
     async fn handle<B>(
         &self,
+        routes: &RouteDeps<S, V>,
         method: Method,
-        wired: &Wired<S, V>,
         body: B,
     ) -> Result<Response<Body>, Status>
     where
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
+        use wire::{decode, decode_each};
         use Method::*;
 
-        let (routes, reads) = (&self.routes, wired.reads.clone());
+        let request = wire::collect_request(body, method).await?;
+        let reads = self.reads.clone();
         let grpc_snapshot = routes.grpc_snapshots.load();
         let served = || grpc_snapshot.served().map_err(wire::unavailable);
         let compact_blocks = || {
@@ -283,7 +278,7 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
             let nothing = || wire::unavailable(Unavailable::NothingServed);
             let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
             let reader = view(indexed.served().views().tree_state(), method)?;
-            let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
+            let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&self.tree_states));
             let reads = reads.clone();
             Ok::<_, Status>(tree_state::TreeStateReads { indexed, reader, reads, memos })
         };
@@ -297,43 +292,53 @@ impl<S: ChainDataSource, V: PinnedView> Routed<S, V> {
 
         match method {
             GetLatestBlock => Ok(blocks::get_latest_block(served()?)),
-            GetBlock => blocks::get_block(compact_blocks()?, body, &reads).await,
-            GetBlockRange => blocks::get_block_range(compact_blocks()?, body, reads).await,
-            GetBlockRangeNullifiers => {
-                deprecated_nullifiers::get_block_range_nullifiers(compact_blocks()?, body, reads)
-                    .await
-            }
-            GetTreeState => tree_state::get_tree_state(&tree_states()?, body).await,
+            GetBlock => blocks::get_block(compact_blocks()?, decode(&request)?, &reads).await,
+            GetBlockRange => blocks::get_block_range(compact_blocks()?, decode(&request)?, reads),
+            GetBlockRangeNullifiers => deprecated_nullifiers::get_block_range_nullifiers(
+                compact_blocks()?,
+                decode(&request)?,
+                reads,
+            ),
+            GetTreeState => tree_state::get_tree_state(&tree_states()?, decode(&request)?).await,
             GetLatestTreeState => tree_state::get_latest_tree_state(&tree_states()?).await,
-            GetSubtreeRoots => tree_state::get_subtree_roots(&tree_states()?, body).await,
+            GetSubtreeRoots => {
+                tree_state::get_subtree_roots(&tree_states()?, decode(&request)?).await
+            }
             GetAddressUtxos => {
-                transparent_address::get_address_utxos(address_index()?, body, &reads).await
+                let index = address_index()?;
+                transparent_address::get_address_utxos(index, decode(&request)?, &reads).await
             }
             GetAddressUtxosStream => {
-                transparent_address::get_address_utxos_stream(address_index()?, body, &reads).await
+                let index = address_index()?;
+                transparent_address::get_address_utxos_stream(index, decode(&request)?, &reads)
+                    .await
             }
             GetTaddressBalance => {
-                transparent_address::get_taddress_balance(address_index()?, body, &reads).await
+                let index = address_index()?;
+                transparent_address::get_taddress_balance(index, decode(&request)?, &reads).await
             }
             GetTaddressBalanceStream => {
-                transparent_address::get_taddress_balance_stream(address_index()?, body, &reads)
-                    .await
+                let (index, request) = (address_index()?, decode_each(&request)?);
+                transparent_address::get_taddress_balance_stream(index, request, &reads).await
             }
             GetTaddressTransactions | GetTaddressTxids => {
                 transparent_address::get_taddress_transactions(
                     address_index()?,
                     routes.validators.clone(),
                     Arc::clone(&grpc_snapshot),
-                    body,
+                    decode(&request)?,
                     &reads,
                 )
                 .await
             }
-            SendTransaction => transactions::send_transaction(&routes.chain_view, body).await,
-            GetMempoolTx => mempool::get_mempool_tx(&grpc_snapshot, body).await,
+            SendTransaction => {
+                transactions::send_transaction(&routes.chain_view, decode(&request)?).await
+            }
+            GetMempoolTx => mempool::get_mempool_tx(&grpc_snapshot, decode(&request)?),
             GetMempoolStream => mempool::get_mempool_stream(&grpc_snapshot),
             GetTransaction => {
-                transactions::get_transaction(&routes.validators, &grpc_snapshot, body).await
+                let validators = &routes.validators;
+                transactions::get_transaction(validators, &grpc_snapshot, decode(&request)?).await
             }
             GetLightdInfo => info::get_lightd_info(&grpc_snapshot, routes.network, routes.version),
             GetStandardFee => info::get_standard_fee(&grpc_snapshot, routes.network),

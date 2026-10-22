@@ -196,17 +196,10 @@ pub(crate) async fn get_latest_tree_state<V: PinnedView>(
 /// - hash wins when given (one block across a reorg): block-hash index locates, this index answers
 ///   only if it holds that same block
 /// - by height in the NFS layer (the synced wallets' tip asks): memoized per NFS publish
-pub(crate) async fn get_tree_state<V, B>(
+pub(crate) async fn get_tree_state<V: PinnedView>(
     tree_states: &TreeStateReads<V>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let block_id: service::BlockId = wire::decode_request(body).await?;
-
+    block_id: service::BlockId,
+) -> Result<Response<Body>, Status> {
     let tree_state = if block_id.hash.is_empty() {
         let height = args::height(block_id.height, "height")?;
         if tree_states.reader.is_above_durable(height) {
@@ -227,17 +220,10 @@ where
 ///
 /// - whole or refused before the first byte (iOS keeps a partial prefix)
 /// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
-pub(crate) async fn get_subtree_roots<V, B>(
+pub(crate) async fn get_subtree_roots<V: PinnedView>(
     tree_states: &TreeStateReads<V>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetSubtreeRootsArg = wire::decode_request(body).await?;
-
+    request: service::GetSubtreeRootsArg,
+) -> Result<Response<Body>, Status> {
     let pool = shielded_pool(request.shielded_protocol)?;
     let roots = tree_states.memoized_subtree_roots(pool).await?;
     let slice = roots.slice(request.start_index, request.max_entries);

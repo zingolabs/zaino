@@ -6,6 +6,8 @@ use http::{HeaderMap, HeaderValue, Response};
 use tonic::{body::Body, Status};
 use zaino_proto::frame::{frame_into, split_frame, FRAME_HEADER};
 
+use crate::service::Method;
+
 /// No answer from this `GrpcSnapshot`: retry (`UNAVAILABLE`, the reason as its message)
 pub(crate) fn unavailable(why: zaino_grpc_snapshot::Unavailable) -> Status {
     Status::unavailable(why.to_string())
@@ -29,7 +31,7 @@ pub(super) fn frame_all<M: prost::Message>(messages: &[M]) -> bytes::Bytes {
 /// Request body caps (gRPC framing included)
 ///
 /// - over one = `RESOURCE_EXHAUSTED` (= tonic's own)
-/// - claimed paths collect their own bodies (tonic's 4 MiB default never applies)
+/// - collected once by the dispatch, before the handler (tonic's 4 MiB default never applies)
 pub(super) mod request_limit {
     /// Every claimed request but a transaction: ids, ranges, address lists (~1.5k t-addresses,
     /// clients send tens)
@@ -95,15 +97,19 @@ where
     response
 }
 
-/// The whole request body, refused past `limit` bytes (checked as it arrives, never buffered
+/// `method`'s whole request body, refused past its cap (checked as it arrives, never buffered
 /// beyond) or past [`request_limit::DEADLINE`]
-async fn collect_limited<B>(body: B, limit: usize) -> Result<bytes::Bytes, Status>
+pub(crate) async fn collect_request<B>(body: B, method: Method) -> Result<bytes::Bytes, Status>
 where
     B: http_body::Body,
-    B::Error: std::fmt::Display,
+    B::Error: fmt::Display,
 {
     use http_body_util::{BodyExt as _, LengthLimitError, Limited};
 
+    let limit = match method {
+        Method::SendTransaction => request_limit::TRANSACTION,
+        _ => request_limit::MESSAGE,
+    };
     let body = body.map_err(|error| Status::internal(format!("reading request body: {error}")));
     let collected =
         tokio::time::timeout(request_limit::DEADLINE, Limited::new(body, limit).collect())
@@ -126,48 +132,24 @@ where
     }
 }
 
-/// Unary request message (body <= [`request_limit::MESSAGE`])
-pub(super) async fn decode_request<M, B>(body: B) -> Result<M, Status>
-where
-    M: prost::Message + Default,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    decode_request_within(body, request_limit::MESSAGE).await
+/// Unary request message (exactly one frame)
+pub(crate) fn decode<M: prost::Message + Default>(body: &[u8]) -> Result<M, Status> {
+    match split_frame(body) {
+        Some((message, [])) => decode_message(message),
+        _ => Err(Status::invalid_argument("request body is not one whole frame")),
+    }
 }
 
-/// Unary request message (body <= `limit` bytes, exactly one frame)
-pub(super) async fn decode_request_within<M, B>(body: B, limit: usize) -> Result<M, Status>
-where
-    M: prost::Message + Default,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let collected = collect_limited(body, limit).await?;
+/// Client-streaming request: every frame's message (sole user `GetTaddressBalanceStream` answers
+/// one total: nothing to emit before the last address)
+pub(crate) fn decode_each<M: prost::Message + Default>(body: &[u8]) -> Result<Vec<M>, Status> {
+    let messages =
+        messages(body).ok_or_else(|| Status::invalid_argument("request body ends mid-frame"))?;
+    messages.into_iter().map(decode_message).collect()
+}
 
-    let message = match split_frame(&collected) {
-        Some((message, [])) => message,
-        _ => return Err(Status::invalid_argument("request body is not one whole frame")),
-    };
-
+fn decode_message<M: prost::Message + Default>(message: &[u8]) -> Result<M, Status> {
     M::decode(message).map_err(|error| Status::invalid_argument(error.to_string()))
-}
-
-/// Every frame of a client-streaming body, collected (sole user `GetTaddressBalanceStream`
-/// answers one total: nothing to emit before the last address)
-pub(super) async fn decode_request_stream<M, B>(body: B) -> Result<Vec<M>, Status>
-where
-    M: prost::Message + Default,
-    B: http_body::Body,
-    B::Error: fmt::Display,
-{
-    let collected = collect_limited(body, request_limit::MESSAGE).await?;
-
-    messages(&collected)
-        .ok_or_else(|| Status::invalid_argument("request body ends mid-frame"))?
-        .into_iter()
-        .map(|message| M::decode(message).map_err(|e| Status::invalid_argument(e.to_string())))
-        .collect()
 }
 
 /// Each frame's message, in order (`None` = ends mid-frame)

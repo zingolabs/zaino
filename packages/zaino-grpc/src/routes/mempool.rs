@@ -10,7 +10,7 @@ use zaino_index_compact_block::project_tx_at;
 use zaino_proto::proto::service;
 
 use super::args;
-use crate::wire::{self, decode_request, frame, streamed_response, trailers};
+use crate::wire::{self, frame, streamed_response, trailers};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
@@ -20,15 +20,10 @@ use crate::wire::{self, decode_request, frame, streamed_response, trailers};
 /// - per request: only the slot and the pool selection, over the cached bytes
 /// - transaction the selection leaves with no component dropped, as from a block
 ///   ([`project_tx_at`]), slots stay the listing's
-pub(crate) async fn get_mempool_tx<V, B>(
+pub(crate) fn get_mempool_tx<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetMempoolTxRequest = decode_request(body).await?;
+    request: service::GetMempoolTxRequest,
+) -> Result<Response<Body>, Status> {
     let pools = args::pools(&request.pool_types)?;
 
     let mempool = grpc_snapshot.mempool().map_err(wire::unavailable)?;

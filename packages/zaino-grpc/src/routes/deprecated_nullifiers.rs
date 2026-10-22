@@ -25,17 +25,11 @@ use crate::wire;
 ///
 /// - proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]` alone
 ///   = empty = shielded default, not "no pools")
-pub(crate) async fn get_block_range_nullifiers<V, B>(
+pub(crate) fn get_block_range_nullifiers<V: zaino_persistence::PinnedView>(
     compact_blocks: CompactBlocks<'_, V>,
-    body: B,
+    mut range: service::BlockRange,
     reads: ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    V: zaino_persistence::PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let mut range: service::BlockRange = wire::decode_request(body).await?;
+) -> Result<Response<Body>, Status> {
     range.pool_types.retain(|pool| *pool != service::PoolType::Transparent as i32);
 
     let pools = args::pools(&range.pool_types)?;

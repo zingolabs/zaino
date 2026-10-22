@@ -14,21 +14,14 @@ use zaino_traffic::TrafficBalancer;
 use zcash_protocol::TxId;
 
 use super::mempool::unmined;
-use crate::wire::{self, decode_request, frame, unary_response};
+use crate::wire::{frame, unary_response};
 
 /// `SendTransaction`, answered as lightwalletd does (a rejection = a reply, only unreachable = a
 /// status: wallet tells "no" from "unreachable")
-pub(crate) async fn send_transaction<S: ChainDataSource, B>(
+pub(crate) async fn send_transaction<S: ChainDataSource>(
     chain_view: &ChainView<S>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let decoded_tx: service::RawTransaction =
-        wire::decode_request_within(body, wire::request_limit::TRANSACTION).await?;
-
+    decoded_tx: service::RawTransaction,
+) -> Result<Response<Body>, Status> {
     let broadcast = async {
         // refused here = never relayed
         let validated = chain_view.validate_transaction(decoded_tx.data.to_vec()).await?;
@@ -50,16 +43,11 @@ where
 }
 
 /// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
-pub(crate) async fn get_transaction<S: ChainDataSource, V: MapRead, B>(
+pub(crate) async fn get_transaction<S: ChainDataSource, V: MapRead>(
     validators: &TrafficBalancer<S>,
     grpc_snapshot: &GrpcSnapshot<V>,
-    body: B,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let tx_filter: service::TxFilter = decode_request(body).await?;
+    tx_filter: service::TxFilter,
+) -> Result<Response<Body>, Status> {
     let txid: [u8; 32] = tx_filter
         .hash
         .as_slice()

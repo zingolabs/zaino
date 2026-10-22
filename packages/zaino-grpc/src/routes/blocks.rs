@@ -34,18 +34,11 @@ pub(crate) fn get_latest_block<V>(served: &IndexesAtBlock<V>) -> Response<Body> 
 /// - one block != range of one (`GetBlockRange` defaults shielded-only, `BlockID` has no
 ///   `poolTypes`)
 /// - TODO: deprecate pending light-client ZIP updates (kept = lightwalletd parity)
-pub(crate) async fn get_block<V, B>(
+pub(crate) async fn get_block<V: PinnedView>(
     compact_blocks: CompactBlocks<'_, V>,
-    body: B,
+    block_id: service::BlockId,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let block_id: service::BlockId = wire::decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let block = if block_id.hash.is_empty() {
         let height = args::height(block_id.height, "height")?;
         compact_blocks.read_by_height(height, reads).await?
@@ -57,18 +50,11 @@ where
 }
 
 /// `GetBlockRange` (wallet-sync path: must stay cheap)
-pub(crate) async fn get_block_range<V, B>(
+pub(crate) fn get_block_range<V: PinnedView>(
     compact_blocks: CompactBlocks<'_, V>,
-    body: B,
+    range: service::BlockRange,
     reads: ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    V: PinnedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let range: service::BlockRange = wire::decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let pools = args::pools(&range.pool_types)?;
     let blocks = compact_blocks.open_range(&range, pools)?;
     Ok(blocks.into_response(reads, Ok))

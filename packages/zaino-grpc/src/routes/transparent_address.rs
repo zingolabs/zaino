@@ -22,7 +22,7 @@ use tonic::{body::Body, Status};
 use super::args;
 use super::info::chain_name;
 use crate::read_lanes::{Lane, ReadLanes};
-use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
+use crate::wire::{self, frame, streamed_response, trailers, unary_response};
 
 /// One request's transparent-address index: the reader (as of the served tip, row-capped) + the
 /// network its addresses parse in
@@ -32,65 +32,42 @@ pub(crate) struct AddressIndex<V> {
 }
 
 /// `GetAddressUtxos`: every utxo in one list message
-pub(crate) async fn get_address_utxos<V: PinnedView, B>(
+pub(crate) async fn get_address_utxos<V: PinnedView>(
     address_index: AddressIndex<V>,
-    body: B,
+    request: service::GetAddressUtxosArg,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let address_utxos = address_utxos(address_index, &request, reads).await?;
     let reply = service::GetAddressUtxosReplyList { address_utxos };
     Ok(unary_response(wire::frame(&reply)))
 }
 
 /// `GetAddressUtxosStream`: one message per utxo
-pub(crate) async fn get_address_utxos_stream<V: PinnedView, B>(
+pub(crate) async fn get_address_utxos_stream<V: PinnedView>(
     address_index: AddressIndex<V>,
-    body: B,
+    request: service::GetAddressUtxosArg,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let request: service::GetAddressUtxosArg = wire::decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let address_utxos = address_utxos(address_index, &request, reads).await?;
     Ok(streamed_response(address_utxos.iter().map(wire::frame).collect()))
 }
 
 /// `GetTaddressBalance`: one `AddressList`, one total
-pub(crate) async fn get_taddress_balance<V: PinnedView, B>(
+pub(crate) async fn get_taddress_balance<V: PinnedView>(
     address_index: AddressIndex<V>,
-    body: B,
+    address_list: service::AddressList,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let address_list: service::AddressList = wire::decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let balance = total_balance(address_index, &address_list.addresses, reads).await?;
     Ok(unary_response(wire::frame(&balance)))
 }
 
 /// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), one total
-pub(crate) async fn get_taddress_balance_stream<V: PinnedView, B>(
+pub(crate) async fn get_taddress_balance_stream<V: PinnedView>(
     address_index: AddressIndex<V>,
-    body: B,
+    streamed: Vec<service::Address>,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let streamed: Vec<service::Address> = wire::decode_request_stream(body).await?;
+) -> Result<Response<Body>, Status> {
     let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
 
     let balance = total_balance(address_index, &addresses, reads).await?;
@@ -99,19 +76,13 @@ where
 
 /// `GetTaddressTransactions`: the index names the txids, a validator (else the peers' blocks)
 /// supplies each one's bytes
-pub(crate) async fn get_taddress_transactions<S: ChainDataSource, V: PinnedView, B>(
+pub(crate) async fn get_taddress_transactions<S: ChainDataSource, V: PinnedView>(
     address_index: AddressIndex<V>,
     validators: TrafficBalancer<S>,
     grpc_snapshot: Arc<GrpcSnapshot<V>>,
-    body: B,
+    filter: service::TransparentAddressBlockFilter,
     reads: &ReadLanes,
-) -> Result<Response<Body>, Status>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let filter: service::TransparentAddressBlockFilter = decode_request(body).await?;
-
+) -> Result<Response<Body>, Status> {
     let txids = address_txids(address_index, filter, reads).await?;
     Ok(streamed_raw_transactions(txids, validators, grpc_snapshot))
 }
