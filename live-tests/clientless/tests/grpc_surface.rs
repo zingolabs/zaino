@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use ztest::prelude::*;
 
@@ -28,14 +29,18 @@ async fn read_surface_serves_the_validators_chain() -> Result<()> {
     let info = indexer.indexer_info().await?;
     assert!(!info.chain_name.is_empty(), "chain_name set: {info:?}");
     assert_eq!(info.block_height, height, "lightd info height = tip");
-    assert_eq!(indexer.latest_block().await?, validator.tip().await?, "served tip = validator's");
+    assert_eq!(
+        indexer.latest_block().await?,
+        validator.tip().await?,
+        "served tip: zaino vs zebrad"
+    );
 
     let by_height = indexer.get_block(BlockHeight::from(1u32)).await?;
     let hash = BlockHash::from_wire(&by_height.hash).context("block hash must be 32 bytes")?;
     let (_, truth) = validator.get_block(BlockHeight::from(1u32)).await?;
     assert_eq!((by_height.height, hash), (1, truth), "block 1 (display-order hash) = validator's");
     let by_hash = indexer.get_block_by_hash(hash).await?;
-    assert_eq!(by_hash, by_height, "by hash = by height");
+    assert_eq!(by_hash, by_height, "block 1: GetBlock by hash {hash} vs by height");
 
     // From 1 (non-standard genesis coinbase script unservable: zingolabs/zaino#818)
     let start = BlockHeight::from(1u32);
@@ -54,19 +59,27 @@ async fn read_surface_serves_the_validators_chain() -> Result<()> {
     assert_eq!(full.len(), shielded.len(), "same heights, all pools");
     for block in &full {
         for tx in &block.vtx {
-            let vout = tx.vout.first().context("transparent vout present")?;
+            let vout = tx.vout.first().with_context(|| {
+                format!("all pools at {}: tx {} carries no vout", block.height, tx.index)
+            })?;
             assert!(!vout.script_pub_key.is_empty(), "vout carries a script at {}", block.height);
         }
     }
 
     let nullifiers = indexer.get_block_range_nullifiers(start, tip).await?;
-    let ids = |blocks: &[CompactBlock]| -> Vec<(u64, Vec<u8>)> {
-        blocks.iter().map(|block| (block.height, block.hash.clone())).collect()
+    let ids = |blocks: &[CompactBlock]| -> Vec<(u64, String)> {
+        blocks.iter().map(|block| (block.height, hex::encode(&block.hash))).collect()
     };
-    assert_eq!(ids(&nullifiers), ids(&shielded), "nullifier range = same blocks");
+    assert_eq!(ids(&nullifiers), ids(&shielded), "(height, hash): nullifier vs default range");
     for block in &nullifiers {
-        let stripped = block.vtx.iter().all(|tx| tx.vin.is_empty() && tx.vout.is_empty());
-        assert!(stripped, "nullifiers only at {}: {block:?}", block.height);
+        let transparent: Vec<(usize, usize)> =
+            block.vtx.iter().map(|tx| (tx.vin.len(), tx.vout.len())).collect();
+        let stripped = transparent.iter().all(|&counts| counts == (0, 0));
+        assert!(
+            stripped,
+            "nullifiers only at {}: (vin, vout) per tx {transparent:?}",
+            block.height
+        );
     }
 
     // Past the tip → served up to it, then an error (not a clean end)
@@ -81,8 +94,10 @@ async fn read_surface_serves_the_validators_chain() -> Result<()> {
 
     let tree = indexer.get_tree_state(tip).await?;
     let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
-    let best = best.as_str().context("getbestblockhash returns a hex string")?;
-    assert_eq!((tree.height, tree.hash.as_str()), (height, best), "tree state at the tip");
-    assert_eq!(indexer.get_latest_tree_state().await?, tree, "latest tree state = tip's");
+    let best = best.as_str().with_context(|| format!("getbestblockhash: {best}"))?;
+    let served = (tree.height, tree.hash.as_str());
+    assert_eq!(served, (height, best), "tip tree state (height, hash): zaino vs zebrad");
+    let latest = indexer.get_latest_tree_state().await?;
+    assert_eq!(latest, tree, "GetLatestTreeState vs GetTreeState({height})");
     Ok(())
 }

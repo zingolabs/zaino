@@ -25,7 +25,7 @@ enum CoinbaseEra {
 
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
+async fn unfiltered_compact_blocks_match_chain_metadata() -> Result<()> {
     // Orchard-receiver miner → Ironwood coinbase actions (transparent miner = vacuous walk)
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
@@ -40,7 +40,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     let mut oracle: Vec<(u64, u64, u64)> = Vec::new();
     for height in 0..=u64::from(tip) {
         let block = vrpc.call_value("getblock", json!([height.to_string(), 1])).await?;
-        let trees = block.get("trees").context("verbose getblock must carry a trees field")?;
+        let trees = block.get("trees").with_context(|| format!("getblock {height}: no trees"))?;
         let size = |pool: &str| {
             trees.get(pool).and_then(|t| t.get("size")).and_then(Value::as_u64).unwrap_or(0)
         };
@@ -60,7 +60,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
         let metadata = block
             .chain_metadata
             .as_ref()
-            .context("every served compact block carries chain metadata")?;
+            .with_context(|| format!("served block {} carries no chain metadata", block.height))?;
 
         let sapling_outputs: u64 = block.vtx.iter().map(|tx| tx.outputs.len() as u64).sum();
         let orchard_actions: u64 = block.vtx.iter().map(|tx| tx.actions.len() as u64).sum();
@@ -81,17 +81,23 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
             prev_orchard + orchard_actions,
             prev_ironwood + ironwood_actions,
         );
-        assert_eq!(sizes, served, "tree-size delta = served commitments at {height}");
+        assert_eq!(
+            sizes, served,
+            "(sapling, orchard, ironwood) at {height}: metadata tree sizes vs parent + served"
+        );
 
         // Oracle parity (live-only: package tests' truth = the served object itself)
-        assert_eq!(sizes, oracle[height as usize], "tree sizes = validator's at {height}");
+        assert_eq!(
+            sizes, oracle[height as usize],
+            "(sapling, orchard, ironwood) tree sizes at {height}: zaino vs zebrad"
+        );
 
         prev_sapling = sapling_size;
         prev_orchard = orchard_size;
         prev_ironwood = ironwood_size;
     }
 
-    assert!(total_ironwood_actions > 0, "fixture produced no ironwood actions");
+    assert!(total_ironwood_actions > 0, "premise: fixture produced no ironwood actions");
     // Pool-swap (orchard > 0, ironwood = 0) vs pool-drop (both 0) (NU6.3: Orchard coinbase empty)
     assert_eq!(total_orchard_actions, 0, "Orchard coinbase: no Orchard actions from NU6.3");
 
@@ -107,21 +113,20 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
 #[case::orchard_to_ironwood(Some(NU6_3_TRANSITION_BOUNDARY))]
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn coinbase_pool_follows_nu6_3_activation_zebrad(#[case] nu6_3: Option<u32>) -> Result<()> {
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(
-        ActivationHeights::builder()
-            .set_overwinter(Some(1))
-            .set_sapling(Some(1))
-            .set_blossom(Some(1))
-            .set_heartwood(Some(1))
-            .set_canopy(Some(1))
-            .set_nu5(Some(2))
-            .set_nu6(Some(2))
-            .set_nu6_1(Some(2))
-            .set_nu6_2(Some(2))
-            .set_nu6_3(nu6_3)
-            .build(),
-    );
+async fn coinbase_pool_follows_nu6_3_activation(#[case] nu6_3: Option<u32>) -> Result<()> {
+    let nu6_3_per_case = ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .set_nu6_3(nu6_3)
+        .build();
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_per_case);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
@@ -149,7 +154,7 @@ async fn coinbase_pool_follows_nu6_3_activation_zebrad(#[case] nu6_3: Option<u32
             count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
         let version = coinbase["version"]
             .as_u64()
-            .context("every block carries a versioned coinbase transaction")?;
+            .with_context(|| format!("getblock {height}: no versioned coinbase: {coinbase}"))?;
         let sapling = count(&coinbase["vShieldedOutput"]);
         let orchard = count(&coinbase["orchard"]["actions"]);
         let ironwood = count(&coinbase["ironwood"]["actions"]);

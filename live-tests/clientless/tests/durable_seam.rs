@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use pretty_assertions::assert_eq;
 use serde_json::json;
 use ztest::prelude::*;
 
@@ -56,7 +57,9 @@ async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
     }
     for pair in blocks.windows(2) {
         let (prev, next) = (&pair[0], &pair[1]);
-        assert_eq!(next.prev_hash, prev.hash, "{} unlinked (floor {floor})", next.height);
+        let (link, parent) = (hex::encode(&next.prev_hash), hex::encode(&prev.hash));
+        let height = next.height;
+        assert_eq!(link, parent, "{height} prev_hash vs {}'s hash (floor {floor})", prev.height);
     }
 
     let straddling = [floor - 1, floor, floor + 1, floor + 2];
@@ -82,8 +85,13 @@ async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
     let descending =
         indexer.get_block_range(BlockHeight::from(high), BlockHeight::from(low)).await?;
     assert_eq!(descending.len(), ascending.len(), "count over [{low}, {high}]");
-    let reversed: Vec<_> = descending.iter().rev().cloned().collect();
-    assert_eq!(reversed, ascending, "descending = ascending reversed (floor {floor})");
+    for (from_descending, from_ascending) in descending.iter().rev().zip(&ascending) {
+        let height = from_ascending.height;
+        assert_eq!(
+            from_descending, from_ascending,
+            "{height}: descending vs ascending (floor {floor})"
+        );
+    }
 
     // Validator = oracle for the durable half too (else only ever compared against zaino)
     let vrpc = validator.json_rpc().await?;
@@ -94,9 +102,13 @@ async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
         // Wire = internal byte order, JSON-RPC = reversed
         let mut served = block.hash.clone();
         served.reverse();
-        let expected = hash.as_str().context("getblockhash returns a hex string")?;
         let height = block.height;
-        assert_eq!(hex::encode(&served), expected, "{height} (floor {floor})");
+        let expected = hash.as_str().with_context(|| format!("getblockhash {height}: {hash}"))?;
+        assert_eq!(
+            hex::encode(&served),
+            expected,
+            "{height} hash: zaino vs zebrad (floor {floor})"
+        );
     }
     Ok(())
 }

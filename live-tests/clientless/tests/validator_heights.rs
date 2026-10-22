@@ -18,7 +18,7 @@ const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
-    let heights = ActivationHeights::builder()
+    let nu6_3_at_boundary = ActivationHeights::builder()
         .set_overwinter(Some(1))
         .set_sapling(Some(1))
         .set_blossom(Some(1))
@@ -30,9 +30,10 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
         .set_nu6_2(Some(2))
         .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
         .build();
-    assert_ne!(heights, ActivationHeights::regtest_default(), "premise: != config placeholder");
+    let placeholder = ActivationHeights::regtest_default();
+    assert_ne!(nu6_3_at_boundary, placeholder, "premise: schedule != zainod's config placeholder");
 
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_at_boundary);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
@@ -45,7 +46,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
 
     // Placeholder schedule (NU6.3 at 2) would serve pre-boundary orchard coinbases as ironwood
     let blocks = indexer.get_block_range(BlockHeight::from(2u32), tip).await?;
-    assert!(!blocks.is_empty(), "no compact blocks served");
+    assert!(!blocks.is_empty(), "no compact blocks served in [2, {tip:?}]");
     for block in &blocks {
         let height = block.height;
         let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
@@ -63,7 +64,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
-    let heights = ActivationHeights::builder()
+    let nu6_3_at_boundary = ActivationHeights::builder()
         .set_overwinter(Some(1))
         .set_sapling(Some(1))
         .set_blossom(Some(1))
@@ -75,9 +76,10 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
         .set_nu6_2(Some(2))
         .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
         .build();
-    assert_ne!(heights, ActivationHeights::regtest_default(), "premise: != config placeholder");
+    let placeholder = ActivationHeights::regtest_default();
+    assert_ne!(nu6_3_at_boundary, placeholder, "premise: schedule != zainod's config placeholder");
 
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_at_boundary);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     env.build().await?;
 
@@ -119,7 +121,7 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
     .map(|(name, height)| (name.to_string(), height))
     .collect();
 
-    assert_eq!(reported, expected, "upgrade schedule: set, order, heights");
+    assert_eq!(reported, expected, "upgrades (name, height): zebrad's vs configured, in order");
 
     Ok(())
 }
