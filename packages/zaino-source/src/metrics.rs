@@ -80,15 +80,43 @@ pub(crate) fn call_settled(
     }
 }
 
-/// Bounded label set (zebra's error codes, HTTP statuses, gRPC codes = small fixed sets)
+/// Codes `legacy_rpc` reads a verdict from (any other = `rpc_other`: the validator picks any i64)
+const VERDICT_RPC_CODES: [i64; 9] = [-1, -5, -8, -22, -25, -26, -27, -32601, -32602];
+
+/// Bounded label set (verdict codes, HTTP status classes, tonic's 17 gRPC codes)
 fn failure_label(mode: FailureMode) -> String {
     match mode {
         FailureMode::Connection => "connection".to_owned(),
         FailureMode::Timeout => "timeout".to_owned(),
         FailureMode::Auth => "auth".to_owned(),
         FailureMode::Parse => "parse".to_owned(),
-        FailureMode::HttpStatus(status) => format!("http_{status}"),
-        FailureMode::RpcError(code) => format!("rpc_{code}"),
+        FailureMode::HttpStatus(status @ 300..=599) => format!("http_{}xx", status / 100),
+        FailureMode::HttpStatus(_) => "http_other".to_owned(),
+        FailureMode::RpcError(code) if VERDICT_RPC_CODES.contains(&code) => format!("rpc_{code}"),
+        FailureMode::RpcError(_) => "rpc_other".to_owned(),
         FailureMode::GrpcStatus(code) => format!("grpc_{code}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_labels_stay_bounded_whatever_the_validator_sends() {
+        use FailureMode::{GrpcStatus, HttpStatus, RpcError};
+        for (mode, label) in [
+            (RpcError(-8), "rpc_-8"),
+            (RpcError(-32601), "rpc_-32601"),
+            (RpcError(-28), "rpc_other"),
+            (RpcError(i64::MIN), "rpc_other"),
+            (HttpStatus(503), "http_5xx"),
+            (HttpStatus(429), "http_4xx"),
+            (HttpStatus(301), "http_3xx"),
+            (HttpStatus(999), "http_other"),
+            (GrpcStatus(14), "grpc_14"),
+        ] {
+            assert_eq!(failure_label(mode), label, "{mode:?}");
+        }
     }
 }
