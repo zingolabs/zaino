@@ -361,6 +361,12 @@ impl TrafficCore {
         member.expect("a configured validator").health()
     }
 
+    /// Each trusted member's health, configured order
+    pub(crate) fn healths(&self) -> Vec<Health> {
+        let trusted = self.members.iter().filter(|(id, _)| *id != &MemberId::Peers);
+        trusted.map(|(_, member)| member.health()).collect()
+    }
+
     /// T1, T2, T4, T5, T10 (the rest = the model's)
     #[cfg(test)]
     pub(crate) fn check(&self) {

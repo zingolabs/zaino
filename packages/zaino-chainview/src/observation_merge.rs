@@ -13,20 +13,18 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::future::join_all;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use zaino_primitives::types::BlockRef;
 use zaino_source::{
     BlockchainInfo, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
-    MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError, Telemetry,
+    MempoolListed, MetadataReading, PollReading, QueryError, Telemetry,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::alarm_thresholds::CATCHING_UP_WARN_INTERVAL;
 use crate::chain_view_core::ChainViewCore;
 
 /// Merges every trusted validator's observations into the view (spawn [`run`](Self::run))
@@ -48,8 +46,6 @@ impl<S: ChainDataSource> ObservationMerge<S> {
                 core: &self.core,
                 balancer: &self.balancer,
                 listed: BTreeSet::new(),
-                health: Health::Pending,
-                catching_up_warned: None,
             };
             merging.follow()
         });
@@ -102,15 +98,12 @@ pub(crate) enum TrustedValidatorReport {
 }
 
 /// - `listed` = its last listing as admitted (the diff's left side)
-/// - `health` = as last merged
 struct ValidatorFollower<'a, S> {
     validator: TrustedValidatorId,
     address: &'a str,
     core: &'a ChainViewCore,
     balancer: &'a TrafficBalancer<S>,
     listed: BTreeSet<TxId>,
-    health: Health,
-    catching_up_warned: Option<Instant>,
 }
 
 impl<S: ChainDataSource> ValidatorFollower<'_, S> {
@@ -129,7 +122,7 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
     async fn merge(&mut self, observation: &Observation) {
         let polled = match &observation.polled {
             Ok(polled) => polled,
-            Err(cause) => return self.failed(cause, observation.health),
+            Err(_) => return self.failed(observation.health),
         };
         let PollReading { info, listing, held, metadata } = polled;
         let telemetry = self.telemetry(metadata.as_ref());
@@ -144,7 +137,6 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
                 self.listed(listing).await;
             }
             Err(_) => {
-                self.catching_up(&reading);
                 let report = TrustedValidatorReport::Read { reading, health, listed: false };
                 self.core.apply(self.validator, report);
                 self.listed.clear();
@@ -189,7 +181,6 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         for txid in self.core.apply(self.validator, TrustedValidatorReport::Listed(listing)) {
             admitted.remove(&txid);
         }
-        self.live(admitted.len());
         self.listed = admitted;
     }
 
@@ -213,47 +204,10 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
 
     /// - `Degraded`: holds no tip, sightings kept
     /// - `Down`: neither (its next answer re-lists all)
-    fn failed(&mut self, cause: &NonDomainError, health: Health) {
-        match health {
-            Health::Down => {
-                if self.health != Health::Down {
-                    warn!(validator = self.address, %cause, "Validator down, holds no tip");
-                }
-                self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
-                self.listed.clear();
-            }
-            _ => {
-                warn!(validator = self.address, %cause, "Validator poll failed");
-                self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
-            }
-        }
-        self.health = health;
-    }
-
-    fn live(&mut self, listed: usize) {
-        match std::mem::replace(&mut self.health, Health::Live) {
-            Health::Live => {}
-            Health::CatchingUp => {
-                info!(validator = self.address, listed, "Validator mempool active")
-            }
-            Health::Pending => info!(validator = self.address, listed, "Polling validator"),
-            Health::Degraded | Health::Down => info!(validator = self.address, "Validator back"),
-        }
-        self.catching_up_warned = None;
-    }
-
-    /// Warned once per [`CATCHING_UP_WARN_INTERVAL`]
-    fn catching_up(&mut self, reading: &Reading) {
-        self.health = Health::CatchingUp;
-        let due =
-            self.catching_up_warned.is_none_or(|at| at.elapsed() >= CATCHING_UP_WARN_INTERVAL);
-        if due {
-            let (tip, network) = (reading.info.tip.height, reading.info.estimated_height);
-            let behind = u32::from(network).saturating_sub(tip.into());
-            let height = u32::from(tip);
-            let hash = reading.info.tip.hash;
-            warn!(validator = self.address, height, behind, %hash, "Validator mempool inactive");
-            self.catching_up_warned = Some(Instant::now());
+    fn failed(&mut self, health: Health) {
+        self.core.apply(self.validator, TrustedValidatorReport::Failed(health));
+        if health == Health::Down {
+            self.listed.clear();
         }
     }
 

@@ -2,9 +2,6 @@
 
 use std::time::Duration;
 
-/// Delay between "catching up" warnings for one trusted validator (polled every second)
-pub(crate) const CATCHING_UP_WARN_INTERVAL: Duration = Duration::from_secs(60);
-
 /// Block `depth` deep owed finality this long, finalized tip unmoved = finality stalled (alarm)
 pub(crate) const FINALITY_STALL: Duration = Duration::from_secs(60);
 

@@ -136,6 +136,10 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 `Benched` is orthogonal: a fast liar is `Live` and benched. `Health::label()` = the metric label
 (`pending`, `live`, `catching_up`, `degraded`, `down`).
 
+Each change is logged once, by its address (`was` = the label left): INFO `Validator live`, WARN
+`Validator mempool inactive (catching up)`, `Validator failing`, `Validator down, probed until it
+answers`. A failed poll also WARNs its cause, except while `Down`.
+
 `Unanswered` displays its `last` (or "no member to ask"), for logs and wallet-facing statuses.
 
 ## Invariants

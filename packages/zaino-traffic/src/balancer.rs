@@ -485,6 +485,17 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     }
 }
 
+/// One trusted member's health change (never back to `Pending`)
+fn transition(validator: &str, was: Health, now: Health) {
+    let was = was.label();
+    match now {
+        Health::Live | Health::Pending => info!(validator, was, "Validator live"),
+        Health::CatchingUp => warn!(validator, was, "Validator mempool inactive (catching up)"),
+        Health::Degraded => warn!(validator, was, "Validator failing"),
+        Health::Down => warn!(validator, was, "Validator down, probed until it answers"),
+    }
+}
+
 /// Abandons its ask on drop unless the core ended it
 struct Open<'a, S> {
     shared: &'a Shared<S>,
@@ -516,9 +527,16 @@ impl<S> Shared<S> {
         self.changed.notify_one();
     }
 
-    /// Ask events to their futures (a dropped one's = ignored), polls to the driver
+    /// Ask events to their futures (a dropped one's = ignored), polls to the driver, each health
+    /// change logged
     fn step_locked(&self, state: &mut State, input: Input) {
-        for output in state.core.step(input, Instant::now().into_std()) {
+        let was = state.core.healths();
+        let outputs = state.core.step(input, Instant::now().into_std());
+        let changed = was.into_iter().zip(state.core.healths()).zip(&self.addresses);
+        for ((was, now), address) in changed.filter(|((was, now), _)| was != now) {
+            transition(address, was, now);
+        }
+        for output in outputs {
             let (ask, event) = match output {
                 Output::Poll(order) => {
                     state.polls.push(order);
@@ -629,6 +647,9 @@ impl<S: ChainDataSource> Shared<S> {
         drop(state);
         self.changed.notify_one();
         let PollOrder { validator, streaming, .. } = order;
+        if let (Err(cause), false) = (&polled, health == Health::Down) {
+            warn!(validator = self.addresses[validator.get()], %cause, "Validator poll failed");
+        }
         let observation = Observation { asked, polled, streaming, health };
         self.observations[validator.get()].send_replace(Some(Arc::new(observation)));
     }

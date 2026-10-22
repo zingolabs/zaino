@@ -135,8 +135,8 @@ failed).
 | failed | `Degraded` | last one shown, holds nothing | kept (still in `trusted.seen`, not in `of`) |
 | 10 failures | `Down` | cleared | retracted; next answer re-lists everything |
 
-INFO on a validator's first listing; WARN every 60 s while catching up, then "Validator caught
-up". A validator going away never ends `run`; only cancel does.
+Health is the balancer's (`Observation::health`, mirrored into `TrustedValidatorMeta`), and so are
+its transition logs. A validator going away never ends `run`; only cancel does.
 
 ## Mempool
 
