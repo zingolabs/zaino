@@ -88,34 +88,47 @@ mod tests {
         pages::{FileKind, Sealed},
     };
 
+    /// 3 MiB + 77 bytes pushed 1 000 at a time
+    ///
     /// - past the threshold → scratch file
     /// - appended bytes = exactly what was pushed, scratch gone
-    /// - below it: nothing touches the disk
     #[test]
     fn a_spill_appends_every_byte_in_order_and_removes_its_scratch() {
         let fs = SimFs::new();
         let dir = Path::new("/set");
         fs.create_dir_all(dir).expect("dir");
         let pushed: Vec<u8> = (0..3 * SPILL_AT + 77).map(|n| (n % 251) as u8).collect();
-
         let path = dir.join("0000000007.fences.scratch");
         let mut spill = Spill::new(fs.clone(), path.clone());
         for piece in pushed.chunks(1000) {
             spill.push(piece).expect("push");
         }
-        assert_eq!(spill.len(), pushed.len() as u64);
-        assert!(fs.contents(&path).is_some(), "spilled past the threshold");
-
+        assert_eq!(spill.len(), pushed.len() as u64, "bytes pushed");
+        assert!(fs.contents(&path).is_some(), "spilled past the threshold: no scratch file");
         let target = dir.join("0000000007.seg");
         let mut out = PagedFile::open(fs.as_ref(), &target, Sealed::EMPTY, FileKind::Segment)
             .expect("segment");
-        spill.append_to(&mut out).expect("append");
-        assert_eq!(fs.contents(&target).expect("segment"), pushed);
-        assert!(fs.contents(&path).is_none(), "scratch removed");
 
-        let small_path = dir.join("0000000008.fences.scratch");
-        let mut small = Spill::new(fs.clone(), small_path.clone());
-        small.push(&[1; 1000]).expect("push");
-        assert!(fs.contents(&small_path).is_none(), "never spilled");
+        spill.append_to(&mut out).expect("append");
+
+        assert!(fs.contents(&target).expect("segment") == pushed, "appended bytes != pushed");
+        assert_eq!(fs.contents(&path), None, "scratch left behind");
+    }
+
+    /// One byte under `SPILL_AT` stays in memory, `SPILL_AT` itself spills
+    #[test]
+    fn a_spill_moves_to_its_scratch_file_at_spill_at_bytes() {
+        let fs = SimFs::new();
+        fs.create_dir_all(Path::new("/set")).expect("dir");
+        let path = Path::new("/set/0000000008.fences.scratch");
+        let mut spill = Spill::new(fs.clone(), path.to_owned());
+
+        spill.push(&vec![1; SPILL_AT - 1]).expect("push");
+        let under = fs.contents(path).map(|bytes| bytes.len());
+        spill.push(&[1]).expect("push");
+        let at = fs.contents(path).map(|bytes| bytes.len());
+
+        assert_eq!(under, None, "{} bytes: scratch file", SPILL_AT - 1);
+        assert_eq!(at, Some(SPILL_AT), "{SPILL_AT} bytes: scratch file length");
     }
 }
