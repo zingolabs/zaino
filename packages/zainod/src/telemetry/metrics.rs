@@ -1,8 +1,7 @@
 //! Prometheus recorder + scrape rendering
 //!
-//! - State gauges (tips, handed, per-index durable + synced, `zaino_chainview_*`) =
-//!   `zaino-grpc-snapshot`'s, set from one `GrpcSnapshot` load per scrape
-//!   ([`DaemonStatus::emit_gauges`])
+//! - State gauges (`zaino_state`, tips, handed, synced, `zaino_chainview_*`) = a fresh recorder per
+//!   scrape ([`STATE_TABLES`]: a series the state dropped, e.g. a validator's old release, leaves)
 //! - Events emitted where they happen, registered here from each crate's `METRICS` ([`TABLES`])
 //! - Every histogram native (exponential buckets, range rescales itself) = protobuf scrapes only
 //! - zebra-network's series = a high-level few, no peer identity ([`ZebraNetworkSummary`])
@@ -23,10 +22,9 @@ use crate::health::DaemonStatus;
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
 
-/// Every emitting crate's table (a new crate = one row)
+/// Every emitting crate's event table (a new crate = one row)
 const TABLES: &[&[Metric]] = &[
     zaino_grpc::METRICS,
-    zaino_grpc_snapshot::METRICS,
     zaino_chainview::METRICS,
     zaino_traffic::METRICS,
     zaino_source::METRICS,
@@ -34,9 +32,11 @@ const TABLES: &[&[Metric]] = &[
     zaino_sync::METRICS,
     zaino_persistence::METRICS,
     zaino_peers::METRICS,
-    crate::health::METRICS,
     super::disk::METRICS,
 ];
+
+/// Gauges [`DaemonStatus::emit_gauges`] sets, per scrape, into that scrape's own recorder
+const STATE_TABLES: &[&[Metric]] = &[zaino_grpc_snapshot::METRICS, crate::health::METRICS];
 
 /// ~9% wide buckets (schema 3 = Prometheus' default native resolution)
 const BUCKET_FACTOR: f64 = 1.1;
@@ -157,10 +157,28 @@ impl<R: Recorder> Recorder for ZebraNetworkSummary<R> {
     }
 }
 
-/// One scrape: `GrpcSnapshot` gauges + process sample set, rendered (blocking: walks every handle)
+/// One scrape: process sample set + every event series, then the state gauges (blocking: walks
+/// every handle)
 pub(crate) fn scrape(handle: &PrometheusHandle, status: &DaemonStatus, format: Format) -> Vec<u8> {
-    status.emit_gauges();
     collect_process_metrics();
+    let mut scrape = render(handle, format);
+    scrape.extend(state_gauges(|| status.emit_gauges(), format));
+    scrape
+}
+
+/// `emit`'s gauges from a recorder of their own: exactly what `emit` set now, nothing older
+///
+/// - families disjoint from the global recorder's (concatenated renders = one valid exposition)
+fn state_gauges(emit: impl FnOnce(), format: Format) -> Vec<u8> {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    metrics::with_local_recorder(&recorder, || {
+        STATE_TABLES.iter().copied().flatten().for_each(Metric::describe);
+        emit();
+    });
+    render(&recorder.handle(), format)
+}
+
+fn render(handle: &PrometheusHandle, format: Format) -> Vec<u8> {
     match format {
         Format::Text => handle.render().into_bytes(),
         Format::Protobuf => handle.render_protobuf(),
@@ -188,6 +206,29 @@ pub(crate) fn describe_all() {
 
 #[cfg(test)]
 mod tests {
+    /// A validator upgrade relabels its release series: the old one gone at the next scrape
+    #[test]
+    fn a_state_series_the_state_no_longer_sets_leaves_the_next_scrape() {
+        let release = |build: &'static str| {
+            move || {
+                metrics::gauge!("zaino.chainview.release", "endpoint" => "a:8232", "build" => build)
+                    .set(1.0)
+            }
+        };
+        let scraped = |emit| {
+            let text = String::from_utf8(super::state_gauges(emit, super::Format::Text));
+            let text = text.expect("text exposition is UTF-8");
+            let series = text.lines().filter(|line| line.starts_with("zaino_chainview_release{"));
+            (text.contains("# HELP zaino_chainview_release "), series.map(str::to_owned).collect())
+        };
+        let first: (bool, Vec<String>) = scraped(release("6.0.0"));
+        let upgraded: (bool, Vec<String>) = scraped(release("6.1.0"));
+        let series =
+            |build| format!(r#"zaino_chainview_release{{endpoint="a:8232",build="{build}"}} 1"#);
+        assert_eq!(first, (true, vec![series("6.0.0")]), "described, one series");
+        assert_eq!(upgraded, (true, vec![series("6.1.0")]), "6.0.0's series gone");
+    }
+
     /// zebra-network's emissions (its own label shapes) through zainod's recorder:
     ///
     /// - kept series keep every other label, peers summed (2 addresses → one total per command)

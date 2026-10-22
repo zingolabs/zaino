@@ -85,8 +85,13 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ## Reporting
 
 ```rust,ignore
-METRICS.iter().for_each(Metric::describe);              // once, at boot
-emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then render
+// per scrape, into a recorder of its own (a label set the snapshot dropped = gone from the scrape)
+let recorder = PrometheusBuilder::new().build_recorder();
+metrics::with_local_recorder(&recorder, || {
+    METRICS.iter().for_each(Metric::describe);
+    emit_gauges(&grpc_snapshots.load(), &nfs_progress);
+});
+// then render `recorder.handle()` beside the global recorder's events
 ```
 
 - `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `chain.alarms`).
