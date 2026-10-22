@@ -35,13 +35,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_mined_location_is_its_golden_bytes() {
+    fn a_mined_location_is_its_golden_bytes_and_round_trips() {
         let block =
-            BlockRef { hash: BlockHash([0xAB; 32]), height: BlockHeight::from(0x0102_0304) };
+            BlockRef { hash: BlockHash([0xab; 32]), height: BlockHeight::from(0x0102_0304) };
         let mined = Mined { block, index: 0x0506_0708 };
-        let golden =
-            [[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08].as_slice(), &[0xAB; 32]].concat();
-        assert_eq!(encode(mined).as_slice(), golden.as_slice());
-        assert_eq!(decode(&encode(mined)), mined);
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+        let encoded = encode(mined);
+
+        let golden: [(&str, String); 3] = [
+            ("height BE", "01020304".into()),
+            ("index BE", "05060708".into()),
+            ("block hash", "ab".repeat(32)),
+        ];
+        let mut at = 0;
+        for (field, expected) in golden {
+            let width = expected.len() / 2;
+            assert_eq!(
+                encoded.get(at..at + width).map(hex),
+                Some(expected),
+                "{field} at byte {at}"
+            );
+            at += width;
+        }
+        assert_eq!(hex(&encoded[at..]), "", "trailing bytes after byte {at}");
+        assert_eq!(decode(&encoded), mined, "decode(encode(mined))");
     }
 }

@@ -77,13 +77,14 @@ pub fn fold<V: MapRead>(parent: &TxidLocationReader<V>, block: &Block, out: &mut
 mod tests {
     use std::num::NonZeroUsize;
 
-    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
-    use zaino_source::testing::{h, MockChain};
-    use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
+    use zaino_source::testing::MockChain;
+    use zaino_sync::testing::{open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::TxId;
 
     use super::*;
+    use crate::by_txid::decode;
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
@@ -92,34 +93,46 @@ mod tests {
         Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
-    /// 0..=3 (2 mines two txs: coinbase at 0, then 1, 2), 3 `FinalizedTip`, then a restart
-    /// resending 2 (held: skipped) before 4
+    /// Block 1 = coinbase + two txs: one row per tx, keyed by txid, at its position (coinbase = 0)
+    #[test]
+    fn each_transaction_folds_to_one_row_naming_its_block_and_position() {
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.tx(|t| t).tx(|t| t));
+        let blocks = chain.blocks(one);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut genesis = store.changes(blocks[0].block_ref());
+        fold(&TxidLocationReader::new(store.applied()), &blocks[0], &mut genesis);
+        store.apply(genesis);
+
+        let mut changes = store.changes(blocks[1].block_ref());
+        fold(&TxidLocationReader::new(store.applied()), &blocks[1], &mut changes);
+
+        let rows: Vec<(TxId, Mined)> = changes
+            .inserts(BY_TXID)
+            .map(|(txid, mined)| {
+                let txid = TxId::from_bytes(txid.try_into().expect("by_txid key: 32-byte txid"));
+                (txid, decode(mined.try_into().expect("by_txid value: MINED bytes")))
+            })
+            .collect();
+        let expected: Vec<(TxId, Mined)> = (0u32..3)
+            .map(|index| (chain.tx(one, index as usize).txid, Mined { block: one, index }))
+            .collect();
+        assert_eq!(rows, expected, "block 1's rows: (txid, mined) per tx, coinbase first");
+    }
+
+    /// Six blocks (2 = coinbase + two txs), 0..=4 each its own commit (write_buffer = 1 byte),
+    /// crashed after every operation
     ///
-    /// - every txid located at its block and position after a reopen
-    /// - a txid never mined nowhere
+    /// - each state reopens to an acknowledged or the attempted commit
+    /// - locates every tx it holds at its block + position, none past it
+    /// - a writer on it skips the resent held blocks and commits the next one
     #[tokio::test]
-    async fn every_txid_locates_its_block_and_position_and_a_restart_skips_what_it_holds() {
-        let fs = SimFs::new();
+    async fn every_crash_state_reopens_to_a_durable_prefix_that_skips_what_it_holds() {
         let mut chain = MockChain::regtest();
         chain.mine_empty(1);
         chain.mine(|b| b.tx(|t| t).tx(|t| t));
-        let tip = chain.mine_empty(2);
+        let tip = chain.mine_empty(3);
         let blocks = chain.blocks(tip);
-
-        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        for block in &blocks[..3] {
-            writer.send(step(block)).await;
-        }
-        writer.send(finalized(&blocks[3])).await;
-        writer.durable_at(h(3)).await;
-        writer.stop().await.expect("stops at Shutdown");
-        let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        for block in &blocks[2..=4] {
-            writer.send(step(block)).await;
-        }
-        writer.stop().await.expect("stops at Shutdown");
-
-        let reader = TxidLocationReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
         let mined: Vec<(TxId, Mined)> = blocks
             .iter()
             .flat_map(|block| {
@@ -129,10 +142,42 @@ mod tests {
                     .map(move |(index, tx)| (tx.txid, Mined { block: at, index }))
             })
             .collect();
-        assert_eq!(mined.len(), 7, "five coinbases + two");
-        for (txid, expected) in &mined {
-            assert_eq!(reader.mined(txid), Some(*expected), "{txid}");
+        assert_eq!(mined.len(), 8, "six coinbases + two");
+        // `count` blocks held = heights `0..count` located, the rest nowhere
+        let expected = |count: u32| -> Vec<(TxId, Option<Mined>)> {
+            let held = |at: &Mined| u32::from(at.block.height) < count;
+            mined.iter().map(|(txid, at)| (*txid, Some(*at).filter(held))).collect()
+        };
+        let located = |view: DiskView| -> Vec<(TxId, Option<Mined>)> {
+            let reader = TxidLocationReader::new(view);
+            mined.iter().map(|(txid, _)| (*txid, reader.mined(txid))).collect()
+        };
+
+        let (fs, recording) = SimFs::recording();
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
+        for (acked, block) in (1u64..).zip(&blocks[..5]) {
+            writer.send(step(block)).await;
+            writer.durable_at(block.header().height).await;
+            fs.set_tag(acked);
         }
-        assert_eq!(reader.mined(&TxId::from_bytes([0xEE; 32])), None, "never mined");
+        writer.stop().await.expect("stops at Shutdown");
+
+        let states = recording.crash_states();
+        assert!(states.len() > 10, "enumerated {} crash states", states.len());
+        for state in states {
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let label = format!("{}: recovered {count} blocks, next height {count}", state.label);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5));
+            assert!(acked.contains(&u64::from(count)), "{label}: acknowledged {acked:?}");
+            assert_eq!(located(store.durable()), expected(count), "{label}: held txs only");
+
+            let writer = start(store);
+            for block in &blocks[..=count as usize] {
+                writer.send(step(block)).await;
+            }
+            let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(located(handle.durable_view()), expected(count + 1), "{label}: next held");
+        }
     }
 }
