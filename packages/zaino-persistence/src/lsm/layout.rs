@@ -271,6 +271,7 @@ mod tests {
         let table = MapTable::point(0, "rows", 8, 4);
         let (plain, removable) = (Shape::of(&table), Shape::of(&table.deletes()));
         let key = [7u8; 8];
+        // (shape, row, golden)
         let cases: [(Shape, Row<'_>, &[u8]); 3] = [
             (plain, Row::Value(&[1, 2, 3, 4]), &[7, 7, 7, 7, 7, 7, 7, 7, 1, 2, 3, 4]),
             (removable, Row::Value(&[1, 2, 3, 4]), &[7, 7, 7, 7, 7, 7, 7, 7, 1, 2, 3, 4, 0]),
@@ -286,7 +287,7 @@ mod tests {
         let corrupt: [&[u8]; 2] =
             [&[7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 2], &[7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 9, 1]];
         for row in corrupt {
-            assert_eq!(decode_row(&removable, row), None, "{row:?}");
+            assert_eq!(decode_row(&removable, row), None, "corrupt row {row:?} decoded");
         }
     }
 }

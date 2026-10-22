@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn coalesced_widens_to_pages_and_merges_contiguous_runs() {
         let ranges = [0..10, 5..20, 20..20, 30..100, 4096..4100, 9000..9001, 17000..17001];
-        let merged = coalesced(ranges.into_iter());
-        assert_eq!(merged, [0..3 * PAGE, 4 * PAGE..5 * PAGE]);
+        let merged = coalesced(ranges.clone().into_iter());
+        assert_eq!(merged, [0..3 * PAGE, 4 * PAGE..5 * PAGE], "coalesced runs of {ranges:?}");
     }
 }
