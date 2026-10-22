@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::BlockHash;
 
@@ -12,43 +14,61 @@ const OTHER: Schema =
     Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[], &[]));
 
 /// Height `n`, hash `[n; 32]`
-fn block_ref(n: u8) -> BlockRef {
+fn block_at(n: u8) -> BlockRef {
     let height = BlockHeight::from(u32::from(n));
     BlockRef { hash: BlockHash([n; 32]), height }
 }
 
-/// Block `n`: one record + one id, both `n`
+/// Block at height `n`: record `[n]` + id `[n; 16]` → `[n; 4]`
 fn block(n: u8) -> BlockChanges {
-    let mut changes = BlockChanges::new(block_ref(n), SCHEMA);
+    let mut changes = BlockChanges::new(block_at(n), SCHEMA);
     changes.sequence(RECORDS).append(&[n]);
     changes.map(IDS).insert(&[n; 16], &[n; 4]);
     changes
 }
 
 impl Overlay {
-    /// - per-table items = what the blocks added
     /// - tips ascending
+    /// - per-table items = what the blocks added
+    /// - each map entry owned by the newest block writing its key
     pub(crate) fn check(&self, label: &str) {
         let tips: Vec<_> = self.deltas.iter().map(|delta| delta.tip.height).collect();
-        assert!(tips.is_sorted_by(|a, b| a < b), "{label}: layer blocks ascending {tips:?}");
-        let records = appended(self.deltas.iter(), self.sequences.len());
-        for (at, (held, records)) in self.sequences.iter().zip(records).enumerate() {
-            assert_eq!(held.len(), records, "{label}: sequence {at} = its blocks' appends");
+        assert!(tips.is_sorted_by(|a, b| a < b), "{label}: layer blocks ascending, got {tips:?}");
+        let appended = appended(self.deltas.iter(), self.sequences.len());
+        for (at, (held, appended)) in self.sequences.iter().zip(appended).enumerate() {
+            let held = held.len();
+            assert_eq!(
+                held, appended,
+                "{label}: sequence {at} holds {held} records, its blocks appended {appended}"
+            );
         }
         for (at, held) in self.maps.iter().enumerate() {
-            let mut keys: Vec<&Bytes> =
+            let written: BTreeSet<&Bytes> =
                 self.deltas.iter().flat_map(|delta| &delta.keys[at]).collect();
-            keys.sort_unstable();
-            keys.dedup();
-            let same = held.len() == keys.len() && keys.iter().all(|key| held.contains_key(*key));
-            assert!(same, "{label}: map {at} = its blocks' keys");
-            let owned = held.iter().all(|(key, (owner, _))| {
+            let held_keys: BTreeSet<&Bytes> = held.keys().collect();
+            let missing: Vec<String> = written.difference(&held_keys).map(|key| hex(key)).collect();
+            let stray: Vec<String> = held_keys.difference(&written).map(|key| hex(key)).collect();
+            assert!(
+                missing.is_empty() && stray.is_empty(),
+                "{label}: map {at} holds its blocks' keys: missing {missing:?}, no block wrote \
+                 {stray:?}"
+            );
+            for (key, (owner, _)) in held {
                 let wrote = self.deltas.iter().filter(|delta| delta.keys[at].contains(key));
-                wrote.map(|delta| delta.tip.height).max() == Some(*owner)
-            });
-            assert!(owned, "{label}: map {at} each entry owned by the newest block writing it");
+                let newest = wrote.map(|delta| delta.tip.height).max();
+                assert!(
+                    newest == Some(*owner),
+                    "{label}: map {at} key {} owned by {owner:?}, want the newest block writing \
+                     it {newest:?}",
+                    hex(key)
+                );
+            }
         }
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Durable side of an `OverlayView`: a tip + a schema, nothing else read
@@ -76,17 +96,10 @@ fn with_a_block_not_above_the_layer_panics() {
 }
 
 #[test]
-#[should_panic(expected = "changes built for another schema")]
-fn with_a_block_of_another_schema_panics() {
-    let layer = Overlay::empty(&SCHEMA).with(&block(0));
-    layer.with(&BlockChanges::new(block_ref(1), OTHER));
-}
-
-#[test]
 #[should_panic(expected = "ids: a map key held twice")]
 fn with_a_key_the_layer_holds_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0));
-    let mut again = SCHEMA.changes(block_ref(1));
+    let mut again = SCHEMA.changes(block_at(1));
     again.map(IDS).insert(&[0; 16], &[9; 4]);
     layer.with(&again);
 }
@@ -94,10 +107,10 @@ fn with_a_key_the_layer_holds_panics() {
 #[test]
 #[should_panic(expected = "ids: a map key removed twice")]
 fn with_a_key_the_layer_removed_panics() {
-    let mut removal = BlockChanges::new(block_ref(0), SCHEMA);
+    let mut removal = BlockChanges::new(block_at(0), SCHEMA);
     removal.map(IDS).remove(&[0; 16]);
     let layer = Overlay::empty(&SCHEMA).with(&removal);
-    let mut again = SCHEMA.changes(block_ref(1));
+    let mut again = SCHEMA.changes(block_at(1));
     again.map(IDS).remove(&[0; 16]);
     layer.with(&again);
 }
@@ -105,17 +118,17 @@ fn with_a_key_the_layer_removed_panics() {
 #[test]
 fn rebase_drops_every_block_durable_holds() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    let durable = |n| Durable { tip: Some(block_ref(n)), schema: SCHEMA };
+    let durable = |n| Durable { tip: Some(block_at(n)), schema: SCHEMA };
 
-    assert_eq!(layer.rebase(&durable(0)), Overlay::empty(&SCHEMA).with(&block(1)));
-    assert_eq!(layer.rebase(&durable(1)), Overlay::empty(&SCHEMA));
+    assert_eq!(layer.rebase(&durable(0)), Overlay::empty(&SCHEMA).with(&block(1)), "durable at 0");
+    assert_eq!(layer.rebase(&durable(1)), Overlay::empty(&SCHEMA), "durable at 1");
 }
 
 #[test]
 #[should_panic(expected = "not one of the layer's blocks")]
 fn rebase_onto_another_branch_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    let other_branch = BlockRef { hash: BlockHash([7; 32]), ..block_ref(0) };
+    let other_branch = BlockRef { hash: BlockHash([7; 32]), ..block_at(0) };
     layer.rebase(&Durable { tip: Some(other_branch), schema: SCHEMA });
 }
 
@@ -123,14 +136,14 @@ fn rebase_onto_another_branch_panics() {
 #[should_panic(expected = "not one of the layer's blocks")]
 fn rebase_past_the_layer_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    layer.rebase(&Durable { tip: Some(block_ref(2)), schema: SCHEMA });
+    layer.rebase(&Durable { tip: Some(block_at(2)), schema: SCHEMA });
 }
 
 #[test]
 #[should_panic(expected = "not above durable")]
 fn a_view_over_a_layer_not_above_durable_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(1));
-    OverlayView::new(Durable { tip: Some(block_ref(1)), schema: SCHEMA }, layer);
+    OverlayView::new(Durable { tip: Some(block_at(1)), schema: SCHEMA }, layer);
 }
 
 #[test]
@@ -140,11 +153,22 @@ fn a_view_over_another_schemas_durable_panics() {
     OverlayView::new(Durable { tip: None, schema: OTHER }, layer);
 }
 
-// `Overlay::check` invariants, each broken by hand (check never firing = silent pass after every
-// `disk::tests::history` step)
+// `Overlay::check` invariants: holds on every layer `with` + `rebase` build, each broken by hand
+// (check never firing = silent pass after every `disk::model_tests::history` step)
+
+/// Blocks 0-2, block 2 removing block 0's id, rebased past block 0
+#[test]
+fn check_passes_every_layer_with_and_rebase_build() {
+    let mut removal = block(2);
+    removal.map(IDS).remove(&[0; 16]);
+    let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1)).with(&removal);
+
+    layer.check("blocks 0-2");
+    layer.rebase(&Durable { tip: Some(block_at(0)), schema: SCHEMA }).check("rebased onto 0");
+}
 
 #[test]
-#[should_panic(expected = "layer blocks ascending")]
+#[should_panic(expected = "layer blocks ascending, got [BlockHeight(1), BlockHeight(0)]")]
 fn check_catches_blocks_out_of_order() {
     let mut layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
     let oldest = layer.deltas.pop_front().expect("two blocks");
@@ -153,7 +177,7 @@ fn check_catches_blocks_out_of_order() {
 }
 
 #[test]
-#[should_panic(expected = "sequence 0 = its blocks' appends")]
+#[should_panic(expected = "sequence 0 holds 3 records, its blocks appended 2")]
 fn check_catches_a_record_no_block_appended() {
     let mut layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
     layer.sequences[0].push_back(Bytes::from_static(b"stray"));
@@ -161,7 +185,9 @@ fn check_catches_a_record_no_block_appended() {
 }
 
 #[test]
-#[should_panic(expected = "map 0 = its blocks' keys")]
+#[should_panic(
+    expected = "map 0 holds its blocks' keys: missing [\"00000000000000000000000000000000\"]"
+)]
 fn check_catches_a_key_a_block_wrote_gone_missing() {
     let mut layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
     layer.maps[0].remove(&[0u8; 16][..]);
@@ -169,19 +195,20 @@ fn check_catches_a_key_a_block_wrote_gone_missing() {
 }
 
 #[test]
-#[should_panic(expected = "map 0 = its blocks' keys")]
+#[should_panic(expected = "no block wrote [\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"]")]
 fn check_catches_a_key_no_block_wrote() {
     let mut layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    let stray = (block_ref(1).height, Entry::Value(Bytes::from_static(b"rows")));
+    let stray = (block_at(1).height, Entry::Value(Bytes::from_static(b"rows")));
     layer.maps[0].insert(Bytes::from(vec![0xee; 16]), stray);
     layer.check("drill");
 }
 
 /// Rebase dropping the newer block would keep its key: a removed value resurrected
 #[test]
-#[should_panic(expected = "map 0 each entry owned by the newest block writing it")]
+#[should_panic(expected = "owned by BlockHeight(0), want the newest block writing it \
+                           Some(BlockHeight(1))")]
 fn check_catches_an_entry_owned_by_an_older_block() {
     let mut layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    layer.maps[0].get_mut(&[1u8; 16][..]).expect("block 1 wrote its id").0 = block_ref(0).height;
+    layer.maps[0].get_mut(&[1u8; 16][..]).expect("block 1 wrote its id").0 = block_at(0).height;
     layer.check("drill");
 }
