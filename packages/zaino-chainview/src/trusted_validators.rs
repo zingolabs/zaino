@@ -203,3 +203,41 @@ impl TrustedValidatorMeta {
         Some(u32::from(info.estimated_height).saturating_sub(u32::from(tip.height)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use zaino_source::testing::{h, MockChain};
+
+    use super::*;
+
+    /// Header chain best = 10 on the trunk; `answer` = its `getblockhash` at 10
+    #[test]
+    fn a_validator_holds_the_best_claiming_it_or_claiming_above_with_its_answer_on_our_chain() {
+        let mut chain = MockChain::regtest();
+        let best = chain.mine_empty(10);
+        let ahead = chain.mine_empty(2);
+        let fork = chain.fork(h(9)).mine_empty(4).tip();
+        let fork_at_10 = chain.ancestor(fork, h(10));
+        let at_9 = chain.at(h(9));
+        let headers = HeaderChainSnapshot::of(&chain, best);
+        #[rustfmt::skip]
+        let cases = [
+            // case,                                  health,              claim, answer,           holds
+            ("claims the best",                       Health::Live,        best,  None,             true),
+            ("catching up, claims the best",          Health::CatchingUp,  best,  None,             true),
+            ("above, its answer on our chain",        Health::Live,        ahead, Some(best),       true),
+            ("above, its answer off our chain",       Health::Live,        fork,  Some(fork_at_10), false),
+            ("above, not yet asked under this best",  Health::Live,        ahead, None,             false),
+            ("below the best",                        Health::Live,        at_9,  None,             false),
+            ("degraded: its claim no current fact",   Health::Degraded,    best,  Some(best),       false),
+        ];
+        for (case, health, claim, answer, holds) in cases {
+            let mut meta = TrustedValidatorMeta::new("v0:8232".to_owned());
+            meta.health = health;
+            meta.info = Some(chain.blockchain_info(claim));
+            meta.block_at_best = answer;
+
+            assert_eq!(meta.holds(&headers), holds, "{case}: claim {claim:?}, answer {answer:?}");
+        }
+    }
+}

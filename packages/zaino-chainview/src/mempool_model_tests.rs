@@ -20,6 +20,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use imbl::Vector;
 use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
 use tokio::time::Instant;
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{BlockRef, FinalityDepth, Netgroup, PeerTxId, ECLIPSE_NETGROUPS};
@@ -36,71 +37,109 @@ use crate::observation_merge::{Reading, Sighted, TrustedValidatorReport};
 use crate::peer_mempool::judge;
 use crate::trusted_validators::TrustedValidatorMeta;
 
-/// `a`, `b` and `rival` (spends `b`'s prevout) fund from coinbases at 1..=3, `child` spends `a`'s
-/// output, `bad` pays out more than it spends, `orphan` spends an outpoint nobody holds
-const A: usize = 0;
-const B: usize = 1;
-const RIVAL: usize = 2;
-const CHILD: usize = 3;
-const BAD: usize = 4;
-const ORPHAN: usize = 5;
-const TXS: usize = 6;
-/// Fee a valid one leaves (a trusted listing names the same)
-const FEES: [u64; 4] = [1_000, 500, 1_000, 1_000];
-
-#[derive(Debug, Clone)]
-enum Move {
-    /// Validator answers, listing these (valid ones only: it validated them)
-    Poll {
-        validator: u8,
-        listed: u8,
-    },
-    Fail {
-        validator: u8,
-    },
-    Kill {
-        validator: u8,
-    },
-    /// Per peer: `None` = unanswered, else the txs its mempool holds (then `wait` seconds)
-    Round {
-        answers: Vec<Option<u8>>,
-        wait: u8,
-    },
-    Block,
-    Send {
-        tx: u8,
-    },
+/// - `A`, `B`, `Rival` (spends `B`'s prevout) fund from coinbases at 1..=3
+/// - `Child` spends `A`'s output, `Bad` pays out more than it spends, `Orphan` spends an outpoint
+///   nobody holds
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tx {
+    A,
+    B,
+    Rival,
+    Child,
+    Bad,
+    Orphan,
 }
 
-fn moves(peers: usize) -> impl Strategy<Value = Vec<Move>> {
-    let answer = proptest::option::weighted(0.85, any::<u8>());
-    let step = prop_oneof![
-        3 => (any::<u8>(), any::<u8>()).prop_map(|(validator, listed)| Move::Poll { validator, listed }),
-        1 => any::<u8>().prop_map(|validator| Move::Fail { validator }),
-        1 => any::<u8>().prop_map(|validator| Move::Kill { validator }),
-        5 => (prop::collection::vec(answer, peers), 0u8..=20)
-            .prop_map(|(answers, wait)| Move::Round { answers, wait }),
-        1 => Just(Move::Block),
-        1 => (0u8..4).prop_map(|tx| Move::Send { tx }),
-    ];
-    prop::collection::vec(step, 1..48)
+const TXS: [Tx; 6] = [Tx::A, Tx::B, Tx::Rival, Tx::Child, Tx::Bad, Tx::Orphan];
+const VALID: [Tx; 4] = [Tx::A, Tx::B, Tx::Rival, Tx::Child];
+
+impl Tx {
+    /// Fee a valid one leaves (a trusted listing names the same)
+    fn fee(self) -> u64 {
+        match self {
+            Tx::A | Tx::Rival | Tx::Child => 1_000,
+            Tx::B => 500,
+            Tx::Bad | Tx::Orphan => panic!("{self:?}: invalid, never priced"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Peer {
+    netgroup: u8,
+    byzantine: bool,
+}
+
+/// - `Poll`: the validator answers, listing these (valid ones only: it validated them)
+/// - `Round`: per peer `None` = unanswered, else the txs its mempool holds; then `wait`
+#[derive(Debug, Clone)]
+enum Move {
+    Poll { validator: TrustedValidatorId, listed: BTreeSet<Tx> },
+    Fail { validator: TrustedValidatorId },
+    Kill { validator: TrustedValidatorId },
+    Round { answers: Vec<Option<BTreeSet<Tx>>>, wait: Duration },
+    Block,
+    Send { tx: Tx },
 }
 
 /// What an honest node's mempool can hold: valid only, one of two rivals, a child with its parent
-fn honest(mask: u8) -> BTreeSet<usize> {
-    let mut held: BTreeSet<usize> = (A..=CHILD).filter(|tx| mask & (1 << tx) != 0).collect();
-    if held.contains(&B) {
-        held.remove(&RIVAL);
+fn honest(mut held: BTreeSet<Tx>) -> BTreeSet<Tx> {
+    held.retain(|tx| VALID.contains(tx));
+    if held.contains(&Tx::B) {
+        held.remove(&Tx::Rival);
     }
-    if !held.contains(&A) {
-        held.remove(&CHILD);
+    if !held.contains(&Tx::A) {
+        held.remove(&Tx::Child);
     }
     held
 }
 
-/// Anything at all (a byzantine peer's listing)
-fn any_of(mask: u8) -> BTreeSet<usize> {
-    (0..TXS).filter(|tx| mask & (1 << tx) != 0).collect()
+fn any_txs() -> impl Strategy<Value = BTreeSet<Tx>> {
+    prop::collection::btree_set(prop::sample::select(TXS.to_vec()), 0..=TXS.len())
+}
+
+/// Honest peers' listings filtered here: the shrunk case shows each as it was answered
+fn moves(validators: usize, peers: Vec<Peer>) -> impl Strategy<Value = Vec<Move>> {
+    let validator =
+        move || (0..validators).prop_map(|index| TrustedValidatorId::new(index).expect("≤ 2"));
+    let answers: Vec<_> = peers
+        .iter()
+        .map(|peer| {
+            let byzantine = peer.byzantine;
+            let listing = any_txs().prop_map(move |txs| if byzantine { txs } else { honest(txs) });
+            proptest::option::weighted(0.85, listing)
+        })
+        .collect();
+    let wait = (0u64..=20).prop_map(Duration::from_secs);
+    let step = prop_oneof![
+        3 => (validator(), any_txs().prop_map(honest))
+            .prop_map(|(validator, listed)| Move::Poll { validator, listed }),
+        1 => validator().prop_map(|validator| Move::Fail { validator }),
+        1 => validator().prop_map(|validator| Move::Kill { validator }),
+        5 => (answers, wait).prop_map(|(answers, wait)| Move::Round { answers, wait }),
+        1 => Just(Move::Block),
+        1 => prop::sample::select(VALID.to_vec()).prop_map(|tx| Move::Send { tx }),
+    ];
+    prop::collection::vec(step, 1..48)
+}
+
+#[derive(Debug, Clone)]
+struct Case {
+    validators: usize,
+    peers: Vec<Peer>,
+    moves: Vec<Move>,
+}
+
+fn case() -> impl Strategy<Value = Case> {
+    let peer = (0u8..8, prop::bool::weighted(0.2))
+        .prop_map(|(netgroup, byzantine)| Peer { netgroup, byzantine });
+    (1usize..=2, prop::collection::vec(peer, 6..=10)).prop_flat_map(|(validators, peers)| {
+        moves(validators, peers.clone()).prop_map(move |moves| Case {
+            validators,
+            peers: peers.clone(),
+            moves,
+        })
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,39 +158,39 @@ struct Held {
     ours: bool,
 }
 
+/// `listings` = per peer its last answer and when
 struct Oracle {
     health: Vec<Health>,
-    listed: Vec<BTreeSet<usize>>,
+    listed: Vec<BTreeSet<Tx>>,
     polled_since_block: Vec<bool>,
-    /// Peer → its last answer and when
-    listings: BTreeMap<usize, (Instant, BTreeSet<usize>)>,
+    listings: BTreeMap<usize, (Instant, BTreeSet<Tx>)>,
     round: Option<Instant>,
-    held: BTreeMap<usize, Held>,
+    held: BTreeMap<Tx, Held>,
 }
 
 impl Oracle {
-    fn fresh(&self) -> Vec<(usize, &BTreeSet<usize>)> {
+    fn fresh(&self) -> Vec<(usize, &BTreeSet<Tx>)> {
         let Some(round) = self.round else { return Vec::new() };
         let fresh = self.listings.iter().filter(|(_, (at, _))| round - *at < LISTING_FRESH);
         fresh.map(|(peer, (_, txs))| (*peer, txs)).collect()
     }
 
-    fn listers(&self, tx: usize) -> Vec<usize> {
+    fn listers(&self, tx: Tx) -> Vec<usize> {
         self.fresh().into_iter().filter(|(_, txs)| txs.contains(&tx)).map(|(p, _)| p).collect()
     }
 
-    fn trusted(&self, tx: usize) -> bool {
+    fn trusted(&self, tx: Tx) -> bool {
         (0..self.health.len())
             .any(|v| self.health[v] != Health::Down && self.listed[v].contains(&tx))
     }
 
-    fn listed(&self, tx: usize) -> bool {
+    fn listed(&self, tx: Tx) -> bool {
         self.trusted(tx) || self.held.get(&tx).is_some_and(|held| held.quorum)
     }
 
     /// The merge's drop rule after any change
     fn settle(&mut self, moved: bool) {
-        let gone: Vec<usize> = self.held.keys().copied().collect();
+        let gone: Vec<Tx> = self.held.keys().copied().collect();
         for tx in gone {
             let ours = self.held[&tx].ours;
             if !self.listed(tx) && (moved || !ours) {
@@ -160,13 +199,13 @@ impl Oracle {
         }
     }
 
-    fn sight(&mut self, tx: usize) {
+    fn sight(&mut self, tx: Tx) {
         let held = self.held.entry(tx).or_insert(Held { fee: None, quorum: false, ours: false });
-        held.fee = held.fee.or(Some(FEES[tx]));
+        held.fee = held.fee.or(Some(tx.fee()));
     }
 }
 
-/// One case: the system + its oracle, moved in lockstep
+/// One case: the system + its oracle, moved in lockstep (`txs` in `TXS` order)
 struct Run {
     core: ChainViewCore,
     chain: MockChain,
@@ -191,30 +230,35 @@ impl Run {
         }
     }
 
-    fn id(&self, tx: usize) -> PeerTxId {
-        PeerTxId { txid: self.txs[tx].0, auth_digest: None }
+    fn txid(&self, tx: Tx) -> TxId {
+        self.txs[tx as usize].0
+    }
+
+    fn tx(&self, txid: &TxId) -> Tx {
+        TXS[self.txs.iter().position(|(t, _)| t == txid).expect("one of the case's")]
+    }
+
+    fn id(&self, tx: Tx) -> PeerTxId {
+        PeerTxId { txid: self.txid(tx), auth_digest: None }
     }
 
     fn apply(&mut self, step: &Move) {
-        let validators = self.oracle.health.len();
-        match *step {
+        match step {
             Move::Poll { validator, listed } => {
-                let v = usize::from(validator) % validators;
-                let listed = honest(listed);
-                let id = TrustedValidatorId::new(v).expect("small");
+                let v = validator.get();
                 let report = TrustedValidatorReport::Read {
                     reading: self.reading(),
                     health: zaino_traffic::Health::Live,
                     listed: true,
                 };
-                self.core.apply(id, report);
-                let sighted = |tx: &usize| Sighted {
-                    txid: self.txs[*tx].0,
-                    raw: Some(self.txs[*tx].1.clone()),
-                    fee: Zatoshis::from_u64(FEES[*tx]).expect("in supply"),
+                self.core.apply(*validator, report);
+                let sighted = |tx: &Tx| Sighted {
+                    txid: self.txid(*tx),
+                    raw: Some(self.txs[*tx as usize].1.clone()),
+                    fee: Zatoshis::from_u64(tx.fee()).expect("in supply"),
                 };
                 let listing = listed.iter().map(sighted).collect();
-                self.core.apply(id, TrustedValidatorReport::Listed(listing));
+                self.core.apply(*validator, TrustedValidatorReport::Listed(listing));
                 self.oracle.health[v] = Health::Live;
                 self.oracle.polled_since_block[v] = true;
                 self.oracle.listed[v] = listed.clone();
@@ -222,25 +266,19 @@ impl Run {
                 self.oracle.settle(false);
             }
             Move::Fail { validator } => {
-                let v = usize::from(validator) % validators;
-                self.core.apply(
-                    TrustedValidatorId::new(v).expect("small"),
-                    TrustedValidatorReport::Failed(zaino_traffic::Health::Degraded),
-                );
-                self.oracle.health[v] = Health::Degraded;
+                let failed = TrustedValidatorReport::Failed(zaino_traffic::Health::Degraded);
+                self.core.apply(*validator, failed);
+                self.oracle.health[validator.get()] = Health::Degraded;
                 self.oracle.settle(false);
             }
             Move::Kill { validator } => {
-                let v = usize::from(validator) % validators;
-                self.core.apply(
-                    TrustedValidatorId::new(v).expect("small"),
-                    TrustedValidatorReport::Failed(zaino_traffic::Health::Down),
-                );
-                self.oracle.health[v] = Health::Down;
-                self.oracle.listed[v].clear();
+                let killed = TrustedValidatorReport::Failed(zaino_traffic::Health::Down);
+                self.core.apply(*validator, killed);
+                self.oracle.health[validator.get()] = Health::Down;
+                self.oracle.listed[validator.get()].clear();
                 self.oracle.settle(false);
             }
-            Move::Round { ref answers, wait } => self.round(answers, wait),
+            Move::Round { answers, wait } => self.round(answers, *wait),
             Move::Block => {
                 self.tip = self.chain.mine_empty(1);
                 let snapshot = HeaderChainSnapshot::of(&self.chain, self.tip);
@@ -249,43 +287,34 @@ impl Run {
                 self.oracle.settle(true);
             }
             Move::Send { tx } => {
-                let tx = usize::from(tx);
-                let (txid, raw) = self.txs[tx].clone();
+                let (txid, raw) = self.txs[*tx as usize].clone();
                 self.core.mark_ours(txid, raw);
-                let held = self.oracle.held.entry(tx);
+                let held = self.oracle.held.entry(*tx);
                 held.or_insert(Held { fee: None, quorum: false, ours: false }).ours = true;
             }
         }
     }
 
-    fn round(&mut self, answers: &[Option<u8>], wait: u8) {
+    fn round(&mut self, answers: &[Option<BTreeSet<Tx>>], wait: Duration) {
         let now = self.start + self.clock;
-        let listing = |peer: usize, mask: u8| match self.byzantine[peer] {
-            true => any_of(mask),
-            false => honest(mask),
-        };
-        let answered: Vec<(usize, Option<BTreeSet<usize>>)> = answers
-            .iter()
-            .enumerate()
-            .map(|(peer, mask)| (peer, mask.map(|m| listing(peer, m))))
-            .collect();
-        let ids = |txs: &BTreeSet<usize>| txs.iter().map(|tx| self.id(*tx)).collect();
-        let real = answered.iter().map(|(peer, txs)| (self.peers[*peer], txs.as_ref().map(ids)));
+        let ids = |txs: &BTreeSet<Tx>| txs.iter().map(|tx| self.id(*tx)).collect();
+        let real =
+            answers.iter().enumerate().map(|(peer, txs)| (self.peers[peer], txs.as_ref().map(ids)));
         let candidates = self.core.apply_listings(real.collect(), now);
         let view = self.core.current();
         let next = NextBlock::above(self.tip.height, &self.chain.schedule().upgrades);
         let fetched = candidates.into_iter().map(|(id, raw)| {
-            let tx = self.txs.iter().position(|(txid, _)| *txid == id.txid).expect("ours");
-            (id, raw.unwrap_or_else(|| self.txs[tx].1.clone()))
+            let tx = self.tx(&id.txid);
+            (id, raw.unwrap_or_else(|| self.txs[tx as usize].1.clone()))
         });
         let judged = judge(&view, &self.utxos, next, fetched.collect());
         let admitted = judged.into_iter().filter_map(|(id, raw, fee)| Some((id, raw, fee.ok()?)));
         self.core.admit_by_quorum(admitted.collect());
 
         // oracle: listings, retention + drop, then admission against the held set before it
-        for (peer, txs) in answered {
+        for (peer, txs) in answers.iter().enumerate() {
             if let Some(txs) = txs {
-                self.oracle.listings.insert(peer, (now, txs));
+                self.oracle.listings.insert(peer, (now, txs.clone()));
             }
         }
         self.oracle.round = Some(now);
@@ -293,21 +322,21 @@ impl Run {
         let netgroups = |peers: &[usize]| {
             peers.iter().map(|p| Netgroup::of(self.peers[*p])).collect::<BTreeSet<_>>().len()
         };
-        for tx in 0..TXS {
+        for tx in TXS {
             let retained = self.oracle.listers(tx).len() * 3 > polled;
             if let Some(held) = self.oracle.held.get_mut(&tx) {
                 held.quorum &= retained;
             }
         }
         self.oracle.settle(false);
-        let before: BTreeSet<usize> = self.oracle.held.keys().copied().collect();
-        for tx in 0..TXS {
+        let before: BTreeSet<Tx> = self.oracle.held.keys().copied().collect();
+        for tx in TXS {
             let listers = self.oracle.listers(tx);
             let admits = listers.len() * 3 > polled * 2 && netgroups(&listers) > ECLIPSE_NETGROUPS;
             let passes = match tx {
-                CHILD => before.contains(&A),
-                BAD | ORPHAN => false,
-                _ => true,
+                Tx::Child => before.contains(&Tx::A),
+                Tx::Bad | Tx::Orphan => false,
+                Tx::A | Tx::B | Tx::Rival => true,
             };
             let already = self.oracle.held.get(&tx).is_some_and(|held| held.quorum);
             if admits && passes && !already {
@@ -315,23 +344,21 @@ impl Run {
                 self.oracle.held.get_mut(&tx).expect("just held").quorum = true;
             }
         }
-        self.clock += Duration::from_secs(u64::from(wait));
+        self.clock += wait;
     }
 
-    /// `rivals_before`: B and RIVAL both quorum-held before `step`
-    fn check(&self, step: &Move, rivals_before: bool) -> bool {
+    /// `rivals_before`: B and Rival both quorum-held before `step`; `Ok` = both now
+    fn check(&self, step: &Move, rivals_before: bool) -> Result<bool, TestCaseError> {
         let view = self.core.current();
-        let real: BTreeMap<usize, Held> = view
+        let real: BTreeMap<Tx, Held> = view
             .mempool
             .iter()
             .map(|(txid, sighting)| {
-                let tx = self.txs.iter().position(|(t, _)| t == txid).expect("one of ours");
                 let fee = sighting.entry(*txid).fee.map(Zatoshis::into_u64);
-                (tx, Held { fee, quorum: sighting.quorum(), ours: sighting.ours() })
+                (self.tx(txid), Held { fee, quorum: sighting.quorum(), ours: sighting.ours() })
             })
             .collect();
-        assert_eq!(real, self.oracle.held, "{step:?}: the held mempool");
-        assert!(!real.contains_key(&BAD) && !real.contains_key(&ORPHAN), "{step:?}: never held");
+        prop_assert_eq!(&real, &self.oracle.held, "after {:?}: held mempool, real vs oracle", step);
 
         let holder = (0..self.oracle.health.len())
             .any(|v| self.oracle.health[v] == Health::Live && self.oracle.polled_since_block[v]);
@@ -339,22 +366,40 @@ impl Run {
         let netgroups: BTreeSet<Netgroup> =
             fresh.iter().map(|(p, _)| Netgroup::of(self.peers[*p])).collect();
         let quorate = netgroups.len() > ECLIPSE_NETGROUPS;
-        assert_eq!(view.mempool().is_some(), holder || quorate, "{step:?}: the gate");
+        prop_assert_eq!(
+            view.mempool().is_some(),
+            holder || quorate,
+            "after {:?}: mempool served vs (a live validator polled since the block {} || {} fresh \
+             netgroups > {})",
+            step,
+            holder,
+            netgroups.len(),
+            ECLIPSE_NETGROUPS
+        );
 
         // - admission > 2/3 + retention > 1/3 → overlap
         // - held on afterwards by an honest split
-        let rivals = [B, RIVAL].iter().all(|tx| real.get(tx).is_some_and(|h| h.quorum));
+        let rivals = [Tx::B, Tx::Rival].iter().all(|tx| real.get(tx).is_some_and(|h| h.quorum));
         if rivals && !rivals_before {
-            let lists_both = fresh.iter().any(|(_, txs)| txs.contains(&B) && txs.contains(&RIVAL));
-            assert!(lists_both, "{step:?}: rivals both quorum-held with no peer listing both");
+            let both =
+                fresh.iter().any(|(_, txs)| txs.contains(&Tx::B) && txs.contains(&Tx::Rival));
+            prop_assert!(
+                both,
+                "after {:?}: rivals newly both quorum-held, no fresh peer lists both",
+                step
+            );
         }
         let all_honest = !self.byzantine.contains(&true);
-        assert!(!(rivals && all_honest), "{step:?}: rivals both quorum-held, every peer honest");
-        rivals
+        prop_assert!(
+            !(rivals && all_honest),
+            "after {:?}: rivals both quorum-held, every peer honest",
+            step
+        );
+        Ok(rivals)
     }
 }
 
-fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move>) {
+fn run(case: &Case) -> Result<(), TestCaseError> {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
     let funded = [10_000, 10_000, 5_000].map(|zats| {
@@ -372,14 +417,16 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
         raw_transparent(&[funding(3)], &[(&alice, 6_000)]),
         raw_transparent(&[unknown], &[(&alice, 1)]),
     ];
-    let peers: Vec<SocketAddr> = groups
+    let peers: Vec<SocketAddr> = case
+        .peers
         .iter()
         .enumerate()
-        .map(|(n, group)| SocketAddr::from(([10, group % 8, 0, n as u8 + 1], 8233)))
+        .map(|(n, peer)| SocketAddr::from(([10, peer.netgroup, 0, n as u8 + 1], 8233)))
         .collect();
 
     let tip = chain.tip();
     let utxos = chain.ledger(tip);
+    let validators = case.validators;
     let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
     let core = ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS);
@@ -393,6 +440,7 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
         held: BTreeMap::new(),
     };
     let txs = txs.into_iter().map(|(txid, raw)| (txid, Bytes::from(raw))).collect();
+    let byzantine = case.peers.iter().map(|peer| peer.byzantine).collect();
     let start = Instant::now();
     let mut run = Run {
         core,
@@ -407,10 +455,11 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
         oracle,
     };
     let mut rivals = false;
-    for step in &steps {
+    for step in &case.moves {
         run.apply(step);
-        rivals = run.check(step, rivals);
+        rivals = run.check(step, rivals)?;
     }
+    Ok(())
 }
 
 proptest! {
@@ -419,13 +468,8 @@ proptest! {
     /// 1–2 trusted validators, 6–10 peers over ≤ 8 netgroups (some byzantine): see the module doc
     #[test]
     fn the_mempool_holds_exactly_what_a_live_validator_a_peer_quorum_or_we_vouch_for(
-        (validators, groups, byzantine, steps) in (1usize..=2, 6usize..=10).prop_flat_map(|(v, p)| (
-            Just(v),
-            prop::collection::vec(any::<u8>(), p),
-            prop::collection::vec(prop::bool::weighted(0.2), p),
-            moves(p),
-        )),
+        case in case(),
     ) {
-        run(validators, groups, byzantine, steps);
+        run(&case)?;
     }
 }
