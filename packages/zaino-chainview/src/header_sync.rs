@@ -49,7 +49,7 @@ pub(crate) const HEADER_BATCH: u32 = 2_000;
 const RETRY: Duration = Duration::from_secs(5);
 
 /// Peer set asked past our best this often (nothing newer = an empty answer, a block ≈ 75 s)
-const PEER_POLL: Duration = Duration::from_secs(5);
+pub(crate) const PEER_POLL: Duration = Duration::from_secs(5);
 
 /// Feeds + owns one header chain from every trusted validator (and the peer set, if any)
 ///

@@ -123,7 +123,7 @@ pub(crate) fn submitted(ended: &Ended, attempts: usize) {
 #[cfg(test)]
 mod tests {
     use zaino_primitives::types::BlockRef;
-    use zaino_source::BlockchainInfo;
+    use zaino_source::{BlockchainInfo, EndOfService, NodeRelease};
     use zcash_protocol::BlockHash;
 
     use zaino_source::testing::h;
@@ -155,6 +155,34 @@ mod tests {
             assert_eq!(raised.by(Alarm::Stale), expected, "{case}: stale validators");
             let others = raised.raised(Alarm::Ending) || raised.raised(Alarm::FinalityPaused);
             assert!(!others, "{case}: only Stale may rise: {raised:?}");
+        }
+    }
+
+    #[test]
+    fn ending_rises_on_a_release_halting_within_a_week_of_its_tip() {
+        const TIP: u32 = 10;
+        let halts = |height: u32| EndOfService::At { height: h(height) };
+        #[rustfmt::skip]
+        let cases: [(&str, EndOfService, &[usize]); 4] = [
+            // case,                      release halts,                                     ending
+            ("halts a week out",          halts(TIP + END_OF_SERVICE_WARN_BLOCKS),           &[0]),
+            ("halts a block past a week", halts(TIP + END_OF_SERVICE_WARN_BLOCKS + 1),       &[]),
+            ("no halt enforced",          EndOfService::NotEnforced,                         &[]),
+            ("halt unknown",              EndOfService::Unknown,                             &[]),
+        ];
+        for (case, end_of_service, ending) in cases {
+            let mut meta = TrustedValidatorMeta::new("v0:8232".to_owned());
+            meta.health = Health::Live;
+            meta.info = Some(BlockchainInfo {
+                tip: BlockRef { hash: BlockHash([0; 32]), height: h(TIP) },
+                estimated_height: h(TIP),
+                activations: Vec::new(),
+            });
+            let (build, user_agent) = ("v6.4.2".to_owned(), "/Zebra:6.4.2/".to_owned());
+            meta.telemetry.release = Some(NodeRelease { build, user_agent, end_of_service });
+            let raised = alarms(&imbl::vector![meta], false);
+            let expected = TrustedValidatorSet::at(ending.iter().copied());
+            assert_eq!(raised.by(Alarm::Ending), expected, "{case}: ending validators");
         }
     }
 }
