@@ -116,24 +116,39 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// - Cookie: user always `__cookie__`, token trimmed with or without its prefix (packagers
-    ///   write both), unreadable = error
-    /// - Basic = the pair, None = no auth
+    /// User always `__cookie__`, token trimmed with or without its prefix (packagers write both)
     #[test]
-    fn credentials_come_from_the_cookie_or_the_pair() {
-        let token = Some(("__cookie__".to_owned(), "sekrit".to_owned()));
+    fn cookie_credentials_are_the_cookie_user_and_its_trimmed_token() {
         for contents in ["__cookie__:sekrit", "  sekrit  \n"] {
             let mut file = tempfile::NamedTempFile::new().expect("temp file");
             write!(file, "{contents}").expect("write cookie");
-            let auth = Auth::Cookie(file.path().to_owned()).credentials().expect("cookie reads");
-            assert_eq!(auth, token, "{contents:?}");
+
+            let auth =
+                Auth::Cookie(file.path().to_owned()).credentials().map_err(|e| e.to_string());
+
+            let token = Some(("__cookie__".to_owned(), "sekrit".to_owned()));
+            assert_eq!(auth, Ok(token), "cookie file {contents:?}");
         }
-        let basic = Auth::Basic { user: "user".to_owned(), password: "pass".to_owned() };
-        let pair = Some(("user".to_owned(), "pass".to_owned()));
-        assert_eq!(basic.credentials().expect("no file to read"), pair);
-        assert_eq!(Auth::None.credentials().expect("no file to read"), None);
+    }
+
+    #[test]
+    fn an_unreadable_cookie_is_refused_naming_it() {
         let missing = Auth::Cookie(PathBuf::from("/nonexistent/cookie")).credentials();
-        assert!(matches!(missing, Err(EndpointError::Cookie { .. })));
+
+        let named =
+            matches!(&missing, Err(EndpointError::Cookie { path, .. }) if path.ends_with("cookie"));
+        assert!(named, "/nonexistent/cookie: {missing:?}");
+    }
+
+    #[test]
+    fn basic_credentials_are_the_pair_and_none_is_no_auth() {
+        let basic = Auth::Basic { user: "user".to_owned(), password: "pass".to_owned() };
+
+        let (pair, none) = (basic.credentials(), Auth::None.credentials());
+
+        let pair = pair.map_err(|e| e.to_string());
+        assert_eq!(pair, Ok(Some(("user".to_owned(), "pass".to_owned()))), "Basic");
+        assert_eq!(none.map_err(|e| e.to_string()), Ok(None), "None");
     }
 
     #[test]
@@ -143,11 +158,15 @@ mod tests {
             ("zebrad:18232", "http://zebrad:18232"),
             ("[::1]:8232", "http://[::1]:8232"),
         ] {
-            assert_eq!(validator_url(address).expect(address), url);
+            assert_eq!(
+                validator_url(address).map_err(|e| e.to_string()),
+                Ok(url.into()),
+                "{address}"
+            );
         }
         for address in ["zebrad", "zebrad:", "zebrad:port", "not a host:8232", "zebrad:8232/path"] {
-            let refused = matches!(validator_url(address), Err(EndpointError::Address { .. }));
-            assert!(refused, "{address} accepted");
+            let url = validator_url(address);
+            assert!(matches!(url, Err(EndpointError::Address { .. })), "{address}: {url:?}");
         }
     }
 }

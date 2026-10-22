@@ -111,45 +111,56 @@ mod tests {
         }
     }
 
-    /// - Replies in call order whatever their arrival order, one outcome per item
-    /// - Reply set != exactly the ids sent → whole batch fails
     #[test]
-    fn batch_replies_are_matched_by_id_and_must_answer_every_call_once() {
+    fn a_batch_numbers_its_calls_from_the_first_id() {
         let calls = [
             Call { method: "getrawtransaction", params: vec!["aa".into()] },
             Call { method: "getinfo", params: vec![] },
         ];
-        let batch = build_batch(&calls, 7);
-        assert_eq!(batch[0]["id"], 7);
-        assert_eq!(batch[0]["params"][0], "aa");
-        assert_eq!(
-            (&batch[1]["id"], &batch[1]["method"]),
-            (&Value::from(8), &Value::from("getinfo"))
-        );
 
+        let batch = build_batch(&calls, 7);
+
+        assert_eq!(batch[0]["id"], 7, "first call: first id");
+        assert_eq!(batch[0]["params"][0], "aa", "first call: its params");
+        assert_eq!(batch[1]["id"], 8, "second call: next id");
+        assert_eq!(batch[1]["method"], "getinfo", "second call: its method");
+    }
+
+    #[test]
+    fn batch_replies_come_back_in_call_order_whatever_their_arrival_order() {
         let reordered = br#"[{"id":8,"result":null,"error":{"code":-5,"message":"gone"}},
                              {"id":7,"result":"ab"}]"#;
-        let items = parse_batch::<Value>(reordered, 7, 2).expect("well-formed batch");
-        assert_eq!(
-            items.into_iter().map(outcome).collect::<Vec<_>>(),
-            [r#"ok "ab""#, "rpc -5 gone"]
-        );
 
-        for broken in [
-            &br#"[{"id":7,"result":"ab"}]"#[..],
-            br#"[{"id":7,"result":"ab"},{"id":7,"result":"ab"}]"#,
-            br#"[{"id":7,"result":"ab"},{"id":9,"result":"ab"}]"#,
-            br#"[{"id":6,"result":"ab"},{"id":7,"result":"ab"}]"#,
-        ] {
+        let items = parse_batch::<Value>(reordered, 7, 2).expect("well-formed batch");
+
+        let outcomes: Vec<String> = items.into_iter().map(outcome).collect();
+        assert_eq!(outcomes, [r#"ok "ab""#, "rpc -5 gone"], "ids 7, 8 in call order");
+    }
+
+    /// Reply set != exactly the ids sent (7, 8) → whole batch fails
+    #[test]
+    fn a_batch_reply_missing_repeating_or_foreign_ids_fails_whole() {
+        #[rustfmt::skip]
+        let cases: [(&str, &[u8]); 4] = [
+            ("8 missing",  br#"[{"id":7,"result":"ab"}]"#),
+            ("7 twice",    br#"[{"id":7,"result":"ab"},{"id":7,"result":"ab"}]"#),
+            ("9 foreign",  br#"[{"id":7,"result":"ab"},{"id":9,"result":"ab"}]"#),
+            ("6 foreign",  br#"[{"id":6,"result":"ab"},{"id":7,"result":"ab"}]"#),
+        ];
+        for (case, broken) in cases {
             let parsed = parse_batch::<Value>(broken, 7, 2);
-            assert!(
-                matches!(parsed, Err(RpcError::BatchMismatch)),
-                "{}",
-                String::from_utf8_lossy(broken)
-            );
+
+            assert!(matches!(parsed, Err(RpcError::BatchMismatch)), "{case}: {parsed:?}");
         }
-        // whole-batch refusal (jsonrpsee answers an invalid batch with one object, not an array)
+    }
+
+    /// jsonrpsee answers an invalid batch with one object, not an array
+    #[test]
+    fn a_whole_batch_refusal_is_a_parse_fault() {
         let refused = br#"{"id":null,"error":{"code":-32600,"message":"Invalid request"}}"#;
-        assert!(matches!(parse_batch::<Value>(refused, 7, 2), Err(RpcError::Json(_))));
+
+        let parsed = parse_batch::<Value>(refused, 7, 2);
+
+        assert!(matches!(parsed, Err(RpcError::Json(_))), "one error object: {parsed:?}");
     }
 }

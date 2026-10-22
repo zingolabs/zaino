@@ -86,22 +86,28 @@ mod tests {
     #[error("concrete transport cause")]
     struct Cause;
 
-    /// - Wrapped cause reachable through `QueryError`
-    /// - Coded refusal: no source, displays its message
     #[test]
-    fn causes_survive_wrapping_and_a_coded_refusal_displays_its_message() {
+    fn a_wrapped_cause_stays_reachable_through_query_error() {
         let wrapped: QueryError<String> =
             NonDomainError::from_cause(FailureMode::Parse, Cause).into();
+
         let mut cursor: Option<&(dyn Error + 'static)> = Some(&wrapped);
         let mut reached = false;
         while let Some(err) = cursor {
             reached |= err.downcast_ref::<Cause>().is_some();
             cursor = err.source();
         }
-        assert!(reached, "cause lost in {wrapped:?}");
 
+        assert!(reached, "cause lost in {wrapped:?}");
+    }
+
+    #[test]
+    fn a_coded_refusal_has_no_source_and_displays_its_message() {
         let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
-        assert!(refusal.source().is_none());
-        assert_eq!(refusal.to_string(), "rejected");
+
+        let source = refusal.source().map(ToString::to_string);
+
+        assert_eq!(source, None, "coded refusal: no source");
+        assert_eq!(refusal.to_string(), "rejected", "coded refusal displays its message");
     }
 }

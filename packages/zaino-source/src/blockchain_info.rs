@@ -47,39 +47,55 @@ impl BlockchainInfo {
 #[cfg(test)]
 mod tests {
     use zaino_primitives::protocol::compiled_schedule;
-    use zcash_protocol::consensus::{
-        NetworkType,
-        NetworkUpgrade::{Nu5, Sapling},
-        Parameters,
-    };
+    use zcash_protocol::consensus::{NetworkType, NetworkUpgrade::Nu5, Parameters};
     use zcash_protocol::BlockHash;
 
     use super::*;
 
-    /// - Listing in any order reads back as the schedule it lists
-    /// - Unlisted = never
-    /// - Out of protocol order or without Sapling = refused
+    fn listing(activations: &[(BranchId, u32)]) -> BlockchainInfo {
+        let tip = BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(3_500_000) };
+        let activations =
+            activations.iter().map(|&(branch, at)| (branch, BlockHeight::from(at))).collect();
+        BlockchainInfo { tip, estimated_height: tip.height, activations }
+    }
+
     #[test]
-    fn a_listed_schedule_reads_back_unlisted_never_activates_and_disorder_or_no_sapling_is_refused()
-    {
+    fn mainnets_listing_in_reverse_order_reads_back_as_mainnets_schedule() {
         let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");
-        let listing = UPGRADES_IN_ORDER.iter().rev().filter_map(|&upgrade| {
+        let reversed = UPGRADES_IN_ORDER.iter().rev().filter_map(|&upgrade| {
             Some((upgrade.branch_id(), mainnet.activation_height(upgrade)?))
         });
         let tip = BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(3_500_000) };
-        let mut info =
-            BlockchainInfo { tip, estimated_height: tip.height, activations: listing.collect() };
-        assert_eq!(info.schedule(), Ok(mainnet));
+        let info =
+            BlockchainInfo { tip, estimated_height: tip.height, activations: reversed.collect() };
 
-        let mut no_sapling = info.clone();
-        no_sapling.activations.retain(|(id, _)| *id != Sapling.branch_id());
-        assert_eq!(no_sapling.schedule(), Err(ScheduleError::NoSapling));
+        let schedule = info.schedule();
 
-        info.activations.retain(|(id, _)| *id != Nu5.branch_id());
-        assert_eq!(info.schedule().map(|s| s.activation_height(Nu5)), Ok(None), "unlisted");
+        assert_eq!(schedule, Ok(mainnet), "listed newest first");
+    }
 
-        info.activations.push((BranchId::Nu5, BlockHeight::from(1)));
+    #[test]
+    fn an_unlisted_upgrade_never_activates() {
+        let info =
+            listing(&[(BranchId::Overwinter, 1), (BranchId::Sapling, 1), (BranchId::Blossom, 2)]);
+
+        let nu5 = info.schedule().map(|schedule| schedule.activation_height(Nu5));
+
+        assert_eq!(nu5, Ok(None), "NU5 unlisted");
+    }
+
+    #[test]
+    fn a_listing_without_sapling_is_refused() {
+        let info = listing(&[(BranchId::Overwinter, 347_500), (BranchId::Nu5, 1_687_104)]);
+
+        assert_eq!(info.schedule(), Err(ScheduleError::NoSapling), "Overwinter + NU5 only");
+    }
+
+    #[test]
+    fn a_listing_out_of_protocol_order_is_refused_naming_it() {
+        let info = listing(&[(BranchId::Sapling, 419_200), (BranchId::Nu5, 1)]);
+
         let out_of_order = ScheduleError::OutOfOrder { listed: info.activations.clone() };
-        assert_eq!(info.schedule(), Err(out_of_order), "NU5 below Sapling");
+        assert_eq!(info.schedule(), Err(out_of_order), "NU5 at 1, below Sapling at 419 200");
     }
 }

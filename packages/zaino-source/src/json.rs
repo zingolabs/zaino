@@ -225,57 +225,88 @@ mod tests {
     /// Reads differently forwards and backwards (a mirrored decode cannot pass by coincidence)
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
 
-    /// Zebra's verbose listing (`fee` = lossy `f64` ZEC)
-    ///
-    /// - key reversed → txid
-    /// - fee → exact zatoshis (ZIP-317 minimum, sub-zat noise, whole supply)
-    /// - `size` = encoded length
-    /// - refused: negative / past-supply fee, missing fee or size, size past `u32`, over-cap
-    ///   listing
-    #[test]
-    fn mempool_listing_reads_each_txid_and_its_exact_fee() {
-        let mut reversed_bytes = [0u8; 32];
-        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
-        reversed_bytes.reverse();
-        let listed = |fee: Value| {
-            parse_mempool_listing(json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } }))
-        };
-
-        for (fee, zats) in [
-            (json!(0.0001), 10_000),
-            (json!(0.00015), 15_000),
-            (json!(1e-8), 1),
-            (json!(0.1 + 0.2), 30_000_000),
-            (json!(21_000_000.0), 2_100_000_000_000_000),
-            (json!(0), 0),
-        ] {
-            let txid = TxId::from_bytes(reversed_bytes);
-            let fee_zats = Zatoshis::from_u64(zats).expect("in supply");
-            let expected = MempoolListed { txid, fee: fee_zats, encoded_len: 250 };
-            assert_eq!(listed(fee.clone()).expect("listing"), vec![expected], "fee {fee}");
-        }
-        for fee in [json!(-0.0001), json!(21_000_000.00000001 + 1.0), json!("0.0001")] {
-            assert!(listed(fee.clone()).is_err(), "fee {fee}");
-        }
-        let refused = |entry: Value| {
-            let listing = parse_mempool_listing(json!({ ASYMMETRIC_HEX: entry }));
-            listing.expect_err("refused").to_string()
-        };
-        assert!(refused(json!({ "size": 250 })).contains("missing field `fee`"));
-        assert!(refused(json!({ "fee": 0.0001 })).contains("missing field `size`"));
-        assert!(refused(json!({ "size": 1u64 << 32, "fee": 0 })).contains("u32"));
-
-        let oversized: serde_json::Map<String, Value> = (0..=MAX_MEMPOOL_LISTING_ENTRIES)
-            .map(|n| (format!("{n:064x}"), json!({ "fee": 0.0001 })))
-            .collect();
-        let oversized = parse_mempool_listing(Value::Object(oversized));
-        assert!(matches!(oversized, Err(ParseError::ListingTooLarge { .. })));
+    fn reversed_asymmetric() -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut bytes).expect("fixture");
+        bytes.reverse();
+        bytes
     }
 
-    /// - Read: tip (hash reversed), estimate, each known upgrade's activation by branch id
-    /// - Never fail the poll: unread fields (lossy pool floats: the old mainnet-boot crash), an
-    ///   upgrade this build does not know (a validator ahead of the pin), names, statuses
-    /// - A known upgrade without its height, a missing tip → parse fails
+    /// Zebra's verbose listing: key reversed → txid, `fee` (lossy `f64` ZEC) → exact zatoshis,
+    /// `size` = encoded length
+    #[test]
+    fn a_listed_fee_reads_back_as_exact_zatoshis() {
+        #[rustfmt::skip]
+        let cases = [
+            ("ZIP 317 minimum",    json!(0.0001),        10_000),
+            ("1.5 × minimum",      json!(0.00015),       15_000),
+            ("1 zat",              json!(1e-8),          1),
+            ("sub-zat f64 noise",  json!(0.1 + 0.2),     30_000_000),
+            ("whole supply",       json!(21_000_000.0),  2_100_000_000_000_000),
+            ("integer zero",       json!(0),             0),
+        ];
+        for (case, fee, zats) in cases {
+            let listing = json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } });
+
+            let listed = parse_mempool_listing(listing).map_err(|e| e.to_string());
+
+            let fee = Zatoshis::from_u64(zats).expect("in supply");
+            let txid = TxId::from_bytes(reversed_asymmetric());
+            let expected = MempoolListed { txid, fee, encoded_len: 250 };
+            assert_eq!(listed, Ok(vec![expected]), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_fee_outside_the_money_supply_is_refused_naming_it() {
+        for (case, fee) in [("negative", -0.0001), ("supply + 1 zat", 21_000_000.00000001)] {
+            let listing = json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } });
+
+            let refused = parse_mempool_listing(listing);
+
+            let named = matches!(refused, Err(ParseError::Zec(zec)) if zec == fee);
+            assert!(named, "{case} fee {fee}: {refused:?}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_listing_entry_is_refused_naming_the_field() {
+        #[rustfmt::skip]
+        let cases = [
+            ("fee as a string", json!({ "size": 250, "fee": "0.0001" }), "invalid type: string"),
+            ("no fee",          json!({ "size": 250 }),                  "missing field `fee`"),
+            ("no size",         json!({ "fee": 0.0001 }),                "missing field `size`"),
+            ("size past u32",   json!({ "size": 1u64 << 32, "fee": 0 }), "u32"),
+        ];
+        for (case, entry, named) in cases {
+            let refused = parse_mempool_listing(json!({ ASYMMETRIC_HEX: entry }));
+
+            let message = refused.map_err(|e| e.to_string());
+            assert!(matches!(&message, Err(m) if m.contains(named)), "{case}: {message:?}");
+        }
+    }
+
+    /// Count checked before any entry decodes: `MAX_MEMPOOL_LISTING_ENTRIES` read, one more refused
+    #[test]
+    fn a_listing_holds_at_most_max_mempool_listing_entries() {
+        let listing = |count: usize| {
+            let entries = (0..count).map(|n| (format!("{n:064x}"), json!({ "size": 1, "fee": 0 })));
+            parse_mempool_listing(Value::Object(entries.collect())).map(|listed| listed.len())
+        };
+        let max = MAX_MEMPOOL_LISTING_ENTRIES;
+
+        let (at_cap, over) = (listing(max), listing(max + 1));
+
+        assert!(matches!(at_cap, Ok(read) if read == max), "{max} entries: {at_cap:?}");
+        assert!(
+            matches!(over, Err(ParseError::ListingTooLarge { len, max: cap }) if len == max + 1 && cap == max),
+            "{} entries: {over:?}",
+            max + 1
+        );
+    }
+
+    /// Never fail the poll on what it does not read: lossy pool floats (the old mainnet-boot
+    /// crash), an upgrade this build does not know (a validator ahead of the pin), names, statuses
     #[test]
     fn blockchain_info_reads_tip_estimate_and_known_activations_and_ignores_the_rest() {
         let info = json!({
@@ -292,72 +323,96 @@ mod tests {
             },
             "consensus": { "chaintip": "c2d6d0b4", "nextblock": "deadbeef" },
         });
-        let mut reversed_bytes = [0u8; 32];
-        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
-        reversed_bytes.reverse();
-        let height = BlockHeight::from;
 
-        let parsed = parse_blockchain_info(info.clone()).expect("well-formed");
-        let tip = BlockRef { hash: BlockHash(reversed_bytes), height: height(3_451_543) };
-        assert_eq!((parsed.tip, parsed.estimated_height), (tip, height(3_451_544)));
+        let parsed = parse_blockchain_info(info).expect("well-formed");
+
+        let height = BlockHeight::from;
+        let tip = BlockRef { hash: BlockHash(reversed_asymmetric()), height: height(3_451_543) };
+        assert_eq!(parsed.tip, tip, "tip: bestblockhash reversed, blocks");
+        assert_eq!(parsed.estimated_height, height(3_451_544), "estimatedheight");
         let known = [(BranchId::Sapling, height(419_200)), (BranchId::Nu5, height(1_687_104))];
         assert_eq!(
             parsed.activations, known,
-            "protocol order; NU9 (unknown to this build) skipped"
+            "protocol order, NU9 (unknown to this build) skipped"
         );
-
-        let mut no_height = info.clone();
-        let nu5 = no_height["upgrades"]["c2d6d0b4"].as_object_mut().expect("object");
-        nu5.remove("activationheight");
-        let no_height = parse_blockchain_info(no_height).expect_err("no NU5 height").to_string();
-        assert!(no_height.contains("missing field `activationheight`"), "{no_height}");
-        let mut no_tip = info;
-        no_tip.as_object_mut().expect("object").remove("bestblockhash");
-        let no_tip = parse_blockchain_info(no_tip).expect_err("no tip").to_string();
-        assert!(no_tip.contains("missing field `bestblockhash`"), "{no_tip}");
     }
 
-    /// - All three placements pinned (side-chain tx reported as unmined = reads as pending)
-    /// - Undefined negative height refused
+    #[test]
+    fn blockchain_info_without_a_tip_or_a_known_upgrades_height_is_refused() {
+        let no_height = json!({
+            "blocks": 1, "estimatedheight": 1, "bestblockhash": ASYMMETRIC_HEX,
+            "upgrades": { "c2d6d0b4": { "name": "NU5", "status": "active" } },
+        });
+        let no_tip = json!({ "blocks": 1, "estimatedheight": 1, "upgrades": {} });
+
+        for (case, info, named) in [
+            ("NU5 without activationheight", no_height, "missing field `activationheight`"),
+            ("no bestblockhash", no_tip, "missing field `bestblockhash`"),
+        ] {
+            let refused =
+                parse_blockchain_info(info).map(|info| info.tip).map_err(|e| e.to_string());
+            assert!(matches!(&refused, Err(m) if m.contains(named)), "{case}: {refused:?}");
+        }
+    }
+
+    /// Side-chain tx (`-1`) reported as unmined = reads as pending
     #[test]
     fn transactions_place_themselves() {
         use TransactionLocation::{BestChain, Mempool, NonBestChain};
-        let location = |value| parse_transaction(value).map(|tx| tx.location);
-        let mined = location(json!({ "hex": "00", "height": 12345 })).expect("mined");
-        let side = location(json!({ "hex": "00", "height": -1 })).expect("side chain");
-        let mempool = location(json!({ "hex": "00" })).expect("mempool");
-        let height = BlockHeight::from(12345);
-        assert_eq!((mined, side, mempool), (BestChain(height), NonBestChain, Mempool));
-        assert!(matches!(
-            location(json!({ "hex": "00", "height": -7 })),
-            Err(ParseError::Height(-7))
-        ));
+        #[rustfmt::skip]
+        let cases = [
+            ("height 12345", json!({ "hex": "00", "height": 12345 }), BestChain(BlockHeight::from(12345))),
+            ("height -1",    json!({ "hex": "00", "height": -1 }),    NonBestChain),
+            ("no height",    json!({ "hex": "00" }),                  Mempool),
+        ];
+        for (case, reply, expected) in cases {
+            let location =
+                parse_transaction(reply).map(|tx| tx.location).map_err(|e| e.to_string());
+            assert_eq!(location, Ok(expected), "{case}");
+        }
     }
 
-    /// zebrad 6.4.2's shapes
-    ///
-    /// - mainnet → halt height
-    /// - other networks → omitted
-    /// - release before `getdeprecationinfo` → unknown (never read as "no halt")
+    #[test]
+    fn a_negative_height_other_than_minus_one_is_refused() {
+        let refused = parse_transaction(json!({ "hex": "00", "height": -7 })).map(|tx| tx.location);
+
+        assert!(matches!(refused, Err(ParseError::Height(-7))), "height -7: {refused:?}");
+    }
+
+    /// zebrad 6.4.2's shapes: mainnet → halt height, other networks → omitted, a release before
+    /// `getdeprecationinfo` → unknown (never read as "no halt")
     #[test]
     fn a_release_reads_its_build_and_where_it_halts() {
-        let info = json!({
+        let getinfo = json!({
             "version": 6040250, "build": "v6.4.2", "subversion": "/Zebra:6.4.2/",
             "protocolversion": 170140, "blocks": 3_400_000, "connections": 8,
         });
-        let release = |deprecation: Option<Value>| {
-            parse_node_release(info.clone(), deprecation).map(|release| release.end_of_service)
-        };
-        let mainnet = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
-        let halts = EndOfService::At { height: BlockHeight::from(3_564_960) };
-        assert_eq!(release(Some(mainnet)).expect("mainnet"), halts);
-        assert_eq!(release(Some(json!({}))).expect("testnet"), EndOfService::NotEnforced);
-        assert_eq!(release(None).expect("zebrad 6.2"), EndOfService::Unknown);
+        let halt = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
+        #[rustfmt::skip]
+        let cases = [
+            ("mainnet",    Some(halt),     EndOfService::At { height: BlockHeight::from(3_564_960) }),
+            ("testnet",    Some(json!({})), EndOfService::NotEnforced),
+            ("zebrad 6.2", None,           EndOfService::Unknown),
+        ];
+        for (case, deprecation, expected) in cases {
+            let read = parse_node_release(getinfo.clone(), deprecation).map_err(|e| e.to_string());
 
-        let read = parse_node_release(info.clone(), None).expect("getinfo");
-        assert_eq!((read.build.as_str(), read.user_agent.as_str()), ("v6.4.2", "/Zebra:6.4.2/"));
+            let read = read.unwrap_or_else(|e| panic!("{case}: {e}"));
+            assert_eq!(read.end_of_service, expected, "{case}: end of service");
+            assert_eq!(read.build, "v6.4.2", "{case}: build");
+            assert_eq!(read.user_agent, "/Zebra:6.4.2/", "{case}: user agent (subversion)");
+        }
+    }
+
+    #[test]
+    fn a_deprecation_without_its_halt_height_is_refused() {
+        let getinfo = json!({ "build": "v6.4.2", "subversion": "/Zebra:6.4.2/" });
         let no_height = json!({ "end_of_service": { "estimated_time": 1 } });
-        let missing = release(Some(no_height)).expect_err("no halt height").to_string();
-        assert!(missing.contains("missing field `block_height`"), "{missing}");
+
+        let refused = parse_node_release(getinfo, Some(no_height)).map_err(|e| e.to_string());
+
+        let refused = refused.map(|release| release.end_of_service);
+        let named = matches!(&refused, Err(m) if m.contains("missing field `block_height`"));
+        assert!(named, "{refused:?}");
     }
 }

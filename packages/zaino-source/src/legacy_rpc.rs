@@ -374,27 +374,39 @@ mod tests {
         RpcError::Rpc { code, message: message.to_string() }
     }
 
-    /// - Batches keep listing order, cover it exactly
-    /// - Batch closes at 100 calls or before passing the budget (8 MiB), entry over it = alone
-    /// - Budget at the 32 MiB cap = 100 hex replies + envelopes
+    /// Batches keep listing order, cover it exactly, close at 100 calls or before passing the
+    /// budget (8 MiB here), an entry over it alone
     #[test]
     fn raw_batches_split_in_order_on_either_budget() {
-        let entry = |encoded_len: u32| MempoolListed {
-            txid: TxId::from_bytes([0; 32]),
-            fee: zcash_protocol::value::Zatoshis::ZERO,
-            encoded_len,
-        };
-        let sizes = |listed: &[MempoolListed]| {
-            raw_batches(listed, 8 << 20).iter().map(|batch| batch.len()).collect::<Vec<_>>()
-        };
-        assert_eq!(raw_batch_bytes(ResponseSizeCap::MAX), 16_726_016);
-
-        assert_eq!(sizes(&[]), Vec::<usize>::new());
-        assert_eq!(sizes(&vec![entry(250); 250]), [100, 100, 50]);
         let mib = 1 << 20;
-        assert_eq!(sizes(&[entry(3 * mib), entry(3 * mib), entry(3 * mib)]), [2, 1]);
-        assert_eq!(sizes(&[entry(8 * mib), entry(1)]), [1, 1]);
-        assert_eq!(sizes(&[entry(1), entry(9 * mib), entry(1)]), [1, 1, 1]);
+        #[rustfmt::skip]
+        let cases: [(&str, Vec<u32>, &[usize]); 6] = [
+            ("empty listing",            vec![],                        &[]),
+            ("100 small: one batch",     vec![250; 100],                &[100]),
+            ("250 small: 100-call caps", vec![250; 250],                &[100, 100, 50]),
+            ("3 × 3 MiB: budget",        vec![3 * mib; 3],              &[2, 1]),
+            ("budget exactly, then 1",   vec![8 * mib, 1],              &[1, 1]),
+            ("one over budget: alone",   vec![1, 9 * mib, 1],           &[1, 1, 1]),
+        ];
+        for (case, encoded_lens, expected) in cases {
+            let entry = |encoded_len: u32| MempoolListed {
+                txid: TxId::from_bytes([0; 32]),
+                fee: zcash_protocol::value::Zatoshis::ZERO,
+                encoded_len,
+            };
+            let listed: Vec<MempoolListed> = encoded_lens.into_iter().map(entry).collect();
+
+            let batches = raw_batches(&listed, 8 << 20);
+
+            let sizes: Vec<usize> = batches.iter().map(|batch| batch.len()).collect();
+            assert_eq!(sizes, expected, "{case}: calls per batch");
+        }
+    }
+
+    /// 32 MiB reply cap = 100 hex-encoded replies + their envelopes
+    #[test]
+    fn the_raw_batch_budget_at_the_reply_cap_fits_100_hex_replies() {
+        assert_eq!(raw_batch_bytes(ResponseSizeCap::MAX), 16_726_016, "budget at the 32 MiB cap");
     }
 
     /// - Both not-found codes = absent answer (missing block as a failure = sync stalls on a
@@ -414,7 +426,10 @@ mod tests {
                 |error| classify(error, |error| verdict(error).then(|| absent.clone()));
             for code in codes {
                 let classified = classified(rpc(code, case));
-                assert!(matches!(classified, QueryError::Domain(_)), "{case} {code}");
+                assert!(
+                    matches!(classified, QueryError::Domain(_)),
+                    "{case} {code}: {classified:?}"
+                );
             }
             for error in [-1, -3, -20, -22, -25, -28, -32_600]
                 .map(|code| rpc(code, "something else"))
@@ -425,9 +440,16 @@ mod tests {
                 assert!(matches!(classified, QueryError::NonDomain(_)), "{case}: {classified:?}");
             }
             let missing = classified(rpc(METHOD_NOT_FOUND, "Method not found"));
-            assert!(matches!(missing, QueryError::Unsupported), "{case}");
+            assert!(matches!(missing, QueryError::Unsupported), "{case} -32601: {missing:?}");
         }
-        assert!(!not_found(&rpc(-32602, "past the tip")), "-32602 absent only for getblockhash");
+    }
+
+    /// zebrad's `-32602` = "past the tip" for `getblockhash` alone (elsewhere: bad params)
+    #[test]
+    fn minus_32602_is_never_a_missing_block() {
+        let absent = not_found(&rpc(-32602, "past the tip"));
+
+        assert!(!absent, "not_found (getblock, getblockheader) read -32602 as an absent block");
     }
 
     /// - Rejections carry the validator's code + reason verbatim (wallets match the text)
@@ -458,7 +480,7 @@ mod tests {
             (-28, "warming up", None),
         ];
         for (code, message, expected) in cases {
-            assert_eq!(submission_rejection(&rpc(code, message)), expected, "{code}");
+            assert_eq!(submission_rejection(&rpc(code, message)), expected, "{code} {message:?}");
         }
     }
 
@@ -473,10 +495,13 @@ mod tests {
         let verbatim = SendRawTransactionError::Rejected { code: -25, message: bad.into() };
         assert!(matches!(&refused, QueryError::Domain(r) if *r == verbatim), "{refused:?}");
         let non_standard = classify(rpc(-1, "transaction is non-standard"), submission_rejection);
-        assert!(matches!(non_standard, QueryError::Domain(_)));
+        assert!(matches!(non_standard, QueryError::Domain(_)), "-1 non-standard: {non_standard:?}");
         for message in ["mempool is not active: wait for Zebra to sync to the tip", "timeout"] {
             let no_verdict = classify(rpc(-1, message), submission_rejection);
-            assert!(matches!(no_verdict, QueryError::NonDomain(_)), "{message}");
+            assert!(
+                matches!(no_verdict, QueryError::NonDomain(_)),
+                "-1 {message:?}: {no_verdict:?}"
+            );
         }
     }
 
@@ -488,11 +513,12 @@ mod tests {
         use GetMempoolListingError::{Inactive, Unavailable};
         let listing = |error| batch_item::<(), _>(Err(error), listing_verdict);
         let inactive = listing(rpc(-1, "mempool is not active: wait for Zebra to sync to the tip"));
-        assert!(matches!(inactive, Ok(Err(Inactive))));
+        assert!(matches!(inactive, Ok(Err(Inactive))), "-1 not active: {inactive:?}");
         let missing = listing(rpc(METHOD_NOT_FOUND, "Method not found"));
-        assert!(matches!(missing, Ok(Err(Unavailable))));
+        assert!(matches!(missing, Ok(Err(Unavailable))), "-32601: {missing:?}");
         for code in [-5, -8, -28, -1, -32603] {
-            assert!(listing(rpc(code, "something else")).is_err(), "code {code}");
+            let failed = listing(rpc(code, "something else"));
+            assert!(failed.is_err(), "{code} something else = failure: {failed:?}");
         }
     }
 }
