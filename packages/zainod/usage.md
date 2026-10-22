@@ -395,7 +395,8 @@ zainod dies rather than serve from a state it cannot vouch for
   (`IndexerError::TaskEnded` or the task's own error, e.g. `FollowError::Diverged`
   = the next finalized block does not extend an index's stored tip, as for a directory
   from another chain: delete that index's directory to resync it)
-- a trusted validator going away never stops zainod: it is retried until it answers
+- a trusted validator going away never stops zainod
+  ([architecture §9](../../docs/architecture.md#9-talking-to-validators-and-peers))
 - an index directory built for another network or format, shorter than its
   seals, or whose tail page or `.crc` file fails its checksum refuses to open: resync it
 

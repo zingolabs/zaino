@@ -1,8 +1,8 @@
 # Running zainod
 
 `zainod` indexes the Zcash chain from one or more trusted Zebra validators and serves it to
-light wallets over lightwalletd-compatible gRPC. It reaches each validator over JSON-RPC (with
-`validator_client = "grpc"`, blocks come over the validator's indexer gRPC instead), and with
+light wallets over lightwalletd-compatible gRPC. It reaches each validator over JSON-RPC (or, for blocks, its indexer gRPC:
+[`validator_client`](../packages/zainod/usage.md#validator-client)), and with
 `[p2p]` on it also takes checked headers, blocks and mempool listings from Zcash peers
 ([architecture §2–3](./architecture.md#2-the-map)). Validators can run on separate hosts. For
 the container image see [docker.md](./docker.md), and for the methods zainod answers see
@@ -44,7 +44,7 @@ default. In outline:
 | Key or table             | For                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
 | `network`                | `mainnet` (default), `testnet` or `regtest`, declared rather than read off the validator    |
-| `validator_client`       | `legacy_rpc` (default, JSON-RPC for everything; zebrad or zcashd) or `grpc`: blocks over each validator's indexer gRPC (`indexer_address`, `GetBlock` + `GetBlockRange`), the rest over JSON-RPC. `GetBlockRange` is only in Zaino's zebra fork (`elicbarbieri/zebra` `perf/indexer-block-range`) |
+| `validator_client`       | `legacy_rpc` (default) or `grpc` ([zainod: Validator client](../packages/zainod/usage.md#validator-client)) |
 | `[metrics]`              | the admin listener's `listen_address` (unset = off; see [Network exposure](#network-exposure)) |
 | `[[trusted_validators]]` | one table per validator: address, credentials, timeouts, link budget, `indexer_address` and `[trusted_validators.indexer_tls]`, `priority` tier ([architecture §3](./architecture.md#3-sources-and-what-each-is-trusted-for)) |
 | `[submission]`           | when `SendTransaction` relays again ([architecture §6](./architecture.md#6-submission))    |
@@ -92,7 +92,8 @@ Boot fails with exit code 1 if a `[[trusted_validators]]` entry cannot make a cl
 first), the gRPC address cannot be bound (next, before any index-snapshot download) or an index
 cannot open. On mainnet and testnet no validator needs to answer for boot to finish (regtest
 reads its upgrade schedule from the first validator that answers, and refuses one listed out of
-protocol order or without Sapling), and a validator that goes away is retried, never fatal.
+protocol order or without Sapling). A validator that goes away is retried
+([architecture §9](./architecture.md#9-talking-to-validators-and-peers)).
 
 SIGINT or SIGTERM closes the gRPC listener at once, sends every open connection an HTTP/2
 GOAWAY, waits up to `[grpc] shutdown_grace_secs` for in-flight streams, lets each index commit

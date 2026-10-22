@@ -204,7 +204,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 - `checkadmission` (Zaino's zebra fork) runs `sendrawtransaction`'s checks, the fee policy and
   mempool conflicts included, without admitting or relaying: a refusal reaches the wallet in one
   call. It goes to a holder of the verified best only (a validator behind it refuses what spends a
-  fresh output). A refusal is returned as gRPC `OK` carrying the validator's code and message.
+  fresh output). A refusal's wire shape: [rpc_api.md](./rpc_api.md#where-each-method-is-answered).
 - A validator without `checkadmission` (zcashd, stock zebrad) answers `-32601`: taken as its
   answer, never a failure (it stays `Live`), and the next holder is asked.
 - A peer relay gets no reply and zebra names no recipient. **Spread** = a trusted validator never

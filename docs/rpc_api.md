@@ -32,13 +32,12 @@ consensus objects are forwarded to the validator.
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                                                                                |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)*         | as `GetTaddressTransactions`                                                                                                                   |
 
-"The validator" here is the traffic balancer (`zaino-traffic`) over every
-`[[trusted_validators]]` entry: lowest `priority` tier first, the least loaded
-within it, a slow answer hedged and an absent one asked of the next until one
-answers (a lagging validator may lack a just-mined transaction); `NOT_FOUND` only
-when every one asked said absent. The two deprecated rows are served
-only because pepper-sync calls them (see
-[client-requirements.md](./client-requirements.md)).
+"The validator" here is the traffic balancer over every `[[trusted_validators]]`
+entry ([architecture §9](./architecture.md#9-talking-to-validators-and-peers)). An
+absent answer is asked of the next validator (a lagging one may lack a just-mined
+transaction): `NOT_FOUND` only when every one asked said absent. Why the two
+deprecated rows exist:
+[client-requirements.md](./client-requirements.md#two-deprecated-methods-served-until-pepper-sync-moves-off-them).
 
 A `BlockID` that carries a hash, in `GetBlock` or `GetTreeState`, is resolved to
 a height through the block-hash index. A hash wins over a height when both are
@@ -46,9 +45,9 @@ given, because a hash names one block across a reorg and a height does not.
 
 Every index can be disabled (at least one stays on); compact-block's fee index,
 utxo-set (every `CompactTx.fee`), runs with it and has no switch of its
-own. A disabled index's methods answer `UNIMPLEMENTED` (for the block-hash
-index, only the by-hash form of `GetBlock` and `GetTreeState`). Nothing falls
-back to the validator.
+own. A disabled index answers as
+[architecture §1](./architecture.md#1-who-owns-what) says; for the block-hash index
+that is only the by-hash form of `GetBlock` and `GetTreeState`.
 
 Every index method reads one `GrpcSnapshot` of every index, pinned for the request or
 stream. A method naming no height answers at the served tip, which every

@@ -44,25 +44,24 @@ Two tests differing only in one input (typically the pool) are one `#[rstest]`.
 async fn send_to_self(#[case] pool: Pool) -> Result<()> {
 ```
 
-Zebra is the only validator, so it is not an axis. Zaino reads it over JSON-RPC
-(`validator_client = "legacy_rpc"`, the default) or its indexer gRPC (`"grpc"`), and
-fetches blocks from p2p peers too. A single-case `#[rstest]` is noise: write a plain test.
+Zebra is the only validator, so it is not an axis (how Zaino reaches it:
+[zainod: Validator client](../packages/zainod/usage.md#validator-client)). A single-case
+`#[rstest]` is noise: write a plain test.
 
 ## Tag the QoS tier, and tag it honestly
 
 Every test carries exactly one `#[ztest::qos::*]`. The tier is a resource
 reservation; getting it wrong OOM-kills pods and reads as flake.
 
-| Tier          | Reserve      | Cap    | Use                                     |
-| ------------- | ------------ | ------ | --------------------------------------- |
-| `basic`       | 1c / 512 MiB | 1 min  | No validator pod.                       |
-| `wallet`      | 4c / 2 GiB   | 10 min | In-process wallet; proving work.        |
-| `integration` | 3c / 3 GiB   | 10 min | ≤3-pod zaino topology, no wallet.       |
-| `testnet`     | 8c / 10 GiB  | 6 h    | Snapshot-restored public chains.        |
-| `sync`        | 15c / 15 GiB | 48 h   | Long-running sync subjects (NVMe pool). |
+| Tier          | Use                                                                        |
+| ------------- | -------------------------------------------------------------------------- |
+| `integration` | Validator + zainod, no wallet (ztest's default).                           |
+| `wallet`      | Any `env.add_wallet`: the in-process wallet runs in the test runner.       |
+| `testnet`     | Snapshot-restored public chains.                                           |
+| `sync`        | Long-running sync subjects (NVMe pool, `footprint` required).              |
 
-A regtest zebrad needs 1 GiB to itself — `basic` will kill it. Anything standing
-up a validator is `integration` or heavier.
+Reserves and caps are ztest's (`QosClass::profile`, its `docs/design-qos.md`). A topology
+other than validator + zainod declares a `footprint` rather than switching tier.
 
 ## Runtime attributes
 
