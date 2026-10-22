@@ -12,14 +12,15 @@ zainod generate-config     # writes $XDG_CONFIG_HOME/zaino/zainod.toml; edit it
 zainod start
 ```
 
-`zainod --help` lists every subcommand: `start`, `generate-config`, `verify`, `hold` and `resume`.
+`zainod --help` lists every subcommand: `start`, `generate-config`, `verify`, `hold`, `resume`
+and `overload`.
 
-- [Running zainod](https://github.com/zingolabs/zaino/blob/dev/docs/running.md): install,
-  configuration, network exposure, stopping and restarts.
+- [Running zainod](https://github.com/zingolabs/zaino/blob/dev/docs/running.md): configuration,
+  states, operator hold, systemd, index snapshots, `verify`, network exposure.
 - [Annotated config](https://github.com/zingolabs/zaino/blob/dev/docs/example_configs/zainod.toml):
   every key and its default.
-- [zainod usage](https://github.com/zingolabs/zaino/blob/dev/packages/zainod/usage.md): admin
-  listener and states, operator hold, systemd, `verify`, failure policy, logging.
+- [zainod usage](https://github.com/zingolabs/zaino/blob/dev/packages/zainod/usage.md): failure
+  policy, logging.
 - [RPC API](https://github.com/zingolabs/zaino/blob/dev/docs/rpc_api.md): the methods served.
 - [Container image](https://github.com/zingolabs/zaino/blob/dev/docs/docker.md).
 

@@ -45,7 +45,7 @@ async fn send_to_self(#[case] pool: Pool) -> Result<()> {
 ```
 
 Zebra is the only validator, so it is not an axis (how Zaino reaches it:
-[zainod: Validator client](../packages/zainod/usage.md#validator-client)). A single-case
+[running.md: Validator client](../docs/running.md#validator-client)). A single-case
 `#[rstest]` is noise: write a plain test.
 
 ## Tag the QoS tier, and tag it honestly
