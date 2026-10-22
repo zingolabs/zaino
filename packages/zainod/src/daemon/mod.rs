@@ -54,7 +54,7 @@ use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, Validator
 use crate::error::IndexerError;
 use crate::health::{admin, DaemonStatus, Sources};
 use crate::telemetry::logging::{self, component};
-use crate::telemetry::{egress, progress};
+use crate::telemetry::{disk, egress, progress};
 
 mod chainview;
 pub(crate) mod fd_limit;
@@ -331,7 +331,7 @@ fn open_indexes<S: ChainDataSource>(
     Ok(indexes)
 }
 
-/// - Every opened index's writer, the follower, NFS, publisher, progress + egress → `tasks`
+/// - Every opened index's writer, the follower, NFS, publisher, progress, disk + egress → `tasks`
 /// - gRPC routed, `status` sources published
 fn run_pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
@@ -374,9 +374,22 @@ fn run_pipeline<S: ChainDataSource>(
         let run = polling.run(cancel.child_token());
         spawn_infallible(tasks, "peer-mempool", component("ChainView"), run);
     }
+    let (sizes, walked) = watch::channel(disk::Sizes::new());
+    spawn(
+        tasks,
+        "disk",
+        component("Admin"),
+        disk::run(opened.clone(), sizes, cancel.child_token()),
+    );
     let (rate, block_rate) = watch::channel(None);
-    let reporting =
-        progress::run(grpc_snapshots.clone(), progress.clone(), opened, rate, cancel.child_token());
+    let reporting = progress::run(
+        grpc_snapshots.clone(),
+        progress.clone(),
+        opened,
+        walked,
+        rate,
+        cancel.child_token(),
+    );
     spawn(tasks, "progress", component("ZainoNFS"), reporting);
     let (egress, egress_windows) = watch::channel(None);
     let measuring = egress::run(egress, cancel.child_token());
@@ -402,6 +415,7 @@ struct Indexes<S> {
 }
 
 /// One enabled index: its log component, directory and writer's handle
+#[derive(Clone)]
 pub(crate) struct OpenedIndex {
     pub(crate) kind: IndexKind,
     pub(crate) span: Span,

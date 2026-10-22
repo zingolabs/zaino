@@ -218,17 +218,15 @@ each index writer's `zaino_index_*` progress included
 ([writer loop](../zaino-sync/usage.md#writer-loop)). One progress task logs the sync summary and
 each index's `Syncing` line (applied, durable, size) every 30 s.
 
-The same task samples the disk every 30 s (a metric whose source is unreadable, e.g. no
-`/proc/self/io`, is left out rather than reported as zero; I/O pressure = the host's PSI, from the
-node exporter):
+A disk task samples each index every 30 s (a cached total that cannot be read is left out rather
+than reported as zero). Filesystem free space, capacity, block-device I/O and I/O pressure are
+per host, not per index: read them from the node exporter or cAdvisor.
 
-| Metric                                                          | Labels  | Answers                                                                                     |
-| --------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `zaino_disk_committed_bytes`                                    | `index` | durable data, every table of the index summed                                               |
-| `zaino_disk_cached_bytes`                                       | `index` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch)        |
-| `zaino_disk_bytes`                                              | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
-| `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes`            | `index` | room left on the index's filesystem                                                         |
-| `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` |         | block-device bytes zainod moved (`/proc/self/io`)                                           |
+| Metric                       | Labels  | Answers                                                                                                          |
+| ---------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `zaino_disk_committed_bytes` | `index` | durable data, every table of the index summed                                                                    |
+| `zaino_disk_cached_bytes`    | `index` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch)                             |
+| `zaino_disk_bytes`           | `index` | the index directory on disk, preallocation and unlanded merges included (walked every 2 min; the `size` above)   |
 
 Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit_bytes_total`
 (`{index}`, [`zaino-persistence`](../zaino-persistence/usage.md)).

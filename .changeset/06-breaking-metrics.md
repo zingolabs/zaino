@@ -37,6 +37,5 @@ Removed with no replacement: `zaino_db_*`, `zaino_migration_*`, `zaino_jsonrpc_*
   messages, bytes sent), and connection, admission, subscription and adaptive-limit gauges and
   counters.
 - **Storage:** `zaino_store_commit_{seconds,bytes_total}{index}`, `zaino_lsm_*{index}`,
-  `zaino_disk_{committed,cached}_bytes{index}`, `zaino_disk_{bytes,free_bytes,capacity_bytes}{index}`,
-  `zaino_disk_{read,written}_bytes_total` (sampled every 30 s).
+  `zaino_disk_{committed,cached}_bytes{index}`, `zaino_disk_bytes{index}` (sampled every 30 s).
 - **Process:** `process_*` (CPU, resident memory, file descriptors, threads).

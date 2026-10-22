@@ -4,11 +4,10 @@
 //!   writers), then `Fetching non-finalized blocks` (served → best, above the finalized tip)
 //! - stall warning once that line has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
-//!   finalized blocks outstanding
-//! - disk walked at most every [`WALK_EVERY`] (`size` here + the index bytes gauge)
+//!   finalized blocks outstanding (`size` = [`super::disk::run`]'s last walk)
 //! - the phase's blocks/s over the last two intervals (`/status` `progress.rate`)
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn};
@@ -17,15 +16,11 @@ use zaino_persistence::DiskView;
 use zaino_primitives::display::{ByteSize, Human};
 use zaino_sync::SyncProgress;
 
-use super::disk::{self, disk_bytes};
+use super::disk::Sizes;
 use crate::daemon::OpenedIndex;
 use crate::error::IndexerError;
 
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(30);
-const WALK_EVERY: Duration = Duration::from_secs(120);
-
-/// Last walk's bytes per index name (unreadable = absent)
-type Disk = BTreeMap<&'static str, u64>;
 
 /// Blocks handed since boot + the served height (0 before any), when
 #[derive(Clone, Copy)]
@@ -82,6 +77,7 @@ pub(crate) async fn run(
     grpc_snapshots: GrpcSnapshots<DiskView>,
     progress: SyncProgress,
     indexes: Vec<OpenedIndex>,
+    sizes: watch::Receiver<Sizes>,
     rate: watch::Sender<Option<f64>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), IndexerError> {
@@ -94,21 +90,11 @@ pub(crate) async fn run(
     let mut last = sample(&grpc_snapshots.load().tips());
     let mut before_last = last;
     let (mut last_phase, mut moved_at) = (None::<Phase>, last.at);
-    let (mut disk, mut walked) = (Disk::new(), None::<Instant>);
     loop {
         tokio::select! {
             () = cancel.cancelled() => return Ok(()),
             _ = ticks.tick() => {}
         }
-        if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
-            disk = walk(&indexes).await?;
-            for (index, bytes) in &disk {
-                disk::walked(index, *bytes);
-            }
-            walked = Some(Instant::now());
-        }
-        let views = disk::views(&indexes);
-        tokio::task::spawn_blocking(move || disk::sample(&views)).await?;
         let tips = grpc_snapshots.load().tips();
         let now = sample(&tips);
         let durable = indexes
@@ -127,6 +113,7 @@ pub(crate) async fn run(
             report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
         if matches!(phase, Some(Phase::Finalized { .. })) {
+            let disk = sizes.borrow();
             for index in &indexes {
                 let applied = index.handle.applied_height().map(u32::from);
                 let durable = index.handle.durable_height().map(u32::from);
@@ -169,22 +156,6 @@ fn per_second(count: u64, over: Duration) -> u64 {
         secs if secs > 0.0 => (count as f64 / secs).round() as u64,
         _ => 0,
     }
-}
-
-/// Every index directory, off the runtime (an unreadable one logged here, under its component)
-async fn walk(indexes: &[OpenedIndex]) -> Result<Disk, IndexerError> {
-    let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
-    let walked = tokio::task::spawn_blocking(move || {
-        dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>()
-    });
-    let mut disk = Disk::new();
-    for (index, walked) in indexes.iter().zip(walked.await?) {
-        match walked {
-            Ok(bytes) => drop(disk.insert(index.kind.name(), bytes)),
-            Err(error) => index.span.in_scope(|| warn!(%error, "Index size unreadable")),
-        }
-    }
-    Ok(disk)
 }
 
 #[cfg(test)]

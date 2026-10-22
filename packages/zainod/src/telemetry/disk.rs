@@ -1,30 +1,31 @@
-//! What the disk is doing to zainod: one sample per progress tick, as metrics
+//! Per-index disk footprint as metrics: one task, every [`SAMPLE_EVERY`]
 //!
-//! - per index (tables summed): durable bytes + their page-cache share (cold lookups = disk reads)
-//! - per index directory: its filesystem's free + capacity
-//! - walk's total = [`walked`] (bytes by [`disk_bytes`])
-//! - process: block-device bytes read / written
-//! - unreadable source (not Linux) = its metric left out, never a guessed zero
+//! - committed bytes + their page-cache share (cold lookups = disk reads), tables summed
+//! - directory walked ([`disk_bytes`]) every [`WALK_EVERY`] → `zaino.disk.bytes` + [`Sizes`]
+//! - filesystem space + block-device I/O left to node_exporter / cAdvisor (per host, not index)
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, io, path::Path, path::PathBuf, time::Duration};
 
 use metrics::Unit;
-use zaino_persistence::IndexKind;
+use tokio::{sync::watch, time::Instant};
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
+use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::metric::Metric;
 
 use crate::daemon::OpenedIndex;
+use crate::error::IndexerError;
+
+const SAMPLE_EVERY: Duration = Duration::from_secs(30);
+const WALK_EVERY: Duration = Duration::from_secs(120);
+
+/// Last walk's bytes per index name (unreadable = absent)
+pub(crate) type Sizes = BTreeMap<&'static str, u64>;
 
 mod names {
     pub(super) const COMMITTED_BYTES: &str = "zaino.disk.committed_bytes";
     pub(super) const CACHED_BYTES: &str = "zaino.disk.cached_bytes";
     pub(super) const BYTES: &str = "zaino.disk.bytes";
-    pub(super) const FREE_BYTES: &str = "zaino.disk.free_bytes";
-    pub(super) const CAPACITY_BYTES: &str = "zaino.disk.capacity_bytes";
-    pub(super) const READ_BYTES_TOTAL: &str = "zaino.disk.read_bytes_total";
-    pub(super) const WRITTEN_BYTES_TOTAL: &str = "zaino.disk.written_bytes_total";
 }
 
 pub(crate) const METRICS: &[Metric] = {
@@ -43,17 +44,40 @@ pub(crate) const METRICS: &[Metric] = {
             "Index directory on disk (preallocation + uncommitted merges included), by index",
         )
         .unit(Unit::Bytes),
-        Metric::gauge(FREE_BYTES, "Free space on the index's filesystem").unit(Unit::Bytes),
-        Metric::gauge(CAPACITY_BYTES, "Size of the index's filesystem").unit(Unit::Bytes),
-        Metric::counter(READ_BYTES_TOTAL, "Block-device bytes zainod read").unit(Unit::Bytes),
-        Metric::counter(WRITTEN_BYTES_TOTAL, "Block-device bytes zainod caused to be written")
-            .unit(Unit::Bytes),
     ]
 };
 
-/// One sample of every index + the process (blocking: `mincore` + `statvfs` + procfs reads)
-pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView)]) {
-    for (kind, dir, view) in indexes {
+/// Until `cancel`: every tick a footprint sample, every [`WALK_EVERY`] a walk into `sizes`
+pub(crate) async fn run(
+    indexes: Vec<OpenedIndex>,
+    sizes: watch::Sender<Sizes>,
+    cancel: CancellationToken,
+) -> Result<(), IndexerError> {
+    let mut ticks = tokio::time::interval(SAMPLE_EVERY);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut walked = None::<Instant>;
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return Ok(()),
+            _ = ticks.tick() => {}
+        }
+        if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
+            let walk = walk(&indexes).await?;
+            for (index, bytes) in &walk {
+                metrics::gauge!(names::BYTES, "index" => *index).set(*bytes as f64);
+            }
+            sizes.send_replace(walk);
+            walked = Some(Instant::now());
+        }
+        let views: Vec<_> =
+            indexes.iter().map(|index| (index.kind, index.handle.durable_view())).collect();
+        tokio::task::spawn_blocking(move || sample(&views)).await?;
+    }
+}
+
+/// Blocking: one `mincore` pass per index
+fn sample(indexes: &[(IndexKind, DiskView)]) {
+    for (kind, view) in indexes {
         let index = kind.name();
         let footprint = view.footprint();
         let committed: u64 = footprint.iter().map(|table| table.bytes).sum();
@@ -62,32 +86,23 @@ pub(crate) fn sample(indexes: &[(IndexKind, PathBuf, zaino_persistence::DiskView
         if let Some(cached) = footprint.iter().map(|table| table.cached).sum::<Option<u64>>() {
             metrics::gauge!(names::CACHED_BYTES, "index" => index).set(cached as f64);
         }
-        if let Some((free, capacity)) = space(dir) {
-            metrics::gauge!(names::FREE_BYTES, "index" => index).set(free as f64);
-            metrics::gauge!(names::CAPACITY_BYTES, "index" => index).set(capacity as f64);
+    }
+}
+
+/// Every index directory, off the runtime (an unreadable one logged here, under its component)
+async fn walk(indexes: &[OpenedIndex]) -> Result<Sizes, IndexerError> {
+    let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
+    let walked = tokio::task::spawn_blocking(move || {
+        dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>()
+    });
+    let mut sizes = Sizes::new();
+    for (index, walked) in indexes.iter().zip(walked.await?) {
+        match walked {
+            Ok(bytes) => drop(sizes.insert(index.kind.name(), bytes)),
+            Err(error) => index.span.in_scope(|| warn!(%error, "Index size unreadable")),
         }
     }
-    if let Some((read, written)) =
-        std::fs::read_to_string("/proc/self/io").ok().and_then(|io| proc_io(&io))
-    {
-        metrics::counter!(names::READ_BYTES_TOTAL).absolute(read);
-        metrics::counter!(names::WRITTEN_BYTES_TOTAL).absolute(written);
-    }
-}
-
-/// Each walked index directory's total
-pub(crate) fn walked(index: &'static str, bytes: u64) {
-    metrics::gauge!(names::BYTES, "index" => index).set(bytes as f64);
-}
-
-/// The sampled set: each index's kind, directory and durable view now
-pub(crate) fn views(
-    indexes: &[OpenedIndex],
-) -> Vec<(IndexKind, PathBuf, zaino_persistence::DiskView)> {
-    indexes
-        .iter()
-        .map(|index| (index.kind, index.dir.clone(), index.handle.durable_view()))
-        .collect()
+    Ok(sizes)
 }
 
 /// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
@@ -111,21 +126,6 @@ pub(crate) fn disk_bytes(path: &Path) -> io::Result<u64> {
     Ok(total)
 }
 
-/// `(free, capacity)` bytes of the filesystem holding `dir` (free = what zainod may still use)
-fn space(dir: &Path) -> Option<(u64, u64)> {
-    let stat = rustix::fs::statvfs(dir).ok()?;
-    Some((stat.f_bavail.saturating_mul(stat.f_frsize), stat.f_blocks.saturating_mul(stat.f_frsize)))
-}
-
-/// `read_bytes`, `write_bytes` of `/proc/<pid>/io` (bytes the block layer moved for it)
-fn proc_io(io: &str) -> Option<(u64, u64)> {
-    let field = |name: &str| {
-        let line = io.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))?;
-        line.trim().parse::<u64>().ok()
-    };
-    Some((field("read_bytes")?, field("write_bytes")?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,13 +142,5 @@ mod tests {
         assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
         let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn proc_io_reads_the_block_layer_fields() {
-        let io = "rchar: 64042856889\nwchar: 64042856889\nsyscr: 1\nsyscw: 2\n\
-                  read_bytes: 23569625088\nwrite_bytes: 70950584320\ncancelled_write_bytes: 0\n";
-        assert_eq!(proc_io(io), Some((23_569_625_088, 70_950_584_320)));
-        assert_eq!(proc_io("rchar: 1\n"), None, "no block-layer fields");
     }
 }
