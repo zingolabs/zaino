@@ -170,13 +170,14 @@ fn steps() -> impl Strategy<Value = Vec<Step>> {
             ),
             false => (small.boxed(), (0u16..8).boxed(), 128),
         };
-        // `removing`: a few seqs per block, sometimes most of those issued (whole segments cancel
-        // in merges)
+        // `removing`: a few seqs per block, sometimes hundreds, sometimes every seq up to one
+        // (whole segments cancel in merges)
         let seq = 1..=issued;
         let removed = match removing {
             true => prop_oneof![
                 4 => prop::collection::vec(seq.clone(), 0..8),
-                1 => prop::collection::vec(seq, 100..600),
+                1 => prop::collection::vec(seq.clone(), 100..600),
+                1 => seq.prop_map(|last| (1..=last).collect()),
             ]
             .boxed(),
             false => Just(Vec::new()).boxed(),
