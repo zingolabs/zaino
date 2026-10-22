@@ -47,20 +47,29 @@ fn network(peer: IpAddr) -> IpAddr {
     }
 }
 
+/// `struct tcp_info` field offsets (include/uapi/linux/tcp.h)
+mod tcp_info {
+    pub(super) const LAST_DATA_SENT: usize = 44;
+    pub(super) const RTT: usize = 68;
+    pub(super) const TOTAL_RETRANS: usize = 100;
+    pub(super) const MIN_RTT: usize = 148;
+    pub(super) const DATA_SEGS_OUT: usize = 156;
+}
+
 /// `tcp_info` (host order, append-only kernel ABI) of socket `cookie` to `peer` → `None` if it
 /// predates `data_segs_out` (kernel < 4.10)
 pub(crate) fn decode_tcp_info(cookie: u64, peer: IpAddr, bytes: &[u8]) -> Option<TcpSocket> {
     let u32_at = |at: usize| Some(u32::from_ne_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
-    let min_rtt_us = u32_at(148)?;
+    let min_rtt_us = u32_at(tcp_info::MIN_RTT)?;
     Some(TcpSocket {
         cookie,
         network: network(peer),
-        sending: u128::from(u32_at(44)?) <= SAMPLE.as_millis(),
-        rtt_us: u32_at(68)?,
+        sending: u128::from(u32_at(tcp_info::LAST_DATA_SENT)?) <= SAMPLE.as_millis(),
+        rtt_us: u32_at(tcp_info::RTT)?,
         // kernel ~0U = never measured
         min_rtt_us: (min_rtt_us != u32::MAX).then_some(min_rtt_us),
-        retransmitted: u32_at(100)?,
-        data_segments: u32_at(156)?,
+        retransmitted: u32_at(tcp_info::TOTAL_RETRANS)?,
+        data_segments: u32_at(tcp_info::DATA_SEGS_OUT)?,
     })
 }
 
@@ -271,15 +280,28 @@ mod tests {
 
     use super::*;
 
-    /// Kernel offsets (`last_data_sent` 44, `rtt` 68, `total_retrans` 100, `min_rtt` 148,
-    /// `data_segs_out` 156), client networks (/24, v4-mapped = its /24, /48), unmeasured min RTT
-    #[test]
-    fn tcp_info_decodes_by_kernel_offset_into_its_client_network() {
+    /// `bytes` = a `tcp_info` buffer with each `(offset, value)` written host order
+    fn tcp_info_bytes(fields: &[(usize, u32)]) -> Vec<u8> {
         let mut bytes = vec![0u8; 232];
-        for (at, value) in [(44, 1_250u32), (68, 31_000), (100, 7), (148, 24_000), (156, 9_000)] {
+        for &(at, value) in fields {
             bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
         }
-        let mapped = IpAddr::V6(Ipv4Addr::new(203, 0, 113, 9).to_ipv6_mapped());
+        bytes
+    }
+
+    #[test]
+    fn tcp_info_decodes_by_kernel_offset_into_its_client_network() {
+        let bytes = tcp_info_bytes(&[
+            (tcp_info::LAST_DATA_SENT, 1_250),
+            (tcp_info::RTT, 31_000),
+            (tcp_info::TOTAL_RETRANS, 7),
+            (tcp_info::MIN_RTT, 24_000),
+            (tcp_info::DATA_SEGS_OUT, 9_000),
+        ]);
+        let v4_mapped = IpAddr::V6(Ipv4Addr::new(203, 0, 113, 9).to_ipv6_mapped());
+
+        let decoded = decode_tcp_info(42, v4_mapped, &bytes);
+
         let expected = TcpSocket {
             cookie: 42,
             network: Ipv4Addr::new(203, 0, 113, 0).into(),
@@ -289,68 +311,118 @@ mod tests {
             retransmitted: 7,
             data_segments: 9_000,
         };
-        assert_eq!(decode_tcp_info(42, mapped, &bytes), Some(expected));
-        assert_eq!(decode_tcp_info(42, mapped, &bytes[..159]), None, "pre-4.10");
+        assert_eq!(decoded, Some(expected), "v4-mapped client = its /24, data sent 1.25 s ago");
+        let pre_4_10 = &bytes[..tcp_info::DATA_SEGS_OUT + 3];
+        assert_eq!(decode_tcp_info(42, v4_mapped, pre_4_10), None, "no whole data_segs_out");
+    }
 
-        let mut idle = bytes.clone();
-        idle[44..48].copy_from_slice(&60_000u32.to_ne_bytes());
-        idle[148..152].copy_from_slice(&u32::MAX.to_ne_bytes());
-        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0xaa, 1, 0, 0, 0, 9));
-        assert_eq!(
-            decode_tcp_info(42, v6, &idle),
-            Some(TcpSocket {
+    /// `sending` = data sent within one SAMPLE; kernel `~0U` min RTT = never measured
+    #[test]
+    fn an_ipv6_socket_idle_past_one_sample_is_not_sending() {
+        let peer = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0xaa, 1, 0, 0, 0, 9));
+        let sample_ms = u32::try_from(SAMPLE.as_millis()).expect("SAMPLE fits u32 ms");
+        for (last_data_sent_ms, sending) in [(sample_ms, true), (sample_ms + 1, false)] {
+            let bytes = tcp_info_bytes(&[
+                (tcp_info::LAST_DATA_SENT, last_data_sent_ms),
+                (tcp_info::MIN_RTT, u32::MAX),
+            ]);
+
+            let decoded = decode_tcp_info(7, peer, &bytes);
+
+            let expected = TcpSocket {
+                cookie: 7,
                 network: Ipv6Addr::new(0x2001, 0xdb8, 0xaa, 0, 0, 0, 0, 0).into(),
-                sending: false,
+                sending,
+                rtt_us: 0,
                 min_rtt_us: None,
-                ..expected
-            }),
-            "idle a minute, never measured, its /48"
+                retransmitted: 0,
+                data_segments: 0,
+            };
+            assert_eq!(decoded, Some(expected), "last data sent {last_data_sent_ms} ms ago");
+        }
+    }
+
+    /// Sending socket in 198.51.`net`.0/24, nothing retransmitted yet
+    fn socket_in(net: u8, cookie: u64, rtt_ms: u32, min_rtt_ms: u32) -> TcpSocket {
+        TcpSocket {
+            cookie,
+            network: Ipv4Addr::new(198, 51, net, 0).into(),
+            sending: true,
+            rtt_us: rtt_ms * 1_000,
+            min_rtt_us: Some(min_rtt_ms * 1_000),
+            retransmitted: 0,
+            data_segments: 0,
+        }
+    }
+
+    fn sorted_ms(mut delays: Vec<Duration>) -> Vec<u128> {
+        delays.sort();
+        delays.iter().map(Duration::as_millis).collect()
+    }
+
+    /// Sockets born into a queue never see the unqueued RTT (RFC 6817 base delay)
+    #[test]
+    fn queueing_is_each_networks_median_rtt_above_the_lowest_rtt_any_of_its_sockets_saw() {
+        let sockets = [
+            socket_in(1, 1, 61, 20),
+            socket_in(1, 2, 61, 60),
+            socket_in(1, 3, 62, 60),
+            socket_in(1, 4, 900, 60),
+            socket_in(9, 9, 5, 5),
+        ];
+
+        let sample = History::default().sample(&sockets);
+
+        assert_eq!(
+            sorted_ms(sample.delays),
+            [0, 42],
+            "network 9: 5 − 5 ms; network 1: median of 41, 41, 42, 880 over its 20 ms base"
         );
     }
 
-    /// One network's sockets across samples:
-    /// - sockets born into a queue (own min RTT 60 ms) measured against the network's 20 ms base,
-    ///   the median socket once per network
-    /// - base forgotten after BASE_MINUTES without a lower sample, a network with its sockets
-    /// - loss: deltas from a socket's second sample, closed sockets dropped, < MIN_SEGMENTS ignored
+    /// Loss counted from a socket's second sample, per network, only >= MIN_SEGMENTS sent
     #[test]
-    fn history_keeps_each_networks_base_rtt_and_loss_since_the_last_sample() {
-        let socket =
-            |cookie: u64, net: u8, rtt_ms: u32, min_rtt_ms: u32, retx: u32, segs: u32| TcpSocket {
-                cookie,
-                network: Ipv4Addr::new(198, 51, net, 0).into(),
-                sending: true,
-                rtt_us: rtt_ms * 1000,
-                min_rtt_us: Some(min_rtt_ms * 1000),
-                retransmitted: retx,
-                data_segments: segs,
-            };
-        let ms = |ms: &[u64]| ms.iter().copied().map(Duration::from_millis).collect::<Vec<_>>();
-        let sorted = |mut delays: Vec<Duration>| {
-            delays.sort();
-            delays
+    fn loss_is_retransmits_over_segments_sent_since_the_previous_sample() {
+        let counting = |net, retransmitted, data_segments| TcpSocket {
+            retransmitted,
+            data_segments,
+            ..socket_in(net, net.into(), 20, 20)
         };
+        let below = u32::try_from(MIN_SEGMENTS - 1).expect("u32");
+        let at = u32::try_from(MIN_SEGMENTS).expect("u32");
         let mut history = History::default();
 
-        let calm = history.sample(&[socket(1, 1, 21, 20, 0, 1_000), socket(9, 9, 5, 5, 0, 50)]);
-        assert_eq!(sorted(calm.delays), ms(&[0, 1]));
-        assert!(calm.losses.is_empty(), "first sight: no loss yet");
+        let first = history.sample(&[counting(1, 0, 1_000), counting(2, 0, 0), counting(3, 0, 0)]);
+        let second =
+            history.sample(&[counting(1, 30, 2_000), counting(2, 9, below), counting(3, 2, at)]);
 
-        let latecomers = [61, 62, 900].map(|rtt| socket(rtt.into(), 1, rtt, 60, 0, 0));
-        let mut queued = vec![socket(1, 1, 61, 20, 30, 1_000 + 1_000), socket(9, 9, 5, 5, 3, 99)];
-        queued.extend(latecomers);
-        let sample = history.sample(&queued);
-        assert_eq!(sorted(sample.delays), ms(&[0, 42]), "network 1: median of 41, 41, 42, 880");
-        assert_eq!(sample.losses, [0.03], "network 1: 30 of 1,000; network 9: 49 sent");
+        assert_eq!(first.losses, Vec::<f64>::new(), "first sight: counters predate this node");
+        let mut losses = second.losses;
+        losses.sort_by(f64::total_cmp);
+        assert_eq!(losses, [0.02, 0.03], "net 3: 2 of {at}; net 1: 30 of 1,000; net 2 under");
+    }
+
+    /// Base forgotten BASE_MINUTES after its last low sample, a network with it
+    #[test]
+    fn a_networks_base_rtt_ages_out_after_base_minutes() {
+        let latecomers =
+            [socket_in(1, 2, 61, 60), socket_in(1, 3, 62, 60), socket_in(1, 4, 900, 60)];
+        let mut history = History::default();
+        history.sample(&[socket_in(1, 1, 61, 20), socket_in(9, 9, 5, 5)]);
 
         let later: Vec<_> = (0..MINUTE_SAMPLES as usize * BASE_MINUTES)
             .map(|_| history.sample(&latecomers))
             .collect();
-        let last = later.last().expect("samples");
-        assert_eq!(last.delays, ms(&[2]), "base aged out to the latecomers' 60 ms");
-        assert!(last.losses.is_empty(), "under MIN_SEGMENTS");
-        assert_eq!(history.bases.len(), 1, "network 9 forgotten");
-        assert_eq!(history.counters.len(), 3, "closed sockets 1 + 9 dropped");
+
+        let [.., last_with_base, aged_out] = &later[..] else { panic!("{} samples", later.len()) };
+        let delays = |sample: &Sample| sorted_ms(sample.delays.clone());
+        assert_eq!(delays(last_with_base), [42], "20 ms base still within BASE_MINUTES");
+        assert_eq!(delays(aged_out), [2], "base aged out to the latecomers' own 60 ms");
+        let networks: Vec<_> = history.bases.keys().collect();
+        assert_eq!(networks, [&IpAddr::from(Ipv4Addr::new(198, 51, 1, 0))], "network 9 forgotten");
+        let mut cookies: Vec<_> = history.counters.keys().copied().collect();
+        cookies.sort_unstable();
+        assert_eq!(cookies, [2, 3, 4], "closed sockets 1 + 9 dropped");
     }
 
     /// A window's verdict per signal: the low end over samples with breadth (a narrow sample
@@ -365,7 +437,7 @@ mod tests {
             Sample { delays: ms(&[500]), losses: vec![0.1; 5] },
         ]);
         let verdict = Verdict { delay: Some(Duration::from_millis(3)), loss: Some(0.1) };
-        assert_eq!(window.verdict(5), verdict, "p20 of ten each, not 500 ms / 50 %");
+        assert_eq!(window.verdict(5), verdict, "p20 of the ten broad values per signal");
         assert_eq!(window.verdict(5), Verdict::default(), "next window starts empty");
     }
 
@@ -383,10 +455,13 @@ mod tests {
         client.read_exact(&mut [0; 256 * 1024]).expect("receive");
 
         let found = sockets(port).expect("sock_diag");
-        assert_eq!(found.len(), 1, "{found:?}");
-        let only = found[0];
-        assert_eq!(only.network, IpAddr::from(Ipv4Addr::new(127, 0, 0, 0)));
-        assert!(only.cookie != 0 && only.sending && only.data_segments > 0, "{only:?}");
-        assert!(only.min_rtt_us.is_some_and(|min| min <= only.rtt_us), "{only:?}");
+
+        let [only] = found[..] else { panic!("only the accepted side on port {port}: {found:?}") };
+        assert_eq!(only.network, IpAddr::from(Ipv4Addr::new(127, 0, 0, 0)), "{only:?}");
+        assert_ne!(only.cookie, 0, "kernel socket cookie: {only:?}");
+        assert!(only.sending, "just sent 256 KiB: {only:?}");
+        assert!(only.data_segments > 0, "256 KiB sent in segments: {only:?}");
+        let min_at_most_smoothed = only.min_rtt_us.is_some_and(|min| min <= only.rtt_us);
+        assert!(min_at_most_smoothed, "measured, min RTT <= smoothed RTT: {only:?}");
     }
 }
