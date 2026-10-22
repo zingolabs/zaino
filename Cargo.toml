@@ -60,7 +60,7 @@ clap = "4.0"
 
 # Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter", "json"] }
+tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 # Plain HTTP only (validator JSON-RPC)
 reqwest = { version = "0.13", default-features = false }
 # Admin listener (/metrics, /livez)

@@ -203,6 +203,5 @@ hard limit (systemd `LimitNOFILE=`, docker `--ulimit nofile=`) or lower
 
 ## Logging
 
-Logging is configured from the environment through `RUST_LOG`, `ZAINOLOG_FORMAT`,
-`ZAINOLOG_COLOR` and `ZAINOLOG_LOCATION`, which are described in
+logfmt to stdout, filtered by `RUST_LOG`:
 [`packages/zainod/usage.md`](../packages/zainod/usage.md#logging).

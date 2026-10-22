@@ -64,6 +64,7 @@ zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
 zaino-index-tree-state.workspace = true
+tracing-logfmt = { version = "0.3.7", features = ["ansi_logs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

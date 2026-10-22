@@ -40,7 +40,7 @@ fn main() -> ExitCode {
     // `overload`'s state)
     if !matches!(cli.command, Command::Verify | Command::Hold(_) | Command::Overload { .. }) {
         if let Err(error) = logging::init() {
-            eprintln!("Error: logging: {error}");
+            eprintln!("Error: RUST_LOG: {error}");
             return ExitCode::from(2);
         }
     }

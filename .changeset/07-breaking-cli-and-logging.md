@@ -8,17 +8,9 @@ Commands: `start`, `generate-config [-o FILE]`, `verify`, `hold` and `resume`. `
 is accepted before or after any command (default `$XDG_CONFIG_HOME/zaino/zainod.toml`), and
 `generate-config` without `-o` writes to that path.
 
-Logs are `tracing-subscriber`'s stock `fmt` output, one line per event: RFC 3339 UTC timestamp,
-level, `component{component=…}` span, target, message, then `key=value` fields.
+Logs are logfmt on stdout, one line per event (`ts=… level=… target=… message=… key=value …
+component=…`), coloured only on a terminal. `RUST_LOG` filters (unset = `zaino=info,zainod=info`);
+a malformed one fails startup.
 
-| Variable | 0.11 values |
-| --- | --- |
-| `ZAINOLOG_FORMAT` | `terminal` (default) or `json`. `stream` and `tree` are gone |
-| `ZAINOLOG_COLOR` | `true`, `false` or `auto` (default `auto`, was on) |
-| `ZAINOLOG_LOCATION` | `true` or `false` (default `false`): source location per line |
-| `RUST_LOG` | filter; unset = `zaino=info,zainod=info` |
-
-An unrecognised `ZAINOLOG_*` value or a malformed `RUST_LOG` fails startup instead of falling
-back to a default.
-
-**Migration:** set `ZAINOLOG_FORMAT=terminal` (or `json`) where it was `stream` or `tree`.
+**Migration:** `ZAINOLOG_FORMAT`, `ZAINOLOG_COLOR` and `ZAINOLOG_LOCATION` are gone (JSON output
+included): unset them and parse logfmt.

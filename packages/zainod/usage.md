@@ -325,8 +325,8 @@ archive's `phase` (`downloading` → `verifying` → `unpacking`), archives alre
 whole. `bytes_per_sec` while downloading only (else `null`). The `IndexSnapshot` component logs progress every 30 s:
 
 ```text
-… INFO component{component=IndexSnapshot}: zainod::daemon::index_snapshot: Downloading index snapshot done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
-… INFO component{component=IndexSnapshot}: zainod::daemon::index_snapshot: Index snapshot installed indexes=5 height=3501802 elapsed=7m12s
+ts=… level=info target=zainod::daemon::index_snapshot message="Downloading index snapshot" done=27.0GB total=44.5GB rate=103MB/s eta=2m49s component=IndexSnapshot
+ts=… level=info target=zainod::daemon::index_snapshot message="Index snapshot installed" indexes=5 height=3501802 elapsed=7m12s component=IndexSnapshot
 ```
 
 ## `zainod verify`
@@ -402,42 +402,22 @@ Shutdown and restarts: [running.md](../../docs/running.md#stopping-and-restarts)
 
 ## Logging
 
-`zainod start` and `generate-config` install the global `tracing` subscriber and a panic hook
-that logs the panic before aborting. `zainod verify`, `hold` and `resume` do not (stdout carries
-only their report or state). Everything is read from the environment:
-
-| Variable            | Effect                                                                                                                                                                                  |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RUST_LOG`          | Standard tracing filter. Unset, only zaino crates log at `info`; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=info,zaino_persistence=debug,tonic=warn`). |
-| `ZAINOLOG_FORMAT`   | `terminal` (default, one line per event) or `json` (machine-parseable, spans included).                                                                                                 |
-| `ZAINOLOG_COLOR`    | `true`/`false` to force ANSI colour, `auto` (default) to colour only when stdout is a terminal.                                                                                         |
-| `ZAINOLOG_LOCATION` | `true` adds each event's source file and line. Off by default.                                                                                                                          |
-
-An unrecognised value for any `ZAINOLOG_*` variable, or a malformed `RUST_LOG`,
-stops startup with an error that names the variable. There is no fallback
-format.
-
-Both formats are `tracing-subscriber`'s stock `fmt` output (`terminal` = its default "full"
-format):
+`zainod start` and `generate-config` log [logfmt](https://brandur.org/logfmt) to stdout
+([`tracing-logfmt`](https://docs.rs/tracing-logfmt)), coloured only on a terminal. `verify`,
+`hold` and `resume` do not log (stdout carries only their report or state). `RUST_LOG` is the
+standard tracing filter: unset, only zaino crates log at `info`; a malformed one stops startup.
 
 ```text
-2026-09-28T17:29:42.659204Z  INFO component{component=ZainoNFS}: zainod::telemetry::progress: Syncing blocks height=3503023 target=3506659 bps=10 eta=5m49s
-2026-09-28T17:29:42.659311Z  INFO component{component=CompactBlockIdx}: zainod::telemetry::progress: Syncing applied=3501900 durable=3501802 size=31.0GB
+ts=2026-09-28T17:29:42.659204Z level=info target=zainod::telemetry::progress message="Syncing blocks" height=3503023 target=3506659 bps=10 eta=5m49s component=ZainoNFS
+ts=2026-09-28T17:29:42.659311Z level=info target=zainod::telemetry::progress message=Syncing applied=3501900 durable=3501802 size=31.0GB component=compact_block
 ```
 
-- Each line has an RFC 3339 UTC timestamp, the level, the component span, the target (module
-  path) and the message, then the event's fields as `key=value`. An absent height is left out,
-  and an error field is followed by its `.sources` chain.
-- Components: `Zainod` (lifecycle), `Admin` (the admin listener: `/metrics`, `/livez`, `/readyz`,
-  heartbeat),
-  `IndexSnapshot` (the `[snapshot]` bootstrap),
-  `Traffic` (the balancer's driver), `ChainView` (polls folded, headers, peers, mempool,
-  submission), `ZainoSync` (the finalized-stream follower), `ZainoNFS` (tip-path fetch and folds,
-  the served tip, reorgs, sync progress), `GrpcSnapshot` (the snapshot publisher), `Grpc`, and
-  one per index (`UtxoSetIdx`, `CompactBlockIdx`, `BlockHashIdx`, `TreeStateIdx`,
-  `TransparentAddrIdx`, `TxidLocationIdx`), which also owns that index's commits and
-  compactions. A component span is always a root, so each line carries exactly one. In `json`
-  it is the `component` field of the event's `span`.
+- `component`: `Zainod` (lifecycle), `Admin` (`/metrics`, `/livez`, `/readyz`, heartbeat),
+  `IndexSnapshot` (the `[snapshot]` bootstrap), `Traffic` (the balancer's driver), `ChainView`
+  (polls, headers, peers, mempool, submission), `ZainoSync` (the finalized-stream follower),
+  `ZainoNFS` (tip-path fetch and folds, the served tip, reorgs, sync progress), `GrpcSnapshot`
+  (the snapshot publisher), `Grpc`, and one per index named as its config table (`utxo_set`,
+  `compact_block`, …), which also owns that index's commits and compactions.
 
 What an operator sees at `info`:
 
@@ -478,11 +458,5 @@ What an operator sees at `info`:
 | index                                  | `Index size unreadable`                                                                                          | warn               | A directory walk failed (`error`); `size` is left out until the next one succeeds.                                                                                                                                                                                                                                      |
 | index                                  | `Commit waited on compaction`                                                                                    | warn               | A commit blocked on a merge that fell two windows behind.                                                                                                                                                                                                                                                               |
 
-Every LSM merge (`Compacting segments`, `Compacted segments`) is at `debug`.
-
-The panic hook logs each panic as a structured `error` event at its origin —
-thread, location, and message — so a panic on a worker thread that would
-otherwise surface only as a distant `JoinError` is logged through the same sink
-as every other error. The `panic` target is forced on so no filter drops it.
-The hook then chains to `main`'s, which prints the panic and aborts the process
-(see [Failure policy](#failure-policy)).
+Every LSM merge (`Compacting segments`, `Compacted segments`) is at `debug`. A panic is printed
+to stderr by `main`'s hook, which then aborts ([Failure policy](#failure-policy)).
