@@ -508,9 +508,10 @@ name = "clientless"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "rstest",
  "serde_json",
  "tokio",
- "zaino-testutils",
  "ztest",
 ]
 
@@ -847,9 +848,9 @@ name = "e2e"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "hex",
  "serde_json",
  "tokio",
- "zaino-testutils",
  "ztest",
 ]
 
@@ -2417,11 +2418,11 @@ name = "non-finalized-state"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "hex",
  "rstest",
  "serde_json",
  "tokio",
  "tonic",
- "zaino-testutils",
  "ztest",
 ]
 
@@ -5170,16 +5171,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
-]
-
-[[package]]
-name = "zaino-testutils"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "hex",
- "tokio",
- "ztest",
 ]
 
 [[package]]

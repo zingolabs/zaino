@@ -51,7 +51,6 @@ live-tests/                        Standalone workspace, run on the ztest Kubern
   clientless/                        Zaino against a live validator, no wallet
   e2e/                               Wallet → Zaino → validator
   non-finalized-state/               Reorgs, the served tip, every tip-dependent RPC
-  zaino-testutils/                   Shared test utilities
   sync/                              Mainnet sync profiles (own workspace, `ztest sync`)
 
 docs/                              Operator docs, architecture, RPC API, testing

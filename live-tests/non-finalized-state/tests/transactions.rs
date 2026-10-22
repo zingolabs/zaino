@@ -41,13 +41,14 @@ async fn orphaned_transaction_leaves_every_index_and_returns_where_remined(
     let txid =
         faucet.send(&taddr, SEND).await?.into_iter().next().context("send returns a txid")?;
     let raw = indexer.get_transaction(txid).await?.data;
-    let raw_hex = zaino_testutils::hex::encode(&raw);
+    let raw_hex = hex::encode(&raw);
     let mined_at = u32::from(validator.generate_blocks(1).await?);
     indexer.wait_for_tip(validator.tip().await?, CONVERGE).await?;
     let vrpc = validator.json_rpc().await?;
 
     // zaino's rows for `taddr` == zebrad's → (balance, UTXO heights, (raw hex, height) per txid)
-    let address_rows = async |tip: u32| -> Result<(i64, Vec<u64>, Vec<(String, u64)>)> {
+    type AddressRows = (i64, Vec<u64>, Vec<(String, u64)>);
+    let address_rows = async |tip: u32| -> Result<AddressRows> {
         let who = json!([{ "addresses": [&taddr] }]);
         let balance = i64::from(indexer.get_taddress_balance(vec![taddr.clone()]).await?);
         let truth = vrpc.call_value("getaddressbalance", who.clone()).await?;
@@ -90,7 +91,7 @@ async fn orphaned_transaction_leaves_every_index_and_returns_where_remined(
             .get_taddress_txids(taddr.clone(), 1u32.into(), tip.into())
             .await?
             .into_iter()
-            .map(|tx| (zaino_testutils::hex::encode(&tx.data), tx.height))
+            .map(|tx| (hex::encode(&tx.data), tx.height))
             .collect();
         let range = json!([{ "addresses": [&taddr], "start": 1, "end": tip }]);
         let mut tx_truth = Vec::new();

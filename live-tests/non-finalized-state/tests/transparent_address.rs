@@ -94,7 +94,7 @@ async fn address_index_moves_orphaned_coinbase_to_the_winning_miner() -> Result<
             .get_taddress_txids(address.to_owned(), 1u32.into(), tip.into())
             .await?
             .into_iter()
-            .map(|tx| (zaino_testutils::hex::encode(&tx.data), tx.height))
+            .map(|tx| (hex::encode(&tx.data), tx.height))
             .collect();
         served.sort();
         tx_truth.sort();

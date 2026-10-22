@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "zaino-testutils",
     "clientless",
     "e2e",
     "non-finalized-state",
@@ -16,9 +15,7 @@ license = "Apache-2.0"
 version = "0.2.0"
 
 [workspace.dependencies]
-zaino-testutils = { path = "zaino-testutils" }
-# TODO: back to a crates.io version once ztest releases the rewritten zainod backend (the same
-# unreleased ztest `sync/` builds against, git rev once pushed)
+# TODO: back to a crates.io version once ztest releases the rewritten zainod backend
 ztest = { path = "../../ztest" }
 tokio = { version = "1.38", features = ["full"] }
 anyhow = "1.0"
