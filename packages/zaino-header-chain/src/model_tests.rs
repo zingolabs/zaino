@@ -460,11 +460,11 @@ proptest! {
     /// - old published chains never change
     #[test]
     fn random_header_trees_answer_like_the_naive_model(moves in moves()) {
-        run(moves);
+        run(moves)?;
     }
 }
 
-fn run(moves: Vec<Move>) {
+fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
     let chain = MockChain::regtest().varied_work();
     let mut builder = Builder { chain, templates: HashMap::new() };
     let genesis = builder.genesis();
@@ -487,9 +487,14 @@ fn run(moves: Vec<Move>) {
         received: 0,
         last_vouched: (H0, header_work(genesis.bits()).expect("regtest limit")),
     };
-    // (published chain, the model's path then, the lowest height it answered by height, each
-    // probe's `holds` then)
-    type Published = (HeaderChainSnapshot, Vec<Record>, usize, Vec<(BlockRef, bool)>);
+    /// Chain published one move earlier + what it answered then (`kept_from` = lowest height by
+    /// height, `holds` = each probe's answer)
+    struct Published {
+        snapshot: HeaderChainSnapshot,
+        path: Vec<Record>,
+        kept_from: usize,
+        holds: Vec<(BlockRef, bool)>,
+    }
     let mut published: Option<Published> = None;
 
     // - driver's: nothing above the ceiling offered (H9)
@@ -500,10 +505,11 @@ fn run(moves: Vec<Move>) {
                  model: &mut Model,
                  header: &Header,
                  trusted: bool,
-                 context: &str| {
+                 context: &str|
+     -> Result<bool, TestCaseError> {
         let at = model.parent(header.prev_hash());
         if at.is_ok_and(|(at, _)| at > model.ceiling()) {
-            return false;
+            return Ok(false);
         }
         let (expected, got) = match trusted {
             true => (model.offer(header), chain.insert(header)),
@@ -512,9 +518,9 @@ fn run(moves: Vec<Move>) {
                 chain.insert_untrusted(header, &params, NOW),
             ),
         };
-        assert_eq!(got, expected, "{context}: insert {header:?} (trusted {trusted})");
+        prop_assert_eq!(got, expected, "{}: insert {:?} (trusted {})", context, header, trusted);
         chain.check();
-        expected.is_ok()
+        Ok(expected.is_ok())
     };
     let mine = |builder: &mut Builder, model: &mut Model, prev: BlockHash, time: u32, bits: u32| {
         let header = builder.mine(model, prev, time, bits);
@@ -533,7 +539,7 @@ fn run(moves: Vec<Move>) {
                 for palette in bits {
                     time += gap;
                     let header = mine(&mut builder, &mut model, prev, time, BITS[palette]);
-                    if !offer(&mut chain, &mut model, &header, trusted, &context) {
+                    if !offer(&mut chain, &mut model, &header, trusted, &context)? {
                         break;
                     }
                     prev = header.hash();
@@ -543,20 +549,23 @@ fn run(moves: Vec<Move>) {
                     chain.witness(last.hash, Witness::Trusted);
                     model.witness(last.hash, None);
                     let boundary = model.finalizable();
-                    assert_eq!(chain.finalizable(), boundary, "{context}: run's boundary");
+                    prop_assert_eq!(chain.finalizable(), boundary, "{}: run's boundary", context);
                     if let Some(boundary) = boundary {
                         chain.finalize(boundary);
                         model.finalize(boundary);
                     }
                     // liveness: finalized = min(vouched, best − depth), no further input
-                    assert_eq!(chain.finalizable(), None, "{context}: finalized caught up");
+                    prop_assert_eq!(chain.finalizable(), None, "{}: finalized caught up", context);
                     let best = chain.best().expect("anchored").block;
                     let deep = u32::from(best.height).checked_sub(DEPTH).map(BlockHeight::from);
                     let finalized_height = chain.finalized_tip().map(|tip| tip.height);
                     let caught = best != last || finalized_height >= deep;
-                    assert!(
+                    prop_assert!(
                         caught,
-                        "{context}: a run ending at the best = finalized at best − depth"
+                        "{}: a run ending at the best {:?} = finalized at best − depth, got {:?}",
+                        context,
+                        best,
+                        finalized_height
                     );
                 }
             }
@@ -578,8 +587,8 @@ fn run(moves: Vec<Move>) {
                     mine(&mut builder, &mut model, parent.hash(), parent.time() + 1, BITS[0]);
                 let child =
                     mine(&mut builder, &mut model, skipped.hash(), skipped.time() + 1, BITS[0]);
-                let offered = offer(&mut chain, &mut model, &child, false, &context);
-                assert!(!offered, "{context}: orphan");
+                let offered = offer(&mut chain, &mut model, &child, false, &context)?;
+                prop_assert!(!offered, "{}: orphan {:?} accepted", context, child);
             }
             Move::Spray { from, branches } => {
                 let mut live: Vec<(u64, BlockHash)> =
@@ -589,35 +598,44 @@ fn run(moves: Vec<Move>) {
                     let parent = live[(from + branch) % live.len()].1;
                     let time = model.by_hash[&parent].time() + 1 + branch as u32;
                     let header = mine(&mut builder, &mut model, parent, time, BITS[0]);
-                    offer(&mut chain, &mut model, &header, true, &context);
+                    offer(&mut chain, &mut model, &header, true, &context)?;
                 }
             }
             Move::Reinsert { mined, trusted } => {
                 let again = model.mined[mined % model.mined.len()].clone();
-                offer(&mut chain, &mut model, &again, trusted, &context);
+                offer(&mut chain, &mut model, &again, trusted, &context)?;
             }
             Move::Finalize => {
                 let boundary = model.finalizable();
-                assert_eq!(chain.finalizable(), boundary, "{context}");
+                prop_assert_eq!(chain.finalizable(), boundary, "{}: boundary", context);
                 if let Some(boundary) = boundary {
                     chain.finalize(boundary);
                     model.finalize(boundary);
                 }
-                assert_eq!(chain.finalizable(), None, "{context}: one call reaches the target");
+                prop_assert_eq!(
+                    chain.finalizable(),
+                    None,
+                    "{}: one call reaches the target",
+                    context
+                );
             }
         }
 
         chain.check();
-        assert_eq!(chain.best(), model.best(), "{context}: best");
-        assert_eq!(chain.finalized_tip(), model.finalized_tip(), "{context}: finalized tip");
-        assert_eq!(chain.finalizable(), model.finalizable(), "{context}: boundary");
-        assert_eq!(chain.ceiling(RUN), model.ceiling(), "{context}: ceiling");
-        assert_eq!(chain.tree_len(), model.alive.len(), "{context}: live tree");
+        prop_assert_eq!(chain.best(), model.best(), "{}: best, chain vs model", context);
+        let finalized_tip = model.finalized_tip();
+        prop_assert_eq!(chain.finalized_tip(), finalized_tip, "{}: finalized tip", context);
+        prop_assert_eq!(chain.finalizable(), model.finalizable(), "{}: boundary", context);
+        prop_assert_eq!(chain.ceiling(RUN), model.ceiling(), "{}: ceiling", context);
+        prop_assert_eq!(chain.tree_len(), model.alive.len(), "{}: live tree size", context);
         let non_finalized = model.best_path().len() - model.finalized_headers.len();
         let bound = (DEPTH + RUN) as usize;
-        assert!(
+        prop_assert!(
             non_finalized <= bound,
-            "{context}: H9, {non_finalized} non-finalized on best > {bound}"
+            "{}: non-finalized on best within depth + run (H9): {} > {}",
+            context,
+            non_finalized,
+            bound
         );
         let path = model.best_path();
         let kept_from = model.kept_from();
@@ -631,16 +649,18 @@ fn run(moves: Vec<Move>) {
                 .map(|(at, record)| (at >= kept_from).then_some(*record))
                 .collect()
         };
-        assert_eq!(answers(&verified, &path), expected(&path, kept_from), "{context}: path");
-        assert_eq!(verified.hash_at(height(path.len() as u32)), None, "{context}: above best");
-        assert_eq!(verified.locator(), model.locator(), "{context}: locator");
+        let answered = answers(&verified, &path);
+        prop_assert_eq!(answered, expected(&path, kept_from), "{}: header by height", context);
+        let above = verified.hash_at(height(path.len() as u32));
+        prop_assert_eq!(above, None, "{}: above best", context);
+        prop_assert_eq!(verified.locator(), model.locator(), "{}: locator", context);
         let (vouched, _) = model.witnessed();
         let finalized = model.finalized_headers.len();
         let model_vouched: Vec<bool> =
             (0..path.len()).map(|at| at < finalized || vouched.contains(&path[at].hash)).collect();
         let chain_vouched: Vec<bool> =
             (0..path.len() as u32).map(|at| verified.vouched(height(at))).collect();
-        assert_eq!(chain_vouched, model_vouched, "{context}: vouched per best-path height");
+        prop_assert_eq!(chain_vouched, model_vouched, "{}: vouched per best-path height", context);
 
         let mut holds = Vec::new();
         for header in &model.mined {
@@ -650,27 +670,38 @@ fn run(moves: Vec<Move>) {
             for at in below.into_iter().chain([at.height, at.height + 1]) {
                 let at = BlockRef { hash, height: at };
                 let held = verified.holds(at);
-                assert_eq!(held, model.holds(at, &path), "{context}: holds {at:?}");
+                prop_assert_eq!(held, model.holds(at, &path), "{}: holds {:?}", context, at);
                 holds.push((at, held));
             }
         }
 
-        if let Some((old, old_path, old_kept_from, old_holds)) = &published {
+        if let Some(Published {
+            snapshot: old,
+            path: old_path,
+            kept_from: old_kept_from,
+            holds: old_holds,
+        }) = &published
+        {
             let answered = answers(old, old_path);
-            assert_eq!(
+            prop_assert_eq!(
                 answered,
                 expected(old_path, *old_kept_from),
-                "{context}: H5, a published chain never changes"
+                "{}: a published chain never changes (H5)",
+                context
             );
             let still: Vec<(BlockRef, bool)> =
                 old_holds.iter().map(|(at, _)| (*at, old.holds(*at))).collect();
-            assert_eq!(still, *old_holds, "{context}: H5, nor its side blocks");
-            let finalized_height = |chain: &HeaderChainSnapshot| chain.finalized_tip().height;
-            assert!(
-                finalized_height(&verified) >= finalized_height(old),
-                "{context}: H2, finalized moves up"
+            prop_assert_eq!(&still, old_holds, "{}: nor its side blocks (H5)", context);
+            let (now, then) = (verified.finalized_tip(), old.finalized_tip());
+            prop_assert!(
+                now.height >= then.height,
+                "{}: finalized moves up (H2): {:?} after {:?}",
+                context,
+                now,
+                then
             );
         }
-        published = Some((verified, path, kept_from, holds));
+        published = Some(Published { snapshot: verified, path, kept_from, holds });
     }
+    Ok(())
 }

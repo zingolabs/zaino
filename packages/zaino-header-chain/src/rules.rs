@@ -266,6 +266,7 @@ mod tests {
         let mean = |bits: u32| difficulty(bits).expect("valid").target();
         #[rustfmt::skip]
         let cases = [
+            // (zcashd vector,                  params,             height,    mean nBits,  timespan s, expected nBits)
             ("get_next_work",                   mainnet,            0,         0x1d00_ffff, 3_570,      0x1d01_1998),
             ("get_next_work_pow_limit",         mainnet,            0,         0x1f07_ffff, 2_055_491,  0x1f07_ffff),
             ("get_next_work_lower_limit",       mainnet,            0,         0x1c05_a3f4, -899_999_083, 0x1c04_bceb),
@@ -276,7 +277,7 @@ mod tests {
         ];
         for (case, params, at, bits, timespan, expected) in cases {
             let threshold = threshold(&params, mean(bits), timespan, height(at));
-            assert_eq!(threshold, expected, "{case}: {threshold:#010x}");
+            assert_eq!(threshold, expected, "{case}: {threshold:#010x} vs zcashd {expected:#010x}");
         }
         let blossom = threshold(&mainnet, mean(0x1d00_ffff), 1_445, height(653_600));
         assert!(blossom < 0x1d01_1998, "get_next_work_blossom: {blossom:#010x}");

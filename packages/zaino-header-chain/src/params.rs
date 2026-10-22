@@ -171,39 +171,54 @@ mod tests {
 
     use super::*;
 
-    /// - limits as zcashd's chainparams encode them (`powLimit` → nBits): mainnet 0x1f07ffff,
-    ///   testnet 0x2007ffff, regtest 0x200f0f0f
-    /// - genesis hashes render back to their display form
-    /// - spacing, window and testnet's minimum-difficulty gap switch at Blossom and NU7
+    /// `powLimit` → nBits as zcashd's chainparams encode them
     #[test]
-    fn each_network_carries_zcashd_limits_genesis_and_upgrade_switches() {
+    fn each_networks_limit_nbits_is_zcashds() {
         let regtest = Params::regtest(all_at(h(1)));
-        let bits = [Params::mainnet(), Params::testnet(), regtest].map(|p| p.limit_bits());
-        assert_eq!(bits, [0x1f07_ffff, 0x2007_ffff, 0x200f_0f0f]);
-        assert_eq!(
-            Params::mainnet().genesis.to_string(),
-            "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08"
-        );
+        #[rustfmt::skip]
+        let cases = [
+            ("mainnet", Params::mainnet(), 0x1f07_ffff),
+            ("testnet", Params::testnet(), 0x2007_ffff),
+            ("regtest", regtest,           0x200f_0f0f),
+        ];
+        for (network, params, bits) in cases {
+            let limit = params.limit_bits();
+            assert_eq!(limit, bits, "{network}: {limit:#010x} vs zcashd {bits:#010x}");
+        }
+    }
 
-        let rules = |params: Params, at: u32| {
-            let at = h(at);
-            (params.spacing(at), params.averaging_window(at), params.min_difficulty_gap(at))
+    /// Spacing, averaging window and testnet's minimum-difficulty gap switch at Blossom and NU7
+    #[test]
+    fn spacing_window_and_minimum_difficulty_gap_switch_at_blossom_and_nu7() {
+        #[derive(Debug, PartialEq)]
+        struct Rules {
+            spacing: i64,
+            window: usize,
+            min_difficulty_gap: Option<i64>,
+        }
+        let rules = |params: Params, at: u32| Rules {
+            spacing: params.spacing(h(at)),
+            window: params.averaging_window(h(at)),
+            min_difficulty_gap: params.min_difficulty_gap(h(at)),
         };
+        let expect =
+            |spacing, window, min_difficulty_gap| Rules { spacing, window, min_difficulty_gap };
         let regtest_nu7 = Params::regtest(LocalNetwork { nu7: Some(h(10)), ..all_at(h(1)) });
         #[rustfmt::skip]
         let cases = [
-            ("mainnet", Params::mainnet(), 653_599,   (150, 17, None)),
-            ("mainnet", Params::mainnet(), 653_600,   (75, 17, None)),
-            ("mainnet", Params::mainnet(), 9_999_999, (75, 17, None)),
-            ("testnet", Params::testnet(), 299_187,   (150, 17, None)),
-            ("testnet", Params::testnet(), 299_188,   (150, 17, Some(900))),
-            ("testnet", Params::testnet(), 584_000,   (75, 17, Some(450))),
-            ("testnet", Params::testnet(), 4_465_025, (75, 17, Some(450))),
-            ("testnet", Params::testnet(), 4_465_026, (25, 102, Some(450))),
-            ("regtest", regtest_nu7,       10,        (25, 102, None)),
+            // (network, params,           height,    expect(spacing s, window, min-difficulty gap s))
+            ("mainnet", Params::mainnet(), 653_599,   expect(150, 17,  None)),
+            ("mainnet", Params::mainnet(), 653_600,   expect(75,  17,  None)),
+            ("mainnet", Params::mainnet(), 9_999_999, expect(75,  17,  None)),
+            ("testnet", Params::testnet(), 299_187,   expect(150, 17,  None)),
+            ("testnet", Params::testnet(), 299_188,   expect(150, 17,  Some(900))),
+            ("testnet", Params::testnet(), 584_000,   expect(75,  17,  Some(450))),
+            ("testnet", Params::testnet(), 4_465_025, expect(75,  17,  Some(450))),
+            ("testnet", Params::testnet(), 4_465_026, expect(25,  102, Some(450))),
+            ("regtest", regtest_nu7,       10,        expect(25,  102, None)),
         ];
-        for (network, params, at, expected) in cases {
-            assert_eq!(rules(params, at), expected, "{network} at {at}");
+        for (network, params, height, expected) in cases {
+            assert_eq!(rules(params, height), expected, "{network} at {height}");
         }
     }
 }

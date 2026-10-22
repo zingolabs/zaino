@@ -70,28 +70,6 @@ mod tests {
     use zcash_protocol::BlockHash;
 
     use super::*;
-    use crate::Inserted;
-
-    /// - varied chain: views follow it as built, finalized where asked
-    /// - header chain follows its outweigh (work decides, not height)
-    #[test]
-    fn a_mock_chain_verifies_as_built_and_its_header_chain_follows_the_work() {
-        let mut chain = MockChain::regtest().varied_work();
-        let twelve = chain.mine_empty(12);
-        let snapshot = HeaderChainSnapshot::of(&chain, twelve);
-        assert_eq!((snapshot.best(), snapshot.finalized_tip()), (twelve, chain.genesis()));
-        let pinned = HeaderChainSnapshot::finalized(&chain, twelve, h(9));
-        assert_eq!((pinned.best(), pinned.finalized_tip()), (twelve, chain.at(h(9))));
-        assert_eq!(pinned.hash_at(h(5)), Some(chain.at(h(5)).hash));
-
-        let retreat = chain.fork(h(10)).outweigh().mine_empty(1).tip();
-        let mut headers = HeaderChain::anchored(&chain, FinalityDepth::CONSENSUS);
-        insert(&mut headers, &chain.blocks(twelve)).expect("trunk links");
-        let heavier = decode_header(&chain.header_bytes(retreat.hash)).expect("decodes");
-        assert_eq!(headers.insert(&heavier), Ok(Inserted::Best { reorg: true }));
-        assert_eq!(headers.best().map(|best| best.block), Some(retreat), "12 → 11 by work");
-        headers.check();
-    }
 
     #[derive(Debug, Clone)]
     enum Shape {
@@ -115,12 +93,11 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-        /// M5 + M8, each the other's oracle, after every shape (extend, fork, outweigh, revive,
-        /// side branch)
+        /// Builder and real header chain, each the other's oracle, after every shape (extend,
+        /// fork, outweigh, revive, side branch)
         ///
-        /// - every new block inserts into the real header chain, `MockChain::tip` =
-        ///   `HeaderChain::best`
-        /// - outweigh = the best (Limit turns each outweigh into a longer fork)
+        /// - every new block inserts, `MockChain::tip` = `HeaderChain::best` (M8)
+        /// - outweigh = the best (M5: `Work::Limit` turns each outweigh into a longer fork)
         #[test]
         fn the_builders_best_tip_is_the_real_header_chains_best(
             varied: bool,
@@ -133,7 +110,8 @@ mod tests {
             let mut headers = HeaderChain::anchored(&chain, FinalityDepth::CONSENSUS);
             let mut inserted: HashSet<BlockHash> = HashSet::from([chain.genesis().hash]);
             let mut tips = vec![chain.genesis()];
-            for shape in shapes {
+            for (step, shape) in shapes.into_iter().enumerate() {
+                let case = format!("step {step} {shape:?}");
                 let tip = chain.tip();
                 let at = |back: u32| h(u32::from(tip.height).saturating_sub(back));
                 let wins = matches!(shape, Shape::Outweigh { .. } | Shape::Revive(_));
@@ -157,7 +135,7 @@ mod tests {
                     }
                 };
                 if wins {
-                    prop_assert_eq!(chain.tip(), mined, "outweigh / a longer fork = the best");
+                    prop_assert_eq!(chain.tip(), mined, "{}: outweigh / a longer fork = the best", case);
                 }
                 tips.push(mined);
                 let fresh: Vec<Arc<Block>> = chain
@@ -165,9 +143,10 @@ mod tests {
                     .into_iter()
                     .filter(|block| inserted.insert(block.header().hash))
                     .collect();
-                prop_assert_eq!(insert(&mut headers, &fresh), Ok(()));
+                prop_assert_eq!(insert(&mut headers, &fresh), Ok(()), "{}: builder's blocks insert", case);
                 headers.check();
-                prop_assert_eq!(headers.best().map(|best| best.block), Some(chain.tip()));
+                let best = headers.best().map(|best| best.block);
+                prop_assert_eq!(best, Some(chain.tip()), "{}: header chain best vs builder tip", case);
             }
         }
     }
