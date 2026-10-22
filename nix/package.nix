@@ -60,7 +60,7 @@ craneLib.buildPackage (commonArgs // {
   };
 
   meta = {
-    description = "Indexer and proxy server for the Zcash protocol";
+    description = "Zcash indexer serving light wallets over lightwalletd-compatible gRPC";
     homepage = "https://github.com/zingolabs/zaino";
     license = lib.licenses.asl20;
     mainProgram = "zainod";

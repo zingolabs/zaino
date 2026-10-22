@@ -80,9 +80,9 @@ not), `changed()` (after each commit; `false` = writer gone).
   `zaino_index_write_seconds` (that run's applies + commits), both `{index}`: run − write = the
   fold + waits. Help and units: `METRICS`.
 - `assert_dense(view, table)`: a writer's open check, one `table` record per durable height.
-- `assert_next(out, parent_tip, block)` / `assert_run(parent_tip, blocks, outs)`: a fold's
+- `assert_next(out, parent, block)` / `assert_run(parent, blocks, out)`: a fold's
   preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one
-  height above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
+  height above `parent` linked by `prev_hash` (genesis on an empty parent).
 - `apply(store, changes)` = `Store::apply` + counted (`zaino_index_applied_blocks_total`, its
   records appended + rows inserted + keys removed into `zaino_index_applied_rows_total`).
   Commits: the store's own once its buffer reaches the `write_buffer` it was opened with

@@ -1,5 +1,5 @@
 {
-  description = "Zaino — indexer and proxy server for the Zcash protocol";
+  description = "Zaino — Zcash indexer serving light wallets over lightwalletd-compatible gRPC";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -16,10 +16,6 @@
   ### Build with Nix
   # nix build .#zainod — build the binary (output at `./result/bin/zainod`)
   # nix develop — enter a dev shell with the pinned Rust toolchain and build deps
-
-
-  # TODO: nixConfig (extra-substituters + extra-trusted-public-keys)
-  #       set once build-cache is setup
 
   outputs = { self, nixpkgs, flake-utils, crane, fenix }:
     let

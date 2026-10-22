@@ -146,20 +146,17 @@ README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
 changed*, the guide records *how to use it*, and neither substitutes for the
 other. Purely internal refactors need no guide edit.
 
-## `zaino-persistence` changes: heavy proptest run before you're done
+## Heavy proptest run before you're done
 
-Every index's durability rests on `packages/zaino-persistence`. After **any**
-change inside it (code, tests, `SimFs`, even a refactor), and before reporting
-the work as done, run the heavy run in
-[`docs/testing.md`](docs/testing.md#heavy-run) with `crate=zaino-persistence`: the
-3-minute loop, then every crate built on it (`rdeps(zaino-persistence)`). The default
-run is deliberately light (64 model-test cases, ~2 s) and is not enough.
+After **any** change inside a crate the [heavy run](docs/testing.md#heavy-run) lists (code,
+tests, `SimFs`, even a refactor), and before reporting the work as done, run that block with
+`crate=<that crate>`: the 3-minute loop, then every crate built on it. The default run is
+deliberately light and is not enough.
 
-- The model test (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`)
-  lives in `packages/zaino-persistence/src/disk/tests.rs` and is `DiskEngine`'s own. A new engine
-  writes its own tests; it does not share or edit `DiskEngine`'s.
-- A failure writes the shrunk case to
-  `packages/zaino-persistence/proptest-regressions/`. Commit that file (it
-  replays on every future run), fix the bug, and rerun the whole block. Never
-  shorten the run, lower case counts, loosen an assertion, or skip a test to get green.
+- `DiskEngine`'s model test
+  (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`,
+  `packages/zaino-persistence/src/disk/tests.rs`) is its own: a new engine writes its own tests
+  and does not share or edit `DiskEngine`'s.
+- On a failure, commit the saved case, fix the bug and rerun the whole block. Never shorten the
+  run, lower case counts, loosen an assertion, or skip a test to get green.
 - Report the rounds completed and the result in your summary.

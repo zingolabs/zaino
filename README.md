@@ -100,25 +100,25 @@ Releasing it:
 
 Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
-- [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on no other Zaino crate.
-- [`zaino-source`](./packages/zaino-source/usage.md): the `ChainDataSource` port, the domain / non-domain error split, and its two clients, `ZcashLegacyRpcClient` (JSON-RPC) and `ZebraIndexerGrpcClient` (indexer gRPC).
-- [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers — request classes with reserved permits, one hedge / retry / blame policy under one budget, `report` benching exactly the member that misanswered, and every trusted validator's poll.
-- [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators and, optionally, peers — header sync into the verified chain, each validator's poll merged (who holds the tip, agreement, alarms), the mempool view (trusted listings and the peer quorum), and submission.
-- [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers and blocks (checked by proof of work and merkle root, so the tip follows the network while every trusted validator is down), each peer's own mempool listing (the chain view's peer quorum: the mempool keeps serving while every trusted validator is down), attributed block announcements (finality on peers' word) and the submission push over the peer set's existing connections; advertises no services.
-- [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the Validated Header tree, each header validated by the trusted validator that served it or by Zaino, anchored at a trusted tip − depth (no history from genesis) — the most-work tip, vouched finality, and `validate`, the consensus rules kept as the fallback for an untrusted source.
-- [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block above the indexes' durable tips (all indexes, in dependency order) as it joins the verified best, and publishes one `NfsPublication` across every index that moves to the fork point the moment a reorg lands.
-- [`zaino-grpc-snapshot`](./packages/zaino-grpc-snapshot/usage.md): one published `GrpcSnapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the `ServingStatus`, the gauges and the alarm logs derived from it.
-- [`zaino-sync`](./packages/zaino-sync/usage.md): `FinalizedFollower` and the finalized stream (`Step`, `Run`), byte-bounded queues, fees from one index to another, and the `apply` / `commit` / `IndexPublisher` every writer's loop runs on.
-- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
-- [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
-- [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash → height locator every by-hash request resolves through, and why the serving index confirms it.
-- [`zaino-internal-txid-location`](./packages/zaino-internal-txid-location/usage.md): where each mined transaction sits, so `GetTransaction` can fetch its block from p2p peers when no validator answers.
-- [`zaino-index-utxo-set`](./packages/zaino-index-utxo-set/usage.md): each unspent transparent output's value, resolving each transaction's fee for compact blocks, and why all of it happens in one `fold`.
-- [`zaino-index-tree-state`](./packages/zaino-index-tree-state/usage.md): the retained-node commitment-tree index — why reconstruction needs no hashing, and why subtree roots share its fold.
-- [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs as two pure projections, why the fold performs no lookups, and what an empty result means.
-- [`zaino-proto`](./packages/zaino-proto/README.md): the vendored lightwallet protocol, Zebra's indexer protocol, and the gRPC frame helpers.
-- [`zaino-grpc`](./packages/zaino-grpc/usage.md): `RouteDeps` and the route registry, the serve stack (caps, adaptive admission, deadlines, TLS, PROXY protocol, health paths), read lanes, the serving log, and why stored records go on the wire as bytes.
-- [`zainod`](./packages/zainod/usage.md): the admin listener and its states (`/livez`, `/readyz`, `/metrics`) and the public `/status`, operator hold, systemd, index snapshots, `zainod verify`, the failure policy and logging.
+- [`zaino-primitives`](./packages/zaino-primitives/usage.md): domain vocabulary and protocol constants.
+- [`zaino-source`](./packages/zaino-source/usage.md): the `ChainDataSource` port and its JSON-RPC and indexer-gRPC clients.
+- [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers.
+- [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over trusted validators and peers: header sync, polls, mempool, submission.
+- [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer.
+- [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the header chain: most-work tip, vouched finality, `validate`.
+- [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state.
+- [`zaino-grpc-snapshot`](./packages/zaino-grpc-snapshot/usage.md): the one published `GrpcSnapshot` of everything served.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): `FinalizedFollower`, the finalized stream and every index writer's loop.
+- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port and `DiskEngine`.
+- [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped compact-block store.
+- [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash → height locator.
+- [`zaino-internal-txid-location`](./packages/zaino-internal-txid-location/usage.md): where each mined transaction sits.
+- [`zaino-index-utxo-set`](./packages/zaino-index-utxo-set/usage.md): unspent transparent outputs' values (compact-block fees).
+- [`zaino-index-tree-state`](./packages/zaino-index-tree-state/usage.md): commitment-tree states and subtree roots.
+- [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs.
+- [`zaino-proto`](./packages/zaino-proto/README.md): vendored lightwallet and Zebra indexer protocols, gRPC frame helpers.
+- [`zaino-grpc`](./packages/zaino-grpc/usage.md): the gRPC routes and serve stack.
+- [`zainod`](./packages/zainod/usage.md): the daemon: admin listener, hold, systemd, index snapshots, `zainod verify`, failure policy, logging.
 
 ## Security disclosure
 

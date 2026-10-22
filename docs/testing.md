@@ -30,14 +30,14 @@ checked against an independent oracle.
 | `random_histories_*` (compact-block, tree-state, transparent-address)                                  | Random finalized streams (bulk runs, folded tip steps, restarts resending held heights) are checked against a naive model: summed tree sizes for compact blocks, `incrementalmerkletree` frontiers for tree state, and a recomputed UTXO set for transparent addresses.                                                                                                                                                      |
 | `the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it` (`zaino-chainview`) | Simulated zebrads mine, relay (longest chain wins, first seen on a tie, as on regtest), fork and go unreachable, and are polled in random order into a real header chain. After every poll the tip must be the header chain's best, its holders the validators whose last-polled chain holds it (no holder = no mempool), and each trusted validator's own tip its polled chain's (none once `Down`). |
 | `random_header_trees_answer_like_the_naive_model` (`zaino-header-chain`)                               | Random trusted header trees (forks, finality, the kept finalized headers window) against a naive best-chain and finality model.                                                                                                                                                                                                                                                                                                     |
-| `NfsCore` model (`zaino-nfs`, `nfs_core/model_tests.rs`)                                               | Random verified-chain evolutions (extensions, reorgs at random depth, same-height replacements, retreats, finality, restarts), late, stale and out-of-order bodies, delayed folds, naive finalized-path writers committing after random delays: every NFS publication must answer like folding each index from genesis along the best chain, and every case must settle with each index durable through the finalized tip and served at best. |
+| `NfsCore` model (`zaino-nfs`, `nfs_core/model_tests.rs`)                                               | Random header-chain evolutions (extensions, reorgs at random depth, same-height replacements, retreats, finality, restarts), late, stale and out-of-order bodies, delayed folds, naive finalized-path writers committing after random delays: every NFS publication must answer like folding each index from genesis along the best chain, and every case must settle with each index durable through the finalized tip and served at best. |
 | `every_publication_answers_like_folding_from_genesis_*` (`zaino-nfs`)                                  | `Nfs` over the real finalized path (`FinalizedFollower` + every index writer, `SimFs` stores) through reorgs, finality and a restart, against each index folded from genesis into fresh stores.                                                                                                                                                                                                                            |
 | `the_pipeline_follows_a_reorg_*` (`zainod`)                                                            | The whole pipeline over a mock validator and gRPC on localhost: `GetLatestBlock`, `GetBlockRange` and `GetTreeState` name one block before and after a reorg.                                                                                                                                                                                                                                                            |
 | `committed_tree_states_are_zebras` (both sync profiles, every 5 s)                                     | On mainnet, `GetTreeState` at the tree-state index's durable tip must match zebrad's `z_gettreestate` byte for byte while the index builds, follows, and recovers from each kill.                                                                                                                                                                                                                                        |
 | `committed_blocks_are_zebras` (both sync profiles, every 5 s)                                          | On mainnet, `GetBlock` at the compact-block index's durable tip must match the compact block implied by zebrad's `getblock 2`, field for field, with every fee recomputed from its prevouts. It runs while the index builds, so it samples blocks across the whole chain, and across each kill in the crash profile.                                                                                                     |
 | `index_files_verify_clean` (both sync profiles, at completion)                                         | `zainod verify` runs in the pod and checks every durable byte of every index against its page checksums.                                                                                                                                                                                                                                                                                                               |
 
-Every in-repo test takes its blocks, headers, verified chains and validators from one builder,
+Every in-repo test takes its blocks, headers, header chains and validators from one builder,
 `zaino_source::testing::MockChain` ([guide](../packages/zaino-source/usage.md#testing-mockchain)):
 every transaction is real consensus bytes written by librustzcash, every block it hands out is
 the production decoder's reading of its own bytes and passes our own checks (linkage, merkle
@@ -123,15 +123,16 @@ and `--cluster` MUST come before them.
 
 ## The `ztest` CLI
 
-Both live workspaces depend on ztest by path, on a `ztest` checkout beside this
-repository, so we install the CLI from that same checkout:
+Both live workspaces depend on ztest by path: `live-tests/` on a `ztest` checkout beside this
+repository, `live-tests/sync/` on a `ztest-status` checkout beside it (each `Cargo.toml` names
+the path). Install the CLI from the `ztest` checkout:
 
 ```sh
 git clone https://github.com/zingolabs/ztest ../ztest   # from the repo root
 cargo install --locked --path ../ztest/cli
 ```
 
-The sync profiles also need a `zingolib` checkout beside `ztest`, and they build
+The sync profiles also need a `zingolib` checkout beside `ztest-status`, and they build
 zebrad's image from a `zebra` checkout beside this repository.
 
 ## Cluster setup
