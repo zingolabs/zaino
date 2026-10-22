@@ -41,39 +41,95 @@ const SETTLE: u32 = 20_000;
 
 /// - `Reorg` = top `depth` replaced by `len` blocks, the first outweighing them (`len` < `depth` =
 ///   a retreat)
-/// - `Revive` = an earlier best tip (`pick` mod held) outweighs the best again (switch back)
+/// - `Revive` = the best tip replaced `back` reorgs ago (0 = the latest) outweighs the best again
+///   (switch back; none that far back = no move)
 #[derive(Debug, Clone)]
 enum Change {
     Extend(u32),
     Reorg { depth: u32, len: u32 },
-    Revive { pick: u8 },
+    Revive { back: usize },
     Finalize,
 }
 
 /// - `Chain.publish` = false: coalesced with the next publish
 /// - `Advance` = seconds, each a tick + every answer, fold and commit due
-#[derive(Debug, Clone)]
+/// - `Restart.wipe` = that index's store deleted too
+#[derive(Clone)]
 enum Move {
     Chain { change: Change, publish: bool },
     Advance(u8),
-    Restart { reset: bool, wipe: Option<u8> },
+    Restart { reset: bool, wipe: Option<usize> },
 }
 
-fn moves() -> impl Strategy<Value = Vec<Move>> {
+/// One line per move, even under `{:#?}` (shrunk case fits a screen)
+impl std::fmt::Debug for Move {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Move::Chain { change, publish } => write!(f, "Chain({change:?}, publish: {publish})"),
+            Move::Advance(seconds) => write!(f, "Advance({seconds})"),
+            Move::Restart { reset, wipe } => write!(f, "Restart(reset: {reset}, wipe: {wipe:?})"),
+        }
+    }
+}
+
+/// While held: this thread's first panic printed (the unshrunk failure + its line), later ones
+/// silent (shrinking = one panic per candidate)
+///
+/// - proptest's own final report still printed (after the guard drops)
+struct QuietPanics;
+
+thread_local! {
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PRINTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl QuietPanics {
+    fn new() -> Self {
+        static HOOK: std::sync::Once = std::sync::Once::new();
+        HOOK.call_once(|| {
+            let default = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if !QUIET.get() || !PRINTED.replace(true) {
+                    default(info);
+                }
+            }));
+        });
+        QUIET.set(true);
+        Self
+    }
+}
+
+impl Drop for QuietPanics {
+    fn drop(&mut self) {
+        QUIET.set(false);
+    }
+}
+
+/// `indexes` = writer count (`wipe` below it)
+fn moves(indexes: usize) -> impl Strategy<Value = Vec<Move>> {
     let change = prop_oneof![
         3 => (1u32..=6).prop_map(Change::Extend),
         3 => (1u32..=6, 1u32..=6).prop_map(|(depth, len)| Change::Reorg { depth, len }),
-        2 => any::<u8>().prop_map(|pick| Change::Revive { pick }),
+        2 => (0usize..8).prop_map(|back| Change::Revive { back }),
         2 => Just(Change::Finalize),
     ];
     let one = prop_oneof![
         8 => (change, prop::bool::weighted(0.7))
             .prop_map(|(change, publish)| Move::Chain { change, publish }),
         6 => (0u8..=30).prop_map(Move::Advance),
-        3 => (any::<bool>(), prop::option::weighted(0.7, any::<u8>()))
+        3 => (any::<bool>(), prop::option::weighted(0.7, 0..indexes))
             .prop_map(|(reset, wipe)| Move::Restart { reset, wipe }),
     ];
     prop::collection::vec(one, 1..32)
+}
+
+/// Per writer: its commit delay (virtual seconds), then the moves
+fn histories() -> impl Strategy<Value = (Vec<u64>, Vec<Move>)> {
+    let delays = prop::collection::vec(0u64..=20, 1..=INDEXES);
+    delays.prop_flat_map(|delays| {
+        let indexes = delays.len();
+        (Just(delays), moves(indexes))
+    })
 }
 
 proptest! {
@@ -88,11 +144,11 @@ proptest! {
     /// - Settled: every index durable through the finalized tip, served at best
     #[test]
     fn the_served_tip_follows_the_verified_best_through_reorgs_restarts_and_bulk_sync(
-        moves in moves(),
-        delays in prop::collection::vec(0u64..=20, 1..=INDEXES),
+        (delays, moves) in histories(),
         lookahead in 1usize..=4,
         seed in any::<u64>(),
     ) {
+        let _quiet = QuietPanics::new();
         run(&moves, &delays, lookahead, seed);
     }
 }
@@ -187,6 +243,10 @@ impl Sim {
         self.writers.iter().map(|writer| writer.durable).collect()
     }
 
+    fn told_heights(&self) -> Vec<Option<BlockHeight>> {
+        self.told.iter().map(|tip| tip.map(|tip| tip.height)).collect()
+    }
+
     /// The core's rule, naively: the lowest durable tip within `WINDOW` of best, the header above
     /// it held
     fn active(&self) -> bool {
@@ -217,10 +277,8 @@ impl Sim {
                 let parent = self.builder.ancestor(best, h(at));
                 (parent.height, self.builder.branch(parent).outweigh().mine_empty(len).tip())
             }
-            Change::Revive { pick } => {
-                let Some(&old) = self.tips.get(usize::from(pick) % self.tips.len().max(1)) else {
-                    return;
-                };
+            Change::Revive { back } => {
+                let Some(&old) = self.tips.iter().rev().nth(back) else { return };
                 let old = self.builder.block(old).block_ref();
                 let fork = self.builder.fork_point(old, best);
                 if u32::from(fork.height) < floor || fork == old {
@@ -282,7 +340,10 @@ impl Sim {
             }
         }
         let wanted: HashSet<BlockHash> = self.core.wanted.values().copied().collect();
-        assert_eq!(wanted, self.fetching, "{context}: one Fetch out per want, none past it");
+        assert_eq!(
+            wanted, self.fetching,
+            "{context}: one Fetch out per want, none past it: core's wants (left) vs Fetches out"
+        );
         self.verify(context);
     }
 
@@ -317,26 +378,45 @@ impl Sim {
         covers: Indexes,
         context: &str,
     ) {
-        assert!(self.active(), "{context}: N5 Fold {at:?} outside the window");
+        let best = self.given.as_ref().map(|chain| chain.best().height);
+        let at_height = at.height;
+        let told = self.told_heights();
+        assert!(
+            self.active(),
+            "{context}: Fold at {at_height:?} only inside the window {WINDOW} (N5): durable \
+             {told:?}, best {best:?}"
+        );
         let expected = (at.height != H0).then(|| self.oracle(block.header().prev_hash));
         let mut toys: Toys = vec![None; self.writers.len()];
-        for index in 0..self.writers.len() {
-            let durable = self.told[index];
-            let below = durable.map(|tip| tip.height) < Some(at.height);
-            assert_eq!(covers.contains(index), below, "{context}: N2 Fold {at:?} index {index}");
+        for (index, durable) in told.into_iter().enumerate() {
+            let below = durable < Some(at.height);
+            assert_eq!(
+                covers.contains(index),
+                below,
+                "{context}: Fold at {at_height:?} must cover index {index} iff durable below it \
+                 (N2): durable {durable:?}, covers {covers:?}"
+            );
             if !below {
                 continue;
             }
             let parent = match parent.as_ref().and_then(|parent| parent[index]) {
                 Some(parent) => Some(parent),
                 None => {
-                    let at_parent = durable.map(|tip| tip.height)
-                        == u32::from(at.height).checked_sub(1).map(BlockHeight::from);
-                    assert!(at_parent, "{context}: N2 Fold {at:?} index {index} on {durable:?}");
+                    let at_parent =
+                        durable == u32::from(at.height).checked_sub(1).map(BlockHeight::from);
+                    assert!(
+                        at_parent,
+                        "{context}: Fold at {at_height:?}, index {index} with no parent node \
+                         folds on its durable tip exactly below (N2): durable {durable:?}"
+                    );
                     expected
                 }
             };
-            assert_eq!(parent, expected, "{context}: N6 Fold {at:?} index {index} parent");
+            assert_eq!(
+                parent, expected,
+                "{context}: Fold at {at_height:?}, index {index} folds on the oracle's parent \
+                 (N6): handed (left) vs oracle (right)"
+            );
             toys[index] = Some(fold(parent, block));
         }
         let due = self.later(4);
@@ -347,15 +427,21 @@ impl Sim {
     /// - N7: `at` of every node, the root and the decoy = the naive answer
     fn served(&mut self, tip: Publication<Toys>, context: &str) {
         let at = tip.tip;
-        assert!(tip.chain.on_best(at), "{context}: N4 served {at:?} off its best");
+        let best = tip.chain.best();
+        assert!(
+            tip.chain.on_best(at),
+            "{context}: published tip on its chain's best (N4): published {at:?}, best {best:?}"
+        );
         let toys = tip.graph.at(&tip.chain, tip.root, &at.hash).and_then(|base| base.folded);
         let expected = Some(self.oracle(at.hash));
-        for index in 0..self.writers.len() {
-            let durable = self.told[index].map(|tip| tip.height) >= Some(at.height);
+        for (index, told) in self.told_heights().into_iter().enumerate() {
+            let durable = told >= Some(at.height);
             let folded = toys.as_ref().and_then(|toys| toys[index]);
             assert!(
                 durable || folded == expected,
-                "{context}: N4 served {at:?} index {index}: folded {folded:?}"
+                "{context}: published {:?}, index {index} = the oracle there or durable at or \
+                 past it (N4): folded {folded:?}, oracle {expected:?}, durable {told:?}",
+                at.height,
             );
         }
         let nodes = tip.graph.nodes().map(|node| node.at.hash);
@@ -388,15 +474,30 @@ impl Sim {
     /// After every step: every node's folds = the oracle, no node outside the window
     fn verify(&mut self, context: &str) {
         let chain = Arc::clone(self.given.as_ref().expect("a chain before any step"));
-        let served = self.published;
-        assert!(served.is_none_or(|tip| chain.on_best(tip)), "{context}: N4 served off best");
+        let (served, best) = (self.published, chain.best());
+        assert!(
+            served.is_none_or(|tip| chain.on_best(tip)),
+            "{context}: last published tip still on best (N4): published {served:?}, best {best:?}"
+        );
         let nodes: Vec<(BlockRef, Toys)> =
             self.core.graph.nodes().map(|node| (node.at, (*node.folded).clone())).collect();
-        assert!(nodes.is_empty() || self.active(), "{context}: N5 nodes outside the window");
+        let heights: Vec<BlockHeight> = nodes.iter().map(|(at, _)| at.height).collect();
+        assert!(
+            nodes.is_empty() || self.active(),
+            "{context}: no nodes outside the window {WINDOW} (N5): nodes {heights:?}, durable \
+             {:?}, best {:?}",
+            self.told_heights(),
+            best.height,
+        );
         for (at, toys) in nodes {
             let toy = Some(self.oracle(at.hash));
             let wrong = toys.iter().flatten().any(|folded| Some(*folded) != toy);
-            assert!(!wrong, "{context}: N6 node {at:?} folded {toys:?}, oracle {toy:?}");
+            assert!(
+                !wrong,
+                "{context}: node at {:?} = the oracle in every index it folds (N6): folded \
+                 {toys:?}, oracle {toy:?}",
+                at.height,
+            );
         }
     }
 
@@ -456,8 +557,8 @@ impl Sim {
     }
 
     /// - Everything not durable lost: in-flight fetches, folds, commits, the core
-    /// - `wipe` (mod the index count) = that index's store too
-    fn restart(&mut self, reset: bool, wipe: Option<u8>, context: &str) {
+    /// - `wipe` = that index's store too
+    fn restart(&mut self, reset: bool, wipe: Option<usize>, context: &str) {
         if reset {
             // re-anchored like HeaderSync: one header `DEPTH` below best, nothing beneath (may
             // sit above every durable tip: the finalized path closes that gap by height)
@@ -470,8 +571,7 @@ impl Sim {
             insert(&mut self.headers, &path[anchor + 1..]).expect("the best path verifies");
         }
         if let Some(wipe) = wipe {
-            let count = self.writers.len();
-            self.writers[usize::from(wipe) % count].durable = None;
+            self.writers[wipe].durable = None;
         }
         for writer in &mut self.writers {
             writer.committing = false;
@@ -498,11 +598,13 @@ impl Sim {
             }
             self.advance(&format!("settle {second}s"));
         }
-        let durable: Vec<Option<BlockRef>> =
-            self.writers.iter().map(|writer| writer.durable).collect();
+        let durable: Vec<Option<BlockHeight>> =
+            self.writers.iter().map(|writer| writer.durable.map(|tip| tip.height)).collect();
         panic!(
-            "liveness: never settled: durable {durable:?}, served {:?} of {best:?}",
-            self.published
+            "liveness: within {SETTLE} s every index durable through finalized {:?} and best \
+             {best:?} served: durable {durable:?}, served {:?}",
+            chain.finalized_tip().height,
+            self.published,
         );
     }
 }
