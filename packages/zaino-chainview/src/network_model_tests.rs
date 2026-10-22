@@ -41,8 +41,9 @@ enum Move {
     Poll { node: usize },
 }
 
-fn moves() -> impl Strategy<Value = Vec<Move>> {
-    let node = || 0..MAX_NODES;
+/// Every `node` < `nodes`
+fn moves(nodes: usize) -> impl Strategy<Value = Vec<Move>> {
+    let node = move || 0..nodes;
     prop::collection::vec(
         prop_oneof![
             3 => (node(), 1u32..=3).prop_map(|(node, count)| Move::Mine { node, count }),
@@ -68,15 +69,14 @@ proptest! {
     /// - each trusted validator's own tip = its polled chain's (none once `Down`)
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(
-        nodes in 1..=MAX_NODES,
-        moves in moves(),
+        (nodes, moves) in (1..=MAX_NODES).prop_flat_map(|nodes| (Just(nodes), moves(nodes))),
     ) {
         tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .start_paused(true)
             .build()
             .expect("runtime")
-            .block_on(run(nodes, moves));
+            .block_on(run(nodes, moves))?;
     }
 }
 
@@ -86,12 +86,25 @@ struct Node {
 }
 
 /// What the view last read from one trusted validator, and the best it asked under
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Seen {
     chain: Vec<BlockHash>,
     reporting: bool,
     down: bool,
     under: Option<BlockRef>,
+}
+
+/// Its polled tip, never the whole chain (a failure message stays one screen)
+impl std::fmt::Debug for Seen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Seen")
+            .field("tip_height", &self.chain.len().saturating_sub(1))
+            .field("tip", &self.chain.last())
+            .field("reporting", &self.reporting)
+            .field("down", &self.down)
+            .field("under", &self.under)
+            .finish()
+    }
 }
 
 /// `chain` = every block any node mined (one tree, real headers)
@@ -136,7 +149,7 @@ fn holders(seen: &[Option<Seen>], best: BlockRef) -> (TrustedValidatorSet, Trust
     (must, may)
 }
 
-async fn run(n: usize, moves: Vec<Move>) {
+async fn run(n: usize, moves: Vec<Move>) -> Result<(), TestCaseError> {
     let mut chain = MockChain::regtest();
     let shared = chain.mine_empty(3);
     let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
@@ -164,26 +177,21 @@ async fn run(n: usize, moves: Vec<Move>) {
 
     for (step, next) in moves.into_iter().enumerate() {
         match next {
-            Move::Mine { node, count } => {
-                let node = node % n;
-                sim.mine(node, sim.nodes[node].tip, count);
-            }
+            Move::Mine { node, count } => sim.mine(node, sim.nodes[node].tip, count),
             Move::Relay { from, to } => {
-                let (from, to) = (sim.nodes[from % n].tip, to % n);
+                let from = sim.nodes[from].tip;
                 if from.height > sim.nodes[to].tip.height {
                     sim.follow(to, from);
                 }
             }
             Move::Fork { node, drop, mine } => {
-                let node = node % n;
                 let tip = sim.nodes[node].tip;
                 let kept = u32::from(tip.height).saturating_sub(drop);
                 let base = sim.chain.ancestor(tip, BlockHeight::from(kept));
                 sim.mine(node, base, mine);
             }
-            Move::Reachable { node, reachable } => sim.nodes[node % n].validator.down(!reachable),
+            Move::Reachable { node, reachable } => sim.nodes[node].validator.down(!reachable),
             Move::Poll { node } => {
-                let node = node % n;
                 let under = reader.current().best();
                 balancer.pushed(validator(node), Push::Changed);
                 within("the node polled", observed[node].changed()).await.expect("driver running");
@@ -213,33 +221,66 @@ async fn run(n: usize, moves: Vec<Move>) {
                 view.set_chain(headers.snapshot());
 
                 let best = headers.snapshot().map(|snapshot| snapshot.best());
-                let context = format!("step {step} poll {node} best {best:?}: {seen:?}");
+                let context = format!("move {step}, poll of {node}, best {best:?}, seen {seen:?}");
                 let pinned = reader.current();
-                assert_eq!(pinned.best(), best, "{context}");
+                prop_assert_eq!(
+                    pinned.best(),
+                    best,
+                    "view's best vs the header chain's: {}",
+                    context
+                );
                 let held = pinned.held_by();
                 match best {
                     Some(best) => {
                         let (must, may) = holders(&seen, best);
-                        assert!(held.covers(must), "{context}: {held:?} ⊇ {must:?}");
-                        assert!(may.covers(held), "{context}: {held:?} ⊆ {may:?}");
+                        prop_assert!(
+                            held.covers(must),
+                            "holders {:?} miss a validator claiming or asked under best {:?}: {}",
+                            held,
+                            must,
+                            context
+                        );
+                        prop_assert!(
+                            may.covers(held),
+                            "holders {:?} outside those whose polled chain holds best {:?}: {}",
+                            held,
+                            may,
+                            context
+                        );
                     }
-                    None => assert!(held.is_empty(), "{context}: nothing verified, no holder"),
+                    None => {
+                        prop_assert!(
+                            held.is_empty(),
+                            "nothing verified, yet holders {:?}: {}",
+                            held,
+                            context
+                        );
+                    }
                 }
-                let gated = pinned.mempool().is_some();
-                assert_eq!(gated, !held.is_empty(), "{context}: mempool iff a holder");
+                let served = pinned.mempool().is_some();
+                prop_assert_eq!(
+                    served,
+                    !held.is_empty(),
+                    "mempool served iff a holder {:?}: {}",
+                    held,
+                    context
+                );
                 for (index, seen) in seen.iter().enumerate() {
                     let theirs = seen.as_ref().filter(|seen| !seen.down).and_then(|seen| {
                         let height = BlockHeight::from(seen.chain.len() as u32 - 1);
                         Some(BlockRef { hash: *seen.chain.last()?, height })
                     });
-                    assert_eq!(
+                    prop_assert_eq!(
                         pinned.trusted_validators()[index].tip(),
                         theirs,
-                        "{context}: trusted validator {index}"
+                        "validator {}'s shown tip vs its polled chain's (none once down): {}",
+                        index,
+                        context
                     );
                 }
             }
         }
     }
     cancel.cancel();
+    Ok(())
 }
