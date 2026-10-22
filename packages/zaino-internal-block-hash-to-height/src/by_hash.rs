@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn a_height_is_its_golden_big_endian_bytes() {
         let height = BlockHeight::from(0x0102_0304);
-        assert_eq!(encode_height(height), [0x01, 0x02, 0x03, 0x04]);
-        assert_eq!(decode_height(&[0x01, 0x02, 0x03, 0x04]), height);
+        assert_eq!(encode_height(height), [0x01, 0x02, 0x03, 0x04], "height 0x01020304 → BE");
+        assert_eq!(decode_height(&[0x01, 0x02, 0x03, 0x04]), height, "BE → height 0x01020304");
     }
 }

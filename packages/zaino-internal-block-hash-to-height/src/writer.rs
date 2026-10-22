@@ -74,7 +74,7 @@ pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Bl
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_source::testing::{h, MockChain};
@@ -114,57 +114,31 @@ mod tests {
         let located: Vec<_> =
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
         let expected: Vec<_> = (0..3u32).map(|n| Some(BlockHeight::from(n))).collect();
-        assert_eq!(located, expected);
+        assert_eq!(located, expected, "height_of each folded block's hash, 0..=2");
         assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
-    /// - 0..=3 (3 `FinalizedTip`: durable there), then a restart resending 2 and 3 (held:
-    ///   skipped) before 4
-    /// - after a reopen: every hash located at its height, a never-sent one nowhere
+    /// Six blocks, 0..=4 each its own commit (write_buffer = 1 byte), crashed after every
+    /// operation
+    ///
+    /// - each state reopens to an acknowledged or the attempted commit
+    /// - locates every hash it holds at its height, none past it
+    /// - a writer on it skips the resent held blocks and commits the next at `FinalizedTip`
     #[tokio::test]
-    async fn every_block_locates_its_hash_and_a_restart_skips_what_it_holds() {
-        let fs = SimFs::new();
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(4);
-        let blocks = chain.blocks(tip);
-        let sibling = chain.fork(h(3)).mine_empty(1).tip();
-
-        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        for block in &blocks[..3] {
-            writer.send(step(block)).await;
-        }
-        writer.send(finalized(&blocks[3])).await;
-        writer.durable_at(h(3)).await;
-        writer.stop().await.expect("stops at Shutdown");
-
-        let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        let resumed = writer.handle().durable_height();
-        assert_eq!(resumed, Some(h(3)), "resumes at the durable tip");
-        for block in &blocks[2..=4] {
-            writer.send(step(block)).await;
-        }
-        writer.stop().await.expect("stops at Shutdown");
-
-        let reader = BlockHashReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
-        let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
-        let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
-        let heights = (0..=4u32).map(|n| Some(BlockHeight::from(n)));
-        assert_eq!(located, heights.chain([None]).collect::<Vec<_>>());
-    }
-
-    /// Five finalized blocks, each its own commit, crashed after every operation: each state
-    /// reopens to an acknowledged or the attempted commit, locates every hash it holds and none
-    /// past it, and commits the next block
-    #[tokio::test]
-    async fn every_crash_state_reopens_to_a_durable_prefix_that_keeps_committing() {
-        let (fs, recording) = SimFs::recording();
+    async fn every_crash_state_reopens_to_a_durable_prefix_that_skips_what_it_holds() {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
         let blocks = chain.blocks(tip);
-        let located = |view: DiskView, blocks: &[Arc<Block>]| -> Vec<Option<BlockHeight>> {
+        let located = |view: DiskView| -> Vec<Option<BlockHeight>> {
             let reader = BlockHashReader::new(view);
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect()
         };
+        // `count` blocks held = heights `0..count` located, the rest nowhere
+        let expected = |count: u32| -> Vec<Option<BlockHeight>> {
+            (0..6).map(|n| (n < count).then(|| BlockHeight::from(n))).collect()
+        };
+
+        let (fs, recording) = SimFs::recording();
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
         for (acked, block) in (1u64..).zip(&blocks[..5]) {
             writer.send(step(block)).await;
@@ -176,20 +150,21 @@ mod tests {
         let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
-            let label = &state.label;
-            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
-            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
-            assert!(acked.contains(&count), "{label}: recovered {count} blocks");
-            let expected: Vec<_> = (0..count as u32).map(|n| Some(BlockHeight::from(n))).collect();
-            let expected = [expected, vec![None]].concat();
-            assert_eq!(located(store.durable(), &blocks[..=count]), expected, "{label}: held only");
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let label = format!("{}: recovered {count} blocks, next height {count}", state.label);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5));
+            assert!(acked.contains(&u64::from(count)), "{label}: acknowledged {acked:?}");
+            assert_eq!(located(store.durable()), expected(count), "{label}: held hashes only");
 
-            let writer = start(store);
-            writer.send(step(&blocks[count])).await;
+            let mut writer = start(store);
+            for block in &blocks[..count as usize] {
+                writer.send(step(block)).await;
+            }
+            writer.send(finalized(&blocks[count as usize])).await;
+            writer.durable_at(h(count)).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = located(handle.durable_view(), &blocks[count..=count]);
-            assert_eq!(next, [Some(BlockHeight::from(count as u32))], "{label}: commits continue");
+            assert_eq!(located(handle.durable_view()), expected(count + 1), "{label}: next held");
         }
     }
 }
