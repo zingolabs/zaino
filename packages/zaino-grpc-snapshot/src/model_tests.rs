@@ -31,15 +31,17 @@ use crate::{MempoolTail, ServingStatus, Tips};
 
 const DEPTH: FinalityDepth = FinalityDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
+/// Relayed transactions: `tx0`..`tx7`
+const RELAYS: u8 = 8;
 
 /// - `Reorg`: top `depth` (above finalized) replaced by `len` blocks, the first outweighing them
+/// - `Hold` = bitmask over `ADDRESSES` of the validators holding best
 /// - `Ahead` = holders in `mask` claim a block past best (header sync short of them)
 /// - `Ahead.read` = their hash at best polled (still holders), else not yet (no longer holders)
 /// - `Relay` = ours (held, served)
 /// - `Mine` = one block on best carrying that txid (kept held)
 /// - `ServeBest` = NFS `lag` below the best
-/// - `ServeOld` = an earlier best tip (reorg in flight)
-/// - paired `bool` = published now (else coalesced with the next)
+/// - `ServeOld` = the best tip replaced `back` reorgs ago (0 = the latest; none = no move)
 #[derive(Debug, Clone)]
 enum Input {
     Extend(u32),
@@ -51,36 +53,87 @@ enum Input {
     Mine(u8),
     Drop(u8),
     ServeBest { lag: u32 },
-    ServeOld { pick: u8 },
+    ServeOld { back: usize },
     Tail,
 }
 
-fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
+/// `publish` = false: coalesced with the next publish
+#[derive(Clone)]
+struct Move {
+    input: Input,
+    publish: bool,
+}
+
+/// One line per move, even under `{:#?}` (shrunk case fits a screen)
+impl std::fmt::Debug for Move {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let coalesced = if self.publish { "" } else { ", coalesced" };
+        write!(f, "{:?}{coalesced}", self.input)
+    }
+}
+
+fn moves() -> impl Strategy<Value = Vec<Move>> {
     let input = prop_oneof![
         3 => (1u32..=4).prop_map(Input::Extend),
         2 => (1u32..=5, 1u32..=4).prop_map(|(depth, len)| Input::Reorg { depth, len }),
         1 => Just(Input::Finalize),
         2 => (0u8..4).prop_map(Input::Hold),
         2 => (0u8..4, any::<bool>()).prop_map(|(mask, read)| Input::Ahead { mask, read }),
-        4 => (0u8..8).prop_map(Input::Relay),
-        3 => (0u8..8).prop_map(Input::Mine),
-        1 => (0u8..8).prop_map(Input::Drop),
+        4 => (0..RELAYS).prop_map(Input::Relay),
+        3 => (0..RELAYS).prop_map(Input::Mine),
+        1 => (0..RELAYS).prop_map(Input::Drop),
         4 => (0u32..=5).prop_map(|lag| Input::ServeBest { lag }),
-        1 => any::<u8>().prop_map(|pick| Input::ServeOld { pick }),
+        1 => (0usize..8).prop_map(|back| Input::ServeOld { back }),
         2 => Just(Input::Tail),
     ];
-    prop::collection::vec((input, prop::bool::weighted(0.7)), 1..64)
+    let one =
+        (input, prop::bool::weighted(0.7)).prop_map(|(input, publish)| Move { input, publish });
+    prop::collection::vec(one, 1..64)
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// - every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6), serving
-    ///   status
+    /// - every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4), serving
+    ///   status, the mempool gate (G6)
     /// - every tail = its epoch exactly, ended iff the served tip moved past it (G5)
     #[test]
     fn every_publish_composes_the_latest_inputs_and_tails_follow_the_served_tip(moves in moves()) {
+        let _quiet = QuietPanics::new();
         run(moves);
+    }
+}
+
+/// While held: this thread's first panic printed (the unshrunk failure + its line), later ones
+/// silent (shrinking = one panic per candidate)
+///
+/// - proptest's own final report still printed (after the guard drops)
+struct QuietPanics;
+
+thread_local! {
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PRINTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl QuietPanics {
+    fn new() -> Self {
+        static HOOK: std::sync::Once = std::sync::Once::new();
+        HOOK.call_once(|| {
+            let default = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if !QUIET.get() || !PRINTED.replace(true) {
+                    default(info);
+                }
+            }));
+        });
+        QUIET.set(true);
+        Self
+    }
+}
+
+impl Drop for QuietPanics {
+    fn drop(&mut self) {
+        QUIET.set(false);
     }
 }
 
@@ -114,6 +167,21 @@ struct Model {
     epochs: Vec<Epoch>,
 }
 
+fn relayed(pick: u8) -> (TxId, Vec<u8>) {
+    raw_transaction(u32::from(pick), 0)
+}
+
+/// Txids by relay name (`tx3`), sorted
+fn names<'a>(txids: impl IntoIterator<Item = &'a TxId>) -> Vec<String> {
+    let name = |txid: &TxId| {
+        let pick = (0..RELAYS).find(|pick| relayed(*pick).0 == *txid);
+        pick.map_or_else(|| format!("{txid}"), |pick| format!("tx{pick}"))
+    };
+    let mut named: Vec<String> = txids.into_iter().map(name).collect();
+    named.sort();
+    named
+}
+
 impl Model {
     fn chain(&self) -> Arc<HeaderChainSnapshot> {
         Arc::new(self.headers.snapshot().expect("genesis verified"))
@@ -130,6 +198,13 @@ impl Model {
         let view = ChainViewSnapshot::fixed(chain, Self::set(self.held), &ADDRESSES, &ours);
         let ahead = Self::set(self.held & self.ahead).positions();
         Arc::new(ahead.fold(view, |view, at| view.ahead(at, 1, self.read)))
+    }
+
+    /// Mempool served: a `Live` holder of best (every `fixed` holder `Live`, ahead + unread = no
+    /// longer a holder), no peer listings here
+    fn mempool_read(&self) -> bool {
+        let unread_ahead = if self.read { 0 } else { self.ahead };
+        self.held & !unread_ahead != 0
     }
 
     fn indexed(&self) -> Option<Arc<NfsPublication<DiskView>>> {
@@ -155,7 +230,6 @@ impl Model {
 
     fn apply(&mut self, input: &Input) {
         let best = self.headers.best().expect("genesis verified").block;
-        let relayed = |pick: u8| raw_transaction(u32::from(pick), 0);
         match *input {
             Input::Extend(count) => {
                 let tip = self.builder.branch(best).mine_empty(count).tip();
@@ -198,9 +272,8 @@ impl Model {
                 let height = u32::from(best.height).saturating_sub(lag);
                 self.served = Some(self.builder.blocks(best)[height as usize].block_ref());
             }
-            Input::ServeOld { pick } => {
-                let old = self.old_tips.get(usize::from(pick) % self.old_tips.len().max(1));
-                self.served = old.copied().or(self.served);
+            Input::ServeOld { back } => {
+                self.served = self.old_tips.iter().rev().nth(back).copied().or(self.served);
             }
             Input::Tail => {}
         }
@@ -239,7 +312,7 @@ impl Model {
     }
 }
 
-fn run(moves: Vec<(Input, bool)>) {
+fn run(moves: Vec<Move>) {
     let builder = MockChain::regtest().varied_work();
     let headers = HeaderChain::anchored(&builder, DEPTH);
     let mut model = Model {
@@ -258,10 +331,22 @@ fn run(moves: Vec<(Input, bool)>) {
     let handle = core.handle();
     let mut seq = 0;
     let mut tails: Vec<Tailed> = Vec::new();
+    // (held, ahead, read, mempool read) as of the stored snapshot
+    let mut stored = (0, 0, false, false);
 
-    for (step, (input, publish)) in moves.iter().enumerate() {
+    for (step, Move { input, publish }) in moves.iter().enumerate() {
         let context = format!("step {step} {input:?}");
         model.apply(input);
+        if *publish {
+            stored = (model.held, model.ahead, model.read, model.mempool_read());
+        }
+        let (held, ahead, read, mempool_read) = stored;
+        let gate = || {
+            format!(
+                "{context}: mempool served iff a Live holder of best (G6): published holders \
+                 {held:#04b}, ahead {ahead:#04b}, read {read}"
+            )
+        };
         if *publish {
             let prev = handle.load();
             core.publish(model.indexed(), model.view());
@@ -272,29 +357,32 @@ fn run(moves: Vec<(Input, bool)>) {
             assert_eq!(
                 (grpc_snapshot.seq(), grpc_snapshot.tips()),
                 (seq, expected),
-                "{context}: G2-G4 tips"
+                "{context}: (seq, tips) published (left) vs the naive model's (G2-G4)"
             );
             assert_eq!(
                 grpc_snapshot.serving_status(EPOCH),
                 serving_status_of(&expected),
-                "{context}: serving status"
+                "{context}: serving status (left) vs the naive model's, synced {}",
+                expected.synced
             );
+            let served = grpc_snapshot.mempool().map(|_| ());
+            assert_eq!(served.is_ok(), mempool_read, "{}: got {served:?}", gate());
         }
         let grpc_snapshot = handle.load();
         if matches!(input, Input::Tail) {
             match grpc_snapshot.mempool_stream() {
                 Ok(tail) => {
+                    assert!(mempool_read, "{}: a stream opened", gate());
                     let epoch = model.epochs.len() - 1;
                     let received = tail.opening().iter().map(|entry| entry.txid).collect();
                     tails.push(Tailed { tail, epoch, received, ended: false });
                 }
                 Err(refused) => {
-                    let read = crate::invariants::mempool_read(&grpc_snapshot);
-                    assert!(!read, "{context}: G6 a read mempool refused a stream: {refused}");
+                    assert!(!mempool_read, "{}: stream refused: {refused}", gate())
                 }
             }
         }
-        for tailed in tails.iter_mut().filter(|tailed| !tailed.ended) {
+        for (at, tailed) in tails.iter_mut().enumerate().filter(|(_, tailed)| !tailed.ended) {
             while let Some(next) = tailed.tail.next().now_or_never() {
                 match next {
                     Some(logged) => tailed.received.push(logged.entry.txid),
@@ -305,13 +393,26 @@ fn run(moves: Vec<(Input, bool)>) {
                 }
             }
             let epoch = &model.epochs[tailed.epoch];
+            let key = epoch.key.map(|key| key.height);
+            let tail = format!("{context}: tail {at} on the epoch at {key:?}");
             let received: BTreeSet<TxId> = tailed.received.iter().copied().collect();
-            assert_eq!(received.len(), tailed.received.len(), "{context}: G5 a tx sent twice");
-            assert_eq!(received, epoch.txs, "{context}: G5 tail = its epoch's transactions");
-            assert_eq!(tailed.ended, epoch.closed, "{context}: G5 ends iff the served tip moved");
+            assert!(
+                received.len() == tailed.received.len(),
+                "{tail}: each tx once per stream (G5): streamed {:?}",
+                names(&tailed.received)
+            );
+            assert!(
+                received == epoch.txs,
+                "{tail}: streamed = the epoch's transactions (G5): streamed {:?}, epoch {:?}",
+                names(&received),
+                names(&epoch.txs)
+            );
+            let message = "ended (left) iff the served tip moved past the epoch (G5)";
+            assert_eq!(tailed.ended, epoch.closed, "{tail}: {message}");
             if tailed.ended {
                 let stored = handle.load().tips().served;
-                assert_ne!(stored, epoch.key, "{context}: G5 ended before the new tip stored");
+                let message = "ends only once the new served tip is stored (G5)";
+                assert_ne!(stored, epoch.key, "{tail}: {message}");
             }
         }
     }
