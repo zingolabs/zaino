@@ -451,11 +451,12 @@ fn eta(left: u64, rate: u64) -> Human {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, num::NonZeroU32};
+    use std::{collections::HashMap, convert::Infallible, net::SocketAddr, num::NonZeroU32};
 
+    use http_body_util::Full;
+    use hyper::body::Bytes;
     use serde_json::json;
     use sha2::{Digest, Sha256};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
 
@@ -482,75 +483,39 @@ mod tests {
             total_bytes: 600,
             bytes_per_sec,
         };
+        // each slot(step, bytes done, bytes/s, archive bytes)
+        #[rustfmt::skip]
         let cases = [
-            (
-                "all queued",
-                [
-                    slot(downloading, 0, 0, 100),
-                    slot(downloading, 0, 0, 200),
-                    slot(downloading, 0, 0, 300),
-                ],
-                Some(at(SnapshotPhase::Downloading, 0, Some(0))),
-            ),
-            (
-                "first unpacking while the second downloads",
-                [
-                    slot(unpacking, 10, 0, 100),
-                    slot(downloading, 150, 9, 200),
-                    slot(downloading, 0, 0, 300),
-                ],
-                Some(at(SnapshotPhase::Downloading, 100 + 150, Some(9))),
-            ),
-            (
-                "completedLength past the manifest's bytes",
-                [
-                    slot(installed, 0, 0, 100),
-                    slot(downloading, 999, 4, 200),
-                    slot(downloading, 0, 0, 300),
-                ],
-                Some(at(SnapshotPhase::Downloading, 100 + 200, Some(4))),
-            ),
-            (
-                "last hashing in aria2",
-                [
-                    slot(installed, 0, 0, 100),
-                    slot(unpacking, 50, 0, 200),
-                    slot(verifying, 120, 0, 300),
-                ],
-                Some(at(SnapshotPhase::Verifying, 100 + 200 + 120, None)),
-            ),
-            (
-                "last unpacking",
-                [
-                    slot(installed, 0, 0, 100),
-                    slot(installed, 0, 0, 200),
-                    slot(unpacking, 30, 0, 300),
-                ],
-                Some(at(SnapshotPhase::Unpacking, 100 + 200 + 30, None)),
-            ),
-            (
-                "all installed",
-                [
-                    slot(installed, 0, 0, 100),
-                    slot(installed, 0, 0, 200),
-                    slot(installed, 0, 0, 300),
-                ],
-                None,
-            ),
+            ("all queued",
+                [slot(downloading, 0, 0, 100), slot(downloading, 0, 0, 200), slot(downloading, 0, 0, 300)],
+                Some(at(SnapshotPhase::Downloading, 0, Some(0)))),
+            ("first unpacking while the second downloads",
+                [slot(unpacking, 10, 0, 100), slot(downloading, 150, 9, 200), slot(downloading, 0, 0, 300)],
+                Some(at(SnapshotPhase::Downloading, 100 + 150, Some(9)))),
+            ("completedLength past the manifest's bytes",
+                [slot(installed, 0, 0, 100), slot(downloading, 999, 4, 200), slot(downloading, 0, 0, 300)],
+                Some(at(SnapshotPhase::Downloading, 100 + 200, Some(4)))),
+            ("last hashing in aria2",
+                [slot(installed, 0, 0, 100), slot(unpacking, 50, 0, 200), slot(verifying, 120, 0, 300)],
+                Some(at(SnapshotPhase::Verifying, 100 + 200 + 120, None))),
+            ("last unpacking",
+                [slot(installed, 0, 0, 100), slot(installed, 0, 0, 200), slot(unpacking, 30, 0, 300)],
+                Some(at(SnapshotPhase::Unpacking, 100 + 200 + 30, None))),
+            ("all installed",
+                [slot(installed, 0, 0, 100), slot(installed, 0, 0, 200), slot(installed, 0, 0, 300)],
+                None),
         ];
         for (case, slots, expected) in cases {
             assert_eq!(overall(&slots), expected, "{case}");
         }
     }
 
-    /// - Manifest v2 → one fetch per empty index (manifest-relative URL, staging = hidden sibling)
-    /// - v1 manifest / index absent from the manifest → refused
-    /// - Space need = per filesystem Σ archive + installed − staged bytes (unpacked = none left),
-    ///   refused past free space
+    /// - Manifest v2 → one fetch per empty index (manifest-relative or absolute URL, staging =
+    ///   hidden sibling)
+    /// - v1 manifest / index absent from the manifest → refused, naming what is missing
     #[test]
-    fn manifest_fetches_and_free_space_per_filesystem() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let indexes = dir.path().join("indexes");
+    fn a_v2_manifest_yields_one_fetch_per_empty_index() {
+        let indexes = PathBuf::from("/srv/zaino/indexes");
         let base = Url::parse("https://snapshots.example/zaino-snapshot-1.1.0/manifest.json")
             .expect("manifest url");
         let manifest: Manifest = serde_json::from_value(json!({
@@ -567,185 +532,219 @@ mod tests {
             (IndexKind::CompactBlock, indexes.join("compact_block")),
             (IndexKind::BlockHash, indexes.join("block_hash")),
         ];
+
         let fetched = fetches(&base, manifest.indexes, empty).expect("both archived");
+
         let summary: Vec<_> =
             fetched.iter().map(|f| (f.kind, f.url.as_str(), f.staging.clone())).collect();
-        assert_eq!(
-            summary,
-            [
-                (
-                    IndexKind::CompactBlock,
-                    "https://snapshots.example/zaino-snapshot-1.1.0/compact_block.tar.zst",
-                    indexes.join(".compact_block.snapshot"),
-                ),
-                (
-                    IndexKind::BlockHash,
-                    "https://mirror.example/bh.tar.zst",
-                    indexes.join(".block_hash.snapshot"),
-                ),
-            ]
-        );
+        let expected = [
+            (
+                IndexKind::CompactBlock,
+                "https://snapshots.example/zaino-snapshot-1.1.0/compact_block.tar.zst",
+                indexes.join(".compact_block.snapshot"),
+            ),
+            (
+                IndexKind::BlockHash,
+                "https://mirror.example/bh.tar.zst",
+                indexes.join(".block_hash.snapshot"),
+            ),
+        ];
+        assert_eq!(summary, expected, "(index, archive url, staging)");
         let v1 = json!({ "archive": "a.tar.zst", "bytes": 1, "sha256": "aa", "height": 7,
                          "network": "mainnet" });
-        assert!(serde_json::from_value::<Manifest>(v1).is_err(), "v1 manifest refused");
+        let v1 = serde_json::from_value::<Manifest>(v1).map_err(|error| error.to_string());
+        assert!(
+            v1.as_ref().is_err_and(|refused| refused.contains("unknown field `archive`")),
+            "v1 manifest refused: {v1:?}"
+        );
         let lacking = vec![(IndexKind::TreeState, indexes.join("tree_state"))];
         let lacking = fetches(&base, BTreeMap::new(), lacking).expect_err("no tree_state archive");
         assert!(lacking.to_string().contains("manifest holds no tree_state archive"), "{lacking}");
+    }
 
+    /// Space need = per filesystem Σ archive + installed − staged bytes (unpacked = none left),
+    /// refused past free space naming the directory
+    #[test]
+    fn free_space_is_checked_per_filesystem_less_what_staging_holds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let indexes = dir.path().join("indexes");
+        let base = Url::parse("https://snapshots.example/manifest.json").expect("manifest url");
+        let archive = |archive_bytes, installed_bytes| Archive {
+            archive: "a.tar.zst".to_owned(),
+            sha256: "aa".to_owned(),
+            archive_bytes,
+            installed_bytes,
+        };
+        let archives = BTreeMap::from([
+            ("compact_block".to_owned(), archive(1000, 3000)),
+            ("block_hash".to_owned(), archive(100, 400)),
+        ]);
+        let empty = vec![
+            (IndexKind::CompactBlock, indexes.join("compact_block")),
+            (IndexKind::BlockHash, indexes.join("block_hash")),
+        ];
+        let fetched = fetches(&base, archives, empty).expect("both archived");
         std::fs::create_dir_all(&fetched[0].staging).expect("staging");
         std::fs::write(fetched[0].staging.join(ARCHIVE), [0u8; 600]).expect("partial archive");
+
         let need: Vec<_> = space_needed(&fetched).expect("walks").into_values().collect();
         assert_eq!(need, [(indexes.clone(), 1000 + 3000 - 600 + 100 + 400)], "one filesystem");
         marker(&fetched[0].staging.join(UNPACKED_DONE)).expect("marker");
         let need: Vec<_> = space_needed(&fetched).expect("walks").into_values().collect();
-        assert_eq!(need, [(indexes.clone(), 100 + 400)], "unpacked = nothing left to land");
+        assert_eq!(need, [(indexes.clone(), 100 + 400)], "compact_block unpacked: none left");
         check_space(&fetched).expect("500 bytes fit");
 
-        let huge = Archive {
-            archive: "bh.tar.zst".to_owned(),
-            sha256: "bb".to_owned(),
-            archive_bytes: 1 << 40,
-            installed_bytes: u64::MAX >> 2,
-        };
-        let huge = fetches(
-            &base,
-            BTreeMap::from([("block_hash".to_owned(), huge)]),
-            vec![(IndexKind::BlockHash, indexes.join("block_hash"))],
-        )
-        .expect("archived");
-        let refused = check_space(&huge).expect_err("exabytes do not fit");
-        assert!(
-            refused.to_string().contains(&format!("{}: needs", indexes.display())),
-            "{refused}"
-        );
+        let huge = BTreeMap::from([("block_hash".to_owned(), archive(1 << 40, u64::MAX >> 2))]);
+        let huge = fetches(&base, huge, vec![(IndexKind::BlockHash, indexes.join("block_hash"))]);
+        let refused = check_space(&huge.expect("archived")).expect_err("exabytes do not fit");
+        let named = format!("{}: needs", indexes.display());
+        assert!(refused.to_string().contains(&named), "{refused}");
     }
 
-    /// Fresh regtest node, compact_block (+ utxo_set) and block_hash on, block_hash holding data
-    ///
-    /// - utxo_set archive failing its sha256 → startup stopped, its staging wiped
-    /// - Republished → restart installs both empty indexes byte for byte, block_hash's archive
-    ///   never fetched, nothing staged, bootstrap status cleared (aria2c from the dev shell)
+    /// `files` (`name` → body) as one `.tar.zst`
+    fn tar_zst(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut tar = tar::Builder::new(Vec::new());
+        for (name, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, *body).expect("tar entry");
+        }
+        zstd::encode_all(&tar.into_inner().expect("tar")[..], 0).expect("zstd")
+    }
+
+    /// Plain HTTP/1.1 on loopback: GET `path` = `files[path]` (else 404), every path requested
+    /// logged (no ranges: aria2c falls back to one connection)
+    async fn serve_files(files: HashMap<&'static str, Vec<u8>>) -> (SocketAddr, Requested) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (files, requested) = (Arc::new(files), Requested::default());
+        let log = Arc::clone(&requested);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (files, log) = (Arc::clone(&files), Arc::clone(&log));
+                let service = hyper::service::service_fn(move |request: hyper::Request<_>| {
+                    let path = request.uri().path().to_owned();
+                    log.lock().expect("log").push(path.clone());
+                    let body = files.get(path.as_str()).cloned();
+                    let status = if body.is_some() { 200 } else { 404 };
+                    let response = hyper::Response::builder()
+                        .status(status)
+                        .body(Full::new(Bytes::from(body.unwrap_or_default())));
+                    async move { Ok::<_, Infallible>(response.expect("a valid response")) }
+                });
+                let connection = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service);
+                tokio::spawn(connection);
+            }
+        });
+        (address, requested)
+    }
+
+    type Requested = Arc<Mutex<Vec<String>>>;
+
+    /// Fresh regtest node, compact_block (+ utxo_set) on, its utxo_set archive failing its sha256
     #[tokio::test]
-    async fn install_refuses_a_bad_archive_then_fills_every_empty_index() {
+    async fn an_archive_failing_its_sha256_stops_startup_and_wipes_its_staging() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let indexes = dir.path().join("indexes");
+        let compact_block = tar_zst(&[("MANIFEST", b"cb manifest")]);
+        let utxo_set = tar_zst(&[("MANIFEST", b"vb manifest")]);
+        let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let entry = |name: &str, bytes: &[u8], sha256: String| {
+            json!({ "archive": format!("{name}.tar.zst"), "sha256": sha256,
+                    "archive_bytes": bytes.len(), "installed_bytes": 1 << 20 })
+        };
+        let manifest = json!({
+            "network": "regtest", "height": 7,
+            "indexes": {
+                "compact_block": entry("compact_block", &compact_block, sha256(&compact_block)),
+                "utxo_set": entry("utxo_set", &utxo_set, sha256(b"not the archive")),
+            },
+        });
+        let (server, _) = serve_files(HashMap::from([
+            ("/v/manifest.json", manifest.to_string().into_bytes()),
+            ("/v/compact_block.tar.zst", compact_block),
+            ("/v/utxo_set.tar.zst", utxo_set),
+        ]))
+        .await;
+        let config: DaemonConfig = toml::from_str(&format!(
+            "network = \"regtest\"\n[index.compact_block]\npath = {:?}\n\
+             [index.block_hash]\nenabled = false\n[index.tree_state]\nenabled = false\n\
+             [index.transparent_address]\nenabled = false\n[index.txid_location]\nenabled = false\n",
+            indexes.join("compact_block"),
+        ))
+        .expect("config");
+        let snapshot = IndexSnapshotConfig {
+            manifest: format!("http://{server}/v/manifest.json"),
+            connections: NonZeroU32::new(4).expect("4"),
+        };
+        let status = DaemonStatus::new(config.network, []);
+
+        let refused = install(&snapshot, &config, &status).await.expect_err("bad sha256");
+
+        assert!(refused.to_string().contains("utxo_set.tar.zst"), "names the archive: {refused}");
+        let staging = indexes.join(".utxo_set.snapshot");
+        assert!(!staging.exists(), "bad archive's staging wiped: {}", staging.display());
+    }
+
+    /// Fresh regtest node, compact_block (+ utxo_set) and block_hash on, block_hash holding data:
+    /// - both empty indexes installed byte for byte, nothing staged left
+    /// - block_hash's archive never fetched, bootstrap status cleared (aria2c from the dev shell)
+    #[tokio::test]
+    async fn install_fills_every_empty_index_and_never_fetches_one_holding_data() {
         let dir = tempfile::tempdir().expect("tempdir");
         let indexes = dir.path().join("indexes");
         std::fs::create_dir_all(indexes.join("block_hash")).expect("block_hash dir");
         std::fs::write(indexes.join("block_hash/MANIFEST"), b"held").expect("block_hash data");
-
-        let archive = |files: &[(&str, &[u8])]| {
-            let mut tar = tar::Builder::new(Vec::new());
-            for (name, body) in files {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(body.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                tar.append_data(&mut header, name, *body).expect("tar entry");
-            }
-            zstd::encode_all(&tar.into_inner().expect("tar")[..], 0).expect("zstd")
-        };
-        let compact_block = archive(&[("MANIFEST", b"cb manifest"), ("blocks.dat", b"cb blocks")]);
-        let utxo_set = archive(&[("MANIFEST", b"vb manifest")]);
+        let compact_block = tar_zst(&[("MANIFEST", b"cb manifest"), ("blocks.dat", b"cb blocks")]);
+        let utxo_set = tar_zst(&[("MANIFEST", b"vb manifest")]);
         let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
-        let manifest = |utxo_set_sha256: String| {
-            let entry = |name: &str, bytes: &[u8], sha256: String| {
-                json!({ "archive": format!("{name}.tar.zst"), "sha256": sha256,
-                        "archive_bytes": bytes.len(), "installed_bytes": 1 << 20 })
-            };
-            json!({
-                "network": "regtest", "height": 7,
-                "indexes": {
-                    "compact_block": entry("compact_block", &compact_block, sha256(&compact_block)),
-                    "utxo_set": entry("utxo_set", &utxo_set, utxo_set_sha256),
-                    "block_hash": entry("block_hash", b"never", sha256(b"never")),
-                },
-            })
-            .to_string()
-            .into_bytes()
+        let entry = |name: &str, bytes: &[u8]| {
+            json!({ "archive": format!("{name}.tar.zst"), "sha256": sha256(bytes),
+                    "archive_bytes": bytes.len(), "installed_bytes": 1 << 20 })
         };
-
-        // Plain HTTP/1.1, whole body per GET (no ranges: aria2c falls back to one connection)
-        let served: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::from([
-            ("/v/manifest.json".to_owned(), manifest(sha256(b"not the archive"))),
-            ("/v/compact_block.tar.zst".to_owned(), compact_block.clone()),
-            ("/v/utxo_set.tar.zst".to_owned(), utxo_set.clone()),
-            ("/v/block_hash.tar.zst".to_owned(), b"never".to_vec()),
-        ])));
-        let requested: Arc<Mutex<Vec<String>>> = Arc::default();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let (files, log) = (Arc::clone(&served), Arc::clone(&requested));
-        tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let (files, log) = (Arc::clone(&files), Arc::clone(&log));
-                tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut buf = [0u8; 1024];
-                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                        match socket.read(&mut buf).await {
-                            Ok(0) | Err(_) => return,
-                            Ok(n) => request.extend_from_slice(&buf[..n]),
-                        }
-                    }
-                    let request = String::from_utf8_lossy(&request);
-                    let path = request.split_whitespace().nth(1).unwrap_or_default().to_owned();
-                    log.lock().expect("log").push(path.clone());
-                    let body = files.lock().expect("files").get(&path).cloned();
-                    let head = match &body {
-                        Some(body) => {
-                            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n", body.len())
-                        }
-                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n".to_owned(),
-                    };
-                    let head = format!("{head}Connection: close\r\n\r\n");
-                    let _ = socket.write_all(head.as_bytes()).await;
-                    let _ = socket.write_all(&body.unwrap_or_default()).await;
-                });
-            }
+        let manifest = json!({
+            "network": "regtest", "height": 7,
+            "indexes": {
+                "compact_block": entry("compact_block", &compact_block),
+                "utxo_set": entry("utxo_set", &utxo_set),
+                "block_hash": entry("block_hash", b"never"),
+            },
         });
-
+        let (server, requested) = serve_files(HashMap::from([
+            ("/v/manifest.json", manifest.to_string().into_bytes()),
+            ("/v/compact_block.tar.zst", compact_block),
+            ("/v/utxo_set.tar.zst", utxo_set),
+            ("/v/block_hash.tar.zst", b"never".to_vec()),
+        ]))
+        .await;
         let config: DaemonConfig = toml::from_str(&format!(
-            "network = \"regtest\"\n\
-             [index.compact_block]\npath = \"{cb}\"\n\
-             [index.block_hash]\npath = \"{bh}\"\n\
-             [index.tree_state]\nenabled = false\n\
-             [index.transparent_address]\nenabled = false\n\
-             [index.txid_location]\nenabled = false\n",
-            cb = indexes.join("compact_block").display(),
-            bh = indexes.join("block_hash").display(),
+            "network = \"regtest\"\n[index.compact_block]\npath = {:?}\n\
+             [index.block_hash]\npath = {:?}\n[index.tree_state]\nenabled = false\n\
+             [index.transparent_address]\nenabled = false\n[index.txid_location]\nenabled = false\n",
+            indexes.join("compact_block"),
+            indexes.join("block_hash"),
         ))
         .expect("config");
         let snapshot = IndexSnapshotConfig {
-            manifest: format!("http://127.0.0.1:{port}/v/manifest.json"),
+            manifest: format!("http://{server}/v/manifest.json"),
             connections: NonZeroU32::new(4).expect("4"),
         };
-
         let status = DaemonStatus::new(config.network, []);
-        let refused = install(&snapshot, &config, &status).await.expect_err("bad sha256");
-        assert!(refused.to_string().contains("utxo_set.tar.zst"), "{refused}");
-        assert!(!indexes.join(".utxo_set.snapshot").exists(), "bad archive wiped");
 
-        served
-            .lock()
-            .expect("files")
-            .insert("/v/manifest.json".to_owned(), manifest(sha256(&utxo_set)));
         install(&snapshot, &config, &status).await.expect("installs");
 
-        let read = |path: &str| std::fs::read(indexes.join(path)).expect(path);
-        let installed = [
-            ("compact_block/MANIFEST", read("compact_block/MANIFEST")),
-            ("compact_block/blocks.dat", read("compact_block/blocks.dat")),
-            ("utxo_set/MANIFEST", read("utxo_set/MANIFEST")),
-            ("block_hash/MANIFEST", read("block_hash/MANIFEST")),
-        ];
-        assert_eq!(
-            installed,
-            [
-                ("compact_block/MANIFEST", b"cb manifest".to_vec()),
-                ("compact_block/blocks.dat", b"cb blocks".to_vec()),
-                ("utxo_set/MANIFEST", b"vb manifest".to_vec()),
-                ("block_hash/MANIFEST", b"held".to_vec()),
-            ]
-        );
+        for (file, expected) in [
+            ("compact_block/MANIFEST", &b"cb manifest"[..]),
+            ("compact_block/blocks.dat", b"cb blocks"),
+            ("utxo_set/MANIFEST", b"vb manifest"),
+            ("block_hash/MANIFEST", b"held"),
+        ] {
+            let installed = std::fs::read(indexes.join(file)).expect(file);
+            assert_eq!(installed, expected, "{file}");
+        }
         let mut left: Vec<_> = std::fs::read_dir(&indexes)
             .expect("indexes dir")
             .map(|entry| entry.expect("entry").file_name().into_string().expect("utf-8"))
