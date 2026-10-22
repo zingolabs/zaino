@@ -180,36 +180,43 @@ mod tests {
     /// - fresh → commit → reopen reads it back
     /// - commits after a reopen continue the sequence (never over the live slot)
     /// - manifest never past its two slots
-    /// - second opener locked out, foreign network never commits
     #[test]
-    fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
+    fn commits_survive_reopen_and_overwrite_the_two_slots_in_place() {
         let fs = SimFs::new();
         let path = Path::new("/data/idx");
+        let manifest_len = || fs.contents(&path.join(MANIFEST)).expect("manifest").len() as u64;
 
         let mut opened = IndexDir::open(fs.clone(), path, IDENTITY).expect("open fresh");
-        assert_eq!(opened.body, None);
-        let manifest_len = || fs.contents(&path.join(MANIFEST)).expect("manifest").len() as u64;
+        assert_eq!(opened.body, None, "fresh: nothing durable");
         assert_eq!(manifest_len(), manifest::FILE_LEN, "both slots exist before any commit");
-        opened.dir.commit(&[1, 2, 3]).expect("commit");
-
-        let locked = IndexDir::open(fs.clone(), path, IDENTITY).expect_err("locked");
-        let would_block =
-            matches!(&locked, ManifestError::Io(e) if e.kind() == io::ErrorKind::WouldBlock);
-        assert!(would_block, "{locked}");
+        opened.dir.commit(&[1]).expect("commit");
         drop(opened);
-
-        for (body, then) in [([1, 2, 3], [4, 5, 6]), ([4, 5, 6], [7, 8, 9])] {
+        for (durable, next) in [([1], [2]), ([2], [3])] {
             let mut reopened = IndexDir::open(fs.clone(), path, IDENTITY).expect("reopen");
-            assert_eq!(reopened.body.as_deref(), Some(&body[..]));
-            reopened.dir.commit(&then).expect("commit after reopen");
+            assert_eq!(reopened.body.as_deref(), Some(&durable[..]), "reopened at {durable:?}");
+            reopened.dir.commit(&next).expect("commit after reopen");
         }
-        let reopened = IndexDir::open(fs.clone(), path, IDENTITY).expect("reopen");
-        assert_eq!(reopened.body.as_deref(), Some(&[7, 8, 9][..]), "the newest of three");
-        assert_eq!(manifest_len(), manifest::FILE_LEN, "every commit overwrote a slot in place");
-        drop(reopened);
 
-        let foreign = IndexDir::open(fs, path, Identity { network: NetworkType::Main, ..IDENTITY });
-        assert!(matches!(foreign, Err(ManifestError::Network { .. })));
+        let reopened = IndexDir::open(fs.clone(), path, IDENTITY).expect("reopen");
+        assert_eq!(reopened.body.as_deref(), Some(&[3][..]), "the newest of three commits");
+        assert_eq!(manifest_len(), manifest::FILE_LEN, "every commit overwrote a slot in place");
+    }
+
+    #[test]
+    fn a_second_opener_is_locked_out_while_the_first_holds_the_directory() {
+        let fs = SimFs::new();
+        let path = Path::new("/data/idx");
+        let first = IndexDir::open(fs.clone(), path, IDENTITY).expect("open");
+
+        let second = IndexDir::open(fs.clone(), path, IDENTITY).map(|_| ()).expect_err("locked");
+
+        let kind = match &second {
+            ManifestError::Io(error) => Some(error.kind()),
+            _ => None,
+        };
+        assert_eq!(kind, Some(io::ErrorKind::WouldBlock), "second opener: {second}");
+        drop(first);
+        IndexDir::open(fs, path, IDENTITY).expect("open once the first dropped");
     }
 
     /// - absent, empty file, directory of empty files = empty
@@ -226,17 +233,20 @@ mod tests {
         let top = fs.open(&path.join("written.dat")).expect("file").file;
         top.write_all_at(&[9], 0).expect("write");
 
-        assert!(opened.dir.ensure_empty("absent.dat", Depth::Shallow).is_ok());
-        assert!(opened.dir.ensure_empty("map/empty.seg", Depth::Shallow).is_ok());
-        assert!(opened.dir.ensure_empty("map", Depth::Shallow).is_ok(), "nested directory skipped");
-        assert!(matches!(
-            opened.dir.ensure_empty("map", Depth::Recursive),
-            Err(ManifestError::Unmanifested { path }) if path == "/idx/map/nested/written.seg"
-        ));
-        assert!(matches!(
-            opened.dir.ensure_empty("written.dat", Depth::Shallow),
-            Err(ManifestError::Unmanifested { path }) if path == "/idx/written.dat"
-        ));
+        #[rustfmt::skip]
+        let cases = [
+            ("absent.dat",    Depth::Shallow,   None),
+            ("map/empty.seg", Depth::Shallow,   None),
+            ("map",           Depth::Shallow,   None),
+            ("map",           Depth::Recursive, Some("/idx/map/nested/written.seg")),
+            ("written.dat",   Depth::Shallow,   Some("/idx/written.dat")),
+        ];
+        for (name, depth, written) in cases {
+            let refused = opened.dir.ensure_empty(name, depth).err().map(|error| error.to_string());
+            let expected =
+                written.map(|path| format!("{path} holds data but the directory has no MANIFEST"));
+            assert_eq!(refused, expected, "{name} checked {depth:?}");
+        }
     }
 
     /// - every crash state of a commit reopens to the old body or the new one, never neither
@@ -261,35 +271,47 @@ mod tests {
             let acknowledged = u8::try_from(state.tag).expect("tag = commits");
             let allowed = [acknowledged, acknowledged + 1]
                 .map(|commit| (commit > 0).then(|| vec![commit.min(3)]));
-            assert!(allowed.contains(&body), "{}: {body:?}", state.label);
+            assert!(
+                allowed.contains(&body),
+                "{}: reopened to body {body:?}, want acknowledged or attempted {allowed:?}",
+                state.label
+            );
         }
     }
 
     /// - offline reader (`zainod verify`, read only, no lock) = what `IndexDir` sees
     /// - nothing before a manifest or its first commit, then the newest commit
-    /// - older layout = `ManifestError::Layout`, foreign network = `ManifestError::Network`
     #[test]
     fn the_offline_reader_answers_the_newest_commit() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("idx");
         let fs = crate::fs::RealFs::shared();
-        let read = || read_durable(fs.as_ref(), &path, IDENTITY);
-        assert_eq!(read().expect("no directory"), None);
+        let read = || read_durable(fs.as_ref(), &path, IDENTITY).expect("read");
+        assert_eq!(read(), None, "no directory");
 
         let mut opened = IndexDir::open(fs.clone(), &path, IDENTITY).expect("open").dir;
-        assert_eq!(read().expect("zeroed slots"), None, "created, never committed");
+        assert_eq!(read(), None, "created, never committed");
         for body in [[1u8], [2], [3]] {
             opened.commit(&body).expect("commit");
-            assert_eq!(read().expect("durable"), Some(body.to_vec()));
+            assert_eq!(read(), Some(body.to_vec()), "committed {body:?}");
         }
-        drop(opened);
+    }
 
-        let foreign = Identity { network: NetworkType::Main, ..IDENTITY };
-        let refused = read_durable(fs.as_ref(), &path, foreign).expect_err("foreign network");
-        assert!(matches!(refused, ManifestError::Network { .. }), "{refused}");
+    #[test]
+    fn the_offline_reader_refuses_another_networks_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("idx");
+        let fs = crate::fs::RealFs::shared();
+        IndexDir::open(fs.clone(), &path, IDENTITY)
+            .expect("open")
+            .dir
+            .commit(&[1])
+            .expect("commit");
 
-        std::fs::write(path.join(MANIFEST), [1; 40]).expect("older layout");
-        let older = read().expect_err("refused");
-        assert!(matches!(older, ManifestError::Layout { len: 40 }), "{older}");
+        let mainnet = Identity { network: NetworkType::Main, ..IDENTITY };
+        let refused = read_durable(fs.as_ref(), &path, mainnet).expect_err("regtest read as main");
+
+        let refused = refused.to_string();
+        assert_eq!(refused, "directory was built for network tag 2, configured network is Main");
     }
 }

@@ -269,108 +269,150 @@ impl<'a> BodyReader<'a> {
 mod tests {
     use super::*;
 
-    /// - slot pinned byte for byte, alternating by `seq`
-    /// - durable state read off every slot pair a crash, foreign directory or older layout leaves
-    #[test]
-    fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
-        let identity =
-            Identity { kind: IndexKind::TreeState, format: 3, network: NetworkType::Test };
-        let encoded = encode(identity, 7, &[0xaa, 0xbb]);
-        let mut expected = b"ZAINOMS\0".to_vec();
-        expected.extend_from_slice(&[3, 0, 2, 1]);
-        expected.extend_from_slice(&7u64.to_le_bytes());
-        expected.extend_from_slice(&[2, 0, 0, 0, 0xaa, 0xbb]);
-        expected.extend_from_slice(&crc32fast::hash(&expected).to_le_bytes());
-        assert_eq!(encoded, expected);
-        assert_eq!((slot_offset(7), slot_offset(8)), (SLOT as u64, 0), "odd → slot 1, even → 0");
+    use crate::golden::assert_fields;
 
-        // the whole file as each slot holds it (`None` = never written)
-        let file = |first: Option<Vec<u8>>, second: Option<Vec<u8>>| {
-            let mut bytes = vec![0; 2 * SLOT];
-            for (at, slot) in [(0, first), (SLOT, second)] {
-                if let Some(slot) = slot {
-                    bytes[at..at + slot.len()].copy_from_slice(&slot);
-                }
+    const IDENTITY: Identity =
+        Identity { kind: IndexKind::TreeState, format: 3, network: NetworkType::Test };
+
+    /// Whole file as each slot holds it (`None` = never written)
+    fn file(first: Option<Vec<u8>>, second: Option<Vec<u8>>) -> Vec<u8> {
+        let mut bytes = vec![0; 2 * SLOT];
+        for (at, slot) in [(0, first), (SLOT, second)] {
+            if let Some(slot) = slot {
+                bytes[at..at + slot.len()].copy_from_slice(&slot);
             }
-            bytes
-        };
-        let commit = |seq: u64, body: &[u8]| Some(encode(identity, seq, body));
-        let torn = |seq: u64, body: &[u8]| {
-            let mut slot = encode(identity, seq, body);
-            slot[HEADER] ^= 1;
-            Some(slot)
-        };
-        // body_len past the slot's end: torn on its length, before any CRC read
-        let mut overlong = encode(identity, 3, &[1]);
-        overlong[20..24].copy_from_slice(&(SLOT as u32).to_le_bytes());
-
-        type Commit = Option<(u64, Vec<u8>)>;
-        let cases: [(&str, Vec<u8>, Commit); 6] = [
-            ("created, never committed", file(None, None), None),
-            ("first commit", file(None, commit(1, &[1])), Some((1, vec![1]))),
-            ("two commits: the newer", file(commit(2, &[2]), commit(1, &[1])), Some((2, vec![2]))),
-            ("newer torn: the older", file(torn(4, &[4]), commit(3, &[3])), Some((3, vec![3]))),
-            ("first commit torn", file(None, torn(1, &[1])), None),
-            ("overlong body = torn", file(None, Some(overlong.clone())), None),
-        ];
-        for (why, bytes, want) in cases {
-            let found = latest(identity, &bytes).unwrap_or_else(|error| panic!("{why}: {error}"));
-            assert_eq!(found.map(|(seq, body)| (seq, body.to_vec())), want, "{why}");
         }
-
-        use ManifestError::{BodyLength, Checksum, Format, Kind, Layout, Network, Sequence};
-        let (torn_pair, twin_pair) =
-            (file(torn(2, &[2]), torn(1, &[1])), file(commit(1, &[1]), commit(1, &[2])));
-        let overlong_pair = file(Some(overlong.clone()), Some(overlong));
-        let both_torn = latest(identity, &torn_pair);
-        let both_overlong = latest(identity, &overlong_pair);
-        let twins = latest(identity, &twin_pair);
-        let older_layout = latest(identity, &[1; 40]);
-        let empty = latest(identity, &[]);
-        let one = file(None, commit(1, &[1]));
-        let (block, main) = (IndexKind::CompactBlock, NetworkType::Main);
-        let kind = latest(Identity { kind: block, ..identity }, &one);
-        let format = latest(Identity { format: 4, ..identity }, &one);
-        let network = latest(Identity { network: main, ..identity }, &one);
-        assert!(matches!(both_torn, Err(Checksum)), "a crash tears one slot, never both");
-        let room = SLOT - HEADER - CRC;
-        let named = matches!(both_overlong, Err(BodyLength { claimed, actual })
-            if claimed as usize == SLOT && actual == room);
-        assert!(named, "the claimed length beside the room the slot holds: {both_overlong:?}");
-        assert!(matches!(twins, Err(Sequence { seq: 1 })));
-        assert!(matches!(older_layout, Err(Layout { len: 40 })));
-        assert!(matches!(empty, Err(Layout { len: 0 })), "only ever created whole");
-        assert!(matches!(kind, Err(Kind { expected: IndexKind::CompactBlock, found: 2 })));
-        assert!(matches!(format, Err(Format { expected: 4, found: 3 })));
-        assert!(matches!(network, Err(Network { expected: NetworkType::Main, found: 1 })));
+        bytes
     }
 
-    /// - tip presence follows the count both ways
-    /// - zero hash = still a tip
-    /// - on disk = block count from genesis (tip height + 1) ‖ hash
-    #[test]
-    fn durable_tip_round_trips_and_refuses_a_tip_with_nothing_durable() {
-        let tip = |height: u32, hash: u8| DurableTip {
-            tip: Some(BlockRef { hash: BlockHash([hash; 32]), height: BlockHeight::from(height) }),
-        };
-        let golden = [3u64.to_le_bytes().as_slice(), &[7; 32]].concat();
-        let mut bytes = Vec::new();
-        tip(2, 7).encode(&mut bytes);
-        assert_eq!(bytes, golden, "tip at 2 = count 3 on disk");
+    fn commit(seq: u64, body: &[u8]) -> Option<Vec<u8>> {
+        Some(encode(IDENTITY, seq, body))
+    }
 
-        for durable in [DurableTip::EMPTY, tip(2, 7), tip(0, 0)] {
+    /// Commit `seq`'s slot, first body byte flipped (CRC fails)
+    fn torn(seq: u64, body: &[u8]) -> Option<Vec<u8>> {
+        let mut slot = encode(IDENTITY, seq, body);
+        slot[HEADER] ^= 1;
+        Some(slot)
+    }
+
+    /// Commit 3's slot claiming a body to the slot's end (torn on its length, before any CRC read)
+    fn overlong() -> Option<Vec<u8>> {
+        let mut slot = encode(IDENTITY, 3, &[1]);
+        slot[20..24].copy_from_slice(&(SLOT as u32).to_le_bytes());
+        Some(slot)
+    }
+
+    #[test]
+    fn a_slot_is_its_golden_bytes() {
+        let encoded = encode(IDENTITY, 7, &[0xaa, 0xbb]);
+
+        #[rustfmt::skip]
+        assert_fields(&encoded, &[
+            ("magic",       b"ZAINOMS\0"),
+            ("format",      &3u16.to_le_bytes()),
+            ("kind",        &[2]),
+            ("network tag", &[1]),
+            ("seq",         &7u64.to_le_bytes()),
+            ("body len",    &2u32.to_le_bytes()),
+            ("body",        &[0xaa, 0xbb]),
+            ("crc",         &0xc61c_cc94u32.to_le_bytes()),
+        ]);
+    }
+
+    #[test]
+    fn commits_alternate_slots_never_overwriting_the_one_before() {
+        let slots = [7, 8, 9].map(slot_offset);
+
+        assert_eq!(slots, [SLOT as u64, 0, SLOT as u64], "commits 7, 8, 9: odd → slot 1, even → 0");
+    }
+
+    #[test]
+    fn latest_reads_the_durable_commit_off_every_slot_pair_a_crash_leaves() {
+        /// `(seq, body)` durable (`None` = nothing durable)
+        type Durable = Option<(u64, Vec<u8>)>;
+        // (case, file, durable)
+        #[rustfmt::skip]
+        let cases: [(&str, Vec<u8>, Durable); 6] = [
+            ("created, never committed", file(None, None),                           None),
+            ("first commit",             file(None, commit(1, &[1])),                Some((1, vec![1]))),
+            ("two commits: the newer",   file(commit(2, &[2]), commit(1, &[1])),     Some((2, vec![2]))),
+            ("newer torn: the older",    file(torn(4, &[4]), commit(3, &[3])),       Some((3, vec![3]))),
+            ("first commit torn",        file(None, torn(1, &[1])),                  None),
+            ("first commit overlong",    file(None, overlong()),                     None),
+        ];
+        for (case, bytes, durable) in cases {
+            let found = latest(IDENTITY, &bytes).unwrap_or_else(|error| panic!("{case}: {error}"));
+            assert_eq!(found.map(|(seq, body)| (seq, body.to_vec())), durable, "{case}");
+        }
+    }
+
+    /// Commit 1 in slot 1, read as `identity` (else this file's), or another file shape
+    #[test]
+    fn latest_refuses_slot_pairs_no_crash_leaves_and_another_identity_s_directory() {
+        let committed = file(None, commit(1, &[1]));
+        let room = SLOT - HEADER - CRC;
+        // (case, read as, file, refused)
+        #[rustfmt::skip]
+        let cases: [(&str, Identity, Vec<u8>, String); 8] = [
+            ("both slots torn",      IDENTITY, file(torn(2, &[2]), torn(1, &[1])),     "MANIFEST checksum mismatch".into()),
+            ("both slots overlong",  IDENTITY, file(overlong(), overlong()),           format!("MANIFEST body claims {SLOT} bytes, {room} present")),
+            ("both slots commit 1",  IDENTITY, file(commit(1, &[1]), commit(1, &[2])), "MANIFEST slots both claim commit 1".into()),
+            ("older 40-byte layout", IDENTITY, vec![1; 40],                            "MANIFEST is 40 bytes, not this build's two-slot layout: resync the index".into()),
+            ("empty file",           IDENTITY, vec![],                                 "MANIFEST is 0 bytes, not this build's two-slot layout: resync the index".into()),
+            ("another index kind",   Identity { kind: IndexKind::CompactBlock, ..IDENTITY }, committed.clone(), "directory holds index kind 2, expected compact_block".into()),
+            ("another format",       Identity { format: 4, ..IDENTITY },                     committed.clone(), "directory holds format 3, this build reads format 4".into()),
+            ("another network",      Identity { network: NetworkType::Main, ..IDENTITY },    committed,         "directory was built for network tag 1, configured network is Main".into()),
+        ];
+        for (case, identity, bytes, refused) in cases {
+            let error = latest(identity, &bytes).map(|_| ()).expect_err(case);
+            assert_eq!(error.to_string(), refused, "{case}");
+        }
+    }
+
+    /// Tip at height 2 = block count 3 on disk, then its hash
+    #[test]
+    fn a_durable_tip_is_its_golden_bytes() {
+        let tip = DurableTip { tip: Some(BlockRef { hash: BlockHash([7; 32]), height: 2.into() }) };
+        let mut bytes = Vec::new();
+
+        tip.encode(&mut bytes);
+
+        assert_fields(&bytes, &[("block count", &3u64.to_le_bytes()), ("tip hash", &[7; 32])]);
+        let mut body = BodyReader::new(&bytes);
+        assert_eq!(DurableTip::decode(&mut body).expect("golden bytes decode"), tip);
+        body.finish().expect("tip = whole body");
+    }
+
+    /// Presence = count > 0: a zero hash at height 0 is still a tip
+    #[test]
+    fn nothing_durable_and_a_zero_hash_at_genesis_round_trip_apart() {
+        let genesis =
+            DurableTip { tip: Some(BlockRef { hash: BlockHash([0; 32]), height: 0.into() }) };
+        for durable in [DurableTip::EMPTY, genesis] {
             let mut bytes = Vec::new();
             durable.encode(&mut bytes);
-            let mut body = BodyReader::new(&bytes);
-            assert_eq!(DurableTip::decode(&mut body).expect("decode"), durable);
-            body.finish().expect("no tail");
-        }
 
-        let mut bytes = 0u64.to_le_bytes().to_vec();
-        bytes.extend_from_slice(&[7; 32]);
-        let tip_only = DurableTip::decode(&mut BodyReader::new(&bytes));
-        assert!(matches!(tip_only, Err(ManifestError::Body("tip hash with nothing durable"))));
-        let tail = BodyReader::new(&[1]).finish();
-        assert!(matches!(tail, Err(ManifestError::Body("trailing bytes"))));
+            let decoded = DurableTip::decode(&mut BodyReader::new(&bytes)).expect("decode");
+
+            assert_eq!(decoded, durable, "{durable:?} round trip");
+        }
+    }
+
+    #[test]
+    fn a_tip_hash_with_nothing_durable_is_refused() {
+        let bytes = [0u64.to_le_bytes().as_slice(), &[7; 32]].concat();
+
+        let refused =
+            DurableTip::decode(&mut BodyReader::new(&bytes)).expect_err("count 0, hash 7s");
+
+        assert_eq!(refused.to_string(), "malformed manifest body: tip hash with nothing durable");
+    }
+
+    #[test]
+    fn a_body_reader_refuses_trailing_bytes() {
+        let refused = BodyReader::new(&[1]).finish().expect_err("one byte unread");
+
+        assert_eq!(refused.to_string(), "malformed manifest body: trailing bytes");
     }
 }
