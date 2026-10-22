@@ -123,8 +123,8 @@ pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ho
             )
         }
         (Action::Hold, Some(admin)) => {
-            let goaway_sent = Some(DaemonReason::GoawaySent.detail());
-            let sent = |running: &Readyz| running.detail.as_deref() == goaway_sent;
+            let goaway_sent = Some(DaemonReason::GoawaySent.label());
+            let sent = |running: &Readyz| running.reason() == goaway_sent;
             match confirm(admin, goaway_by + CONFIRM_WITHIN, sent) {
                 Some(running) if sent(&running) => eprintln!(
                     "zainod at {admin} reports held, every gRPC connection sent GOAWAY: safe to stop"
@@ -132,7 +132,7 @@ pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ho
                 Some(running) => eprintln!(
                     "zainod at {admin} reports {} ({}): GOAWAY not confirmed",
                     running.state,
-                    running.detail.as_deref().unwrap_or("no detail")
+                    running.reason().unwrap_or("no reason")
                 ),
                 None => eprintln!("no zainod answering at {admin}: applies when it next starts"),
             }
@@ -157,11 +157,22 @@ fn goaway_bound(delay: Duration) -> Duration {
     POLL + delay + POLL
 }
 
-/// `/readyz` as `zainod hold` / `resume` read it
+/// `/readyz` as `zainod hold` / `resume` read it (`detail.reason` = down, degraded or held only)
 #[derive(Debug, PartialEq, Eq, serde::Deserialize)]
 struct Readyz {
     state: String,
-    detail: Option<String>,
+    detail: Option<ReadyzDetail>,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+struct ReadyzDetail {
+    reason: Option<String>,
+}
+
+impl Readyz {
+    fn reason(&self) -> Option<&str> {
+        self.detail.as_ref()?.reason.as_deref()
+    }
 }
 
 /// Running zainod's `/readyz` once `done` (or the last one seen after `within`)
@@ -267,15 +278,15 @@ mod tests {
         };
         let read = |status: &DaemonStatus| {
             let readyz = readyz(status);
-            (readyz.state, readyz.detail)
+            (readyz.state.clone(), readyz.reason().map(str::to_owned))
         };
 
         spawn(Arc::clone(&status), state_dir.clone(), delay);
         tokio::time::sleep(POLL).await;
-        let pending = (String::from("held"), Some(String::from("GOAWAY pending")));
+        let pending = (String::from("held"), Some(String::from("goaway_pending")));
         assert_eq!(read(&status), pending, "held at the first poll");
         tokio::time::sleep(goaway_bound(delay) - POLL).await;
-        let sent = (String::from("held"), Some(String::from("GOAWAY sent")));
+        let sent = (String::from("held"), Some(String::from("goaway_sent")));
         assert_eq!(read(&status), sent, "GOAWAY by the CLI's bound");
 
         apply(&state_dir, Action::Resume).expect("resumes");

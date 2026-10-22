@@ -33,7 +33,7 @@ impl OverloadCause {
     const ALL: [Self; 4] =
         [Self::NetworkSaturated, Self::CpuPressure, Self::IoPressure, Self::RefusingWork];
 
-    /// Readiness `detail`
+    /// Readiness `detail.message`
     pub const fn detail(self) -> &'static str {
         match self {
             Self::NetworkSaturated => "Overloaded: network saturated",

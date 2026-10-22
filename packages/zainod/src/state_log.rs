@@ -73,13 +73,13 @@ fn level(state: DaemonState) -> Level {
     }
 }
 
-fn emit(line: Line, readiness: &Readiness) {
-    let state = readiness.state.label();
-    let detail = readiness.reason.map(DaemonReason::detail);
-    let notes = (!readiness.notes.is_empty()).then(|| readiness.notes.join(" · "));
+fn emit(line: Line, readiness: &Readiness, alarms: &[String]) {
+    let state = readiness.state().label();
+    let detail = readiness.reason().map(DaemonReason::message);
+    let notes = (!alarms.is_empty()).then(|| alarms.join(" · "));
     macro_rules! at_level {
         ($($fields:tt)*) => {
-            match level(readiness.state) {
+            match level(readiness.state()) {
                 Level::ERROR => error!($($fields)*),
                 Level::WARN => warn!($($fields)*),
                 _ => info!($($fields)*),
@@ -105,8 +105,8 @@ pub(crate) fn spawn(status: Arc<DaemonStatus>) {
         loop {
             tick.tick().await;
             let readiness = status.current_readiness();
-            if let Some(line) = log.step(Instant::now(), readiness.state, readiness.reason) {
-                emit(line, &readiness);
+            if let Some(line) = log.step(Instant::now(), readiness.state(), readiness.reason()) {
+                emit(line, &readiness, &status.alarms());
             }
         }
     };

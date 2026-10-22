@@ -4,6 +4,7 @@
 //! - `ready` ⇔ `state` = serving or degraded ⇔ `/readyz` 200 (degraded = a fresh peer-verified
 //!   tip served, no trusted validator vouching for it)
 
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
@@ -20,7 +21,7 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::admin::Heartbeat;
 use crate::egress::Egress;
-use crate::index_snapshot::SnapshotProgress;
+use crate::index_snapshot::{SnapshotPhase, SnapshotProgress};
 
 /// One process's status: config facts, then what each stage sets as it starts
 ///
@@ -34,7 +35,6 @@ pub(crate) struct DaemonStatus {
     retire: Retire,
     awaiting_validator: AtomicBool,
     bootstrap: std::sync::Mutex<Option<SnapshotProgress>>,
-    overload_notes: std::sync::Mutex<Vec<String>>,
     sources: OnceLock<Sources>,
 }
 
@@ -50,9 +50,8 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set, first match wins: held, not booted, runtime stalled, `GrpcSnapshot`'s [`ServingStatus`]
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+/// [`Readiness`] without its detail: metric + log labels
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DaemonState {
     Provisioning,
     Syncing,
@@ -71,7 +70,7 @@ impl DaemonState {
     const ALL: [Self; 6] =
         [Self::Provisioning, Self::Syncing, Self::Serving, Self::Degraded, Self::Held, Self::Down];
 
-    /// = its `/readyz` + `/status` spelling (serde's)
+    /// = [`Readiness`]'s `state` spelling (tested equal)
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Provisioning => "provisioning",
@@ -92,48 +91,69 @@ pub(crate) fn describe_metrics() {
     );
     metrics::describe_gauge!(
         REASON,
-        "Why down, degraded or held, one-hot by reason (= /readyz's detail; overloaded = its cause \
-         in zaino_grpc_overload_latched)"
+        "Why down, degraded or held, one-hot by reason (= /readyz's detail.reason; overloaded = \
+         its cause in zaino_grpc_overload_latched)"
     );
 }
 
-/// `rate` per second of `unit` (`None` = not measured yet, or a bootstrap phase past downloading)
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct Progress {
-    done: u64,
-    total: u64,
-    unit: Unit,
-    rate: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum Unit {
-    Block,
-    Byte,
-}
-
-/// Head of `/status` (`/readyz` = `state` + `detail`)
+/// `/readyz` body + head of `/status`: the state, `detail` its own measure (`null` = none yet)
 ///
-/// - `detail` only when `down`, `degraded` or `held` (its GOAWAYs), `progress` only while
-///   provisioning or syncing, `notes` = raised alarms
+/// - provisioning = index-snapshot bytes, syncing = blocks, serving = last egress window
+/// - degraded / down / held = [`DaemonReason`]
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct Readiness {
-    pub(crate) state: DaemonState,
-    progress: Option<Progress>,
-    #[serde(rename = "detail")]
-    pub(crate) reason: Option<DaemonReason>,
-    pub(crate) notes: Vec<String>,
+#[serde(tag = "state", content = "detail", rename_all = "snake_case")]
+pub(crate) enum Readiness {
+    Provisioning(Option<Download>),
+    Syncing(Option<Catchup>),
+    Serving(Option<Egress>),
+    Degraded(DaemonReason),
+    Down(DaemonReason),
+    Held(DaemonReason),
 }
 
 impl Readiness {
+    pub(crate) fn state(&self) -> DaemonState {
+        match self {
+            Self::Provisioning(_) => DaemonState::Provisioning,
+            Self::Syncing(_) => DaemonState::Syncing,
+            Self::Serving(_) => DaemonState::Serving,
+            Self::Degraded(_) => DaemonState::Degraded,
+            Self::Down(_) => DaemonState::Down,
+            Self::Held(_) => DaemonState::Held,
+        }
+    }
+
+    pub(crate) fn reason(&self) -> Option<DaemonReason> {
+        match self {
+            Self::Degraded(reason) | Self::Down(reason) | Self::Held(reason) => Some(*reason),
+            Self::Provisioning(_) | Self::Syncing(_) | Self::Serving(_) => None,
+        }
+    }
+
     /// Serving, or degraded (serving a peer-verified tip no trusted validator vouches for)
     pub(crate) fn ready(&self) -> bool {
-        matches!(self.state, DaemonState::Serving | DaemonState::Degraded)
+        matches!(self, Self::Serving(_) | Self::Degraded(_))
     }
 }
 
-/// Why `down`, `degraded` or `held` (`detail()` = `/readyz` + `/status` `detail`)
+/// Index-snapshot bootstrap (`bytes_per_sec` = downloading only)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct Download {
+    phase: SnapshotPhase,
+    bytes: u64,
+    total_bytes: u64,
+    bytes_per_sec: Option<u64>,
+}
+
+/// `height` = served (else handed), `target` = [`GrpcSnapshot::sync_target`]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct Catchup {
+    height: u32,
+    target: u32,
+    blocks_per_sec: Option<f64>,
+}
+
+/// Why `down`, `degraded` or `held`
 ///
 /// - `Overloaded` = `zaino_grpc::AdmissionReport::overload`
 /// - `GoawaySent` = held past `hold_goaway_delay_secs`, every connection GOAWAY'd (`zainod hold`
@@ -159,7 +179,7 @@ impl DaemonReason {
         "goaway_sent",
     ];
 
-    const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::NoValidatorReachable => "no_validator_reachable",
             Self::TipUnvouched => "tip_unvouched",
@@ -170,7 +190,7 @@ impl DaemonReason {
         }
     }
 
-    pub(crate) const fn detail(self) -> &'static str {
+    pub(crate) const fn message(self) -> &'static str {
         match self {
             Self::NoValidatorReachable => "No trusted validator reachable",
             Self::TipUnvouched => "No trusted validator vouches for the tip",
@@ -182,88 +202,75 @@ impl DaemonReason {
     }
 }
 
-/// = its `detail()`
+/// `{"reason": label(), "message": message()}`
 impl Serialize for DaemonReason {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.detail())
+        #[derive(Serialize)]
+        struct Wire {
+            reason: &'static str,
+            message: &'static str,
+        }
+        Wire { reason: self.label(), message: self.message() }.serialize(serializer)
     }
 }
 
 /// Where the process is: before boot (index-snapshot bootstrap, first validator answer) or booted
 enum Stage {
-    Starting { bootstrap: Option<Progress>, awaiting_validator: bool },
+    Starting { bootstrap: Option<Download>, awaiting_validator: bool },
     Booted(Booted),
 }
 
-/// One snapshot's facts: `done` = served height (else handed), `target` = [`GrpcSnapshot::sync_target`]
+/// One snapshot's facts: `height` = served (else handed), `target` = [`GrpcSnapshot::sync_target`]
 struct Booted {
     serving_status: ServingStatus,
     overload: Option<OverloadCause>,
-    done: Option<u32>,
+    height: Option<u32>,
     target: Option<u32>,
     rate: Option<f64>,
-    notes: Vec<String>,
+    egress: Option<Egress>,
 }
 
 impl Booted {
     fn of(sources: &Sources, grpc_snapshot: &GrpcSnapshot<DiskView>) -> Self {
         let served = grpc_snapshot.tips().served.map(|tip| tip.height);
-        let (progress, rate) = (&sources.progress, *sources.block_rate.borrow());
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
             serving_status: grpc_snapshot.serving_status(now),
             overload: sources.grpc_admission.report().overload,
-            done: served.or(progress.handed()).map(u32::from),
+            height: served.or(sources.progress.handed()).map(u32::from),
             target: grpc_snapshot.sync_target().map(u32::from),
-            rate,
-            notes: zaino_grpc_snapshot::notes(grpc_snapshot),
+            rate: *sources.block_rate.borrow(),
+            egress: *sources.egress.borrow(),
         }
     }
 }
 
 /// Pure: the state rules over the hold + heartbeat + stage (held > the rest)
 fn readiness(hold: Hold, live: bool, stage: Stage) -> Readiness {
-    let at = |state, progress, reason, notes| Readiness { state, progress, reason, notes };
-    let goaway = match hold {
-        Hold::Off => None,
-        Hold::Draining => Some(DaemonReason::GoawayPending),
-        Hold::Drained => Some(DaemonReason::GoawaySent),
-    };
-    if let Some(goaway) = goaway {
-        let notes = match stage {
-            Stage::Booted(booted) => booted.notes,
-            Stage::Starting { .. } => Vec::new(),
-        };
-        return at(DaemonState::Held, None, Some(goaway), notes);
+    match hold {
+        Hold::Off => {}
+        Hold::Draining => return Readiness::Held(DaemonReason::GoawayPending),
+        Hold::Drained => return Readiness::Held(DaemonReason::GoawaySent),
     }
-    let unvouched = Some(DaemonReason::TipUnvouched);
     match (live, stage) {
-        (false, Stage::Booted(booted)) => {
-            at(DaemonState::Down, None, Some(DaemonReason::RuntimeStalled), booted.notes)
-        }
+        (false, Stage::Booted(_)) => Readiness::Down(DaemonReason::RuntimeStalled),
         (_, Stage::Starting { awaiting_validator: true, .. }) => {
-            at(DaemonState::Down, None, Some(DaemonReason::NoValidatorReachable), Vec::new())
+            Readiness::Down(DaemonReason::NoValidatorReachable)
         }
-        (_, Stage::Starting { bootstrap, .. }) => {
-            at(DaemonState::Provisioning, bootstrap, None, Vec::new())
-        }
-        (true, Stage::Booted(Booted { overload: Some(cause), notes, .. })) => {
-            at(DaemonState::Down, None, Some(DaemonReason::Overloaded(cause)), notes)
+        (_, Stage::Starting { bootstrap, .. }) => Readiness::Provisioning(bootstrap),
+        (true, Stage::Booted(Booted { overload: Some(cause), .. })) => {
+            Readiness::Down(DaemonReason::Overloaded(cause))
         }
         (true, Stage::Booted(booted)) => match booted.serving_status {
-            ServingStatus::Down => at(DaemonState::Down, None, unvouched, booted.notes),
-            ServingStatus::Degraded => at(DaemonState::Degraded, None, unvouched, booted.notes),
-            ServingStatus::Serving => at(DaemonState::Serving, None, None, booted.notes),
-            ServingStatus::Syncing => {
-                let progress = booted.target.map(|total| Progress {
-                    done: u64::from(booted.done.unwrap_or(0)),
-                    total: u64::from(total),
-                    unit: Unit::Block,
-                    rate: booted.rate,
-                });
-                at(DaemonState::Syncing, progress, None, booted.notes)
-            }
+            ServingStatus::Down => Readiness::Down(DaemonReason::TipUnvouched),
+            ServingStatus::Degraded => Readiness::Degraded(DaemonReason::TipUnvouched),
+            ServingStatus::Serving => Readiness::Serving(booted.egress),
+            ServingStatus::Syncing => Readiness::Syncing(booted.target.map(|target| Catchup {
+                height: booted.height.unwrap_or(0),
+                target,
+                blocks_per_sec: booted.rate,
+            })),
         },
     }
 }
@@ -280,14 +287,8 @@ impl DaemonStatus {
             retire: Retire::default(),
             awaiting_validator: AtomicBool::new(false),
             bootstrap: std::sync::Mutex::new(None),
-            overload_notes: std::sync::Mutex::new(Vec::new()),
             sources: OnceLock::new(),
         }
-    }
-
-    /// The operator's overload overrides in force (`overload.rs`): `/status` notes
-    pub(crate) fn set_overload_notes(&self, notes: Vec<String>) {
-        *self.overload_notes.lock().expect("notes mutex poisoned") = notes;
     }
 
     pub(crate) fn beat(&self) {
@@ -315,33 +316,46 @@ impl DaemonStatus {
     }
 
     pub(crate) fn current_readiness(&self) -> Readiness {
-        let stage = match self.sources.get() {
-            Some(sources) => {
-                let mut booted = Booted::of(sources, &sources.grpc_snapshots.load());
-                booted.notes.extend(self.overload_notes.lock().expect("notes poisoned").clone());
-                Stage::Booted(booted)
-            }
+        let loaded = self.sources.get().map(|sources| (sources, sources.grpc_snapshots.load()));
+        self.readiness_at(
+            loaded.as_ref().map(|(sources, grpc_snapshot)| (*sources, &**grpc_snapshot)),
+        )
+    }
+
+    fn readiness_at(&self, booted: Option<(&Sources, &GrpcSnapshot<DiskView>)>) -> Readiness {
+        let stage = match booted {
+            Some((sources, grpc_snapshot)) => Stage::Booted(Booted::of(sources, grpc_snapshot)),
             None => Stage::Starting {
-                bootstrap: self.bootstrap_bytes(),
+                bootstrap: self.bootstrap_download(),
                 awaiting_validator: self.awaiting_validator.load(Ordering::Relaxed),
             },
         };
         readiness(self.retire.state(), self.live(), stage)
     }
 
-    /// `/readyz`: `(ready, {"state", "detail"})`
+    /// Chainview alarms (none before boot)
+    pub(crate) fn alarms(&self) -> Vec<String> {
+        let sources = self.sources.get();
+        sources.map_or_else(Vec::new, |sources| {
+            zaino_grpc_snapshot::notes(&sources.grpc_snapshots.load())
+        })
+    }
+
+    /// `/readyz`: `(ready, readiness)`
     pub(crate) fn readiness_json(&self) -> (bool, String) {
         let readiness = self.current_readiness();
-        let body = serde_json::json!({ "state": readiness.state, "detail": readiness.reason });
-        (readiness.ready(), body.to_string())
+        (readiness.ready(), serde_json::to_string(&readiness).unwrap_or_default())
     }
 
     /// Public `/status` body, now
     fn public_status_json(&self) -> String {
-        let sources = self.sources.get();
-        let chain =
-            sources.map(|sources| Chain::of(sources, &sources.grpc_snapshots.load(), self.network));
-        let status = public_status(self.current_readiness(), self.network, chain, &self.configured);
+        let loaded = self.sources.get().map(|sources| (sources, sources.grpc_snapshots.load()));
+        let booted = loaded.as_ref().map(|(sources, grpc_snapshot)| (*sources, &**grpc_snapshot));
+        let chain = match booted {
+            Some((_, grpc_snapshot)) => Chain::of(grpc_snapshot, self.network),
+            None => Chain::unbooted(self.network),
+        };
+        let status = public_status(self.readiness_at(booted), chain, &self.configured);
         serde_json::to_string(&status).unwrap_or_default()
     }
 
@@ -350,10 +364,10 @@ impl DaemonStatus {
     pub(crate) fn emit_gauges(&self) {
         let readiness = self.current_readiness();
         for state in DaemonState::ALL {
-            let now = u8::from(state == readiness.state);
+            let now = u8::from(state == readiness.state());
             metrics::gauge!(STATE, "state" => state.label()).set(f64::from(now));
         }
-        let reason = readiness.reason.map(DaemonReason::label);
+        let reason = readiness.reason().map(DaemonReason::label);
         for label in DaemonReason::LABELS {
             metrics::gauge!(REASON, "reason" => label)
                 .set(f64::from(u8::from(Some(label) == reason)));
@@ -367,7 +381,7 @@ impl DaemonStatus {
     /// - Before boot: bootstrap phase + bytes
     pub(crate) fn startup(&self) -> Startup {
         let readiness = self.current_readiness();
-        let started = readiness.ready() || readiness.state == DaemonState::Held;
+        let started = readiness.ready() || readiness.state() == DaemonState::Held;
         let Some(sources) = self.sources.get() else {
             return Startup { started, progress: self.bootstrap_progress() };
         };
@@ -395,13 +409,12 @@ impl DaemonStatus {
         self.bootstrap_lock().clone()
     }
 
-    /// While a bootstrap runs: its bytes (`rate` downloading only)
-    fn bootstrap_bytes(&self) -> Option<Progress> {
-        self.current_bootstrap().map(|bootstrap| Progress {
-            done: bootstrap.done,
-            total: bootstrap.total,
-            unit: Unit::Byte,
-            rate: bootstrap.rate.map(|rate| rate as f64),
+    fn bootstrap_download(&self) -> Option<Download> {
+        self.current_bootstrap().map(|bootstrap| Download {
+            phase: bootstrap.phase,
+            bytes: bootstrap.done,
+            total_bytes: bootstrap.total,
+            bytes_per_sec: bootstrap.rate,
         })
     }
 
@@ -424,20 +437,27 @@ impl zaino_grpc::Health for DaemonStatus {
     }
 }
 
-/// Public `/status` (gRPC listener): readiness + chain position + counts, safe for the open
-/// internet (no validator address, peer, disk, mempool or tailnet name)
+/// Public `/status` (gRPC listener), safe for the open internet (no validator address, peer,
+/// disk, mempool or tailnet name)
+///
+/// - `indexes` = configured index → RPCs it gates (an RPC naming no index needs none)
 #[derive(Debug, Serialize, PartialEq)]
 struct PublicStatus {
     #[serde(flatten)]
     readiness: Readiness,
-    version: &'static str,
+    chain: Chain,
+    build: Build,
+    indexes: BTreeMap<&'static str, Vec<&'static str>>,
+}
+
+/// `tip` = verified best, `served` = the height RPCs answer at (both `null` before boot)
+#[derive(Debug, Serialize, PartialEq)]
+struct Chain {
     network: &'static str,
     tip: Option<PublicBlock>,
     served: Option<u32>,
     validators: Option<ValidatorCounts>,
-    indexes: IndexCounts,
-    egress: Option<Egress>,
-    info: Option<serde_json::Value>,
+    alarms: Vec<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -446,99 +466,53 @@ struct PublicBlock {
     hash: String,
 }
 
-/// `connected` = answering (live or catching up)
+/// `answering` = live or catching up
 #[derive(Debug, Serialize, PartialEq)]
 struct ValidatorCounts {
-    configured: usize,
-    connected: usize,
+    trusted: usize,
+    answering: usize,
 }
 
-/// `enabled` of the `total` indexes zainod can build
 #[derive(Debug, Serialize, PartialEq)]
-struct IndexCounts {
-    enabled: Vec<&'static str>,
-    total: usize,
-}
-
-/// Booted facts of the public status (`None` before boot)
-struct Chain {
-    tip: Option<PublicBlock>,
-    served: Option<u32>,
-    validators: ValidatorCounts,
-    egress: Option<Egress>,
-    info: Option<serde_json::Value>,
+struct Build {
+    version: &'static str,
 }
 
 impl Chain {
-    fn of(sources: &Sources, grpc_snapshot: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
+    fn of(grpc_snapshot: &GrpcSnapshot<DiskView>, network: NetworkType) -> Self {
         let tips = grpc_snapshot.tips();
         let trusted_validators = grpc_snapshot.chain_view().trusted_validators();
         let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
-        let info = zaino_grpc::lightd_info(grpc_snapshot, network, env!("CARGO_PKG_VERSION"));
         Self {
+            network: crate::config::network_name(network),
             tip: tips.best.map(|best| PublicBlock {
                 height: u32::from(best.height),
                 hash: best.hash.to_string(),
             }),
             served: tips.served.map(|served| u32::from(served.height)),
-            validators: ValidatorCounts {
-                configured: trusted_validators.len(),
-                connected: trusted_validators.iter().filter(answering).count(),
-            },
-            egress: *sources.egress.borrow(),
-            info: info.map(lightd_json),
+            validators: Some(ValidatorCounts {
+                trusted: trusted_validators.len(),
+                answering: trusted_validators.iter().filter(answering).count(),
+            }),
+            alarms: zaino_grpc_snapshot::notes(grpc_snapshot),
         }
+    }
+
+    fn unbooted(network: NetworkType) -> Self {
+        let network = crate::config::network_name(network);
+        Self { network, tip: None, served: None, validators: None, alarms: Vec::new() }
     }
 }
 
-/// `GetLightdInfo` as lightwalletd's JSON names it (camelCase, every field)
-fn lightd_json(info: zaino_grpc::LightdInfo) -> serde_json::Value {
-    serde_json::json!({
-        "version": info.version,
-        "vendor": info.vendor,
-        "taddrSupport": info.taddr_support,
-        "chainName": info.chain_name,
-        "saplingActivationHeight": info.sapling_activation_height,
-        "consensusBranchId": info.consensus_branch_id,
-        "blockHeight": info.block_height,
-        "gitCommit": info.git_commit,
-        "branch": info.branch,
-        "buildDate": info.build_date,
-        "buildUser": info.build_user,
-        "estimatedHeight": info.estimated_height,
-        "zcashdBuild": info.zcashd_build,
-        "zcashdSubversion": info.zcashd_subversion,
-        "donationAddress": info.donation_address,
-        "upgradeName": info.upgrade_name,
-        "upgradeHeight": info.upgrade_height,
-        "lightwalletProtocolVersion": info.lightwallet_protocol_version,
-    })
-}
-
-fn public_status(
-    readiness: Readiness,
-    network: NetworkType,
-    chain: Option<Chain>,
-    configured: &[IndexKind],
-) -> PublicStatus {
-    let all = IndexKind::ALL;
-    let enabled = all.into_iter().filter(|kind| configured.contains(kind)).map(IndexKind::name);
-    let (tip, served, validators, egress, info) = match chain {
-        Some(chain) => (chain.tip, chain.served, Some(chain.validators), chain.egress, chain.info),
-        None => (None, None, None, None, None),
-    };
+fn public_status(readiness: Readiness, chain: Chain, configured: &[IndexKind]) -> PublicStatus {
+    let gated = |kind: &IndexKind| (kind.name(), zaino_grpc::rpcs_gated_by(*kind).collect());
     PublicStatus {
         readiness,
-        version: env!("CARGO_PKG_VERSION"),
-        network: crate::config::network_name(network),
-        tip,
-        served,
-        validators,
-        indexes: IndexCounts { enabled: enabled.collect(), total: all.len() },
-        egress,
-        info,
+        chain,
+        build: Build { version: env!("CARGO_PKG_VERSION") },
+        indexes: configured.iter().map(gated).collect(),
     }
 }
 
@@ -555,16 +529,16 @@ pub(crate) struct Startup {
 mod tests {
     use super::*;
 
-    /// Every state rule, first match wins, as `/status` serializes it
+    /// Every state rule, first match wins, as `/readyz` serializes it
     ///
-    /// - Across all: `ready` ⇔ serving or degraded, `detail` only when down, degraded or held
-    /// - `progress` only provisioning or syncing
+    /// - `state` = its [`DaemonState`] label, `ready` ⇔ serving or degraded
+    /// - held = the operator's intent over every condition, detail = its GOAWAYs
     #[test]
-    fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
+    fn the_state_is_the_first_matching_rule_with_its_own_detail() {
         let stage = |serving_status, overload, target: Option<u32>, rate: Option<f64>| {
-            let notes = vec!["1 validator on a stale tip".to_owned()];
-            let done = Some(3_514_194);
-            Stage::Booted(Booted { serving_status, overload, done, target, rate, notes })
+            let (height, egress) =
+                (Some(3_514_194), Some(Egress { start: 1_790_000_400, mbps: 12.5 }));
+            Stage::Booted(Booted { serving_status, overload, height, target, rate, egress })
         };
         let booted = |serving_status, target, rate| stage(serving_status, None, target, rate);
         let saturated = Some(OverloadCause::NetworkSaturated);
@@ -572,229 +546,220 @@ mod tests {
             |serving_status| stage(serving_status, saturated, Some(3_515_406), Some(6.2));
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
-        let stale = serde_json::json!(["1 validator on a stale tip"]);
+        let because = |reason: &str, message: &str| serde_json::json!({ "reason": reason, "message": message });
+        let stalled = because("runtime_stalled", "Runtime stalled");
+        let saturated = because("overloaded", "Overloaded: network saturated");
+        let unvouched = because("tip_unvouched", "No trusted validator vouches for the tip");
+        let downloading = Download {
+            phase: SnapshotPhase::Downloading,
+            bytes: 4 << 30,
+            total_bytes: 9 << 30,
+            bytes_per_sec: Some(50_000_000),
+        };
         let cases = [
             (
                 "plain startup",
+                Hold::Off,
                 true,
                 starting(None, false),
-                serde_json::json!({ "state": "provisioning", "progress": null, "detail": null, "notes": [] }),
+                serde_json::json!({ "state": "provisioning", "detail": null }),
+            ),
+            (
+                "bootstrap downloading",
+                Hold::Off,
+                true,
+                starting(Some(downloading), false),
+                serde_json::json!({
+                    "state": "provisioning",
+                    "detail": {
+                        "phase": "downloading", "bytes": 4u64 << 30, "total_bytes": 9u64 << 30,
+                        "bytes_per_sec": 50_000_000,
+                    },
+                }),
             ),
             (
                 "boot waiting on a validator",
+                Hold::Off,
                 true,
                 starting(None, true),
                 serde_json::json!({
-                    "state": "down", "progress": null, "detail": "No trusted validator reachable",
-                    "notes": [],
+                    "state": "down",
+                    "detail": because("no_validator_reachable", "No trusted validator reachable"),
                 }),
             ),
             (
                 "runtime stalled beats serving",
+                Hold::Off,
                 false,
                 booted(ServingStatus::Serving, Some(3_514_194), None),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
+                serde_json::json!({ "state": "down", "detail": stalled }),
             ),
             (
                 "runtime stalled beats overloaded",
+                Hold::Off,
                 false,
                 overloaded(ServingStatus::Serving),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
-            ),
-            (
-                "overloaded beats syncing",
-                true,
-                overloaded(ServingStatus::Syncing),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
-            ),
-            (
-                "overloaded beats down",
-                true,
-                overloaded(ServingStatus::Down),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
-            ),
-            (
-                "overloaded beats degraded",
-                true,
-                overloaded(ServingStatus::Degraded),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded: network saturated", "notes": stale }),
+                serde_json::json!({ "state": "down", "detail": stalled }),
             ),
             (
                 "runtime stalled beats degraded",
+                Hold::Off,
                 false,
                 booted(ServingStatus::Degraded, None, None),
-                serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
+                serde_json::json!({ "state": "down", "detail": stalled }),
+            ),
+            (
+                "overloaded beats syncing",
+                Hold::Off,
+                true,
+                overloaded(ServingStatus::Syncing),
+                serde_json::json!({ "state": "down", "detail": saturated }),
+            ),
+            (
+                "overloaded beats down",
+                Hold::Off,
+                true,
+                overloaded(ServingStatus::Down),
+                serde_json::json!({ "state": "down", "detail": saturated }),
+            ),
+            (
+                "overloaded beats degraded",
+                Hold::Off,
+                true,
+                overloaded(ServingStatus::Degraded),
+                serde_json::json!({ "state": "down", "detail": saturated }),
             ),
             (
                 "unvouched tip, fresh: peers carried it",
+                Hold::Off,
                 true,
                 booted(ServingStatus::Degraded, Some(3_514_194), None),
-                serde_json::json!({
-                    "state": "degraded", "progress": null,
-                    "detail": "No trusted validator vouches for the tip", "notes": stale,
-                }),
+                serde_json::json!({ "state": "degraded", "detail": unvouched }),
             ),
             (
                 "unvouched tip, stale",
+                Hold::Off,
                 true,
                 booted(ServingStatus::Down, Some(3_515_406), Some(6.2)),
-                serde_json::json!({
-                    "state": "down", "progress": null,
-                    "detail": "No trusted validator vouches for the tip", "notes": stale,
-                }),
+                serde_json::json!({ "state": "down", "detail": unvouched }),
             ),
             (
                 "syncing",
+                Hold::Off,
                 true,
                 booted(ServingStatus::Syncing, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
-                    "state": "syncing", "detail": null, "notes": stale,
-                    "progress": { "done": 3_514_194, "total": 3_515_406, "unit": "block", "rate": 6.2 },
+                    "state": "syncing",
+                    "detail": { "height": 3_514_194, "target": 3_515_406, "blocks_per_sec": 6.2 },
                 }),
             ),
             (
                 "syncing, no header chain yet",
+                Hold::Off,
                 true,
                 booted(ServingStatus::Syncing, None, None),
-                serde_json::json!({ "state": "syncing", "progress": null, "detail": null, "notes": stale }),
+                serde_json::json!({ "state": "syncing", "detail": null }),
             ),
             (
-                "serving",
+                "serving: its last egress window",
+                Hold::Off,
                 true,
                 booted(ServingStatus::Serving, Some(3_514_194), Some(1.0)),
-                serde_json::json!({ "state": "serving", "progress": null, "detail": null, "notes": stale }),
-            ),
-            (
-                "bootstrap downloading",
-                true,
-                starting(
-                    Some(Progress {
-                        done: 4 << 30,
-                        total: 9 << 30,
-                        unit: Unit::Byte,
-                        rate: Some(5e7),
-                    }),
-                    false,
-                ),
                 serde_json::json!({
-                    "state": "provisioning", "detail": null, "notes": [],
-                    "progress": { "done": 4u64 << 30, "total": 9u64 << 30, "unit": "byte", "rate": 5e7 },
+                    "state": "serving", "detail": { "start": 1_790_000_400, "mbps": 12.5 },
                 }),
             ),
-        ];
-        for (case, live, stage, expected) in cases {
-            let readiness = readiness(Hold::Off, live, stage);
-            let state = readiness.state;
-            assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            let serving = matches!(state, DaemonState::Serving | DaemonState::Degraded);
-            assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
-            let detailed = matches!(state, DaemonState::Down | DaemonState::Degraded);
-            assert_eq!(readiness.reason.is_some(), detailed, "{case}: detail ⇔ down or degraded");
-            let progressing = matches!(state, DaemonState::Provisioning | DaemonState::Syncing);
-            assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
-        }
-
-        // held: the operator's intent over every condition, notes kept, detail = its GOAWAYs
-        let held = |detail, notes| serde_json::json!({ "state": "held", "progress": null, "detail": detail, "notes": notes });
-        let held_cases = [
             (
                 "held while serving",
                 Hold::Draining,
                 true,
                 booted(ServingStatus::Serving, None, None),
-                held("GOAWAY pending", stale.clone()),
+                serde_json::json!({
+                    "state": "held", "detail": because("goaway_pending", "GOAWAY pending"),
+                }),
             ),
             (
-                "held while overloaded",
+                "held while overloaded, stalled",
                 Hold::Drained,
-                true,
-                overloaded(ServingStatus::Down),
-                held("GOAWAY sent", stale.clone()),
-            ),
-            (
-                "held while degraded",
-                Hold::Drained,
-                true,
-                booted(ServingStatus::Degraded, None, None),
-                held("GOAWAY sent", stale.clone()),
-            ),
-            (
-                "held with a stalled runtime",
-                Hold::Draining,
                 false,
-                booted(ServingStatus::Syncing, None, None),
-                held("GOAWAY pending", stale.clone()),
+                overloaded(ServingStatus::Down),
+                serde_json::json!({
+                    "state": "held", "detail": because("goaway_sent", "GOAWAY sent"),
+                }),
             ),
             (
                 "held while booting, no validator",
                 Hold::Drained,
                 true,
                 starting(None, true),
-                held("GOAWAY sent", serde_json::json!([])),
+                serde_json::json!({
+                    "state": "held", "detail": because("goaway_sent", "GOAWAY sent"),
+                }),
             ),
         ];
-        for (case, hold, live, stage, expected) in held_cases {
+        for (case, hold, live, stage, expected) in cases {
             let readiness = readiness(hold, live, stage);
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            assert!(!readiness.ready(), "{case}: never ready");
+            assert_eq!(expected["state"], readiness.state().label(), "{case}: label = serde");
+            let serving = matches!(readiness.state(), DaemonState::Serving | DaemonState::Degraded);
+            assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
         }
     }
 
-    /// Public `/status`, field by field
-    ///
-    /// - Before boot (chain facts `null`), then booted with a tip, one of two validators
-    ///   answering, an egress window and `GetLightdInfo`
-    /// - Never a validator address, peer, disk or mempool
+    /// Public `/status`: before boot (chain facts `null`), then booted with a tip, one of two
+    /// validators answering; never a validator address, peer, disk or mempool
     #[test]
-    fn the_public_status_projects_readiness_and_counts_only() {
-        let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
-        let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
-        let readiness = |stage| readiness(Hold::Off, true, stage);
-        let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 6 });
-        let version = env!("CARGO_PKG_VERSION");
+    fn the_public_status_nests_state_chain_build_and_index_gated_rpcs() {
+        let configured = [IndexKind::TreeState, IndexKind::UtxoSet];
+        let indexes = serde_json::json!({
+            "tree_state": ["GetTreeState", "GetLatestTreeState", "GetSubtreeRoots"],
+            "utxo_set": [],
+        });
+        let build = serde_json::json!({ "version": env!("CARGO_PKG_VERSION") });
 
-        let before = public_status(readiness(starting), NetworkType::Main, None, &configured);
+        let before = public_status(
+            Readiness::Provisioning(None),
+            Chain::unbooted(NetworkType::Main),
+            &configured,
+        );
         assert_eq!(
             serde_json::to_value(before).expect("serializes"),
             serde_json::json!({
-                "state": "provisioning", "progress": null, "detail": null, "notes": [],
-                "version": version, "network": "mainnet", "tip": null, "served": null,
-                "validators": null, "indexes": indexes, "egress": null, "info": null,
+                "state": "provisioning", "detail": null,
+                "chain": {
+                    "network": "mainnet", "tip": null, "served": null, "validators": null,
+                    "alarms": [],
+                },
+                "build": build, "indexes": indexes,
             }),
         );
 
-        let serving = Stage::Booted(Booted {
-            serving_status: ServingStatus::Serving,
-            overload: None,
-            done: Some(3_515_400),
-            target: Some(3_515_406),
-            rate: None,
-            notes: Vec::new(),
-        });
         let chain = Chain {
+            network: "mainnet",
             tip: Some(PublicBlock { height: 3_515_406, hash: "00ab".to_owned() }),
             served: Some(3_515_400),
-            validators: ValidatorCounts { configured: 2, connected: 1 },
-            egress: Some(Egress { start: 1_790_000_400, mbps: 12.5 }),
-            info: Some(serde_json::json!({ "blockHeight": 3_515_400 })),
+            validators: Some(ValidatorCounts { trusted: 2, answering: 1 }),
+            alarms: vec!["1 validator on a stale tip".to_owned()],
         };
-        let after = public_status(readiness(serving), NetworkType::Main, Some(chain), &configured);
+        let serving = Readiness::Serving(Some(Egress { start: 1_790_000_400, mbps: 12.5 }));
+        let after = public_status(serving, chain, &configured);
         assert_eq!(
             serde_json::to_value(after).expect("serializes"),
             serde_json::json!({
-                "state": "serving", "progress": null, "detail": null, "notes": [],
-                "version": version, "network": "mainnet",
-                "tip": { "height": 3_515_406, "hash": "00ab" }, "served": 3_515_400,
-                "validators": { "configured": 2, "connected": 1 }, "indexes": indexes,
-                "egress": { "start": 1_790_000_400, "mbps": 12.5 },
-                "info": { "blockHeight": 3_515_400 },
+                "state": "serving", "detail": { "start": 1_790_000_400, "mbps": 12.5 },
+                "chain": {
+                    "network": "mainnet", "tip": { "height": 3_515_406, "hash": "00ab" },
+                    "served": 3_515_400, "validators": { "trusted": 2, "answering": 1 },
+                    "alarms": ["1 validator on a stale tip"],
+                },
+                "build": build, "indexes": indexes,
             }),
         );
     }
 
-    /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail, each one-hot
+    /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail reason, each one-hot
     ///
-    /// - state labels = their serde spelling, every reason variant labelled
+    /// - every reason variant labelled
     /// - not booted = provisioning, no reason; a zero-delay operator hold = held, its GOAWAYs sent
     #[test]
     fn the_state_gauges_are_readyz_one_hot() {
@@ -822,8 +787,6 @@ mod tests {
         };
 
         let states = DaemonState::ALL.map(DaemonState::label);
-        let spellings = DaemonState::ALL.map(|state| (serde_json::json!(state), state.label()));
-        assert!(spellings.iter().all(|(serde, label)| serde == label), "{spellings:?}");
         let reasons = [
             DaemonReason::NoValidatorReachable,
             DaemonReason::TipUnvouched,

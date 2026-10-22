@@ -46,13 +46,8 @@ pub use proxy_protocol::TrustedProxies;
 pub use service::{RouteDeps, Routing};
 pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};
-pub use zaino_proto::proto::service::LightdInfo;
 
-/// `GetLightdInfo`'s answer from `grpc_snapshot` (`None` = the RPC answers `UNAVAILABLE`)
-pub fn lightd_info<V>(
-    grpc_snapshot: &zaino_grpc_snapshot::GrpcSnapshot<V>,
-    network: zcash_protocol::consensus::NetworkType,
-    version: &str,
-) -> Option<LightdInfo> {
-    routes::info::lightd_info(grpc_snapshot, network, version).ok()
+/// RPCs unserved without `kind` (`ROUTES` order; none = an index no RPC reads directly)
+pub fn rpcs_gated_by(kind: zaino_persistence::IndexKind) -> impl Iterator<Item = &'static str> {
+    service::ROUTES.into_iter().filter(move |row| row.index == Some(kind)).map(|row| row.name)
 }

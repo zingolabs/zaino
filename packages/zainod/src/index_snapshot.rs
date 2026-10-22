@@ -21,7 +21,7 @@ use std::{
 
 use futures::future::try_join_all;
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 use zaino_persistence::IndexKind;
@@ -61,7 +61,8 @@ pub(crate) struct SnapshotProgress {
 }
 
 /// Declared in pipeline order (`Ord`: earliest = slowest)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum SnapshotPhase {
     Downloading,
     Verifying,

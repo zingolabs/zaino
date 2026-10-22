@@ -87,7 +87,7 @@ describe_metrics();                                     // once, at boot
 emit_gauges(&grpc_snapshots.load(), &nfs_progress);     // per scrape, then render
 ```
 
-- `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `notes`).
+- `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `chain.alarms`).
 - Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
   `zaino_fetch_height` (`handed`), `zaino_index_synced{index}`, and the chain view's
   `zaino_chainview_*` state:

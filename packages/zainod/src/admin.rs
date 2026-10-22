@@ -298,7 +298,7 @@ mod tests {
         // no indexer booted in this test = sources unpublished
         let readyz = get("/readyz", "*/*").await;
         assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
-        assert!(readyz.ends_with(r#"{"detail":null,"state":"provisioning"}"#), "{readyz}");
+        assert!(readyz.ends_with(r#"{"state":"provisioning","detail":null}"#), "{readyz}");
         assert!(get("/nope", "*/*").await.starts_with("HTTP/1.1 404"));
     }
 

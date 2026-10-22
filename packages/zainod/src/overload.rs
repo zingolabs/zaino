@@ -2,7 +2,8 @@
 //! `[grpc.overload]`
 //!
 //! - `off` = never `Overloaded`; `<key>` = that key's value; both survive restarts (as `held`)
-//! - the running zainod reads them every second → the gRPC overload latch + `/status` notes
+//! - the running zainod reads them every second → the gRPC overload latch (a change = WARN; never
+//!   on public `/status`)
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,8 +12,6 @@ use std::time::Duration;
 
 use tracing::warn;
 use zaino_grpc::{AdmissionState, OverloadLimits};
-
-use crate::status::DaemonStatus;
 
 const OFF: &str = "off";
 
@@ -37,7 +36,7 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
-    /// `/status` notes (none while nothing is overridden)
+    /// Log notes (none while nothing is overridden)
     fn notes(&self) -> Vec<String> {
         let off =
             (!self.detection).then(|| "Overload detection off (zainod overload on)".to_owned());
@@ -150,14 +149,9 @@ pub(super) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ov
     Ok(ExitCode::SUCCESS)
 }
 
-/// Every second for the process's life: the markers → `admission` + `status` notes (a change =
-/// WARN; unreadable or invalid = WARN, settings kept)
-pub(crate) fn spawn(
-    admission: Arc<AdmissionState>,
-    status: Arc<DaemonStatus>,
-    state_dir: &Path,
-    config: OverloadLimits,
-) {
+/// Every second for the process's life: the markers → `admission` (a change = WARN; unreadable or
+/// invalid = WARN, settings kept)
+pub(crate) fn spawn(admission: Arc<AdmissionState>, state_dir: &Path, config: OverloadLimits) {
     let dir: PathBuf = state_dir.join("overload");
     tokio::spawn(async move {
         let mut current =
@@ -174,7 +168,6 @@ pub(crate) fn spawn(
                 }
             };
             admission.set_overload(settings.limits.clone(), settings.detection);
-            status.set_overload_notes(settings.notes());
             warn!(notes = ?settings.notes(), "Overload settings changed by operator");
             current = settings;
         }

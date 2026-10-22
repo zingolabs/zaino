@@ -33,9 +33,8 @@ pub(crate) fn get_standard_fee<V>(
     Ok(unary_response(frame(&standard_fee)))
 }
 
-/// `GetLightdInfo`'s message from one `GrpcSnapshot` (fields: `docs/rpc_api.md`; also the
-/// crate's public `lightd_info`)
-pub(crate) fn lightd_info<V>(
+/// `GetLightdInfo`'s message from one `GrpcSnapshot` (fields: `docs/rpc_api.md`)
+fn lightd_info<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,
     version: &str,

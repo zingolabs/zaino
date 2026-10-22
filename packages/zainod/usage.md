@@ -22,11 +22,11 @@ its own thread and current-thread runtime. A probe answered from a saturated ser
 would measure that runtime's queue, and a timed-out liveness probe gets the pod killed. Who
 may reach it: [running.md: Network exposure](../../docs/running.md#network-exposure).
 
-| Path       | Answers                                | Fails when                     |
-| ---------- | -------------------------------------- | ------------------------------ |
-| `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
-| `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
-| `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` or `degraded` (`503`) |
+| Path       | Answers                                | Fails when                                         |
+| ---------- | -------------------------------------- | -------------------------------------------------- |
+| `/metrics` | Prometheus exposition, process metrics | render panic (`500`)                               |
+| `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)                       |
+| `/readyz`  | `{"state", "detail"}` (below)          | `state` other than `serving` or `degraded` (`503`) |
 
 `/readyz`, the public [`/status`](#public-health-on-the-grpc-listener) and the `/metrics` gauges
 each read **one** `GrpcSnapshot` load (`zaino-grpc-snapshot`): none of them can mix two
@@ -54,14 +54,14 @@ the recorder, and so is any peer identity (`addr`, `remote_ip`, `user_agent`, `r
 
 `state` is one of six, and the first rule that matches wins:
 
-| `state`        | When                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------- |
-| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                      |
-| `provisioning` | not booted yet: an index-snapshot bootstrap, or plain startup                            |
+| `state`        | When                                                                                                                                                                                                                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                                                                                                                                                                                                                                    |
+| `provisioning` | not booted yet: an index-snapshot bootstrap, or plain startup                                                                                                                                                                                                                                          |
 | `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), the best block more than one past the last a trusted validator vouched for while not `degraded`, or every trusted validator down under a stale best (`[p2p]` off: the tip frozen) |
-| `degraded`     | the best block more than one past the last vouched, but synced to it while fresh (its block time within 24 target spacings of the clock: p2p peers carried the tip) |
-| `syncing`      | booted, but the served tip is not the best yet, or a validator's mempool is off and none is on (zebrad's, for minutes after a catch-up) |
-| `serving`      | otherwise                                                                                |
+| `degraded`     | the best block more than one past the last vouched, but synced to it while fresh (its block time within 24 target spacings of the clock: p2p peers carried the tip)                                                                                                                                    |
+| `syncing`      | booted, but the served tip is not the best yet, or a validator's mempool is off and none is on (zebrad's, for minutes after a catch-up)                                                                                                                                                                |
+| `serving`      | otherwise                                                                                                                                                                                                                                                                                              |
 
 - `ready` is true exactly when `state` is `serving` or `degraded`, and only then does `/readyz`
   answer `200`. A degraded node keeps serving so a load balancer keeps routing to it during an
@@ -72,28 +72,39 @@ the recorder, and so is any peer identity (`addr`, `remote_ip`, `user_agent`, `r
 - `syncing` follows `synced`
   ([architecture §8](../../docs/architecture.md#8-serving-one-grpcsnapshot)). Requests are never
   refused for it.
-- `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
-  validator reachable` (boot), `No trusted validator vouches for the tip`, `Runtime stalled` or
-  `Overloaded: <cause>` (a degraded node only ever shows the second). One block past the last
-  vouch is the race a validator's next poll closes (a peer relayed the block first), not a reason.
-  When `held` it names the drain: `GOAWAY pending` or `GOAWAY sent`.
-- `Overloaded: <cause>` takes a node persistently short of capacity out of a load balancer
-  (causes and `[grpc.overload]`: [zaino-grpc: Overload](../zaino-grpc/usage.md#overload);
-  overrides: [Operator overload overrides](#operator-overload-overrides)).
-- `progress` is set only while `provisioning` or `syncing`, as `{done, total, unit, rate}`:
-  - A bootstrap reports `unit` `byte`, with `rate` in bytes/s while downloading.
-  - Syncing reports `unit` `block`:
-    - `done` is the served height, or the handed one before anything is served.
-    - `total` is the verified best height, or a catching-up validator's network estimate when
-      that is higher.
-    - `rate` is blocks per second over the last ~60 s of the phase still outstanding: finalized
-      blocks handed to the indexes, then the served height climbing through the non-finalized
-      window.
-  - `progress` is `null` before the first verified header.
-- `notes` holds one sentence per raised alarm
-  ([architecture §11](../../docs/architecture.md#11-telemetry)), or `[]` when none.
-- `progress` and `notes` appear on the public `/status`; `/readyz` carries `state` and `detail`
-  only.
+- One `detail` shape per state (`null` = nothing measured yet):
+
+| `state`                    | `detail`                                                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `provisioning`             | index-snapshot bootstrap `{phase, bytes, total_bytes, bytes_per_sec}` (see [Index snapshot](#index-snapshot)); `null` on plain startup |
+| `syncing`                  | `{height, target, blocks_per_sec}`; `null` before the first verified header                                                            |
+| `serving`                  | gRPC egress, last closed UTC 10-minute window: `{start, mbps}`; `null` until the first closes                                          |
+| `degraded`, `down`, `held` | `{reason, message}`                                                                                                                    |
+
+- Syncing:
+  - `height` is the served height, or the handed one before anything is served.
+  - `target` is the verified best height, or a catching-up validator's network estimate when
+    that is higher.
+  - `blocks_per_sec` is over the last ~60 s of the phase still outstanding: finalized blocks
+    handed to the indexes, then the served height climbing through the non-finalized window.
+- Serving: `mbps` is rounded to 3 significant figures, under 0.1 published as 0. `start` is the
+  window's start (unix seconds). The counter is read at each window boundary; the first window
+  after boot is measured from boot.
+- `reason` is a stable code, `message` its sentence:
+
+| `reason`                        | `message`                                  | `state`            |
+| ------------------------------- | ------------------------------------------ | ------------------ |
+| `no_validator_reachable`        | `No trusted validator reachable`           | `down` (boot)      |
+| `tip_unvouched`                 | `No trusted validator vouches for the tip` | `down`, `degraded` |
+| `runtime_stalled`               | `Runtime stalled`                          | `down`             |
+| `overloaded`                    | `Overloaded: <cause>`                      | `down`             |
+| `goaway_pending`, `goaway_sent` | `GOAWAY pending`, `GOAWAY sent`            | `held`             |
+
+- One block past the last vouch is the race a validator's next poll closes (a peer relayed the
+  block first), not a reason.
+- `overloaded` takes a node persistently short of capacity out of a load balancer (causes and
+  `[grpc.overload]`: [zaino-grpc: Overload](../zaino-grpc/usage.md#overload); overrides:
+  [Operator overload overrides](#operator-overload-overrides)).
 
 ## Operator hold
 
@@ -106,8 +117,8 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
   holding a node requires write access to its state directory.
 - The running zainod checks the marker every second, from process start (before the
   index-snapshot bootstrap and before the gRPC listener binds). Held:
-  - `state` becomes `held`: `/readyz` answers `503` with `detail` `GOAWAY pending`, then
-    `GOAWAY sent` once the delay below has passed.
+  - `state` becomes `held`: `/readyz` answers `503` with `detail.reason` `goaway_pending`, then
+    `goaway_sent` once the delay below has passed.
   - It outranks every other state. A held node that is overloaded or has lost its validators
     still reports `held`, and so does a held node stopping, so a planned stop's last answer
     before exit is `held`.
@@ -130,7 +141,7 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
   - `resume`, when `[metrics] listen_address` is set: the state the running zainod reports
     within 5 s, or that none answered (the marker applies when it next starts).
   - `hold`, when `[metrics] listen_address` is set: blocks until the running zainod's `/readyz`
-    reports `GOAWAY sent` (at most 1 s poll + `hold_goaway_delay_secs` + 1 s + 5 s), then
+    reports `goaway_sent` (at most 1 s poll + `hold_goaway_delay_secs` + 1 s + 5 s), then
     `safe to stop`; or names the state it saw instead, or that none answered.
   - `hold` without one: blocks for the longest a running zainod can take to send its GOAWAYs
     (1 s poll + `hold_goaway_delay_secs` + 1 s), counted from the command, so an old marker or
@@ -141,14 +152,14 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
 ## Operator overload overrides
 
 `zainod overload …` writes markers in `<[serve] state_dir>/overload/`, over `[grpc.overload]`,
-that survive restarts like `held`; the running zainod applies them within a second, logs a WARN
-and lists them in `/status` `notes`. Each prints the settings in force.
+that survive restarts like `held`; the running zainod applies them within a second and logs a
+WARN naming them. Each prints the settings in force.
 
-| Command | Marker | Effect |
-| ------- | ------ | ------ |
-| `off` / `on` | `off` | never report `Overloaded` / report again |
+| Command             | Marker                     | Effect                                                      |
+| ------------------- | -------------------------- | ----------------------------------------------------------- |
+| `off` / `on`        | `off`                      | never report `Overloaded` / report again                    |
 | `set <key> <value>` | `<key>` (its value inside) | that `[grpc.overload]` key overridden (validated as config) |
-| `unset <key>` | `<key>` removed | back to the config's value |
+| `unset <key>`       | `<key>` removed            | back to the config's value                                  |
 
 ## Public health on the gRPC listener
 
@@ -156,13 +167,13 @@ The gRPC listener also answers two plain `GET`s, over HTTPS/1.1 or h2, for load-
 monitors and public dashboards; a `200` from them also proves TLS and the listener are up. Rate
 limits and status codes: [zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack).
 
-| Path | Answers |
-|---|---|
+| Path      | Answers                                                                                             |
+| --------- | --------------------------------------------------------------------------------------------------- |
 | `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving` or `degraded`, else `503` |
-| `/status` | the public projection below, always `200` |
+| `/status` | the public projection below, always `200`                                                           |
 
 The listener binds at process start, before an index-snapshot bootstrap or boot, so these paths
-answer `provisioning` (with progress) or `down` from the first second. Until boot finishes,
+answer `provisioning` (with its bytes) or `down` from the first second. Until boot finishes,
 every gRPC method answers `UNAVAILABLE`. A port already in use fails startup at once.
 
 `/status` is safe for the open internet. It carries no validator address, peer, disk, mempool
@@ -170,30 +181,33 @@ or tailnet name:
 
 ```json
 {
-  "state": "serving", "detail": null, "progress": null, "notes": [],
-  "version": "0.11.0-alpha.2", "network": "mainnet",
-  "tip": { "height": 3515406, "hash": "0000…" },
-  "served": 3515400,
-  "validators": { "configured": 2, "connected": 1 },
-  "indexes": { "enabled": ["utxo_set", "compact_block"], "total": 5 },
-  "egress": { "start": 1790000400, "mbps": 12.5 },
-  "info": { "version": "…", "blockHeight": 3515400, "…": "every GetLightdInfo field" }
+  "state": "serving",
+  "detail": { "start": 1790000400, "mbps": 12.5 },
+  "chain": {
+    "network": "mainnet",
+    "tip": { "height": 3515406, "hash": "0000…" },
+    "served": 3515400,
+    "validators": { "trusted": 2, "answering": 1 },
+    "alarms": []
+  },
+  "build": { "version": "0.11.0-alpha.4" },
+  "indexes": {
+    "compact_block": ["GetBlock", "GetBlockRange", "GetBlockRangeNullifiers"],
+    "utxo_set": []
+  }
 }
 ```
 
-- `state`, `detail`, `progress` and `notes` follow [the admin listener](#the-admin-listener)'s
-  rules.
-- `tip` is the verified best block and `served` is the served height.
-- In `validators`, `connected` counts the answering ones (live or catching up).
-- `egress` is gRPC bytes sent in the last *closed* UTC 10-minute window, in Mbit/s:
-  - It is rounded to 3 significant figures, and under 0.1 is published as 0.
-  - `start` is the window's start time (unix seconds).
-  - The counter is read at each window boundary. The first window after boot is measured from
-    boot.
-- `info` holds the `GetLightdInfo` fields under lightwalletd's camelCase names, as numbers and
-  strings, or `null` while that RPC would be `UNAVAILABLE`.
-- Before boot, `tip`, `served`, `validators`, `egress` and `info` are `null` (`egress` also until
-  its first window closes).
+- `state` and `detail` = `/readyz`'s body ([the admin listener](#the-admin-listener)'s rules).
+- `chain`:
+  - `tip` is the verified best block and `served` is the height RPCs answer at.
+  - `validators.answering` counts the trusted validators live or catching up.
+  - `alarms` holds one sentence per raised alarm
+    ([architecture §11](../../docs/architecture.md#11-telemetry)), or `[]` when none.
+  - Before boot, `tip`, `served` and `validators` are `null`.
+- `indexes` maps each configured index to the RPCs it gates. An RPC answers when `state` is
+  `serving` or `degraded` and either it names no index or its index is a key here; an index with
+  `[]` feeds other indexes and gates no RPC of its own.
 
 `/metrics` sets every state gauge from the `GrpcSnapshot` first (`zaino_best_tip`,
 `zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
@@ -208,13 +222,13 @@ The same task samples the disk every 30 s (a metric whose source is unreadable, 
 `/proc/self/io`, is left out rather than reported as zero; I/O pressure = the host's PSI, from the
 node exporter):
 
-| Metric | Labels | Answers |
-|---|---|---|
-| `zaino_disk_committed_bytes` | `index` | durable data, every table of the index summed |
-| `zaino_disk_cached_bytes` | `index` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch) |
-| `zaino_disk_bytes` | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
-| `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes` | `index` | room left on the index's filesystem |
-| `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` | | block-device bytes zainod moved (`/proc/self/io`) |
+| Metric                                                          | Labels  | Answers                                                                                     |
+| --------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `zaino_disk_committed_bytes`                                    | `index` | durable data, every table of the index summed                                               |
+| `zaino_disk_cached_bytes`                                       | `index` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch)        |
+| `zaino_disk_bytes`                                              | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
+| `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes`            | `index` | room left on the index's filesystem                                                         |
+| `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` |         | block-device bytes zainod moved (`/proc/self/io`)                                           |
 
 Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit_bytes_total`
 (`{index}`, [`zaino-persistence`](../zaino-persistence/usage.md)).
@@ -238,9 +252,9 @@ Restart=always
 TimeoutStartSec=15min
 ```
 
-| Message | When |
-|---|---|
-| `READY=1` | the first time `/readyz` passes (`serving` or `degraded`) or the node is held; nothing is sent after it |
+| Message                       | When                                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `READY=1`                     | the first time `/readyz` passes (`serving` or `degraded`) or the node is held; nothing is sent after it                            |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: index-snapshot bytes, the fetch height, the served height or an index height moved |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
@@ -301,16 +315,16 @@ with; `index.compact_block` may be disabled, and then neither is installed).
 - A manifest for another network, a hash mismatch or a permanent download error stops startup
   (a failed archive's staging is deleted).
 
-While it runs, the state is `provisioning`, and `/status` carries the bytes as `progress`:
+While it runs, the state is `provisioning`, and `detail` carries the bytes:
 
 ```json
-{"state": "provisioning", "detail": null, "notes": [],
- "progress": {"done": 27000000000, "total": 44500000000, "unit": "byte", "rate": 103000000.0}, …}
+{"state": "provisioning",
+ "detail": {"phase": "downloading", "bytes": 27000000000, "total_bytes": 44500000000, "bytes_per_sec": 103000000}, …}
 ```
 
-`total` = the fetched archives' cumulative bytes. `done` = bytes through the slowest archive's
-phase (each moves downloading → verifying → unpacking), archives already past it counted whole.
-`rate` bytes/s (downloading only). The `IndexSnapshot` component logs progress every 30 s:
+`total_bytes` = the fetched archives' cumulative bytes. `bytes` = bytes through the slowest
+archive's `phase` (`downloading` → `verifying` → `unpacking`), archives already past it counted
+whole. `bytes_per_sec` while downloading only (else `null`). The `IndexSnapshot` component logs progress every 30 s:
 
 ```text
 INFO  IndexSnapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
@@ -393,12 +407,12 @@ Shutdown and restarts: [running.md](../../docs/running.md#stopping-and-restarts)
 that logs the panic before aborting. `zainod verify`, `hold` and `resume` do not (stdout carries
 only their report or state). Everything is read from the environment:
 
-| Variable | Effect |
-|---|---|
-| `RUST_LOG` | Standard tracing filter. Unset, only zaino crates log at `info`; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=info,zaino_persistence=debug,tonic=warn`). |
-| `ZAINOLOG_FORMAT` | `terminal` (default, one line per event) or `json` (machine-parseable, spans included). |
-| `ZAINOLOG_COLOR` | `true`/`false` to force ANSI colour, `auto` (default) to colour only when stdout is a terminal. |
-| `ZAINOLOG_LOCATION` | `true` adds each event's source as `at=file:line`. Off by default. |
+| Variable            | Effect                                                                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RUST_LOG`          | Standard tracing filter. Unset, only zaino crates log at `info`; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=info,zaino_persistence=debug,tonic=warn`). |
+| `ZAINOLOG_FORMAT`   | `terminal` (default, one line per event) or `json` (machine-parseable, spans included).                                                                                                 |
+| `ZAINOLOG_COLOR`    | `true`/`false` to force ANSI colour, `auto` (default) to colour only when stdout is a terminal.                                                                                         |
+| `ZAINOLOG_LOCATION` | `true` adds each event's source as `at=file:line`. Off by default.                                                                                                                      |
 
 An unrecognised value for any `ZAINOLOG_*` variable, or a malformed `RUST_LOG`,
 stops startup with an error that names the variable. There is no fallback
@@ -436,42 +450,42 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        a
 
 What an operator sees at `info`:
 
-| Component | Event | Level | When |
-|---|---|---|---|
-| `Zainod` | `State changed` | by the new state | `/readyz`'s state or detail changed, within 1 s (`from`, `to`, `detail`, `after` = time in the last, `notes`). Level: `down` (overloaded included) error, `held` / `degraded` warn, the rest info. |
-| `Zainod` | `Not ready` | error / warn | Every 60 s while `down`, `degraded` or `held`, at the state's level (`state`, `detail`, `for` = since the change, `notes`). Syncing and serving log their own activity instead. |
-| `Grpc` | `Overload latched` / `Overload cleared` | warn / info | A cause's latch flips (`cause`, `detection`, the window's `signals`, `refused` share); `/readyz` names the first latched while detection is on. |
-| `ChainView` | `Chain view configured` | info | At startup (`validators`, `p2p`). |
-| `ChainView` | `Polling validator` | info | A validator's first listing (`validator`, `listed` = its mempool size). |
-| `ChainView` | `Header chain anchored` | info | Header sync anchors its in-memory header chain (`height`, `hash`). |
-| `ChainView` | `Header fetch failed` | warn | Header sync skips that validator this round and retries in 5 s (`validator`, the failure, or no member to ask: benched, down). |
-| `ChainView` / `ZainoSync` / `ZainoNFS` | `Misanswer` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (block fetch): `ticket.member`, `class`, `why`. That member is benched ([zaino-traffic: Blame](../zaino-traffic/usage.md#blame-report)); the block is asked of another. |
-| `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll; the member gone `Down` (its chain and sightings retracted; [polling](../zaino-traffic/usage.md#polling-and-observations)); its first answer after. |
-| `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
-| `ChainView` | `Validator mempool inactive` | warn | Every 60 s while a validator's mempool is off (`validator`, its `height`, `behind` its own network estimate, `hash`). zebrad keeps it off until its last 3 sync rounds average under 20 blocks, so `behind` can read 0 for a few minutes after a catch-up. `/readyz` reports `syncing` meanwhile. |
-| `ChainView` | `Validator mempool active` | info | The mempool answers again. |
-| `GrpcSnapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | The stale alarm ([§11](../../docs/architecture.md#11-telemetry)) rises, then clears (`validator`, `tip`, `behind`). |
-| `GrpcSnapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | The partitioned alarm rises, then clears (over `getpeerinfo`). |
-| `GrpcSnapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | The eclipsed alarm rises, then clears (no outbound peer at all raises nothing). |
-| `GrpcSnapshot` | `Finality paused: no trusted validator holds the boundary` / `Finality resumed` | warn / info | The finality paused alarm rises, then clears (`best`). |
-| `ChainView` | `Validator peer list read failed, last kept` / `Validator release read failed, last kept` | warn | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on). |
-| `GrpcSnapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | The end of service alarm rises (`validator`, `build`, `left` blocks), then a newer release clears it. |
-| `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's zebra indexer push streams (`zebra_indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
-| `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
-| `Grpc` / `Admin` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
-| `Grpc` | `Serving` | info / warn | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
-| `Grpc` | `High load` | warn | In place of `Serving` while any cap (`work`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
-| `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
-| `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's finalized tip (`height` = the higher of the last block handed and the lowest durable index tip, `—` when neither exists; `target` = the finalized tip, `bps`, `eta`). Blocks above the finalized tip are folded by the NFS, not handed. |
-| `ZainoNFS` | `Fetching non-finalized blocks` | info | Every 30 s once the indexes reach the finalized tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the finalized tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end. |
-| `ZainoNFS` | `Block fetch stalled` / `Non-finalized block fetch stalled` | warn | The phase above has not moved for 30 s or more (`stalled` = for how long). |
-| `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized_tip` = the header chain's finalized tip). |
-| `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
-| `GrpcSnapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while the indexes trail the finalized tip (the progress task): `applied` and `durable` (off the index writer's handle), `size` (bytes on disk, 3 significant figures, decimal units). |
-| index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
-| index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
+| Component                              | Event                                                                                                            | Level              | When                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Zainod`                               | `State changed`                                                                                                  | by the new state   | `/readyz`'s state or detail changed, within 1 s (`from`, `to`, `detail`, `after` = time in the last, `notes`). Level: `down` (overloaded included) error, `held` / `degraded` warn, the rest info.                                                                                                                      |
+| `Zainod`                               | `Not ready`                                                                                                      | error / warn       | Every 60 s while `down`, `degraded` or `held`, at the state's level (`state`, `detail`, `for` = since the change, `notes`). Syncing and serving log their own activity instead.                                                                                                                                         |
+| `Grpc`                                 | `Overload latched` / `Overload cleared`                                                                          | warn / info        | A cause's latch flips (`cause`, `detection`, the window's `signals`, `refused` share); `/readyz` names the first latched while detection is on.                                                                                                                                                                         |
+| `ChainView`                            | `Chain view configured`                                                                                          | info               | At startup (`validators`, `p2p`).                                                                                                                                                                                                                                                                                       |
+| `ChainView`                            | `Polling validator`                                                                                              | info               | A validator's first listing (`validator`, `listed` = its mempool size).                                                                                                                                                                                                                                                 |
+| `ChainView`                            | `Header chain anchored`                                                                                          | info               | Header sync anchors its in-memory header chain (`height`, `hash`).                                                                                                                                                                                                                                                      |
+| `ChainView`                            | `Header fetch failed`                                                                                            | warn               | Header sync skips that validator this round and retries in 5 s (`validator`, the failure, or no member to ask: benched, down).                                                                                                                                                                                          |
+| `ChainView` / `ZainoSync` / `ZainoNFS` | `Misanswer`                                                                                                      | warn               | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (block fetch): `ticket.member`, `class`, `why`. That member is benched ([zaino-traffic: Blame](../zaino-traffic/usage.md#blame-report)); the block is asked of another.               |
+| `ChainView`                            | `Validator poll failed` / `Validator down, holds no tip` / `Validator back`                                      | warn / warn / info | A failed poll; the member gone `Down` (its chain and sightings retracted; [polling](../zaino-traffic/usage.md#polling-and-observations)); its first answer after.                                                                                                                                                       |
+| `ChainView`                            | `Transaction not accepted`                                                                                       | warn               | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure).                                                                                                                                                                                                                                   |
+| `ChainView`                            | `Validator mempool inactive`                                                                                     | warn               | Every 60 s while a validator's mempool is off (`validator`, its `height`, `behind` its own network estimate, `hash`). zebrad keeps it off until its last 3 sync rounds average under 20 blocks, so `behind` can read 0 for a few minutes after a catch-up. `/readyz` reports `syncing` meanwhile.                       |
+| `ChainView`                            | `Validator mempool active`                                                                                       | info               | The mempool answers again.                                                                                                                                                                                                                                                                                              |
+| `GrpcSnapshot`                         | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again`                  | warn / info        | The stale alarm ([§11](../../docs/architecture.md#11-telemetry)) rises, then clears (`validator`, `tip`, `behind`).                                                                                                                                                                                                     |
+| `GrpcSnapshot`                         | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again`                | warn / info        | The partitioned alarm rises, then clears (over `getpeerinfo`).                                                                                                                                                                                                                                                          |
+| `GrpcSnapshot`                         | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info        | The eclipsed alarm rises, then clears (no outbound peer at all raises nothing).                                                                                                                                                                                                                                         |
+| `GrpcSnapshot`                         | `Finality paused: no trusted validator holds the boundary` / `Finality resumed`                                  | warn / info        | The finality paused alarm rises, then clears (`best`).                                                                                                                                                                                                                                                                  |
+| `ChainView`                            | `Validator peer list read failed, last kept` / `Validator release read failed, last kept`                        | warn               | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on).                                                                                                                                                                                                                      |
+| `GrpcSnapshot`                         | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded`      | warn / info        | The end of service alarm rises (`validator`, `build`, `left` blocks), then a newer release clears it.                                                                                                                                                                                                                   |
+| `ChainView`                            | `Push stream up` / `Push stream ended, polling meanwhile`                                                        | info / warn        | A validator's zebra indexer push streams (`zebra_indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile.                                                                                                                                              |
+| `ChainView`                            | `Push stream unavailable, polling`                                                                               | info               | Once, when the configured `indexer_address` refuses (retries then stay at debug).                                                                                                                                                                                                                                       |
+| `Grpc` / `Admin`                       | `Listening`                                                                                                      | info               | At startup (`endpoint`; gRPC adds `network`).                                                                                                                                                                                                                                                                           |
+| `Grpc`                                 | `Serving`                                                                                                        | info / warn        | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
+| `Grpc`                                 | `High load`                                                                                                      | warn               | In place of `Serving` while any cap (`work`, `subs`, `conns`) is past 25% held: those caps as `used/max`.                                                                                                                                                                                                               |
+| `Grpc`                                 | `Request failed`                                                                                                 | error              | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted.                                                                                                                                                                                                                        |
+| `Grpc`                                 | `Request unavailable`                                                                                            | warn               | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`).                                                                                                                                                                                          |
+| `ZainoNFS`                             | `Syncing blocks`                                                                                                 | info               | Every 30 s (the progress task) while the indexes trail the header chain's finalized tip (`height` = the higher of the last block handed and the lowest durable index tip, `—` when neither exists; `target` = the finalized tip, `bps`, `eta`). Blocks above the finalized tip are folded by the NFS, not handed.       |
+| `ZainoNFS`                             | `Fetching non-finalized blocks`                                                                                  | info               | Every 30 s once the indexes reach the finalized tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the finalized tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end.        |
+| `ZainoNFS`                             | `Block fetch stalled` / `Non-finalized block fetch stalled`                                                      | warn               | The phase above has not moved for 30 s or more (`stalled` = for how long).                                                                                                                                                                                                                                              |
+| `ZainoNFS`                             | `Chain tip advanced`                                                                                             | info               | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized_tip` = the header chain's finalized tip).                                                                                                                                                                                     |
+| `ZainoNFS`                             | `Chain reorg detected`                                                                                           | warn               | The served tip left the best chain (`from` = its height, `to` = the new served tip).                                                                                                                                                                                                                                    |
+| `GrpcSnapshot`                         | `Serving the verified tip` / `Behind the verified tip, syncing`                                                  | info               | The `synced` judgement flips between two publishes (`height` = the served tip).                                                                                                                                                                                                                                         |
+| index                                  | `Syncing`                                                                                                        | info               | Every 30 s while the indexes trail the finalized tip (the progress task): `applied` and `durable` (off the index writer's handle), `size` (bytes on disk, 3 significant figures, decimal units).                                                                                                                        |
+| index                                  | `Index size unreadable`                                                                                          | warn               | A directory walk failed (`error`); `size` is left out until the next one succeeds.                                                                                                                                                                                                                                      |
+| index                                  | `Commit waited on compaction`                                                                                    | warn               | A commit blocked on a merge that fell two windows behind.                                                                                                                                                                                                                                                               |
 
 Every LSM merge (`Compacting segments`, `Compacted segments`) is at `debug`.
 

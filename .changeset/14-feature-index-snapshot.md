@@ -17,4 +17,4 @@ connections = 8   # total across every archive, at most 16
   renamed into place.
 - A restart resumes each archive at the step it stopped in. SIGTERM / SIGINT during the download
   stops `aria2c` and exits 0.
-- Progress shows as state `provisioning` with byte `progress` on `/status`.
+- Progress shows as state `provisioning` with its bytes as `detail` on `/readyz` and `/status`.
