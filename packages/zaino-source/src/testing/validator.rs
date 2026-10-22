@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use serde_json::{json, Value};
-use zaino_primitives::types::{Block, BlockRef, DecodedHeader, HeaderBytes};
+use zaino_primitives::types::{Block, BlockRef, HeaderBytes};
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, CompressedTransactionData, TxVersion};
 use zcash_protocol::consensus::{BlockHeight, BranchId, Parameters, UPGRADES_IN_ORDER};
@@ -24,9 +24,7 @@ use zcash_script::script::Code;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::{Bundle as TransparentBundle, TxIn};
 
-use super::{
-    encode_header, header_hash, mint, raw_transaction, Ledger, MockChain, Refused, Unmined,
-};
+use super::{encode_header, mint, raw_transaction, Ledger, MockChain, Refused, Unmined};
 use crate::rpc::{RpcClient, RpcError, Served};
 use crate::{
     BlockchainInfo, EndOfService, GetMempoolListingError, LinkLimits, NodeRelease,
@@ -384,21 +382,6 @@ impl MockValidator {
         let mut node = self.node();
         node.mempool.retain(|unmined| unmined.tx.txid != txid);
         node.readmit();
-    }
-
-    /// Followed header at `height` edited, hash recomputed (a header the builder refuses to mine)
-    ///
-    /// - blocks above keep their `prev_hash`: served as is, unlinked
-    pub fn tamper(&self, height: BlockHeight, edit: impl FnOnce(&mut DecodedHeader)) {
-        let mut node = self.node();
-        let at = node.chain.best.get_mut(u32::from(height) as usize);
-        let held = at.unwrap_or_else(|| panic!("tamper at {height}: above the followed tip"));
-        let mut header = held.block.header().clone();
-        edit(&mut header);
-        header.hash = header_hash(&header);
-        let (_, body) = HeaderBytes::split(&held.raw).expect("a held block's header");
-        let raw = [encode_header(&header), body.to_vec()].concat();
-        *held = Held::of(raw);
     }
 
     /// `getrawmempool` answer (default `Ok`: its mempool)

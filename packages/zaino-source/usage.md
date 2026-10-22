@@ -148,8 +148,9 @@ let change = chain.output(spent, 1, 0);
 let parent = chain.submit(|t| t.spend(change).pay(&alice, 29_000)); // minted for the next block
 let txid = chain.submit_raw(raw_transaction(1, 0).1); // bytes from elsewhere
 let held: &[Unmined] = chain.mempool();              // submission order, each with bytes + fee
-let mined = chain.mine_mempool();                    // one block on tip() carrying all of it
 let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs, txids, nullifiers
+let refused: Result<BlockRef, Refused> = chain.try_mine(|b| b.tx(|t| t.spend(funding)));
+let rival: Result<TxId, Refused> = chain.try_submit(|t| t.spend(change)); // nothing held on Err
 ```
 
 - **A test states** values, scripts, spends, fees and note tags; the chain derives the rest: the
@@ -167,8 +168,9 @@ let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs,
   competing branch (`raw_tx(chain.tx_bytes(txid))`) is the reorg shape mempool and index tests
   need.
 - **Mempool.** `submit` / `submit_raw` admit each on the best after every entry before it,
-  through the same `Ledger` mining uses, and panic with the `Refused` rule otherwise. Whenever
-  the best moves, the mempool is re-admitted on the new best.
+  through the same `Ledger` mining uses, and panic with the `Refused` rule otherwise
+  (`try_submit` returns it, nothing held). Whenever the best moves, the mempool is re-admitted
+  on the new best.
 
 Views over a `MockChain` live in the crate that owns each type, behind its `testing` feature:
 header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer sets
@@ -178,8 +180,9 @@ header chains ([`zaino-header-chain`](../zaino-header-chain/usage.md)), peer set
 
 ### Invariants
 
-Every block `MockChain` hands out passes these; a construction that would break one panics
-naming the rule.
+Every block `MockChain` hands out passes these. A construction that would break M2–M4, M6 or
+M7 is a `Refused` naming the rule: `try_mine` (chain or `Branch`) returns it with nothing
+mined, `mine` panics with it and the height.
 
 | | Invariant |
 |---|---|
@@ -222,7 +225,6 @@ validator.latency(&["getblock"], Duration::from_secs(2)); // before each request
 validator.reachable(&["sendrawtransaction"], false); // requests carrying it: HTTP 503
 validator.down(true);                                // every request: HTTP 503
 validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
-validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
 assert_eq!(validator.calls("getblockheader"), 12);   // each batch item counted
 ```
 

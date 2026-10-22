@@ -1,7 +1,7 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! Every block handed out = `decode_block` of bytes minted here, and passes M1–M7 (else panic
-//! naming the rule, `usage.md` § Invariants)
+//! Every block handed out = `decode_block` of bytes minted here, and passes M1–M7 (else
+//! `try_mine` → `Refused` / `mine` panic naming the rule, `usage.md` § Invariants)
 //!
 //! - M1: hash = SHA-256d(`encode_header`)
 //! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
@@ -27,7 +27,7 @@ use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::bundle::OutPoint;
 
 use super::build::{BlockBuilder, Planned, Spend, TxBuilder};
-use super::ledger::{Ledger, Unmined};
+use super::ledger::{Ledger, Refused, Unmined};
 use super::mint::{self, At};
 use super::upgrades::all_at;
 use super::{encode_header, h, header_hash, GENESIS_TIME, REGTEST_BITS};
@@ -141,10 +141,19 @@ impl MockChain {
         a
     }
 
-    /// On `tip()`
+    /// On `tip()` (panic: [`try_mine`](Self::try_mine) refused it)
     pub fn mine(&mut self, block: impl FnOnce(BlockBuilder) -> BlockBuilder) -> BlockRef {
         let tip = self.tip();
         self.branch(tip).mine(block).tip()
+    }
+
+    /// On `tip()`, or the rule (M2, M3, M4, M6, M7) it breaks with nothing mined
+    pub fn try_mine(
+        &mut self,
+        block: impl FnOnce(BlockBuilder) -> BlockBuilder,
+    ) -> Result<BlockRef, Refused> {
+        let tip = self.tip();
+        Ok(self.branch(tip).try_mine(block)?.tip())
     }
 
     /// `count` bare blocks on `tip()` → the last (`tip()` itself when `count` = 0)
@@ -228,26 +237,34 @@ impl MockChain {
 
     /// Minted for the next block on the best, then held like [`submit_raw`](Self::submit_raw)
     pub fn submit(&mut self, tx: impl FnOnce(TxBuilder) -> TxBuilder) -> TxId {
+        self.try_submit(tx).unwrap_or_else(|refused| panic!("submit: {refused}"))
+    }
+
+    /// [`submit`](Self::submit), or the refusal (M6, M7) with nothing held
+    pub fn try_submit(&mut self, tx: impl FnOnce(TxBuilder) -> TxBuilder) -> Result<TxId, Refused> {
         let tx = tx(TxBuilder::new());
         let prevouts = tx.spends.iter().map(|spend| match spend {
             Spend::Mined(prevout) => prevout.clone(),
             Spend::InBlock { .. } => panic!("spend_in_block() outside a block"),
         });
         let height = self.tip().height + 1;
-        let raw = mint::transaction(&tx, prevouts.collect(), false, self.at_height(height));
-        self.submit_raw(raw)
+        let raw = mint::transaction(&tx, prevouts.collect(), false, self.at_height(height))?;
+        self.try_submit_raw(raw)
     }
 
     /// Held for the next block on the best: admitted after every entry before it (M6, M7), else
     /// panic naming the refusal
     pub fn submit_raw(&mut self, raw: Vec<u8>) -> TxId {
+        self.try_submit_raw(raw).unwrap_or_else(|refused| panic!("submit_raw: {refused}"))
+    }
+
+    fn try_submit_raw(&mut self, raw: Vec<u8>) -> Result<TxId, Refused> {
         let tx = crate::decode_transaction(&raw).expect("submit_raw takes transaction bytes");
-        let mut pool = self.pool_ledger();
-        let fee = pool.admit(&tx).unwrap_or_else(|refused| panic!("submit {}: {refused}", tx.txid));
+        let fee = self.pool_ledger().admit(&tx)?;
         let txid = tx.txid;
         self.tx_bytes.insert(txid, raw.clone());
         self.mempool.push(Unmined { tx, bytes: raw, fee });
-        txid
+        Ok(txid)
     }
 
     /// Submission order
@@ -260,15 +277,6 @@ impl MockChain {
         self.mempool.retain(|unmined| unmined.tx.txid != txid);
         let best = self.best;
         self.repool(best);
-    }
-
-    /// One block on `tip()` carrying every mempool entry, in submission order
-    pub fn mine_mempool(&mut self) -> BlockRef {
-        let held = self.mempool.clone();
-        let carried = |block: BlockBuilder| {
-            held.into_iter().fold(block, |block, unmined| block.raw_tx(unmined.bytes))
-        };
-        self.mine(carried)
     }
 
     fn over(schedule: Schedule, genesis_spec: BlockBuilder) -> Self {
@@ -284,6 +292,7 @@ impl MockChain {
             tx_nonces: 0,
         };
         let genesis = chain.insert(None, genesis_spec, false);
+        let genesis = genesis.unwrap_or_else(|refused| panic!("genesis_with: {refused}"));
         (chain.genesis, chain.best) = (genesis.hash, genesis.hash);
         chain
     }
@@ -309,10 +318,15 @@ impl MockChain {
     }
 
     /// Child of `parent` (`None` = genesis) holding `spec`: minted, checked (M1–M7), decoded
-    /// back, then held
-    fn insert(&mut self, parent: Option<BlockRef>, spec: BlockBuilder, outweigh: bool) -> BlockRef {
+    /// back, then held (`Err` = nothing held)
+    fn insert(
+        &mut self,
+        parent: Option<BlockRef>,
+        spec: BlockBuilder,
+        outweigh: bool,
+    ) -> Result<BlockRef, Refused> {
         let height = parent.map_or(H0, |parent| parent.height + 1);
-        let time = self.time(parent, height, spec.time);
+        let time = self.time(parent, height, spec.time)?;
         let bits = self.bits(parent, spec.bits, outweigh);
         let mut ledger = match (parent, spec.reads_history()) {
             (Some(parent), true) => self.ledger(parent),
@@ -336,7 +350,7 @@ impl MockChain {
                         }
                     });
                     let prevouts = prevouts.collect();
-                    let raw = mint::transaction(&tx, prevouts, slot == 0, self.at_height(height));
+                    let raw = mint::transaction(&tx, prevouts, slot == 0, self.at_height(height))?;
                     (raw, tx.fee)
                 }
                 Planned::Raw(raw) => (raw, None),
@@ -348,8 +362,7 @@ impl MockChain {
                 "{}: a coinbase in slot 0, only there",
                 tx.txid
             );
-            let fee = ledger.apply(&tx, stated);
-            fees.push(fee.unwrap_or_else(|refused| panic!("{} at {height}: {refused}", tx.txid)));
+            fees.push(ledger.apply(&tx, stated)?);
             minted.push((tx, raw));
         }
         let txids: Vec<TxId> = minted.iter().map(|(tx, _)| tx.txid).collect();
@@ -396,7 +409,7 @@ impl MockChain {
             let old = std::mem::replace(&mut self.best, at.hash);
             self.repool(old);
         }
-        at
+        Ok(at)
     }
 
     /// Best ledger + every mempool entry
@@ -436,8 +449,13 @@ impl MockChain {
     }
 
     /// M2: stated or parent + target spacing, after the parent's median time past
-    fn time(&self, parent: Option<BlockRef>, height: BlockHeight, stated: Option<u32>) -> u32 {
-        let Some(parent) = parent else { return stated.unwrap_or(GENESIS_TIME) };
+    fn time(
+        &self,
+        parent: Option<BlockRef>,
+        height: BlockHeight,
+        stated: Option<u32>,
+    ) -> Result<u32, Refused> {
+        let Some(parent) = parent else { return Ok(stated.unwrap_or(GENESIS_TIME)) };
         let parent_time = self.block(parent.hash).header().time;
         let time = stated.unwrap_or(parent_time + target_spacing(&self.schedule.upgrades, height));
         let ancestors = std::iter::successors(Some(self.block(parent.hash)), |block| {
@@ -445,8 +463,10 @@ impl MockChain {
         });
         let times = ancestors.map(|block| block.header().time);
         let median = median_time_past(times).expect("a parent holds a time");
-        assert!(time > median, "time {time} at {height}: not after the median time past {median}");
-        time
+        match time > median {
+            true => Ok(time),
+            false => Err(Refused::NotAfterMedianTime { time, median }),
+        }
     }
 
     /// M5: the limit, a stated nBits (`Work::Varied`), or just enough work to become best
@@ -493,9 +513,19 @@ impl Branch<'_> {
         Self { outweigh: true, ..self }
     }
 
+    /// Panic: [`try_mine`](Self::try_mine) refused it
     pub fn mine(self, block: impl FnOnce(BlockBuilder) -> BlockBuilder) -> Self {
-        let tip = self.chain.insert(Some(self.tip), block(BlockBuilder::new()), self.outweigh);
-        Self { chain: self.chain, tip, outweigh: false }
+        let height = self.tip.height + 1;
+        self.try_mine(block).unwrap_or_else(|refused| panic!("mine at {height}: {refused}"))
+    }
+
+    /// Next block, or the rule (M2, M3, M4, M6, M7) it breaks with nothing mined
+    pub fn try_mine(
+        self,
+        block: impl FnOnce(BlockBuilder) -> BlockBuilder,
+    ) -> Result<Self, Refused> {
+        let tip = self.chain.insert(Some(self.tip), block(BlockBuilder::new()), self.outweigh)?;
+        Ok(Self { chain: self.chain, tip, outweigh: false })
     }
 
     pub fn mine_empty(self, count: u32) -> Self {

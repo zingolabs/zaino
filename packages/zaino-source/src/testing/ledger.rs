@@ -32,9 +32,11 @@ pub struct Unmined {
     pub fee: Zatoshis,
 }
 
-/// Why a transaction cannot be mined next on a [`Ledger`]'s tip
+/// Why a block or transaction cannot be mined next on a [`Ledger`]'s tip
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Refused {
+    #[error("time {time}: not after the median time past {median}")]
+    NotAfterMedianTime { time: u32, median: u32 },
     #[error("txid repeated on this branch")]
     Repeated,
     #[error("pool data before {0}")]

@@ -51,19 +51,20 @@ pub(super) struct At<'a> {
     pub(super) nonce: u32,
 }
 
-/// One transaction's bytes (`prevouts` = its spends, already resolved to outpoints)
+/// One transaction's bytes (`prevouts` = its spends, already resolved to outpoints), or the rule
+/// no consensus encoding of it could pass
 pub(super) fn transaction(
     tx: &TxBuilder,
     prevouts: Vec<OutPoint>,
     coinbase: bool,
     at: At,
-) -> Vec<u8> {
-    let version = version(tx, &at);
+) -> Result<Vec<u8>, Refused> {
+    let version = version(tx, &at)?;
     let branch = BranchId::for_height(at.upgrades, at.height);
 
     let transparent = match coinbase {
-        true => coinbase_transparent(tx, &at),
-        false => transparent(tx, prevouts),
+        true => coinbase_transparent(tx, &at)?,
+        false => transparent(tx, prevouts)?,
     };
     let sprout = sprout(tx.sprout_balance);
     let sapling = sapling(tx, &at);
@@ -110,7 +111,7 @@ pub(super) fn transaction(
     let mut raw = Vec::new();
     let tx = data.freeze().expect("a minted transaction hashes");
     tx.write(&mut raw).expect("a Vec takes every write");
-    raw
+    Ok(raw)
 }
 
 /// The format a node at `height` writes for this content
@@ -118,10 +119,11 @@ pub(super) fn transaction(
 /// - Ironwood → v6
 /// - Sprout → v4 (v5 dropped JoinSplits)
 /// - else NU5 → v5, Sapling → v4, Overwinter → v3, before → v1
-fn version(tx: &TxBuilder, at: &At) -> TxVersion {
+fn version(tx: &TxBuilder, at: &At) -> Result<TxVersion, Refused> {
     let active = |upgrade| at.upgrades.is_nu_active(upgrade, at.height);
-    let require = |upgrade, used: bool| {
-        assert!(!used || active(upgrade), "{}", Refused::Inactive(upgrade));
+    let require = |upgrade, used: bool| match !used || active(upgrade) {
+        true => Ok(()),
+        false => Err(Refused::Inactive(upgrade)),
     };
     let used = PerPool {
         sapling: !tx.sapling_spends.is_empty() || !tx.sapling_outputs.is_empty(),
@@ -129,52 +131,61 @@ fn version(tx: &TxBuilder, at: &At) -> TxVersion {
         ironwood: !tx.ironwood_actions.is_empty(),
     };
     for (pool, used) in used.iter() {
-        require(pool.activation_upgrade(), *used);
+        require(pool.activation_upgrade(), *used)?;
     }
     let sprout = tx.sprout_balance != 0;
     // v4 = the one format carrying JoinSplits here
-    require(NetworkUpgrade::Sapling, sprout);
+    require(NetworkUpgrade::Sapling, sprout)?;
     let (orchard, ironwood) = (used.orchard, used.ironwood);
     assert!(
         !(sprout && (orchard || ironwood)),
         "sprout_balance() beside Orchard / Ironwood: no format carries both"
     );
 
-    match () {
+    Ok(match () {
         _ if ironwood => TxVersion::V6,
         _ if sprout => TxVersion::V4,
         _ if active(NetworkUpgrade::Nu5) => TxVersion::V5,
         _ if active(NetworkUpgrade::Sapling) => TxVersion::V4,
         _ if active(NetworkUpgrade::Overwinter) => TxVersion::V3,
         _ => TxVersion::Sprout(1),
-    }
+    })
 }
 
 /// Null prevout, script = BIP 34 height then the extranonce (a coinbase script holds ≥ 2 bytes)
-fn coinbase_transparent(tx: &TxBuilder, at: &At) -> Option<TransparentBundle<Authorized>> {
-    assert!(tx.spends.is_empty(), "{}", Refused::CoinbaseSpends);
+fn coinbase_transparent(
+    tx: &TxBuilder,
+    at: &At,
+) -> Result<Option<TransparentBundle<Authorized>>, Refused> {
+    if !tx.spends.is_empty() {
+        return Err(Refused::CoinbaseSpends);
+    }
     let script = [bip34(u32::from(at.height)), push(&at.nonce.to_le_bytes())].concat();
     let input = TxIn::from_parts(OutPoint::NULL, Script(Code(script)), u32::MAX);
-    Some(TransparentBundle { vin: vec![input], vout: outputs(tx), authorization: Authorized })
+    let vout = outputs(tx)?;
+    Ok(Some(TransparentBundle { vin: vec![input], vout, authorization: Authorized }))
 }
 
 /// Empty script sigs (nothing here verifies a signature)
-fn transparent(tx: &TxBuilder, prevouts: Vec<OutPoint>) -> Option<TransparentBundle<Authorized>> {
+fn transparent(
+    tx: &TxBuilder,
+    prevouts: Vec<OutPoint>,
+) -> Result<Option<TransparentBundle<Authorized>>, Refused> {
     let vin: Vec<TxIn<Authorized>> = prevouts
         .into_iter()
         .map(|prevout| TxIn::from_parts(prevout, Script::default(), u32::MAX))
         .collect();
-    let vout = outputs(tx);
+    let vout = outputs(tx)?;
     if vin.is_empty() && vout.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(TransparentBundle { vin, vout, authorization: Authorized })
+    Ok(Some(TransparentBundle { vin, vout, authorization: Authorized }))
 }
 
-fn outputs(tx: &TxBuilder) -> Vec<TxOut> {
+fn outputs(tx: &TxBuilder) -> Result<Vec<TxOut>, Refused> {
     let output = |(script, zats): &(Script, u64)| {
-        let value = Zatoshis::from_u64(*zats).unwrap_or_else(|_| panic!("{}", Refused::PastSupply));
-        TxOut::new(value, script.clone())
+        let value = Zatoshis::from_u64(*zats).map_err(|_| Refused::PastSupply)?;
+        Ok(TxOut::new(value, script.clone()))
     };
     tx.pays.iter().map(output).collect()
 }
