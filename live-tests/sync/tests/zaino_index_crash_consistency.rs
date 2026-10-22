@@ -136,7 +136,7 @@ async fn zaino_index_crash_consistency(run: SyncRunner) -> SyncOutcome {
             Ok(())
         },
     );
-    // Durable = final → answered mid-build too: a torn write across a kill reads back here
+    // Durable = finalized → answered mid-build too: a torn write across a kill reads back here
     index.always("committed_tree_states_are_zebras", Fatal).every(secs(5)).check(
         async |_, (zebra, zaino)| {
             let Some(at) = zaino.finalized_height(ZainoIndex::TreeState).await? else {

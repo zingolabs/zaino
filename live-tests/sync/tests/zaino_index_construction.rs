@@ -162,7 +162,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             Ok(())
         },
     );
-    // Durable = final → answered mid-build too: ~1 height per 5 s sampled across the whole chain
+    // Durable = finalized → answered mid-build too: ~1 height per 5 s sampled across the whole chain
     run.throughout().always("committed_tree_states_are_zebras", Fatal).every(secs(5)).check(
         async |_, (zebra, zaino)| {
             let Some(at) = zaino.finalized_height(ZainoIndex::TreeState).await? else {

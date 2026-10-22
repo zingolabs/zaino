@@ -1,4 +1,4 @@
-//! The non-final window's edges: the deepest legal reorg, and one block deeper
+//! The non-finalized window's edges: the deepest legal reorg, and one block deeper
 //!
 //! - `depth` orphans = fork parent on the window floor (legal); `depth + 1` = below it (fatal)
 //! - C9, C10 (`README.md`)
@@ -65,7 +65,7 @@ async fn deepest_legal_reorg_never_rewrites_durable_data() -> Result<()> {
         let trace: Vec<u32> = samples.iter().filter_map(|row| row[i]).collect();
         let regressed = trace.windows(2).find(|pair| pair[1] < pair[0]);
         assert_eq!(regressed, None, "{index:?} durable extent monotone: {trace:?}");
-        // A: final < tip + 1 − depth = fork parent; B's first block may land at fork once replayed
+        // A: durable < tip + 1 − depth = fork parent; B's first block may land at fork once replayed
         let (first, max) = (trace.first().copied(), trace.iter().max().copied());
         assert!(
             first.is_some_and(|d| d <= fork_parent) && max.is_some_and(|d| d <= fork_parent + 1),

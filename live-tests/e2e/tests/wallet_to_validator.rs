@@ -1,6 +1,6 @@
 //! In-process librustzcash wallet (faucet + recipient) → zainod pod over gRPC
 //!
-//! - `send_to_all`, shielding, finalisation-seam address txids
+//! - `send_to_all`, shielding, durable-seam address txids
 //! - `get_transaction` (mempool → mined), `get_mempool_tx`, `get_mempool_stream`, unmined sends
 //! - Address queries: `get_taddress_*` / `get_address_utxos*` (recipient + faucet coinbase)
 //! - Tree state: `get_tree_state`, `get_subtree_roots`; block range pool filters
@@ -18,9 +18,9 @@ const SEND_AMOUNT: u64 = 250_000;
 const SHIELD_FEE: u64 = 15_000;
 /// Coinbase → unified address's Orchard receiver (credited to Ironwood: NU6.3 live from 2)
 const FUND: Pool = Pool::Orchard;
-/// Buries a transaction's block below the final boundary (regtest depth + margin)
+/// Buries a transaction's block below the finalized tip (regtest depth + margin)
 const SEAM_ADVANCE: u32 = ztest::backends::zainod::REGTEST_FINALISED_DEPTH + 5;
-/// Finalised writer's commit lag behind the validator (per batch: frontier moves in steps)
+/// Finalized writer's commit lag behind the validator (per batch: frontier moves in steps)
 const SEAM_TIMEOUT: Duration = Duration::from_secs(300);
 
 mod wallet {
@@ -89,7 +89,7 @@ mod wallet {
     /// Transparent send → same address txids from the non-finalized state and again once a
     /// seam-deep advance commits it to the durable compact-block index
     ///
-    /// - Shipped depth (1000): `SEAM_ADVANCE` buries nothing → vacuous compare (finalised poll =
+    /// - Shipped depth (1000): `SEAM_ADVANCE` buries nothing → vacuous compare (durable poll =
     ///   the loud check against that)
     /// - Advance mined to `FILLER_ADDRESS` (to `FUND` = `SEAM_ADVANCE` halo2 proofs, past the cap)
     #[ztest::qos::wallet]
@@ -109,9 +109,9 @@ mod wallet {
         indexer.wait_for_block_num(tip, READY).await?;
 
         let height = indexer.latest_block_height().await?;
-        let unfinalised_txs = indexer.get_taddress_txids(taddr.clone(), height, height).await?;
+        let non_finalized_txs = indexer.get_taddress_txids(taddr.clone(), height, height).await?;
 
-        // Load-bearing: buries the send below the final boundary (`tip - depth`)
+        // Load-bearing: buries the send below the finalized tip (`tip - depth`)
         let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
@@ -119,24 +119,21 @@ mod wallet {
         // - Unpublished until the first commit → keep polling
         let deadline = tokio::time::Instant::now() + SEAM_TIMEOUT;
         loop {
-            let finalised = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
-            if finalised.is_some_and(|finalised| finalised >= u32::from(height)) {
+            let durable = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
+            if durable.is_some_and(|durable| durable >= u32::from(height)) {
                 break;
             }
             let expired = tokio::time::Instant::now() >= deadline;
-            anyhow::ensure!(
-                !expired,
-                "finalised {finalised:?}, never {height:?} in {SEAM_TIMEOUT:?}"
-            );
+            anyhow::ensure!(!expired, "durable {durable:?}, never {height:?} in {SEAM_TIMEOUT:?}");
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
 
-        let finalised_txs = indexer.get_taddress_txids(taddr, height, height).await?;
+        let durable_txs = indexer.get_taddress_txids(taddr, height, height).await?;
 
         recipient.sync().await?;
         let transparent = recipient.balances().await?.transparent;
-        assert_eq!(transparent, SEND_AMOUNT, "transparent send still served once final");
-        assert_eq!(unfinalised_txs, finalised_txs, "address txs identical across the seam");
+        assert_eq!(transparent, SEND_AMOUNT, "transparent send still served once durable");
+        assert_eq!(non_finalized_txs, durable_txs, "address txs identical across the seam");
         Ok(())
     }
 

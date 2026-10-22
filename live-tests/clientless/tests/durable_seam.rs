@@ -1,4 +1,4 @@
-//! Reads that cross zaino's final / non-final boundary
+//! Reads that cross zaino's durable index / NFS boundary
 //!
 //! - Below `tip + 1 − finalised_depth` → durable index, above → non-finalized state
 //! - Spanning range = stitched from both (only place a served chain can gain a gap, a duplicate,
@@ -13,12 +13,12 @@ use serde_json::json;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
-const FINALISE_TIMEOUT: Duration = Duration::from_secs(300);
-/// Leaves a 60-block finalised band below the seam and the 100-block window above it.
+const DURABLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// 60-block durable band below the seam + the 100-block window above it
 const CHAIN_LEN: u32 = 160;
 const FAST_SEAM: u32 = ztest::backends::zainod::REGTEST_FINALISED_DEPTH;
 
-/// Finalised past the seam, then every read shape across it = one chain = the validator's
+/// Durable past the seam, then every read shape across it = one chain = the validator's
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
@@ -31,22 +31,22 @@ async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
     indexer.wait_for_block_num(tip, READY).await?;
     let tip = u32::from(tip);
     let floor = tip.saturating_sub(FAST_SEAM);
-    assert!(floor > 0, "fixture too short for a finalised band: tip {tip}, seam {FAST_SEAM}");
+    assert!(floor > 0, "fixture too short for a durable band: tip {tip}, seam {FAST_SEAM}");
 
-    // - Load-bearing: nothing finalised → every read below stays on one side (vacuous)
+    // - Load-bearing: nothing durable → every read below stays on one side (vacuous)
     // - Unpublished until the first commit → keep polling
-    let deadline = tokio::time::Instant::now() + FINALISE_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + DURABLE_TIMEOUT;
     let frontier = loop {
-        let finalised = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
-        if let Some(finalised) = finalised.filter(|f| *f >= floor) {
-            break finalised;
+        let durable = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
+        if let Some(durable) = durable.filter(|d| *d >= floor) {
+            break durable;
         }
         let expired = tokio::time::Instant::now() >= deadline;
-        anyhow::ensure!(!expired, "finalised {finalised:?}, never {floor} in {FINALISE_TIMEOUT:?}");
+        anyhow::ensure!(!expired, "durable {durable:?}, never {floor} in {DURABLE_TIMEOUT:?}");
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
-    // Finalised tip = reorg-stability claimed for blocks consensus can still roll back
-    assert!(frontier < tip, "finalised frontier {frontier} must trail tip {tip}");
+    // Durable tip = reorg-stability claimed for blocks consensus can still roll back
+    assert!(frontier < tip, "durable frontier {frontier} must trail tip {tip}");
 
     // `prev_hash` links (height contiguity alone passes the right heights off the wrong chain)
     let blocks = indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip)).await?;
@@ -85,7 +85,7 @@ async fn reads_across_the_seam_serve_the_validators_chain() -> Result<()> {
     let reversed: Vec<_> = descending.iter().rev().cloned().collect();
     assert_eq!(reversed, ascending, "descending = ascending reversed (floor {floor})");
 
-    // Validator = oracle for the finalised half too (else only ever compared against zaino)
+    // Validator = oracle for the durable half too (else only ever compared against zaino)
     let vrpc = validator.json_rpc().await?;
     let all_pools = vec![1, 2, 3, 4];
     let (low, high) = (BlockHeight::from(floor - 3), BlockHeight::from(floor + 3));
