@@ -13,6 +13,3 @@ pub const STALE_TIP_BLOCKS: u32 = 24;
 
 /// Release halting within this many blocks of its tip = alarm (one week at 75 s)
 pub(crate) const END_OF_SERVICE_WARN_BLOCKS: u32 = 7 * 24 * 3600 / 75;
-
-/// Distinct outbound peers across live trusted validators <= this (and > 0) = eclipse risk
-pub(crate) const ECLIPSE_OUTBOUND_MAX: usize = 2;

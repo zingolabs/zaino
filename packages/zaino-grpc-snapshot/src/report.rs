@@ -28,7 +28,6 @@ mod names {
     pub(super) const END_OF_SERVICE_HEIGHT: &str = "zaino.chainview.end_of_service_height";
     pub(super) const TIP_HOLDERS: &str = "zaino.chainview.tip_holders";
     pub(super) const FINALITY_PAUSED: &str = "zaino.chainview.finality_paused";
-    pub(super) const SHARED_OUTBOUND_MIN: &str = "zaino.chainview.shared_outbound_min";
     pub(super) const MEMPOOL_TRANSACTIONS: &str = "zaino.chainview.mempool_transactions";
 }
 
@@ -43,8 +42,6 @@ const AGREEMENTS: [Agreement; 5] = [
     Agreement::Diverged,
 ];
 
-const PARTITIONED: &str = "Two live validators share no outbound peer (possible partition)";
-const ECLIPSED: &str = "Live validators reach few distinct outbound peers (possible eclipse)";
 const FINALITY_PAUSED: &str = "Finality paused: no trusted validator holds the boundary";
 
 /// One sentence per raised alarm (zainod's `/status` `notes`), `Alarm` order
@@ -60,8 +57,6 @@ fn note(alarm: Alarm, count: usize) -> String {
         count => format!("{count} {many}"),
     };
     match alarm {
-        Alarm::Partitioned => PARTITIONED.to_owned(),
-        Alarm::Eclipsed => ECLIPSED.to_owned(),
         Alarm::FinalityPaused => FINALITY_PAUSED.to_owned(),
         Alarm::Stale => counted("validator on a stale tip", "validators on a stale tip"),
         Alarm::Ending => counted(
@@ -112,10 +107,6 @@ pub const METRICS: &[Metric] = {
         Metric::gauge(
             names::FINALITY_PAUSED,
             "1 while the finalized boundary waits for a trusted validator to hold it",
-        ),
-        Metric::gauge(
-            SHARED_OUTBOUND_MIN,
-            "Fewest outbound peers any two live endpoints share; 0 = possible partition",
         ),
         Metric::gauge(
             MEMPOOL_TRANSACTIONS,
@@ -188,9 +179,6 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
         }
     }
     metrics::gauge!(names::TIP_HOLDERS).set(view.held_by().count() as f64);
-    if let Some(shared) = view.shared_outbound_min() {
-        metrics::gauge!(names::SHARED_OUTBOUND_MIN).set(shared as f64);
-    }
     let paused = view.alarms().raised(Alarm::FinalityPaused);
     metrics::gauge!(names::FINALITY_PAUSED).set(f64::from(paused));
 }
@@ -223,12 +211,6 @@ fn edge(view: &ChainViewSnapshot, alarm: Alarm, by: Option<TrustedValidatorId>, 
     let tip = meta.and_then(|meta| meta.tip()).map(|tip| u32::from(tip.height));
     let best = view.best().map(|best| u32::from(best.height));
     match (alarm, raised) {
-        (Alarm::Partitioned, true) => warn!("{PARTITIONED}"),
-        (Alarm::Partitioned, false) => info!("Live validators share outbound peers again"),
-        (Alarm::Eclipsed, true) => warn!("{ECLIPSED}"),
-        (Alarm::Eclipsed, false) => {
-            info!("Live validators reach enough distinct outbound peers again")
-        }
         (Alarm::FinalityPaused, true) => warn!(?best, "{FINALITY_PAUSED}"),
         (Alarm::FinalityPaused, false) => info!(?best, "Finality resumed"),
         (Alarm::Stale, true) => {

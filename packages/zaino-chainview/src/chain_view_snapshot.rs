@@ -21,7 +21,7 @@ use zcash_protocol::{BlockHash, TxId};
 
 use crate::alarm_thresholds::FINALITY_STALL;
 use crate::listings::Listings;
-use crate::telemetry::{self, Alarms};
+use crate::telemetry::Alarms;
 use crate::trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
 
 /// One unconfirmed transaction, as served
@@ -62,16 +62,6 @@ impl PartialEq for Projection {
 }
 
 impl Eq for Projection {}
-
-/// When one transaction reached each milestone (tokio clock: paused tests advance it)
-///
-/// - `all_trusted` = first moment every mempool-reading trusted validator listed it at once
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Timeline {
-    pub(crate) first_seen: Instant,
-    pub(crate) first_trusted: Option<Instant>,
-    pub(crate) all_trusted: Option<Instant>,
-}
 
 /// Why one held transaction is held, first match: a trusted listing, a peer quorum, our relay
 ///
@@ -119,41 +109,16 @@ pub(crate) struct Sighting {
     raw: Bytes,
     fee: Option<Zatoshis>,
     projection: Projection,
-    timeline: Timeline,
 }
 
 impl Sighting {
     pub(crate) fn new(raw: Bytes, fee: Option<Zatoshis>, ours: bool) -> Self {
-        let projection = Projection::default();
-        let timeline =
-            Timeline { first_seen: Instant::now(), first_trusted: None, all_trusted: None };
-        Self {
-            trusted: TrustedValidatorSet::default(),
-            quorum: false,
-            ours,
-            raw,
-            fee,
-            projection,
-            timeline,
-        }
+        let (trusted, projection) = (TrustedValidatorSet::default(), Projection::default());
+        Self { trusted, quorum: false, ours, raw, fee, projection }
     }
 
     pub(crate) fn raw(&self) -> &Bytes {
         &self.raw
-    }
-
-    pub(crate) fn timeline(&self) -> Timeline {
-        self.timeline
-    }
-
-    /// Records `all_trusted` the first time `readers` (non-empty) all list it (`true` = now)
-    pub(crate) fn reached_all(&mut self, readers: TrustedValidatorSet) -> bool {
-        let everywhere = !readers.is_empty() && self.trusted.covers(readers);
-        let first = everywhere && self.timeline.all_trusted.is_none();
-        if first {
-            self.timeline.all_trusted = Some(Instant::now());
-        }
-        first
     }
 
     /// First known fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
@@ -196,7 +161,6 @@ impl Sighting {
 
     pub(crate) fn sight(&mut self, validator: TrustedValidatorId) {
         self.trusted.insert(validator);
-        self.timeline.first_trusted.get_or_insert_with(Instant::now);
     }
 
     pub(crate) fn unsight(&mut self, validator: TrustedValidatorId) {
@@ -316,11 +280,6 @@ impl ChainViewSnapshot {
     /// Per-validator metadata, in configured order
     pub fn trusted_validators(&self) -> &Vector<TrustedValidatorMeta> {
         &self.trusted_validators
-    }
-
-    /// Fewest outbound peers any two live validators share (`None` below two reporting any)
-    pub fn shared_outbound_min(&self) -> Option<usize> {
-        telemetry::shared_outbound_min(&telemetry::outbound(&self.trusted_validators))
     }
 
     /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch)

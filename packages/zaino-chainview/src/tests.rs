@@ -265,7 +265,6 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let sighting = first.sighting(&tx7).expect("validator a reported it");
     let trusted = (sighting.trusted().count(), first.mempool_readers().count());
     assert_eq!(trusted, (1, 1), "b, c not yet read");
-    assert!(sighting.timeline().all_trusted.is_some(), "every reader so far lists it");
     let servable: Vec<_> = first.arrivals(None).iter().map(|entry| entry.txid).collect();
     assert_eq!(servable, [tx7], "servable once a holder lists it");
 
@@ -353,7 +352,6 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     assert!(sighting.ours());
     let trusted = (sighting.trusted().count(), pinned.mempool_readers().count());
     assert_eq!(trusted, (0, 3), "not polled since");
-    assert_eq!(sighting.timeline().first_trusted, None);
     let servable = |view: &crate::ChainViewSnapshot| {
         view.mempool().expect("tip held").entries().find(|entry| entry.txid == txid)
     };
@@ -375,10 +373,8 @@ async fn a_checked_submission_answers_at_once_on_the_check() {
     let listed = servable(&pinned).expect("still servable");
     assert_eq!((listed.raw, listed.fee), (Bytes::from(sent), Some(zats(0))));
     let sighting = pinned.sighting(&txid).expect("held");
-    assert_eq!((sighting.trusted().count(), pinned.mempool_readers().count()), (1, 3));
-    let timeline = sighting.timeline();
-    assert!(timeline.first_trusted.is_some_and(|at| at >= timeline.first_seen), "{timeline:?}");
-    assert_eq!(timeline.all_trusted, None, "b, c have not listed it");
+    let spread = (sighting.trusted().count(), pinned.mempool_readers().count());
+    assert_eq!(spread, (1, 3), "b, c have not listed it");
 
     // a refused check = the refusal at once: one check, nothing pushed
     for validator in &validators {
@@ -637,7 +633,11 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
         entries.sort();
         entries
     };
-    let first_seen = |txid: &TxId| reader.current().sighting(txid).map(|s| s.timeline().first_seen);
+    // a sighting's first render survives it (a re-added one renders afresh)
+    let rendered = |txid: &TxId, text: &'static str| {
+        let render = || Ok::<_, ()>(Bytes::from_static(text.as_bytes()));
+        reader.current().sighting(txid).map(|s| s.entry(*txid).projection.get_or_render(render))
+    };
 
     // listed by the validator and the quorum, then the validator gone: handed over, never dropped
     view.set_chain(Some(HeaderChainSnapshot::of(&chain, tip)));
@@ -646,7 +646,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     listing(&[a], &seven);
     polled(&balancer).await;
     round().await;
-    let listed = first_seen(&a).expect("listed by the validator");
+    let listed = rendered(&a, "listed").expect("listed by the validator");
     assert_eq!(served(), [(a, Some(zats(1_000)))]);
     validator.down(true);
     // `Down` (its listing retracted) after 10 failures on the 0.5 → 30 s ladder
@@ -655,7 +655,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     assert_eq!(down, Health::Down, "its listing retracted, not kept as `Degraded`");
     assert!(reader.current().held_by().is_empty(), "no trusted validator vouches");
     assert_eq!(served(), [(a, Some(zats(1_000)))], "the quorum keeps it");
-    assert_eq!(first_seen(&a), Some(listed), "the same sighting throughout");
+    assert_eq!(rendered(&a, "re-added"), Some(listed), "the same sighting throughout");
 
     listing(&[a, parent, child, bad], &seven);
     round().await;
@@ -681,8 +681,8 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     listing(&[a, parent, child], &seven[..2]);
     round().await;
     assert_eq!(served(), [], "2 of 7: no longer kept; the quorum still reads, an empty mempool");
-    let gone = [a, parent, child].map(|txid| first_seen(&txid));
-    assert_eq!(gone, [None, None, None], "gone from the view");
+    let gone = [a, parent, child].map(|txid| reader.current().sighting(&txid).is_some());
+    assert_eq!(gone, [false; 3], "gone from the view");
 
     // send with no trusted validator: a peer first, the quorum listing it = the answer
     let (sent, sent_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_500)]);
@@ -708,7 +708,8 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     assert_eq!(served(), [(sent, Some(zats(500)))], "unlisted, ours: kept");
     let next = chain.mine_empty(1);
     view.set_chain(Some(HeaderChainSnapshot::of(&chain, next)));
-    assert_eq!((served(), first_seen(&sent)), (vec![], None), "a block later: mined or gone");
+    let held = reader.current().sighting(&sent).is_some();
+    assert_eq!((served(), held), (vec![], false), "a block later: mined or gone");
     cancel.cancel();
 }
 

@@ -112,7 +112,7 @@ Cheap to clone; cannot drive polling or submit.
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `mempool_states()` | each held transaction's `MempoolState`: `Verified` (a trusted listing), `Quorum` (a peer quorum's only), `Ours` (our relay, neither) |
 | `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
-| `alarms()`, `shared_outbound_min()` | below |
+| `alarms()` | below |
 
 `TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured
 positions, `TrustedValidatorSet::at(positions)` builds one (`testing` feature).
@@ -212,14 +212,11 @@ zainod registers each from `METRICS` (help, unit). The `zaino.chainview.*` gauge
 
 | Metric | Kind | Labels |
 |---|---|---|
-| `first_trusted_seconds` | histogram | `origin` (`ours`, `network`) |
-| `all_trusted_seconds` | histogram | |
-| `residence_seconds` | histogram | `left` (`block`, `unlisted`), `origin` |
 | `submission_attempts` | histogram | `outcome` |
 | `submissions_total` | counter | `outcome` (`spread`, `unconfirmed`, `rejected`, `unreachable`) |
 
-`alarms()` → `Alarms`: each raised `Alarm` (`Partitioned`, `Eclipsed`, `FinalityPaused`, and
-per validator `Stale`, `Ending`), derived per merge (definitions and thresholds:
+`alarms()` → `Alarms`: each raised `Alarm` (`FinalityPaused`, and per validator `Stale`,
+`Ending`), derived per merge (definitions and thresholds:
 [architecture §11](../../docs/architecture.md#11-telemetry); in `alarm_thresholds.rs`). A new
 alarm = an `Alarm` variant: the compiler then names its arms (raised in `telemetry::alarms`,
 noted and logged in `zaino-grpc-snapshot`'s report).

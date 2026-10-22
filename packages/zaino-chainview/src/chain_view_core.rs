@@ -19,27 +19,15 @@ use zcash_protocol::TxId;
 use crate::chain_view_snapshot::{ChainViewSnapshot, Sighting};
 use crate::observation_merge::{Reading, TrustedValidatorReport};
 use crate::telemetry;
-use crate::trusted_validators::{TrustedValidatorMeta, TrustedValidatorSet};
-
-/// State before a merge's change (settle's baseline)
-struct Before {
-    best: Option<BlockRef>,
-    readers: TrustedValidatorSet,
-}
-
-impl Before {
-    fn of(state: &ChainViewSnapshot) -> Self {
-        Self { best: state.best(), readers: state.mempool_readers() }
-    }
-}
+use crate::trusted_validators::TrustedValidatorMeta;
 
 /// One id the peer quorum admits, not yet admitted here (`raw` = its bytes when held already)
 pub(crate) type Candidate = (PeerTxId, Option<Bytes>);
 
-/// One merge's effect: `Settle(touched)` = settle (spreads re-judged for `touched`) + publish
+/// One merge's effect: `Settle` = alarms, drops, publish
 enum Change {
     Unchanged,
-    Settle(Vec<TxId>),
+    Settle,
 }
 
 /// The published cell + its watch, and the lock that serialises merges
@@ -87,7 +75,6 @@ impl ChainViewCore {
         report: TrustedValidatorReport,
     ) -> Vec<TxId> {
         self.merge(|state| {
-            let mut touched: Vec<TxId> = Vec::new();
             let mut unadmitted: Vec<TxId> = Vec::new();
             let Some(meta) = state.trusted_validators.get_mut(validator.get()) else {
                 return (Change::Unchanged, unadmitted);
@@ -97,39 +84,29 @@ impl ChainViewCore {
                     meta.health = health;
                     read(meta, reading);
                     if !listed {
-                        touched.extend(retract(&mut state.mempool, validator));
+                        retract(&mut state.mempool, validator);
                     }
                 }
                 TrustedValidatorReport::Listed(listing) => {
                     for txid in &listing.removed {
                         if let Some(sighting) = state.mempool.get_mut(txid) {
                             sighting.unsight(validator);
-                            touched.push(*txid);
                         }
                     }
                     for sighted in listing.added {
                         match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
                             (Some(sighting), _) => {
-                                let verified = sighting.timeline().first_trusted.is_some();
                                 sighting.sight(validator);
                                 sighting.listed_fee(sighted.fee);
-                                if !verified {
-                                    telemetry::first_trusted(sighting);
-                                }
                             }
                             (None, Some(raw)) => {
                                 let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
                                 sighting.sight(validator);
-                                telemetry::first_trusted(&sighting);
                                 state.mempool.insert(sighted.txid, sighting);
                             }
                             // held at the fetch-once check, gone before the merge
-                            (None, None) => {
-                                unadmitted.push(sighted.txid);
-                                continue;
-                            }
+                            (None, None) => unadmitted.push(sighted.txid),
                         }
-                        touched.push(sighted.txid);
                     }
                 }
                 TrustedValidatorReport::Failed(health) => {
@@ -137,11 +114,11 @@ impl ChainViewCore {
                     if health == Health::Down {
                         (meta.info, meta.block_at_best) = (None, None);
                         meta.telemetry.peers = None;
-                        touched.extend(retract(&mut state.mempool, validator));
+                        retract(&mut state.mempool, validator);
                     }
                 }
             }
-            (Change::Settle(touched), unadmitted)
+            (Change::Settle, unadmitted)
         })
     }
 
@@ -163,11 +140,7 @@ impl ChainViewCore {
                     changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
                 }
             }
-            let change = match changed {
-                true => Change::Settle(Vec::new()),
-                false => Change::Unchanged,
-            };
-            (change, ())
+            (if changed { Change::Settle } else { Change::Unchanged }, ())
         })
     }
 
@@ -198,15 +171,14 @@ impl ChainViewCore {
                     None => Some((id, None)),
                 }
             });
-            let candidates = candidates.collect();
-            (Change::Settle(lost), candidates)
+            (Change::Settle, candidates.collect())
         })
     }
 
     /// Candidates that passed our checks (`admission.rs`), each still admitted by the quorum now
     pub(crate) fn admit_by_quorum(&self, admitted: Vec<(PeerTxId, Bytes, Zatoshis)>) {
         self.merge(|state| {
-            let mut touched = Vec::new();
+            let mut changed = false;
             for (id, raw, fee) in admitted {
                 if !state.listings.admits(&id) {
                     continue;
@@ -216,16 +188,10 @@ impl ChainViewCore {
                 }
                 if let Some(sighting) = state.mempool.get_mut(&id.txid) {
                     sighting.listed_fee(fee);
-                    if sighting.set_quorum(true) {
-                        touched.push(id.txid);
-                    }
+                    changed |= sighting.set_quorum(true);
                 }
             }
-            let change = match touched.is_empty() {
-                true => Change::Unchanged,
-                false => Change::Settle(touched),
-            };
-            (change, ())
+            (if changed { Change::Settle } else { Change::Unchanged }, ())
         })
     }
 
@@ -233,48 +199,33 @@ impl ChainViewCore {
     pub(crate) fn apply_headers(&self, chain: Option<Arc<HeaderChainSnapshot>>) {
         self.merge(|state| {
             state.set_chain(chain, Instant::now());
-            (Change::Settle(Vec::new()), ())
+            (Change::Settle, ())
         })
     }
 
     /// Under the merge lock: `change`, then [`settle`](Self::settle) unless [`Change::Unchanged`]
     fn merge<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Change, T)) -> T {
         let mut guard = self.state.lock().expect("chainview merge mutex poisoned");
-        let before = Before::of(&guard);
+        let best_before = guard.best();
         let (change, out) = change(&mut guard);
-        if let Change::Settle(touched) = change {
-            self.settle(guard, before, touched);
+        if let Change::Settle = change {
+            self.settle(guard, best_before);
         }
         out
     }
 
-    /// After any change: alarms, spreads, drops, publish
+    /// After any change: alarms, drops, publish
     fn settle(
         &self,
         mut guard: std::sync::MutexGuard<'_, ChainViewSnapshot>,
-        before: Before,
-        touched: Vec<TxId>,
+        best_before: Option<BlockRef>,
     ) {
         let state = &mut *guard;
         let stalled = state.finality_stalled(Instant::now());
         state.alarms = telemetry::alarms(&state.trusted_validators, stalled);
 
-        // reader joined / left → any spread may complete (else only `touched`)
-        let readers = state.mempool_readers();
-        let spreading: Vec<TxId> = match readers == before.readers {
-            true => touched.clone(),
-            false => state.mempool.keys().copied().collect(),
-        };
-        for txid in spreading {
-            if let Some(sighting) = state.mempool.get_mut(&txid) {
-                if sighting.reached_all(readers) {
-                    telemetry::all_trusted(sighting);
-                }
-            }
-        }
-
         // unlisted dropped on a new best block (`ours` nobody lists after a block = mined or gone)
-        let moved = state.best() != before.best;
+        let moved = state.best() != best_before;
         let dropped: Vec<TxId> = state
             .mempool
             .iter()
@@ -282,9 +233,7 @@ impl ChainViewCore {
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {
-            if let Some(gone) = state.mempool.remove(txid) {
-                telemetry::left(&gone, moved);
-            }
+            state.mempool.remove(txid);
         }
 
         self.publish(guard);
@@ -297,7 +246,7 @@ impl ChainViewCore {
                 Some(sighting) => sighting.mark_ours(),
                 None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
             }
-            (Change::Settle(vec![txid]), ())
+            (Change::Settle, ())
         })
     }
 
@@ -324,8 +273,8 @@ fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.telemetry.absorb(reading.telemetry);
 }
 
-/// `validator`'s bit cleared from every sighting → the txids it held
-fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, validator: TrustedValidatorId) -> Vec<TxId> {
+/// `validator`'s bit cleared from every sighting
+fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, validator: TrustedValidatorId) {
     let held: Vec<TxId> = mempool
         .iter()
         .filter(|(_, sighting)| sighting.trusted().contains(validator))
@@ -336,5 +285,4 @@ fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, validator: TrustedValidat
             sighting.unsight(validator);
         }
     }
-    held
 }

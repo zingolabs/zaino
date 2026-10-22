@@ -325,12 +325,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 | ----------------- | ----------------------------------------------------------------------------------- |
 | stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ `STALE_TIP_BLOCKS` |
 | end of service    | a validator's release halts within 8,064 blocks (a week) of its tip                 |
-| partitioned       | two `Live` validators share no outbound peer                                        |
-| eclipsed          | `Live` validators reach 1–2 distinct outbound peers in total                        |
 | finality paused   | > depth non-finalized blocks for 60 s with the finalized tip unmoved                          |
-
-Per-transaction spread (`peers: x/y, trusted: x/y`) is tracked internally and feeds histograms
-(first seen → first trusted listing → every trusted listing, residence).
 
 ## 12. Seams
 
