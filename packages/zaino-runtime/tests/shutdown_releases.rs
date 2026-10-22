@@ -239,3 +239,61 @@ async fn a_fresh_runtime_boots_on_the_ports_the_torn_down_one_held() {
     assert_eq!(second.statuses()[0].lifecycle, Lifecycle::Ready);
     second.shutdown().await;
 }
+
+/// A run loop that never honours its cancel token, so its `stop` never returns.
+struct NeverStops;
+
+impl RunLoop for NeverStops {
+    type Error = ServeError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    async fn run(
+        self: Arc<Self>,
+        _cancel: CancellationToken,
+        reporter: RunReporter,
+    ) -> Result<(), ServeError> {
+        reporter.ready();
+        std::future::pending::<()>().await;
+        Ok(())
+    }
+}
+
+/// A component that never stops must not strand the ones below it.
+///
+/// The error case is covered above; this is the one a bounded await exists for.
+/// An unbounded teardown waits on this component forever: the components booted
+/// under it are never stopped, the teardown never returns, and the re-boot an
+/// escalation is driving toward is never reached — with nothing in the log
+/// naming what the runtime is waiting on.
+///
+/// Time is paused, so the stop budget elapses in virtual time and the test costs
+/// nothing. Real time would make this a 30-second test of a constant.
+#[tokio::test(start_paused = true)]
+async fn a_component_that_never_stops_does_not_strand_the_others() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let orchestra = OrchestraBuilder::new()
+        .boot(RunComponent::new(
+            ComponentName("store"),
+            Recording {
+                name: "store",
+                order: Arc::clone(&order),
+            },
+        ))
+        .await
+        .expect("boot store")
+        .boot(RunComponent::new(ComponentName("stubborn"), NeverStops))
+        .await
+        .expect("boot stubborn")
+        .build();
+
+    // Reverse boot order puts the stubborn component first, so it is the one
+    // that burns the budget — and `store`, booted under it, still has to stop.
+    orchestra.shutdown().await;
+
+    assert_eq!(
+        *order.lock().expect("order lock"),
+        vec!["store"],
+        "the component below the stubborn one is stopped despite the one above it hanging"
+    );
+}

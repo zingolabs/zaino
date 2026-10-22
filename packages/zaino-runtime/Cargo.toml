@@ -45,7 +45,9 @@ zaino-primitives = { path = "../zaino-primitives" }
 zaino-finality.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `test-util` for `#[tokio::test(start_paused = true)]`: the teardown
+# budget elapses in virtual time, so testing it costs nothing.
+tokio = { workspace = true, features = ["test-util"] }
 zaino-status = { path = "../zaino-status" }
 # Serving-composition POC: one engine driving both public ports at once.
 zaino-service = { path = "../zaino-service", features = ["testing"] }

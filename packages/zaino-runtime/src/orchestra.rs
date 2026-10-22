@@ -27,6 +27,17 @@ use zaino_component::{
 use crate::signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 use crate::supervisor::{observe, supervise, RecoveryPolicy, SupervisionOutcome};
 
+/// How long one component gets to release what it holds before the teardown
+/// moves on without it.
+///
+/// Generous, because a clean stop is worth waiting for: a serve socket that
+/// closes a second late costs a retry, while abandoning it costs the next boot
+/// its port. Bounded, because a component that never returns would otherwise
+/// strand the teardown and, with it, the re-boot an escalation is trying to
+/// reach — silently, since the only evidence would be a shutdown line with no
+/// terminator.
+const STOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A component could not be booted.
 #[derive(Debug, thiserror::Error)]
 pub enum BootError<E: std::error::Error + Send + Sync + 'static> {
@@ -327,8 +338,12 @@ impl Orchestra {
     /// An observed component is not stopped: the runtime does not own its
     /// lifetime and only watches it.
     ///
-    /// A component that fails to stop is reported and the teardown continues, so
-    /// one stubborn component cannot strand the rest.
+    /// A component that fails to stop — by erroring, or by not returning within
+    /// [`STOP_BUDGET`] — is reported by name and the teardown continues, so one
+    /// stubborn component cannot strand the rest. The budget is what makes that
+    /// true of a component that never returns: awaiting it unbounded would leave
+    /// the teardown half-done and the re-boot unreachable, with nothing in the
+    /// log saying which component the runtime was waiting on.
     pub async fn shutdown(&self) {
         self.tear_down(None).await;
     }
@@ -351,19 +366,39 @@ impl Orchestra {
             babysitter.cancel();
         }
 
+        // Reverse boot order, and recorded as it goes: the order is the property
+        // this teardown exists to uphold, so the line that reports it names the
+        // sequence rather than asserting one happened.
+        let mut stopped: Vec<ComponentName> = Vec::with_capacity(self.stoppers.len());
         for (name, component) in self.stoppers.iter().rev() {
             if Some(*name) == escalated {
                 continue;
             }
-            if let Err(error) = component.stop_erased().await {
-                tracing::warn!(
+            match tokio::time::timeout(STOP_BUDGET, component.stop_erased()).await {
+                Ok(Ok(())) => {
+                    // Per-component at debug: a teardown runs on every
+                    // escalation, so naming each one at info would bury the
+                    // escalation that caused it.
+                    tracing::debug!(%name, "component stopped");
+                    stopped.push(*name);
+                }
+                Ok(Err(error)) => tracing::warn!(
                     %name,
                     error = %zaino_component::error_chain(error.as_ref()),
                     "component did not stop cleanly; continuing the teardown"
-                );
+                ),
+                Err(_elapsed) => tracing::warn!(
+                    %name,
+                    budget_secs = STOP_BUDGET.as_secs(),
+                    "component did not stop within the budget; continuing the teardown \
+                     without it — whatever it holds is still held"
+                ),
             }
         }
-        tracing::info!("runtime shutdown: every owned component stopped");
+        tracing::info!(
+            ?stopped,
+            "runtime shutdown: every owned component stopped"
+        );
     }
 }
 
