@@ -51,14 +51,26 @@ mod tests {
     /// Slot = subtree index → a width change re-addresses every entry
     #[test]
     fn subtree_entry_golden_bytes_round_trip() {
+        let root: [u8; 32] = std::array::from_fn(|at| 0xe0 ^ at as u8);
         let entry =
-            SubtreeEntry { root: TreeRoot([0x5a; 32]), end_height: BlockHeight::from(0x0012_3456) };
+            SubtreeEntry { root: TreeRoot(root), end_height: BlockHeight::from(0x0012_3456) };
+        // height = a locator: big-endian
+        #[rustfmt::skip]
+        let fields = [
+            ("root",       "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"),
+            ("end_height", "00123456"),
+        ];
 
-        let mut expected = [0u8; ENTRY];
-        expected[..32].copy_from_slice(&[0x5a; 32]);
-        expected[32..].copy_from_slice(&[0x00, 0x12, 0x34, 0x56]);
+        let encoded = encode(&entry);
 
-        assert_eq!(encode(&entry), expected);
-        assert_eq!(decode(&expected), entry);
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let mut offset = 0;
+        for (field, expected) in fields {
+            let end = offset + expected.len() / 2;
+            assert_eq!(hex(&encoded[offset..end]), expected, "{field} at bytes {offset}..{end}");
+            offset = end;
+        }
+        assert_eq!(offset, ENTRY, "fields fill the entry, nothing trailing");
+        assert_eq!(decode(&encoded), entry, "decode inverts encode");
     }
 }

@@ -57,35 +57,48 @@ mod tests {
     use incrementalmerkletree::Level;
     use incrementalmerkletree::Position;
 
-    /// Address → slot = the slot the retained counts imply
+    /// Level 0 = every leaf, higher levels = even indices only, each from its completing size:
+    /// (1,0) at 2, (1,2) at 6, (2,0) at 4, (2,2) at 12, (3,0) at 8
     #[test]
     fn retained_counts_match_the_nodes_a_fold_would_materialise() {
-        // level 0 = every leaf, higher levels = even indices only
-        assert_eq!(retained_nodes(0, 0), 0);
-        assert_eq!(retained_nodes(0, 7), 7);
-        assert_eq!(retained_nodes(5, 0), 0);
-
-        // even node retained from its completing size: (1,0) at 2, (1,2) at 6, (2,0) at 4,
-        // (2,2) at 12, (3,0) at 8
-        for (level, size, expected) in [
-            (1u8, 1u64, 0u64),
-            (1, 2, 1),
-            (1, 5, 1),
-            (1, 6, 2),
-            (2, 3, 0),
-            (2, 4, 1),
-            (2, 11, 1),
-            (2, 12, 2),
-            (3, 7, 0),
-            (3, 8, 1),
-        ] {
-            assert_eq!(retained_nodes(level, size), expected, "level {level} at size {size}");
+        #[rustfmt::skip]
+        let cases = [
+            // (level, tree size, retained)
+            (0u8, 0u64, 0u64),
+            (0,   7,    7),
+            (5,   0,    0),
+            (1,   1,    0),
+            (1,   2,    1),
+            (1,   5,    1),
+            (1,   6,    2),
+            (2,   3,    0),
+            (2,   4,    1),
+            (2,   11,   1),
+            (2,   12,   2),
+            (3,   7,    0),
+            (3,   8,    1),
+        ];
+        for (level, size, retained) in cases {
+            assert_eq!(retained_nodes(level, size), retained, "level {level} at tree size {size}");
         }
+    }
 
-        // leaf = own position, even internal index halved, odd internal = none
-        assert_eq!(slot(Address::from(Position::from(9))), Some((0u8, 9u64)));
-        assert_eq!(slot(Address::from_parts(Level::from(1), 4)), Some((1, 2)));
-        assert_eq!(slot(Address::from_parts(Level::from(1), 5)), None);
-        assert_eq!(slot(Address::from_parts(Level::from(32), 0)), None);
+    /// Leaf = own position, even internal index halved, odd internal + root = none
+    #[test]
+    fn a_node_address_maps_to_its_retained_slot() {
+        #[rustfmt::skip]
+        let cases = [
+            // (level, index, slot)
+            (0u8, 9u64, Some((0u8, 9u64))),
+            (1,   4,    Some((1, 2))),
+            (1,   5,    None),
+            (32,  0,    None),
+        ];
+        for (level, index, expected) in cases {
+            let addr = Address::from_parts(Level::from(level), index);
+            assert_eq!(slot(addr), expected, "level {level} index {index}");
+        }
+        let leaf = Address::from(Position::from(9));
+        assert_eq!(slot(leaf), Some((0, 9)), "a position's leaf address = the level 0 slot");
     }
 }

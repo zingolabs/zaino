@@ -91,16 +91,40 @@ mod tests {
     fn tables_lay_out_heights_then_each_pools_levels_and_subtrees() {
         let tables: Vec<(&str, Width)> =
             SEQUENCES.iter().map(|table| (table.name, table.record)).collect();
-        assert_eq!(tables.len(), 1 + 3 * 33);
-        assert_eq!(tables[0], ("heights", Width::fixed(48)));
+        assert_eq!(tables.len(), 1 + 3 * 33, "heights + 3 pools × (32 levels + subtrees)");
+        assert_eq!(tables[0], ("heights", Width::fixed(48)), "first table");
         for (pool, base) in [("sapling", 1), ("orchard", 34), ("ironwood", 67)] {
-            assert_eq!(tables[base], (&*format!("{pool}/l00"), Width::fixed(32)));
-            assert_eq!(tables[base + 9], (&*format!("{pool}/l09"), Width::fixed(32)));
-            assert_eq!(tables[base + 31], (&*format!("{pool}/l31"), Width::fixed(32)));
-            assert_eq!(tables[base + 32], (&*format!("{pool}/subtrees"), Width::fixed(36)));
+            assert_eq!(tables[base], (&*format!("{pool}/l00"), Width::fixed(32)), "{pool} level 0");
+            assert_eq!(
+                tables[base + 9],
+                (&*format!("{pool}/l09"), Width::fixed(32)),
+                "{pool} level 9"
+            );
+            assert_eq!(
+                tables[base + 31],
+                (&*format!("{pool}/l31"), Width::fixed(32)),
+                "{pool} level 31"
+            );
+            assert_eq!(
+                tables[base + 32],
+                (&*format!("{pool}/subtrees"), Width::fixed(36)),
+                "{pool} subtrees"
+            );
         }
-        assert_eq!(level_table(ShieldedPool::Orchard, 5), SEQUENCES[34 + 5]);
-        assert_eq!(level_table(ShieldedPool::Orchard, 5).name, "orchard/l05");
-        assert_eq!(subtree_table(ShieldedPool::Ironwood).name, "ironwood/subtrees");
+        assert_eq!(
+            level_table(ShieldedPool::Orchard, 5),
+            SEQUENCES[34 + 5],
+            "orchard level 5 by position"
+        );
+        assert_eq!(
+            level_table(ShieldedPool::Orchard, 5).name,
+            "orchard/l05",
+            "orchard level 5 by name"
+        );
+        assert_eq!(
+            subtree_table(ShieldedPool::Ironwood).name,
+            "ironwood/subtrees",
+            "ironwood subtrees by name"
+        );
     }
 }

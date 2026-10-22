@@ -139,7 +139,7 @@ mod tests {
             orchard: Some(h(1_687_104)),
             ironwood: Some(h(3_428_143)),
         };
-        assert_eq!(pool_activations(&mainnet), expected);
+        assert_eq!(pool_activations(&mainnet), expected, "mainnet: Sapling, NU5, NU6.3");
 
         let no_nu5 = LocalNetwork { nu5: None, ..all_at(h(1)) };
         let expected = PerPool { sapling: Some(h(1)), orchard: None, ironwood: Some(h(1)) };

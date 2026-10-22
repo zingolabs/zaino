@@ -51,8 +51,9 @@ mod tests {
     /// Slot = height × RECORD → a width or order change silently re-addresses every stored height
     #[test]
     fn height_record_golden_bytes_round_trip() {
+        let hash: [u8; 32] = std::array::from_fn(|at| at as u8);
         let height = TreeStateHeight {
-            hash: BlockHash([0xab; 32]),
+            hash: BlockHash(hash),
             time: 0x1122_3344,
             sizes: TreeSizes {
                 sapling: TreeSize::from(1),
@@ -60,16 +61,26 @@ mod tests {
                 ironwood: TreeSize::from(u32::MAX),
             },
         };
-
-        let mut expected = Vec::with_capacity(RECORD);
-        expected.extend_from_slice(&[0xab; 32]);
-        expected.extend_from_slice(&[0x44, 0x33, 0x22, 0x11]);
-        expected.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
-        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        expected.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+        // quantities little-endian, hash as serialized
+        #[rustfmt::skip]
+        let fields = [
+            ("hash",     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+            ("time",     "44332211"),
+            ("sapling",  "01000000"),
+            ("orchard",  "00000001"),
+            ("ironwood", "ffffffff"),
+        ];
 
         let encoded = encode(&height);
-        assert_eq!(encoded.as_slice(), expected.as_slice());
-        assert_eq!(decode(&encoded), height);
+
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let mut offset = 0;
+        for (field, expected) in fields {
+            let end = offset + expected.len() / 2;
+            assert_eq!(hex(&encoded[offset..end]), expected, "{field} at bytes {offset}..{end}");
+            offset = end;
+        }
+        assert_eq!(offset, RECORD, "fields fill the record, nothing trailing");
+        assert_eq!(decode(&encoded), height, "decode inverts encode");
     }
 }

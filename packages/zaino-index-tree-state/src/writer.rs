@@ -323,97 +323,114 @@ mod tests {
         Mix(bytes)
     }
 
+    fn height(n: usize) -> BlockHeight {
+        BlockHeight::from(u32::try_from(n).expect("test heights fit u32"))
+    }
+
+    /// Oracle: incrementalmerkletree's frontier, leaf by leaf
+    fn library_frontier(size: u64) -> Frontier<Mix, MERKLE_DEPTH> {
+        let mut frontier = Frontier::empty();
+        assert!((0..size).all(|n| frontier.append(leaf(n))), "{size} leaves fit a depth-32 tree");
+        frontier
+    }
+
+    /// Oracle: the whole tree built level by level, each retained node + subtree root under the
+    /// block holding its last leaf (block `b` = `leaves_per_block[b]` leaves, height `b`)
+    fn naive_retained(leaves_per_block: &[usize], subtree_level: u8) -> Vec<Retained> {
+        let block_of_leaf: Vec<usize> = (0..leaves_per_block.len())
+            .flat_map(|block| std::iter::repeat_n(block, leaves_per_block[block]))
+            .collect();
+        let total = block_of_leaf.len() as u64;
+        let mut retained = vec![Retained::default(); leaves_per_block.len()];
+        let mut level_nodes: Vec<Mix> = (0..total).map(leaf).collect();
+        for level in 0..MERKLE_DEPTH {
+            for (index, node) in (0u64..).zip(&level_nodes) {
+                let last_leaf = usize::try_from(((index + 1) << level) - 1).expect("leaf index");
+                let block = block_of_leaf[last_leaf];
+                let kept = match level {
+                    0 => Some(index),
+                    _ => (index % 2 == 0 && index / 2 < retained_nodes(level, total))
+                        .then_some(index / 2),
+                };
+                if let Some(slot) = kept {
+                    retained[block].nodes.insert((level, slot), nodes::encode(node));
+                }
+                if level == subtree_level {
+                    let entry = SubtreeEntry {
+                        root: TreeRoot(nodes::encode(node)),
+                        end_height: height(block),
+                    };
+                    retained[block].subtrees.insert(index, entry);
+                }
+            }
+            level_nodes = level_nodes
+                .chunks_exact(2)
+                .map(|pair| Mix::combine(Level::from(level), &pair[0], &pair[1]))
+                .collect();
+        }
+        retained
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
-        /// Random blocks split into random runs, each run's frontier read back off the nodes
-        /// the runs before it retained
+        /// Random blocks split into random runs, each run hashed onto the frontier read back off
+        /// the nodes the runs before it retained
         ///
-        /// - retained nodes + subtree roots = naive tree's, each under the block holding its last
-        ///   leaf
-        /// - every frontier read = library's leaf-by-leaf one at that size
+        /// - every frontier read = the library's leaf-by-leaf one at that size
+        /// - retained nodes + subtree roots = the naive tree's, each under the block holding its
+        ///   last leaf (any split = the same per-block deltas)
         #[test]
         fn any_split_into_runs_retains_the_naive_trees_nodes_reading_each_frontier_back(
-            blocks in proptest::collection::vec(0usize..40, 1..60),
-            runs in proptest::collection::vec(1usize..12, 1..60),
+            leaves_per_block in proptest::collection::vec(0usize..40, 1..60),
+            run_lengths in proptest::collection::vec(1usize..12, 1..60),
             subtree_level in 1u8..5,
         ) {
-            let total: usize = blocks.iter().sum();
-            let height = |n: usize| BlockHeight::from(u32::try_from(n).expect("n"));
-            let library = |size: u64| {
-                let mut frontier = Frontier::<Mix, MERKLE_DEPTH>::empty();
-                (0..size).all(|n| frontier.append(leaf(n))).then_some(frontier)
-            };
-
             let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-            let mut out = Vec::new();
-            let (mut next_block, mut next_leaf) = (0usize, 0u64);
-            for (run, length) in runs.iter().cycle().enumerate() {
-                if next_block == blocks.len() {
+            let mut folded: Vec<Retained> = Vec::new();
+            let mut leaves_before = 0u64;
+            for (run, length) in run_lengths.iter().cycle().enumerate() {
+                let first = folded.len();
+                if first == leaves_per_block.len() {
                     break;
                 }
-                let these = &blocks[next_block..(next_block + length).min(blocks.len())];
-                let parent = TreeStateReader::new(store.applied());
-                let frontier = parent.frontier::<Mix>(ShieldedPool::Sapling, next_leaf);
-                prop_assert_eq!(&frontier, &library(next_leaf), "frontier read before run {}", run);
+                let these = &leaves_per_block[first..(first + length).min(leaves_per_block.len())];
+                let frontier = TreeStateReader::new(store.applied())
+                    .frontier::<Mix>(ShieldedPool::Sapling, leaves_before);
+                let library = library_frontier(leaves_before);
+                prop_assert_eq!(&frontier, &Some(library), "frontier read before run {}", run);
                 let mut leaves = Vec::new();
                 let mut ends = Vec::new();
-                for (offset, count) in these.iter().enumerate() {
-                    leaves.extend((0..*count as u64).map(|i| leaf(next_leaf + i)));
-                    next_leaf += *count as u64;
-                    ends.push((height(next_block + offset), leaves.len()));
+                for (offset, &count) in these.iter().enumerate() {
+                    leaves.extend((leaves_before..).take(count).map(leaf));
+                    leaves_before += count as u64;
+                    ends.push((height(first + offset), leaves.len()));
                 }
-                let frontier = frontier.expect("read");
+                let frontier = frontier.expect("compared above");
+
                 let retained = PoolRun { frontier, leaves, ends }.hash(Level::from(subtree_level));
 
-                // the run's nodes as one "block" per run (heights = run number)
-                let tip = BlockRef { hash: BlockHash([0; 32]), height: height(run) };
-                let mut changes = store.changes(tip);
+                // run's nodes stored as one change set (tip height = run number)
+                let mut changes =
+                    store.changes(BlockRef { hash: BlockHash([0; 32]), height: height(run) });
                 let nodes: BTreeMap<_, _> = retained.iter().flat_map(|block| &block.nodes).collect();
                 for (&(level, _), node) in nodes {
                     changes.sequence(level_table(ShieldedPool::Sapling, level)).append(node);
                 }
                 store.apply(changes);
-                out.extend(retained);
-                next_block += these.len();
+                folded.extend(retained);
             }
-            let parent = TreeStateReader::new(store.applied());
-            let last = parent.frontier::<Mix>(ShieldedPool::Sapling, total as u64);
-            prop_assert_eq!(last, library(total as u64), "frontier after every run");
+            let last = TreeStateReader::new(store.applied())
+                .frontier::<Mix>(ShieldedPool::Sapling, leaves_before);
+            prop_assert_eq!(last, Some(library_frontier(leaves_before)), "frontier after every run");
 
-            let block_of_leaf: Vec<usize> =
-                blocks.iter().enumerate().flat_map(|(b, &c)| std::iter::repeat_n(b, c)).collect();
-            let mut expected_nodes = vec![BTreeMap::new(); blocks.len()];
-            let mut expected_subtrees = vec![BTreeMap::new(); blocks.len()];
-            let mut level_nodes: Vec<Mix> = (0..total as u64).map(leaf).collect();
-            for level in 0..MERKLE_DEPTH {
-                let retained = retained_nodes(level, total as u64);
-                for (index, node) in (0u64..).zip(&level_nodes) {
-                    let last = usize::try_from(((index + 1) << level) - 1).expect("leaf");
-                    let block = block_of_leaf[last];
-                    if level == 0 || (index % 2 == 0 && index / 2 < retained) {
-                        let slot = if level == 0 { index } else { index / 2 };
-                        expected_nodes[block].insert((level, slot), nodes::encode(node));
-                    }
-                    if level == subtree_level {
-                        expected_subtrees[block].insert(index, (nodes::encode(node), height(block)));
-                    }
-                }
-                level_nodes = level_nodes
-                    .chunks_exact(2)
-                    .map(|pair| Mix::combine(Level::from(level), &pair[0], &pair[1]))
-                    .collect();
+            let naive = naive_retained(&leaves_per_block, subtree_level);
+            for (block, (folded, naive)) in folded.iter().zip(&naive).enumerate() {
+                let slots = |retained: &Retained| retained.nodes.keys().copied().collect::<Vec<_>>();
+                prop_assert_eq!(slots(folded), slots(naive), "block {}: retained slots", block);
+                prop_assert!(folded.nodes == naive.nodes, "block {block}: retained node bytes");
+                prop_assert_eq!(&folded.subtrees, &naive.subtrees, "block {}: subtree roots", block);
             }
-            let folded: Vec<_> = out.iter().map(|block| block.nodes.clone()).collect();
-            prop_assert_eq!(folded, expected_nodes, "retained nodes, per block");
-            let subtrees: Vec<BTreeMap<_, _>> = out
-                .iter()
-                .map(|block| {
-                    let entries = block.subtrees.iter();
-                    entries.map(|(i, e)| (*i, (e.root.0, e.end_height))).collect()
-                })
-                .collect();
-            prop_assert_eq!(subtrees, expected_subtrees, "subtree roots, per block");
         }
     }
 
@@ -423,9 +440,10 @@ mod tests {
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
         let mut mock = MockChain::regtest();
-        // (sapling, orchard, ironwood) leaves per block, nullifier tag = the leaf
+        // nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
+            // (sapling,         orchard,               ironwood)
             (&[1, 2, 3],         &[101],                &[]),
             (&[4],               &[102, 103],           &[201]),
             (&[],                &[],                   &[]),
@@ -442,30 +460,21 @@ mod tests {
             });
         }
         let chain = mock.blocks(mock.tip());
-        // (tip, every table's appends) per block
-        let tables = |changes: &BlockChanges| {
-            let appends = SCHEMA
-                .sequences()
-                .iter()
-                .map(|&table| changes.appends(table).map(<[u8]>::to_vec).collect::<Vec<_>>());
-            (changes.block(), appends.collect::<Vec<_>>())
-        };
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-        let one_by_one: Vec<_> = chain
+        let one_by_one: Vec<BlockChanges> = chain
             .iter()
             .map(|block| {
                 let mut changes = store.changes(block.block_ref());
                 fold(&TreeStateReader::new(store.applied()), block, &mut changes).expect("folds");
-                let folded = tables(&changes);
-                store.apply(changes);
-                folded
+                store.apply(changes.clone());
+                changes
             })
             .collect();
 
         // bit `i` of `split` = a run ends after block `i`
-        let fold_in_runs = |split: u32| {
+        for split in 0..1u32 << (chain.len() - 1) {
             let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-            let mut folded = Vec::new();
+            let mut in_runs: Vec<BlockChanges> = Vec::new();
             let mut run: Vec<&Block> = Vec::new();
             for (at, block) in chain.iter().enumerate() {
                 run.push(block);
@@ -477,15 +486,21 @@ mod tests {
                 let parent = TreeStateReader::new(store.applied());
                 fold_run(&parent, &std::mem::take(&mut run), &mut out).expect("folds");
                 for changes in out {
-                    folded.push(tables(&changes));
-                    store.apply(changes);
+                    store.apply(changes.clone());
+                    in_runs.push(changes);
                 }
             }
-            folded
-        };
 
-        for split in 0..1 << (chain.len() - 1) {
-            assert_eq!(fold_in_runs(split), one_by_one, "runs split by {split:#06b}");
+            for (alone, ran) in one_by_one.iter().zip(&in_runs) {
+                let case = format!("runs split by {split:#06b}, block {:?}", alone.block());
+                assert_eq!(ran.block(), alone.block(), "{case}: delta for its own block");
+                for &table in SCHEMA.sequences() {
+                    let ran: Vec<&[u8]> = ran.appends(table).collect();
+                    let alone: Vec<&[u8]> = alone.appends(table).collect();
+                    let counts = format!("{} appends vs {} alone", ran.len(), alone.len());
+                    assert!(ran == alone, "{case}: table {} differs ({counts})", table.name);
+                }
+            }
         }
     }
 
@@ -505,8 +520,11 @@ mod tests {
         let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.block_ref())).collect();
+
         let refused = fold_run(&TreeStateReader::new(store.applied()), &run, &mut out);
-        assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
+
+        let expected = Err(FoldError::Commitment { height: h(2) });
+        assert_eq!(refused, expected, "run 0..=2, cmu edited at 2");
     }
 
     /// Oracle: the three trees both clients parse, every commitment of `blocks` appended in order
@@ -545,11 +563,11 @@ mod tests {
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {
         let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
-        // - (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
-        //   both parities (forces carries several levels up)
+        // - 0, 1, many commitments per pool on both parities (forces carries several levels up)
         // - nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
+            // (sapling,         orchard,               ironwood)
             (&[1, 2, 3],         &[101],                &[]),
             (&[4],               &[102, 103],           &[201]),
             (&[],                &[],                   &[]),
@@ -566,7 +584,7 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
-        let seen = |through: u32| naive_trees(&blocks[..=through as usize]);
+        let naive_through = |through: u32| naive_trees(&blocks[..=through as usize]);
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
         for (acked, block) in (1u64..).zip(&blocks[..5]) {
             writer.send(step(block)).await;
@@ -581,21 +599,36 @@ mod tests {
         let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
-            let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
-            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as u32);
-            assert!(acked.contains(&count), "{label}: recovered {count}");
-            if let Some(tip) = count.checked_sub(1) {
-                assert_eq!(trees(store.durable(), tip), seen(tip), "{label}: at {tip}");
+            let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let acknowledged = (state.tag as u32).min(5);
+            let attempted = (acknowledged + 1).min(5);
+            let case =
+                format!("{}: recovered {recovered} blocks, next height {recovered}", state.label);
+            assert!(
+                [acknowledged, attempted].contains(&recovered),
+                "{case}: acknowledged {acknowledged}, attempted {attempted}"
+            );
+            if let Some(tip) = recovered.checked_sub(1) {
+                let served = trees(store.durable(), tip);
+                assert_eq!(served, naive_through(tip), "{case}: trees at the recovered tip {tip}");
             }
 
             let writer = start(store);
-            writer.send(step(&blocks[count as usize])).await;
-            let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = trees(handle.durable_view(), count);
-            assert_eq!(next, seen(count), "{label}: folding on after recovery");
+            writer.send(step(&blocks[recovered as usize])).await;
+            let handle = writer.stop().await.unwrap_or_else(|error| panic!("{case}: {error}"));
+            let next = trees(handle.durable_view(), recovered);
+            assert_eq!(next, naive_through(recovered), "{case}: trees after folding on");
         }
+    }
+
+    /// Commitments one block adds, per pool (0..=3 each)
+    fn commits() -> impl Strategy<Value = PerPool<u32>> {
+        (0u32..=3, 0u32..=3, 0u32..=3).prop_map(|(sapling, orchard, ironwood)| PerPool {
+            sapling,
+            orchard,
+            ironwood,
+        })
     }
 
     proptest! {
@@ -606,33 +639,34 @@ mod tests {
         /// the tip is served
         #[test]
         fn random_histories_serve_the_naive_trees_at_every_height(
-            counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
+            per_block in proptest::collection::vec(commits(), 1..10),
             moves in moves(),
             write_buffer in write_buffers(),
         ) {
-            block_on_paused(random_history(counts, moves, write_buffer));
+            block_on_paused(random_history(per_block, moves, write_buffer))?;
         }
     }
 
-    /// Genesis, then one block per `counts` entry
+    /// Genesis, then one block per `per_block` entry
     ///
     /// - leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
     /// - nullifier tag = the leaf
     async fn random_history(
-        counts: Vec<(usize, usize, usize)>,
+        per_block: Vec<PerPool<u32>>,
         moves: Vec<Move>,
         write_buffer: NonZeroUsize,
-    ) {
-        let mut next = (1u32, 10_001u32, 20_001u32);
-        let take = |count: usize, from: &mut u32| {
-            let taken = *from..*from + count as u32;
-            *from += count as u32;
-            taken
-        };
+    ) -> Result<(), TestCaseError> {
+        let mut next_leaf = PerPool { sapling: 1u32, orchard: 10_001, ironwood: 20_001 };
         let mut mock = MockChain::regtest();
-        for &(sapling, orchard, ironwood) in &counts {
-            let (sapling, orchard) = (take(sapling, &mut next.0), take(orchard, &mut next.1));
-            let ironwood = take(ironwood, &mut next.2);
+        for adds in &per_block {
+            let mut take = |pool: ShieldedPool| {
+                let from = next_leaf.get_mut(pool);
+                let taken = *from..*from + adds.get(pool);
+                *from = taken.end;
+                taken
+            };
+            let (sapling, orchard) = (take(ShieldedPool::Sapling), take(ShieldedPool::Orchard));
+            let ironwood = take(ShieldedPool::Ironwood);
             mock.mine(|b| {
                 b.tx(|t| {
                     let t = sapling.fold(t, |t, leaf| t.sapling_output(leaf));
@@ -657,44 +691,53 @@ mod tests {
             }
             writer.durable_at(stream.tip()).await;
 
-            let label = format!("move {at} {next:?}");
+            let case = format!("move {at} {next:?}");
             let reader = TreeStateReader::new(writer.handle().durable_view());
             let sent = stream.sent() as u32;
             for height in 0..sent {
-                let served = reader.treestate(h(height));
-                let served = served.unwrap_or_else(|error| panic!("{label}: {error}"));
-                let expected = trees_through(height as usize);
-                assert_eq!(served.trees, expected, "{label}: trees at {height}");
+                let served = reader.treestate(h(height)).map(|served| served.trees);
+                let expected = Ok(trees_through(height as usize));
+                prop_assert_eq!(served, expected, "{}: trees at {}", case, height);
             }
             let absent = Err(ServeError::NotFound { height: h(sent) });
-            assert_eq!(reader.treestate(h(sent)), absent, "{label}: past the tip");
+            prop_assert_eq!(reader.treestate(h(sent)), absent, "{}: past the tip {}", case, sent);
         }
         writer.stop().await.expect("stops at Shutdown");
+        Ok(())
     }
 
-    /// Real 2^16-leaf subtrees
-    ///
-    /// - each root = served tree's own level-16 root at its completing height, named by that block
-    /// - resumable from any `start_index` (`start_index == count` = empty, pepper-sync's probe)
-    /// - reopen appends the next boundary after the ones on disk
+    /// Orchard leaves `(first, count)` per height 1..: subtree 0 completes at 2, subtree 1 at 4,
+    /// subtree 2 at 5
+    const HALF: u32 = 1 << 15;
+    const ORCHARD_LEAVES: [(u32, u32); 5] = [
+        (1, HALF),
+        (1 + HALF, HALF),
+        (1 + 2 * HALF, 1),
+        (2 + 2 * HALF, 2 * HALF - 1),
+        (1 + 4 * HALF, 2 * HALF),
+    ];
+    /// <= 8 192 actions per tx (a tx's proof length = a CompactSize, <= 32 MiB)
+    const PER_TX: u32 = 1 << 13;
+
+    /// Level-16 root of the subtree holding the tip of the orchard tree served at `height`
+    /// (the client's own reading of the served tree)
+    fn served_subtree_root(view: &TreeStateReader<DiskView>, height: u32) -> TreeRoot {
+        let tree = view.treestate(h(height)).expect("served").trees.orchard;
+        let frontier = read_commitment_tree::<MerkleHashOrchard, _, 32>(tree.as_bytes())
+            .expect("parses")
+            .to_frontier();
+        let root = frontier.value().expect("non-empty").root(Some(Level::from(16)));
+        let mut bytes = [0u8; 32];
+        root.write(&mut bytes[..]).expect("32 bytes");
+        TreeRoot(bytes)
+    }
+
+    /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
+    /// height, named by that block, resumable from any `start_index`
     #[tokio::test]
-    async fn subtree_roots_resume_from_start_index() {
-        const HALF: u32 = 1 << 15;
-        let fs = SimFs::new();
+    async fn subtree_roots_name_their_completing_blocks_and_resume_from_any_start_index() {
         let mut chain = MockChain::regtest();
-        // - orchard leaves (first, count) per height 1..: subtree 0 completes at height 2,
-        //   subtree 1 at 4, subtree 2 at 5 (sent after a reopen)
-        // - nullifier tag = the leaf
-        let orchard = [
-            (1, HALF),
-            (1 + HALF, HALF),
-            (1 + 2 * HALF, 1),
-            (2 + 2 * HALF, 2 * HALF - 1),
-            (1 + 4 * HALF, 2 * HALF),
-        ];
-        // ≤ 8 192 actions per tx (a tx's proof length = a CompactSize, ≤ 32 MiB)
-        const PER_TX: u32 = 1 << 13;
-        for (first, count) in orchard {
+        for (first, count) in ORCHARD_LEAVES[..4].iter().copied() {
             chain.mine(|b| {
                 (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
                     let to = (from + PER_TX).min(first + count);
@@ -703,21 +746,50 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
+        let mut writer = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX));
+        for block in &blocks[..4] {
+            writer.send(step(block)).await;
+        }
+        writer.send(finalized(&blocks[4])).await;
+        writer.durable_at(h(4)).await;
+        let view = TreeStateReader::new(writer.stop().await.expect("stops").durable_view());
 
-        let completing =
-            |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
-        // level-16 root of the subtree holding the tip of the orchard tree served at `height`
-        let tree_root = |view: &TreeStateReader<DiskView>, height: u32| {
-            let tree = view.treestate(h(height)).expect("served").trees.orchard;
-            let frontier = read_commitment_tree::<MerkleHashOrchard, _, 32>(tree.as_bytes())
-                .expect("parses")
-                .to_frontier();
-            let root = frontier.value().expect("non-empty").root(Some(Level::from(16)));
-            let mut bytes = [0u8; 32];
-            root.write(&mut bytes[..]).expect("32 bytes");
-            TreeRoot(bytes)
-        };
+        let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
 
+        let expected = [2, 4].map(|at| SubtreeRoot {
+            root: served_subtree_root(&view, at),
+            completing: blocks[at as usize].block_ref(),
+        });
+        assert_eq!(roots, expected, "two boundaries, their completing blocks");
+        // (pool, start_index, max_entries) → served = a slice of `roots`
+        use ShieldedPool::{Orchard, Sapling};
+        #[rustfmt::skip]
+        let cases = [
+            ("resume = a seek",                   Orchard, 1, 0, &roots[1..]),
+            ("bound = a prefix",                  Orchard, 0, 1, &roots[..1]),
+            ("start = count = empty (the probe)", Orchard, 2, 0, &[][..]),
+            ("untouched pool",                    Sapling, 0, 0, &[][..]),
+        ];
+        for (case, pool, start_index, max_entries, expected) in cases {
+            let served = view.subtree_roots(pool, start_index, max_entries);
+            assert_eq!(served.as_deref(), Ok(expected), "{case}: {pool:?} from {start_index}");
+        }
+    }
+
+    /// Reopen rebuilds the subtree cursor from the files → the next boundary follows those on disk
+    #[tokio::test]
+    async fn a_reopened_writer_appends_the_next_subtree_root_after_those_on_disk() {
+        let fs = SimFs::new();
+        let mut chain = MockChain::regtest();
+        for (first, count) in ORCHARD_LEAVES {
+            chain.mine(|b| {
+                (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
+                    let to = (from + PER_TX).min(first + count);
+                    b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
+                })
+            });
+        }
+        let blocks = chain.blocks(chain.tip());
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         for block in &blocks[..4] {
             writer.send(step(block)).await;
@@ -725,29 +797,18 @@ mod tests {
         writer.send(finalized(&blocks[4])).await;
         writer.durable_at(h(4)).await;
         writer.stop().await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
-        let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
-        let expected = [(2, &blocks[2]), (4, &blocks[4])].map(|(at, block)| SubtreeRoot {
-            root: tree_root(&view, at),
-            completing: completing(block),
-        });
-        assert_eq!(roots, expected, "two boundaries, their completing blocks");
+        let before = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
+        let before = before.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
 
-        // slot = subtree index → resume = a seek, bound = a prefix
-        use ShieldedPool::{Orchard, Sapling};
-        assert_eq!(view.subtree_roots(Orchard, 1, 0).expect("resume"), roots[1..]);
-        assert_eq!(view.subtree_roots(Orchard, 0, 1).expect("bounded"), roots[..1]);
-        assert_eq!(view.subtree_roots(Orchard, 2, 0).expect("probe"), Vec::new());
-        assert_eq!(view.subtree_roots(Sapling, 0, 0).expect("untouched pool"), Vec::new());
-
-        // reopen rebuilds the subtree cursor from the files → next boundary follows it
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[5])).await;
-        let handle = writer.stop().await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(handle.durable_view());
-        let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
-        let third = SubtreeRoot { root: tree_root(&view, 5), completing: completing(&blocks[5]) };
-        assert_eq!(resumed_roots, [roots, vec![third]].concat(), "earlier entries untouched");
+        let view = TreeStateReader::new(writer.stop().await.expect("stops").durable_view());
+
+        let after = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
+        let third =
+            SubtreeRoot { root: served_subtree_root(&view, 5), completing: blocks[5].block_ref() };
+        assert_eq!(before.len(), 2, "subtrees 0 and 1 on disk before the reopen");
+        assert_eq!(after, [before, vec![third]].concat(), "earlier entries untouched, 2 appended");
     }
 
     /// Every pool served as its real tree's serialization, never an empty field (both clients map
@@ -765,18 +826,18 @@ mod tests {
         }
         let handle = writer.stop().await.expect("stops at Shutdown");
         let reader = TreeStateReader::new(handle.durable_view());
+
         let trees = reader.treestate(h(1)).expect("served").trees;
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())
             .expect("the clients' own parser accepts it");
-        assert_eq!(parsed.to_frontier().tree_size(), 3);
-
+        assert_eq!(parsed.to_frontier().tree_size(), 3, "ironwood: its 3 leaves");
         // empty pool = the three-byte empty tree, not "" (active pool with no notes != a pool
         // below its activation)
-        for empty in [trees.sapling, trees.orchard] {
-            assert_eq!(empty.as_bytes(), [0u8, 0, 0]);
+        for (pool, empty) in [("sapling", trees.sapling), ("orchard", trees.orchard)] {
+            assert_eq!(empty.as_bytes(), [0u8, 0, 0], "{pool}: the empty tree's bytes");
             let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(empty.as_bytes());
-            assert_eq!(parsed.expect("parses").to_frontier().tree_size(), 0);
+            assert_eq!(parsed.expect("parses").to_frontier().tree_size(), 0, "{pool}: no leaves");
         }
     }
 }
