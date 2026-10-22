@@ -361,23 +361,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_snapshot_of_a_sighting_shares_its_first_render() {
-        let txid = TxId::from_bytes([1; 32]);
-        let sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
-        let published = sighting.clone();
-        let first = sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>("first".into()));
-        let again = published.entry(txid).projection.get_or_render(|| Ok::<_, ()>("again".into()));
-        assert_eq!((first, again), (Ok("first".into()), Ok("first".into())));
-    }
-
-    #[test]
-    fn a_first_listed_fee_drops_the_unpriced_render() {
+    fn a_sightings_render_is_shared_by_every_snapshot_until_its_first_listed_fee() {
         let txid = TxId::from_bytes([1; 32]);
         let mut sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
-        let unpriced = sighting.entry(txid).projection;
-        let _ = unpriced.get_or_render(|| Ok::<_, ()>("unpriced".into()));
+        let published = sighting.clone();
+        let render = |sighting: &Sighting, text: &'static str| {
+            sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>(Bytes::from(text)))
+        };
+
+        let first = render(&sighting, "first");
+        let shared = render(&published, "again");
         sighting.listed_fee(Zatoshis::ZERO);
-        let priced = sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>("priced".into()));
-        assert_eq!(priced, Ok(Bytes::from("priced")));
+        let priced = render(&sighting, "priced");
+
+        assert_eq!(first, Ok(Bytes::from("first")), "unpriced: rendered once");
+        assert_eq!(shared, Ok(Bytes::from("first")), "a published clone: the first render");
+        assert_eq!(priced, Ok(Bytes::from("priced")), "a first listed fee: rendered afresh");
     }
 }

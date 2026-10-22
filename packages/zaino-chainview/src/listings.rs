@@ -120,17 +120,22 @@ mod tests {
         PeerTxId { txid: TxId::from_bytes([n; 32]), auth_digest: witness.map(|w| [w; 32]) }
     }
 
-    /// One round: per peer, `None` = failed, else the ids it lists (bit `i` = id `i`)
+    /// Ids the model draws from: `id(0..IDS)`
+    const IDS: u8 = 8;
+
+    /// One round: per peer, `None` = failed, else the ids (`id(n)`) it lists; then `wait`
     #[derive(Debug, Clone)]
     struct Round {
-        answers: Vec<Option<u8>>,
-        wait_secs: u8,
+        answers: Vec<Option<BTreeSet<u8>>>,
+        wait: Duration,
     }
 
     fn rounds(peers: usize) -> impl Strategy<Value = Vec<Round>> {
-        let answer = proptest::option::weighted(0.9, any::<u8>());
-        let round = (prop::collection::vec(answer, peers), 0u8..12)
-            .prop_map(|(answers, wait_secs)| Round { answers, wait_secs });
+        let listed = prop::collection::btree_set(0..IDS, 0..=usize::from(IDS));
+        let answer = proptest::option::weighted(0.9, listed);
+        let wait = (0u64..12).prop_map(Duration::from_secs);
+        let round = (prop::collection::vec(answer, peers), wait)
+            .prop_map(|(answers, wait)| Round { answers, wait });
         prop::collection::vec(round, 1..24)
     }
 
@@ -148,21 +153,20 @@ mod tests {
         ) {
             let addrs: Vec<SocketAddr> =
                 (0..peers).map(|n| peer(n as u8 + 1, own_netgroups || n % 2 == 0)).collect();
-            let ids: Vec<PeerTxId> =
-                (0..8u8).map(|n| id(n, witnessed.then_some(n))).collect();
+            let ids: Vec<PeerTxId> = (0..IDS).map(|n| id(n, witnessed.then_some(n))).collect();
             let start = Instant::now();
             let mut now = start;
             let mut real = Listings::default();
             let mut model: BTreeMap<SocketAddr, (Instant, BTreeSet<PeerTxId>)> = BTreeMap::new();
             for round in rounds {
-                now += Duration::from_secs(u64::from(round.wait_secs));
+                now += round.wait;
+                let at = now - start;
                 let answers: Vec<(SocketAddr, Option<Vec<PeerTxId>>)> = addrs
                     .iter()
                     .zip(&round.answers)
-                    .map(|(peer, bits)| {
-                        let listed = bits.map(|bits| {
-                            ids.iter().enumerate().filter(|(i, _)| bits & (1 << i) != 0)
-                                .map(|(_, id)| *id).collect()
+                    .map(|(peer, listed)| {
+                        let listed = listed.as_ref().map(|listed| {
+                            listed.iter().map(|n| ids[usize::from(*n)]).collect()
                         });
                         (*peer, listed)
                     })
@@ -181,19 +185,27 @@ mod tests {
                     .collect();
                 let polled: BTreeSet<SocketAddr> = fresh.iter().map(|(p, _)| **p).collect();
                 let real_polled: BTreeSet<SocketAddr> = real.fresh().map(|(p, _)| *p).collect();
-                prop_assert_eq!(real_polled, polled.clone());
+                prop_assert_eq!(&real_polled, &polled, "at {:?}: fresh peers, real vs model", at);
                 let groups = |peers: &[SocketAddr]| {
                     peers.iter().map(|p| Netgroup::of(*p)).collect::<BTreeSet<_>>().len()
                 };
                 let all: Vec<SocketAddr> = polled.iter().copied().collect();
-                prop_assert_eq!(real.quorate(), groups(&all) > ECLIPSE_NETGROUPS);
+                let quorate = groups(&all) > ECLIPSE_NETGROUPS;
+                prop_assert_eq!(
+                    real.quorate(), quorate,
+                    "at {:?}: quorate, real vs model ({} fresh netgroups)", at, groups(&all)
+                );
                 let mut admitted = Vec::new();
-                for id in &ids {
+                for (n, id) in ids.iter().enumerate() {
                     let listers: Vec<SocketAddr> =
                         fresh.iter().filter(|(_, l)| l.contains(id)).map(|(p, _)| **p).collect();
                     let admits = listers.len() * 3 > fresh.len() * 2
                         && groups(&listers) > ECLIPSE_NETGROUPS;
-                    prop_assert_eq!(real.admits(id), admits, "{:?}", id);
+                    prop_assert_eq!(
+                        real.admits(id), admits,
+                        "at {:?}: id({}) admitted, real vs model: {} of {} fresh list it, {} netgroups",
+                        at, n, listers.len(), fresh.len(), groups(&listers)
+                    );
                     if admits {
                         admitted.push(*id);
                     }
@@ -202,52 +214,97 @@ mod tests {
                         .map(|(p, _)| **p).collect();
                     let real_listers: BTreeSet<SocketAddr> =
                         real.listers(&id.txid).into_iter().collect();
-                    prop_assert_eq!(&real_listers, &by_txid);
-                    prop_assert_eq!(real.retains(&id.txid), by_txid.len() * 3 > fresh.len());
+                    prop_assert_eq!(
+                        &real_listers, &by_txid,
+                        "at {:?}: id({})'s txid listers (any witness), real vs model", at, n
+                    );
+                    prop_assert_eq!(
+                        real.retains(&id.txid), by_txid.len() * 3 > fresh.len(),
+                        "at {:?}: id({})'s txid retained, real vs model: {} of {} fresh list it",
+                        at, n, by_txid.len(), fresh.len()
+                    );
                 }
-                prop_assert_eq!(real.admitted(), admitted);
+                let real_admitted = real.admitted();
+                prop_assert_eq!(&real_admitted, &admitted, "at {:?}: every admitted id, real vs model", at);
             }
         }
     }
 
-    /// - 9 peers, 9 netgroups: 7 listing = > 2/3 → admitted, retained down to 4 (> 1/3), gone at 3
-    /// - same 7 inside 5 netgroups = never admitted
-    /// - another witness of the txid = not this id, still a lister of the txid
+    /// 9 peers in 9 netgroups, the first `listing` of them listing `a`
     #[test]
-    fn admission_needs_two_thirds_in_six_netgroups_and_retention_one_third() {
-        let start = Instant::now();
+    fn an_id_is_admitted_above_two_thirds_of_fresh_listings_and_retained_above_one_third() {
         let a = id(1, Some(1));
-        let a_other_witness = id(1, Some(2));
-        let answers = |peers: &[SocketAddr], listing: usize, with: PeerTxId| {
-            let listed = |at: usize| if at < listing { vec![with] } else { Vec::new() };
-            peers.iter().enumerate().map(|(at, p)| (*p, Some(listed(at)))).collect::<Vec<_>>()
-        };
         let spread: Vec<SocketAddr> = (1..=9).map(|n| peer(n, true)).collect();
-        let mut listings = Listings::default();
-        listings.round(answers(&spread, 7, a), start);
-        assert_eq!((listings.quorate(), listings.admitted()), (true, vec![a]));
-        assert!(!listings.admits(&a_other_witness), "an id the quorum never listed");
-        for (listing, retained) in [(6, true), (4, true), (3, false)] {
-            listings.round(answers(&spread, listing, a), start);
-            assert_eq!(listings.retains(&a.txid), retained, "{listing} of 9 list it");
+        #[rustfmt::skip]
+        let cases = [
+            // case,                   listing, admitted, retained
+            ("7 of 9: > 2/3",          7,       true,     true),
+            ("6 of 9: = 2/3",          6,       false,    true),
+            ("4 of 9: > 1/3",          4,       false,    true),
+            ("3 of 9: = 1/3",          3,       false,    false),
+        ];
+        for (case, listing, admitted, retained) in cases {
+            let answers = spread.iter().enumerate().map(|(at, peer)| {
+                let listed = if at < listing { vec![a] } else { Vec::new() };
+                (*peer, Some(listed))
+            });
+            let mut listings = Listings::default();
+            listings.round(answers.collect(), Instant::now());
+
+            assert_eq!(listings.admits(&a), admitted, "{case}: admitted");
+            assert_eq!(listings.retains(&a.txid), retained, "{case}: retained");
         }
-        listings.round(answers(&spread, 4, a_other_witness), start);
-        assert_eq!(listings.listers(&a.txid).len(), 4, "any witness lists the txid");
+    }
 
-        // 9 peers over 5 netgroups (10.1–10.4 + 10.0.0.x): 7 listing never admits
-        let clustered: Vec<SocketAddr> =
-            (1..=9).map(|n| if n <= 4 { peer(n, true) } else { peer(n, false) }).collect();
-        let mut listings = Listings::default();
-        listings.round(answers(&clustered, 9, a), start);
-        assert_eq!((listings.quorate(), listings.admitted()), (false, vec![]), "5 netgroups");
+    /// Every peer listing `a`: 9/9, so netgroups alone decide (10.1.0.1… own, 10.0.0.x shared)
+    #[test]
+    fn admission_needs_fresh_listers_in_more_than_five_netgroups() {
+        let a = id(1, Some(1));
+        for (case, own_netgroups, quorate) in [("6 netgroups", 5, true), ("5 netgroups", 4, false)]
+        {
+            let peers = (1..=9).map(|n| peer(n, n <= own_netgroups));
+            let mut listings = Listings::default();
+            listings.round(peers.map(|peer| (peer, Some(vec![a]))).collect(), Instant::now());
 
-        // a failed peer keeps its last listing for 15 s, then stops counting
+            assert_eq!(listings.quorate(), quorate, "{case}: quorate");
+            let expected = if quorate { vec![a] } else { vec![] };
+            assert_eq!(listings.admitted(), expected, "{case}: admitted");
+        }
+    }
+
+    #[test]
+    fn another_witness_of_a_txid_lists_the_txid_but_is_not_the_admitted_id() {
+        let (a, a_other_witness) = (id(1, Some(1)), id(1, Some(2)));
         let mut listings = Listings::default();
-        listings.round(answers(&spread, 9, a), start);
-        let failed: Vec<_> = spread.iter().map(|p| (*p, None)).collect();
-        listings.round(failed.clone(), start + LISTING_FRESH - Duration::from_secs(1));
-        assert_eq!(listings.fresh().count(), 9, "kept while fresh");
+        let spread = (1..=9).map(|n| peer(n, true));
+        listings.round(
+            spread.map(|peer| (peer, Some(vec![a_other_witness]))).collect(),
+            Instant::now(),
+        );
+
+        assert!(!listings.admits(&a), "{a:?} never listed: not admitted");
+        assert_eq!(listings.listers(&a.txid).len(), 9, "any witness lists the txid");
+        assert!(listings.retains(&a.txid), "retained by txid, whatever the witness");
+    }
+
+    /// Every peer lists `a` at `start`, then fails every round
+    #[test]
+    fn a_failed_peer_keeps_its_last_listing_for_15_s() {
+        let a = id(1, Some(1));
+        let spread: Vec<SocketAddr> = (1..=9).map(|n| peer(n, true)).collect();
+        let start = Instant::now();
+        let mut listings = Listings::default();
+        listings.round(spread.iter().map(|peer| (*peer, Some(vec![a]))).collect(), start);
+        let failed: Vec<_> = spread.iter().map(|peer| (*peer, None)).collect();
+
+        listings.round(failed.clone(), start + LISTING_FRESH - Duration::from_millis(1));
+        let (kept, kept_admitted) = (listings.fresh().count(), listings.admitted());
         listings.round(failed, start + LISTING_FRESH);
-        assert_eq!((listings.fresh().count(), listings.admitted()), (0, vec![]), "stale");
+        let (stale, stale_admitted) = (listings.fresh().count(), listings.admitted());
+
+        assert_eq!(kept, 9, "fresh listings 1 ms inside {LISTING_FRESH:?}");
+        assert_eq!(kept_admitted, [a], "admitted 1 ms inside {LISTING_FRESH:?}");
+        assert_eq!(stale, 0, "fresh listings at {LISTING_FRESH:?}");
+        assert_eq!(stale_admitted, [], "admitted at {LISTING_FRESH:?}");
     }
 }

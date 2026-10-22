@@ -133,31 +133,28 @@ mod tests {
     #[test]
     fn stale_rises_only_on_a_live_tip_24_blocks_behind_its_own_clock() {
         use Health::{CatchingUp, Live};
+        const TIP: u32 = 10;
         #[rustfmt::skip]
-        let cases: [(&str, Health, u32, u32, &[usize]); 4] = [
-            ("isolated regtest node",     Live,       10, 10,  &[]),
-            ("one block short of stale",  Live,       10, 33,  &[]),
-            ("stale live tip",            Live,       10, 34,  &[0]),
-            ("catching up: not an alarm", CatchingUp, 10, 500, &[]),
+        let cases: [(&str, Health, u32, &[usize]); 4] = [
+            // case,                      health,     clock estimate,                stale
+            ("isolated regtest node",     Live,       TIP,                           &[]),
+            ("one block short of stale",  Live,       TIP + STALE_TIP_BLOCKS - 1,    &[]),
+            ("stale live tip",            Live,       TIP + STALE_TIP_BLOCKS,        &[0]),
+            ("catching up: not an alarm", CatchingUp, TIP + 20 * STALE_TIP_BLOCKS,   &[]),
         ];
-        for (case, health, tip, estimated, stale) in cases {
+        for (case, health, estimated, stale) in cases {
             let mut meta = TrustedValidatorMeta::new("v0:8232".to_owned());
             meta.health = health;
             meta.info = Some(BlockchainInfo {
-                tip: BlockRef { hash: BlockHash([0; 32]), height: h(tip) },
+                tip: BlockRef { hash: BlockHash([0; 32]), height: h(TIP) },
                 estimated_height: h(estimated),
                 activations: Vec::new(),
             });
             let raised = alarms(&imbl::vector![meta], false);
-            assert_eq!(
-                raised.by(Alarm::Stale),
-                TrustedValidatorSet::at(stale.iter().copied()),
-                "{case}"
-            );
-            assert!(
-                !raised.raised(Alarm::Ending) && !raised.raised(Alarm::FinalityPaused),
-                "{case}"
-            );
+            let expected = TrustedValidatorSet::at(stale.iter().copied());
+            assert_eq!(raised.by(Alarm::Stale), expected, "{case}: stale validators");
+            let others = raised.raised(Alarm::Ending) || raised.raised(Alarm::FinalityPaused);
+            assert!(!others, "{case}: only Stale may rise: {raised:?}");
         }
     }
 }

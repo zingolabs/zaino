@@ -6,8 +6,15 @@ use zaino_source::{BlockchainInfo, EndOfService, Telemetry};
 use zaino_traffic::{Health, TrustedValidatorId};
 
 /// Which trusted validators, by [`TrustedValidatorId`]: a bitset, never a count
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct TrustedValidatorSet(u64);
+
+/// Positions as a set (`{0, 2}`), never the raw bits
+impl std::fmt::Debug for TrustedValidatorSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.positions()).finish()
+    }
+}
 
 const _: () =
     assert!(TrustedValidatorId::MAX <= TrustedValidatorSet::MAX, "every validator has a bit");
