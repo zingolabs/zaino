@@ -203,7 +203,7 @@ mod tests {
                         && groups(&listers) > ECLIPSE_NETGROUPS;
                     prop_assert_eq!(
                         real.admits(id), admits,
-                        "at {:?}: id({}) admitted, real vs model: {} of {} fresh list it, {} netgroups",
+                        "at {:?}: id({}) admitted, real vs model: {} of {} fresh, {} netgroups",
                         at, n, listers.len(), fresh.len(), groups(&listers)
                     );
                     if admits {
@@ -225,7 +225,9 @@ mod tests {
                     );
                 }
                 let real_admitted = real.admitted();
-                prop_assert_eq!(&real_admitted, &admitted, "at {:?}: every admitted id, real vs model", at);
+                prop_assert_eq!(
+                    &real_admitted, &admitted, "at {:?}: every admitted id, real vs model", at
+                );
             }
         }
     }

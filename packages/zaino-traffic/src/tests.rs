@@ -70,8 +70,7 @@ where
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lookup_absent_on_the_best_tier_is_served_by_the_next_and_absent_everywhere_ends_with_the_absence(
-) {
+async fn a_lookup_absent_on_the_best_tier_moves_on_and_absent_everywhere_ends_absent() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let (txid, raw) = raw_transaction(1, 0);
@@ -99,8 +98,7 @@ async fn a_lookup_absent_on_the_best_tier_is_served_by_the_next_and_absent_every
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lookup_a_validator_lacks_the_method_for_moves_on_and_lacking_everywhere_is_unsupported_not_a_failure(
-) {
+async fn a_lookup_lacking_its_method_moves_on_and_lacking_everywhere_is_unsupported_not_failed() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let (sent_id, sent) = raw_transaction(2, 0);
@@ -299,7 +297,7 @@ async fn a_lookup_storm_never_delays_a_poll() {
     let cadence = (WINDOW.as_secs_f64() / POLL_INTERVAL.as_secs_f64()) as u32;
     assert!(
         polled >= cadence - 1,
-        "{polled} polls of ours in {WINDOW:?} under 64 lookups, want ≥ {} (every {POLL_INTERVAL:?})",
+        "{polled} polls of ours in {WINDOW:?} of 64 lookups, want ≥ {} (each {POLL_INTERVAL:?})",
         cadence - 1
     );
     storm.iter().for_each(|lookup| lookup.abort());

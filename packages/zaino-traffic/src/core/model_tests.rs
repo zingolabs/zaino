@@ -171,19 +171,23 @@ proptest! {
 /// Tier 0 stalls, fails or lacks it, tier 1 answers in `FAST`: each ask ends at its bound
 #[test]
 fn an_ask_ends_within_its_hedge_floor_plus_one_round() -> Result<(), TestCaseError> {
-    let hedge = |class: Class| class.hedge_floor().expect("a hedged class");
+    use Class::{BulkBlock, Bytes, Headers, Lookup, Submit, TipBlock};
+    use Kind::{Down, Lagging, Silent, Slow};
+    // tier 1's answer `FAST` after the hedge floor
+    let hedged = |class: Class| class.hedge_floor().expect("a hedged class") + FAST;
     let (v0, v1) = (trusted(0), trusted(1));
+    let (any, pinned, prefer_none) = (Route::Any, Route::Only(v0), Route::Prefer(vec![]));
     #[rustfmt::skip]
     let cases = [
-        // case,                    tier 0,        class,            route,                 ends after,                      served by
-        ("hedged past a silence",   Kind::Silent,  Class::TipBlock,  Route::Any,            hedge(Class::TipBlock) + FAST,   Some(v1)),
-        ("hedged past a stall",     Kind::Slow,    Class::TipBlock,  Route::Any,            hedge(Class::TipBlock) + FAST,   Some(v1)),
-        ("hedged past a silence",   Kind::Silent,  Class::Lookup,    Route::Any,            hedge(Class::Lookup) + FAST,     Some(v1)),
-        ("hedged past a silence",   Kind::Silent,  Class::BulkBlock, Route::Any,            hedge(Class::BulkBlock) + FAST,  Some(v1)),
-        ("absent: the next member", Kind::Lagging, Class::Lookup,    Route::Any,            FAST + FAST,                     Some(v1)),
-        ("failed: the next member", Kind::Down,    Class::Bytes,     Route::Prefer(vec![]), FAST + FAST,                     Some(v1)),
-        ("pinned: its timeout",     Kind::Silent,  Class::Headers,   Route::Only(v0),       TIMEOUT,                         None),
-        ("pinned: its failure",     Kind::Down,    Class::Submit,    Route::Only(v0),       FAST,                            None),
+        // case,            tier 0,  class,     route,         ends after,         served by
+        ("past a silence",  Silent,  TipBlock,  any.clone(),   hedged(TipBlock),   Some(v1)),
+        ("past a stall",    Slow,    TipBlock,  any.clone(),   hedged(TipBlock),   Some(v1)),
+        ("past a silence",  Silent,  Lookup,    any.clone(),   hedged(Lookup),     Some(v1)),
+        ("past a silence",  Silent,  BulkBlock, any.clone(),   hedged(BulkBlock),  Some(v1)),
+        ("absent: next",    Lagging, Lookup,    any,           FAST + FAST,        Some(v1)),
+        ("failed: next",    Down,    Bytes,     prefer_none,   FAST + FAST,        Some(v1)),
+        ("pinned: timeout", Silent,  Headers,   pinned.clone(), TIMEOUT,           None),
+        ("pinned: failure", Down,    Submit,    pinned,        FAST,               None),
     ];
     for (case, kind, class, route, after, served_by) in cases {
         let mut world = World::new(&[(kind, 0), (Kind::Honest, 1)], None)?;

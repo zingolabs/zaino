@@ -499,12 +499,14 @@ mod tests {
 
             let (tried, trusted_tried) = (run.tried(), run.tried_trusted());
             let distinct: BTreeSet<Entry> = trusted_tried.iter().copied().collect();
-            prop_assert_eq!(distinct.len(), trusted_tried.len(), "a trusted validator pushed twice: {:?}", tried);
+            let once = distinct.len() == trusted_tried.len();
+            prop_assert!(once, "a trusted validator pushed twice: {:?}", tried);
             let budget = usize::from(case.max_attempts);
-            prop_assert!(tried.len() <= budget + 1, "{} pushes, budget {}: {:?}", tried.len(), budget, tried);
+            let bounded = tried.len() <= budget + 1;
+            prop_assert!(bounded, "{} pushes, budget {}: {:?}", tried.len(), budget, tried);
             if !case.peers.is_empty() {
                 let peers_first = tried.iter().take(budget).all(|entry| *entry == Entry::Peers);
-                prop_assert!(peers_first, "with peers, the budget all relays through them: {:?}", tried);
+                prop_assert!(peers_first, "with peers, the budget all via them: {:?}", tried);
                 prop_assert!(trusted_tried.len() <= 1, "one trusted push at most: {:?}", tried);
             }
             if let Some(past) = tried.get(budget) {
@@ -521,11 +523,16 @@ mod tests {
         ) {
             let run = run(&case);
 
-            prop_assert!(!run.ran_away, "still running at {:?}, bound {:?}", run.ended_at, bound(&case));
+            let (ended_at, bound) = (run.ended_at, bound(&case));
+            prop_assert!(!run.ran_away, "still running at {:?}, bound {:?}", ended_at, bound);
             for pair in run.pushes.windows(2) {
                 let (before, push) = (pair[0], pair[1]);
                 let waited = !before.waits || push.at >= before.at + case.threshold;
-                prop_assert!(waited, "{:?} inside the {:?} threshold of {:?}", push, case.threshold, before);
+                let threshold = case.threshold;
+                prop_assert!(
+                    waited,
+                    "{:?} inside the {:?} threshold of {:?}", push, threshold, before
+                );
             }
             for push in &run.pushes {
                 let spread = push.seen.spread && push.accepted;
@@ -545,18 +552,24 @@ mod tests {
         fn a_jobs_answer_comes_from_a_check_a_trusted_entry_or_a_listing(case in case()) {
             let run = run(&case);
 
-            let trusted_took = run.tried_trusted().iter().any(|entry| matches!(entry, Entry::Trusted(i)
-                if !matches!(case.trusted[i.get()], Node::Rejects | Node::Unreachable)));
-            let trusted_rejected = run.tried_trusted().iter().any(|entry| matches!(entry, Entry::Trusted(i)
-                if case.trusted[i.get()] == Node::Rejects));
+            let node = |entry: &Entry| match entry {
+                Entry::Trusted(i) => Some(case.trusted[i.get()]),
+                Entry::Peers => None,
+            };
+            let nodes: Vec<Node> = run.tried_trusted().iter().filter_map(node).collect();
+            let trusted_took =
+                nodes.iter().any(|node| !matches!(node, Node::Rejects | Node::Unreachable));
+            let trusted_rejected = nodes.contains(&Node::Rejects);
             let earned = case.checked || trusted_took || run.listed_ever;
             prop_assert_eq!(
                 run.accepted, earned,
                 "accepted vs (checked {} || a trusted entry took it {} || listed {}): {:?}",
                 case.checked, trusted_took, run.listed_ever, run.tried()
             );
-            let asked_trusted = !run.tried_trusted().is_empty();
-            prop_assert!(run.accepted || asked_trusted, "a refusal answered without asking a trusted validator: {:?}", run.tried());
+            let asked_trusted = !nodes.is_empty();
+            let tried = run.tried();
+            let answered = run.accepted || asked_trusted;
+            prop_assert!(answered, "refused, no trusted validator asked: {:?}", tried);
             let answer = match &run.ended {
                 Ended::Spread => run.accepted && run.seen.spread,
                 Ended::Unconfirmed => run.accepted,
@@ -570,8 +583,8 @@ mod tests {
             );
         }
 
-        /// A trusted entry relaying within the threshold (+ one 500 ms clock step), an honest reader
-        /// never pushed to: it lists the transaction in time
+        /// A trusted entry relaying within the threshold (+ one 500 ms clock step), an honest
+        /// reader never pushed to: it lists the transaction in time
         #[test]
         fn a_fast_relay_with_an_honest_reader_outside_the_entries_ends_spread(case in case()) {
             let run = run(&case);

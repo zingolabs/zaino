@@ -222,14 +222,14 @@ mod tests {
         let headers = HeaderChainSnapshot::of(&chain, best);
         #[rustfmt::skip]
         let cases = [
-            // case,                                  health,              claim, answer,           holds
-            ("claims the best",                       Health::Live,        best,  None,             true),
-            ("catching up, claims the best",          Health::CatchingUp,  best,  None,             true),
-            ("above, its answer on our chain",        Health::Live,        ahead, Some(best),       true),
-            ("above, its answer off our chain",       Health::Live,        fork,  Some(fork_at_10), false),
-            ("above, not yet asked under this best",  Health::Live,        ahead, None,             false),
-            ("below the best",                        Health::Live,        at_9,  None,             false),
-            ("degraded: its claim no current fact",   Health::Degraded,    best,  Some(best),       false),
+            // case,                          health,             claim, answer,           holds
+            ("claims the best",               Health::Live,       best,  None,             true),
+            ("catching up, claims the best",  Health::CatchingUp, best,  None,             true),
+            ("above, answer on our chain",    Health::Live,       ahead, Some(best),       true),
+            ("above, answer off our chain",   Health::Live,       fork,  Some(fork_at_10), false),
+            ("above, unasked at this best",   Health::Live,       ahead, None,             false),
+            ("below the best",                Health::Live,       at_9,  None,             false),
+            ("degraded: no current claim",    Health::Degraded,   best,  Some(best),       false),
         ];
         for (case, health, claim, answer, holds) in cases {
             let mut meta = TrustedValidatorMeta::new("v0:8232".to_owned());
