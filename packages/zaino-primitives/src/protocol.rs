@@ -60,9 +60,9 @@ mod tests {
     #[test]
     fn median_time_past_is_the_upper_median_of_the_newest_eleven() {
         let newest_first = [9, 1, 8, 2, 7, 3, 6, 4, 5, 10, 11, 1_000, 2_000];
-        assert_eq!(median_time_past(newest_first), Some(6));
-        assert_eq!(median_time_past([4, 1, 3, 2]), Some(3));
-        assert_eq!(median_time_past([]), None);
+        assert_eq!(median_time_past(newest_first), Some(6), "newest 11 of {newest_first:?}");
+        assert_eq!(median_time_past([4, 1, 3, 2]), Some(3), "upper middle of [1 2 3 4]");
+        assert_eq!(median_time_past([]), None, "no times");
     }
 
     #[test]

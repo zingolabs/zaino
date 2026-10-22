@@ -127,10 +127,10 @@ impl<'a> HeaderBytes<'a> {
 mod tests {
     use super::*;
 
-    /// - Header laid out field by field → `split` → every field back, the rest untouched
-    /// - Each layout fault named
+    /// Header laid out field by field, two trailing bytes → `split` → every field back, the rest
+    /// untouched
     #[test]
-    fn split_reads_back_every_field_and_names_each_layout_fault() {
+    fn split_reads_back_every_field_and_leaves_the_bytes_after_the_header() {
         let mut raw = Vec::new();
         raw.extend(4i32.to_le_bytes()); // version
         raw.extend([0x11; 32]); // prev_hash
@@ -141,35 +141,44 @@ mod tests {
         raw.extend([0x44; 32]); // nonce
         raw.push(36); // solution length
         raw.extend([0x55; 36]); // solution
-        let len = raw.len();
+        let header_len = raw.len();
         raw.extend([7, 7]);
 
         let (split, rest) = HeaderBytes::split(&raw).expect("a laid-out header");
-        let fields = (
-            (split.hash(), split.version(), split.prev_hash(), split.merkle_root()),
-            (split.block_commitments(), split.time(), split.bits(), split.nonce()),
-        );
-        let hash = BlockHash(sha256d(&raw[..len]));
-        let expected = (
-            (hash, 4, BlockHash([0x11; 32]), MerkleRoot([0x22; 32])),
-            (BlockCommitments([0x33; 32]), 1_700_000_000, 0x200f_0f0f, [0x44; 32]),
-        );
-        assert_eq!(fields, expected);
-        assert_eq!((split.as_bytes().len(), rest), (len, &[7u8, 7][..]));
-        assert_eq!(split.equihash_solution(), EquihashSolution::Regtest([0x55; 36]));
-        assert_eq!(split.equihash_input(), &raw[..EQUIHASH_INPUT]);
 
-        let truncated = |len| Err(HeaderError::Truncated { len });
-        assert_eq!(HeaderBytes::split(&raw[..NONCE_END]), truncated(NONCE_END));
-        assert_eq!(HeaderBytes::split(&raw[..len - 1]), truncated(len - 1));
-        let mut odd = raw[..=NONCE_END].to_vec();
-        odd[NONCE_END] = 7;
-        assert_eq!(HeaderBytes::split(&odd), Err(HeaderError::SolutionLength { len: 7 }));
-        odd[NONCE_END] = 0xfe;
-        assert_eq!(HeaderBytes::split(&odd), Err(HeaderError::SolutionPrefix { prefix: 0xfe }));
-        let mut wide = raw[..NONCE_END].to_vec();
-        wide.extend([0xfd, 36, 0]);
-        wide.extend(&raw[NONCE_END + 1..len]);
-        assert_eq!(HeaderBytes::split(&wide), Err(HeaderError::NonMinimalLength { len: 36 }));
+        assert_eq!(split.hash(), BlockHash(sha256d(&raw[..header_len])), "hash");
+        assert_eq!(split.version(), 4, "version");
+        assert_eq!(split.prev_hash(), BlockHash([0x11; 32]), "prev_hash");
+        assert_eq!(split.merkle_root(), MerkleRoot([0x22; 32]), "merkle_root");
+        assert_eq!(split.block_commitments(), BlockCommitments([0x33; 32]), "block_commitments");
+        assert_eq!(split.time(), 1_700_000_000, "time");
+        assert_eq!(split.bits(), 0x200f_0f0f, "bits");
+        assert_eq!(split.nonce(), [0x44; 32], "nonce");
+        assert_eq!(split.equihash_solution(), EquihashSolution::Regtest([0x55; 36]), "solution");
+        assert_eq!(split.equihash_input(), &raw[..EQUIHASH_INPUT], "equihash input");
+        assert_eq!(split.as_bytes().len(), header_len, "header bytes");
+        assert_eq!(rest, [7, 7], "bytes after the header");
+    }
+
+    #[test]
+    fn split_names_each_layout_fault() {
+        let fixed = [0u8; NONCE_END];
+        let header = |solution_prefix: &[u8], solution: usize| {
+            [&fixed[..], solution_prefix, &vec![0x55; solution]].concat()
+        };
+        let regtest = header(&[36], 36);
+        let short = regtest.len() - 1;
+        use HeaderError::*;
+        #[rustfmt::skip]
+        let cases = [
+            ("no solution length",      fixed.to_vec(),              Truncated { len: NONCE_END }),
+            ("solution one byte short", regtest[..short].to_vec(),   Truncated { len: short }),
+            ("7-byte solution",         header(&[7], 7),             SolutionLength { len: 7 }),
+            ("0xfe length prefix",      header(&[0xfe], 0),          SolutionPrefix { prefix: 0xfe }),
+            ("36 in three bytes",       header(&[0xfd, 36, 0], 36),  NonMinimalLength { len: 36 }),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(HeaderBytes::split(&raw), Err(expected), "{case}");
+        }
     }
 }

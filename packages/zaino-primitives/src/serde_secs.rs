@@ -78,9 +78,12 @@ mod tests {
 
         let aged: Keys = toml::from_str("grace_secs = 600\ntimeout_secs = 1\nage_secs = 1800\n")
             .expect("parses");
-        assert_eq!((aged.grace_secs, aged.age_secs), (secs(600), Some(secs(1800))));
+        let expected =
+            Keys { grace_secs: secs(600), timeout_secs: secs(1), age_secs: Some(secs(1800)) };
+        assert_eq!(aged, expected, "nonzero seconds read as themselves");
 
         let zero = toml::from_str::<Keys>("grace_secs = 0\ntimeout_secs = 0\nage_secs = 0\n");
-        assert!(zero.expect_err("timeout 0").to_string().contains("nonzero"));
+        let refused = zero.expect_err("timeout_secs = 0 refused").to_string();
+        assert!(refused.contains("nonzero"), "refusal names the nonzero rule: {refused}");
     }
 }

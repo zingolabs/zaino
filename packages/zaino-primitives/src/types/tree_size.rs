@@ -103,8 +103,9 @@ mod tests {
     };
     use zcash_protocol::{BlockHash, TxId};
 
-    /// A block of txs carrying `(sapling outputs, orchard actions, ironwood actions)` each
-    fn block_of(txs: &[(usize, usize, usize)]) -> Block {
+    /// Block of one tx per entry, each carrying that many sapling outputs / orchard and ironwood
+    /// actions
+    fn block_of(txs: &[PerPool<usize>]) -> Block {
         let output = SaplingOutput {
             cmu: NoteCommitment([0; 32]),
             ephemeral_key: EphemeralKey([0; 32]),
@@ -116,7 +117,7 @@ mod tests {
             ephemeral_key: EphemeralKey([0; 32]),
             enc_ciphertext: CompactCiphertext([0; CompactCiphertext::LENGTH]),
         };
-        let tx = |(sapling, orchard, ironwood): &(usize, usize, usize)| Transaction {
+        let tx = |PerPool { sapling, orchard, ironwood }: &PerPool<usize>| Transaction {
             txid: TxId::from_bytes([0; 32]),
             transparent: Default::default(),
             sprout: Default::default(),
@@ -145,18 +146,22 @@ mod tests {
     /// Per-pool commitment counts added onto the prior sizes
     #[test]
     fn advance_adds_each_pools_commitments() {
-        let block = block_of(&[(0, 0, 0), (2, 1, 0), (1, 0, 3)]);
+        let block = block_of(&[
+            PerPool { sapling: 0, orchard: 0, ironwood: 0 },
+            PerPool { sapling: 2, orchard: 1, ironwood: 0 },
+            PerPool { sapling: 1, orchard: 0, ironwood: 3 },
+        ]);
 
         let prior = PerPool { sapling: 10, orchard: 20, ironwood: 30 }.map(TreeSize::from);
         let expected = PerPool { sapling: 13, orchard: 21, ironwood: 33 }.map(TreeSize::from);
-        assert_eq!(prior.advance(&block), expected);
+        assert_eq!(prior.advance(&block), expected, "prior sizes + the block's commitments");
     }
 
     #[test]
     #[should_panic(expected = "Sapling commitment tree past 2^32 leaves")]
     fn a_tree_past_2_32_leaves_panics() {
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
-        full.advance(&block_of(&[(0, 0, 0), (1, 0, 0)]));
+        full.advance(&block_of(&[PerPool { sapling: 1, orchard: 0, ironwood: 0 }]));
     }
 
     /// Both doors refuse exactly the #549 boundary (a full depth-32 tree, `2^32`) and accept
@@ -165,12 +170,12 @@ mod tests {
     fn sizes_enter_up_to_u32_max_and_a_full_tree_is_refused_at_both_doors() {
         let full = 1_u64 << 32;
 
-        assert_eq!(TreeSize::default(), TreeSize::ZERO);
-        assert_eq!(TreeSize::try_from(u64::from(u32::MAX)), Ok(TreeSize::from(u32::MAX)));
-        assert_eq!(TreeSize::try_from(full), Err(TreeSizeOutOfRange { got: full }));
+        let largest = TreeSize::try_from(u64::from(u32::MAX));
+        assert_eq!(largest, Ok(TreeSize::from(u32::MAX)), "u32::MAX enters");
+        assert_eq!(TreeSize::try_from(full), Err(TreeSizeOutOfRange { got: full }), "2^32 refused");
 
-        assert_eq!(TreeSize::ZERO.checked_add(0), Ok(TreeSize::ZERO));
-        assert_eq!(TreeSize::from(10).checked_add(5), Ok(TreeSize::from(15)));
+        assert_eq!(TreeSize::ZERO.checked_add(0), Ok(TreeSize::ZERO), "0 + 0");
+        assert_eq!(TreeSize::from(10).checked_add(5), Ok(TreeSize::from(15)), "10 + 5");
         let past_u32 = TreeSize::from(u32::MAX).checked_add(1);
         assert_eq!(past_u32, Err(TreeSizeOutOfRange { got: full }), "refused, not wrapped to 0");
         let past_u64 = TreeSize::from(1).checked_add(u64::MAX);

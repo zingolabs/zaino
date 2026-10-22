@@ -245,7 +245,8 @@ mod tests {
         at_target[29..].copy_from_slice(&[0xff, 0xff, 0x07]);
         let mut above = at_target;
         above[0] = 1;
-        assert_eq!([at_target, above].map(|hash| target.is_met_by(BlockHash(hash))), [true, false]);
+        assert!(target.is_met_by(BlockHash(at_target)), "hash = target meets it");
+        assert!(!target.is_met_by(BlockHash(above)), "target + 1 (low byte first) misses it");
     }
 
     #[test]

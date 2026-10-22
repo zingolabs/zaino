@@ -173,15 +173,16 @@ mod tests {
         let added = [txs.clone(), vec![txs[0].clone()]].concat();
         let reordered = vec![txs[0].clone(), txs[2].clone(), txs[1].clone()];
         let repeated = [txs.clone(), vec![txs[2].clone()]].concat();
+        #[rustfmt::skip]
         let cases = [
-            (with(txs.clone()), Ok(())),
-            (with(added), Err(BodyMismatch::MerkleRoot)),
-            (with(reordered), Err(BodyMismatch::MerkleRoot)),
-            (with(txs[..2].to_vec()), Err(BodyMismatch::MerkleRoot)),
-            (with(repeated), Err(BodyMismatch::Mutated)),
+            ("its own txids",       with(txs.clone()),        Ok(())),
+            ("a txid added",        with(added),              Err(BodyMismatch::MerkleRoot)),
+            ("txids reordered",     with(reordered),          Err(BodyMismatch::MerkleRoot)),
+            ("last txid dropped",   with(txs[..2].to_vec()),  Err(BodyMismatch::MerkleRoot)),
+            ("last pair repeated",  with(repeated),           Err(BodyMismatch::Mutated)),
         ];
-        for (index, (body, expected)) in cases.into_iter().enumerate() {
-            assert_eq!(body.check_body(), expected, "case {index}");
+        for (case, body, expected) in cases {
+            assert_eq!(body.check_body(), expected, "{case}");
         }
     }
 

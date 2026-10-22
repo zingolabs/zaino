@@ -42,11 +42,11 @@ mod tests {
             MerkleRoot::of_txids(&txids).map(|root| root.0)
         };
         let pair = |l: [u8; 32], r: [u8; 32]| sha256d(&[l, r].concat());
-        assert_eq!(root(&[a]), Some(a));
-        assert_eq!(root(&[a, b]), Some(pair(a, b)));
-        assert_eq!(root(&[a, b, c]), Some(pair(pair(a, b), pair(c, c))));
+        assert_eq!(root(&[a]), Some(a), "[a] = a");
+        assert_eq!(root(&[a, b]), Some(pair(a, b)), "[a b] = sha256d(a b)");
+        assert_eq!(root(&[a, b, c]), Some(pair(pair(a, b), pair(c, c))), "[a b c]: c with c");
         assert_eq!(root(&[a, b, c, c]), None, "CVE-2012-2459: [a b c c] roots like [a b c]");
-        assert_eq!(root(&[a, a]), None);
-        assert_eq!(root(&[]), None);
+        assert_eq!(root(&[a, a]), None, "[a a] roots like [a]");
+        assert_eq!(root(&[]), None, "no txids");
     }
 }
