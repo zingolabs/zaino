@@ -347,19 +347,31 @@ mod tests {
         );
     }
 
-    /// Mainnet 2,000,000: each transaction cut from its block by position = its own bytes
+    /// Mainnet 2,000,000: each cut = the bytes librustzcash's own reader consumes for that tx
+    /// (oracle independent of `tx_spans`)
     #[test]
     fn a_mined_transaction_comes_out_of_its_block_by_position() {
         let raw = fixtures::block(2_000_000);
         let block = decode_block(&raw).expect("block decodes");
         let at = block.block_ref();
-
-        let own = fixtures::transactions(2_000_000);
+        let branch = BranchId::for_height(
+            &zcash_protocol::consensus::MainNetwork,
+            BlockHeight::from(2_000_000),
+        );
+        let mut reader = Cursor::new(raw.as_slice());
+        BlockHeader::read(&mut reader).expect("header");
+        let count = CompactSize::read(&mut reader).expect("tx count");
+        assert_eq!(count, block.transactions().len() as u64, "tx count = decoded txs");
 
         for (index, tx) in (0u32..).zip(block.transactions()) {
+            let start = reader.position() as usize;
+            let reference = Librustzcash::read(&mut reader, branch).expect("librustzcash reads");
+            let own = &raw[start..reader.position() as usize];
+
             let cut = mined_transaction(&raw, at, index, tx.txid);
-            let matches = cut.as_deref() == own.get(index as usize).map(Vec::as_slice);
-            assert!(matches, "tx {index} ({}): cut bytes = its own", tx.txid);
+
+            assert_eq!(reference.txid(), tx.txid, "tx {index}: librustzcash txid = decoded");
+            assert_eq!(cut.as_deref(), Some(own), "tx {index} ({}): cut bytes = its own", tx.txid);
         }
     }
 

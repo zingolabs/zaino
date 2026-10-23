@@ -51,17 +51,15 @@ impl SyncProgress {
 mod tests {
     use super::*;
 
+    /// `Tally.handed` +1 encoding: genesis handed != nothing handed
     #[test]
-    fn handed_is_the_last_height_and_blocks_count_every_hand() {
+    fn genesis_handed_reads_as_height_zero_not_as_nothing_handed() {
         let progress = SyncProgress::default();
-        let reader = progress.clone();
-        assert_eq!(reader.handed(), None, "nothing handed yet");
-        assert_eq!(reader.blocks(), 0, "nothing counted yet");
-        let at = BlockHeight::from;
-        for h in [0, 1, 2] {
-            progress.hand(at(h));
-        }
-        assert_eq!(reader.handed(), Some(at(2)), "clone taken before: last height handed");
-        assert_eq!(reader.blocks(), 3, "clone taken before: 0, 1, 2 counted");
+        assert_eq!((progress.handed(), progress.blocks()), (None, 0), "fresh: nothing handed");
+
+        progress.hand(BlockHeight::from(0));
+
+        let handed = (progress.handed(), progress.blocks());
+        assert_eq!(handed, (Some(BlockHeight::from(0)), 1), "hand(0): genesis, one block");
     }
 }

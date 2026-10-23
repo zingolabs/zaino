@@ -316,7 +316,7 @@ mod tests {
     async fn get_block_answers_one_stored_record_with_every_pool() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::compact_formats::CompactBlock;
+        use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
         use zaino_proto::proto::service::BlockId;
 
         // 1..=5: a coinbase paying alice, then one tx spending it into transparent + sapling
@@ -346,9 +346,14 @@ mod tests {
         let blocks = decode_frames::<CompactBlock>(&records.concat());
         let [block] = <[CompactBlock; 1]>::try_from(blocks)
             .unwrap_or_else(|blocks| panic!("one framed record, got {}", blocks.len()));
-        let transparent_ins: Vec<_> = block.vtx.iter().map(|tx| tx.vin.len()).collect();
+        let shape = |tx: &CompactTx| (tx.vin.len(), tx.spends.len(), tx.outputs.len());
+        let txs: Vec<_> = block.vtx.iter().map(shape).collect();
         assert_eq!(block.height, 3, "{block:?}");
-        assert_eq!(transparent_ins, [0, 1], "coinbase + the spend, transparent kept");
+        assert_eq!(
+            txs,
+            [(0, 0, 0), (1, 1, 1)],
+            "per tx (transparent ins, sapling spends, sapling outputs): coinbase + the spend"
+        );
     }
 
     #[tokio::test]

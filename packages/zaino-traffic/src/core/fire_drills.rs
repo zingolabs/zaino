@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::{Ask, AskId, Input, Push, Reply, Route, Ticket, TrafficCore};
+use super::{Ask, AskId, Input, Push, Reply, Route, Sent, Ticket, TrafficCore};
 use crate::class::{Class, Lane, Permits};
 use crate::member::{Limits, Member, MemberId, Synced, TrustedValidatorId};
 
@@ -113,7 +113,21 @@ fn check_catches_a_due_poll_never_sent() {
 }
 
 #[test]
-#[should_panic(expected = "a class reaches only the member kinds its route allows (T2)")]
+#[should_panic(expected = "a trusted-only class never reaches the peer set (T2)")]
+fn check_catches_a_trusted_only_class_sent_to_the_peer_set() {
+    let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
+    let interactive = Lane::Interactive.index();
+    // LOOKUP's send moved trusted 0 → peers (route Any admits it, in flight + tried kept true)
+    let lookup = ask(&mut core, LOOKUP);
+    lookup.sends[0].member = MemberId::Peers;
+    lookup.tried.insert(MemberId::Peers);
+    member(&mut core, 0).in_flight[interactive] -= 1;
+    core.members.get_mut(&MemberId::Peers).expect("configured").in_flight[interactive] += 1;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "a send stays within its ask's route (T2)")]
 fn check_catches_a_send_outside_its_route() {
     let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
     // in flight on trusted 0
@@ -122,8 +136,21 @@ fn check_catches_a_send_outside_its_route() {
 }
 
 #[test]
-#[should_panic(expected = "a round asks each member once (T5)")]
-fn check_catches_a_round_asking_a_member_twice() {
+#[should_panic(expected = "a round sends to each member once (T5)")]
+fn check_catches_a_round_sending_to_a_member_twice() {
+    let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
+    // TIP_BLOCK sent to trusted 1 twice (in flight + tried kept true, room for both)
+    let tip = ask(&mut core, TIP_BLOCK);
+    let to_trusted_1 = Sent { member: trusted(1), ..tip.sends[0] };
+    tip.sends.extend([to_trusted_1, to_trusted_1]);
+    tip.tried.insert(trusted(1));
+    member(&mut core, 1).in_flight[Lane::Interactive.index()] += 2;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "every send's member in its round's tried (T5)")]
+fn check_catches_a_send_missing_from_its_rounds_tried() {
     let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
     // trusted 0 forgotten: a re-ask could reach it again this round
     ask(&mut core, TIP_BLOCK).tried.clear();
@@ -194,7 +221,25 @@ fn a_poll_result_without_a_poll_panics() {
 }
 
 #[test]
-#[should_panic(expected = "a configured validator")]
+#[should_panic(expected = "report: a configured validator")]
+fn a_report_on_an_unknown_validator_panics() {
+    let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
+    let now = core.now;
+    // only 0 and 1 configured
+    let ticket = Ticket { ask: TIP_BLOCK, member: trusted(5), class: Class::TipBlock };
+    core.step(Input::Report(ticket), now);
+}
+
+#[test]
+#[should_panic(expected = "health: a configured validator")]
+fn the_health_of_an_unknown_validator_panics() {
+    let core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
+    // only 0 and 1 configured
+    core.health(TrustedValidatorId::new(5).expect("small"));
+}
+
+#[test]
+#[should_panic(expected = "push: a configured validator")]
 fn a_push_from_an_unknown_validator_panics() {
     let mut core = two_live_trusted_and_peers_with_four_asks_open(Instant::now());
     let now = core.now;

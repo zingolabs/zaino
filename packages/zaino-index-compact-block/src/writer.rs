@@ -173,7 +173,7 @@ mod tests {
             fold(&CompactBlockReader::new(store.applied()), block, &fees, &mut changes);
             let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
             let expected = encode_compact_block(block, &fees, &after);
-            assert!(records == [&expected[..]], "{at:?}: one record, encoded with {after:?}");
+            assert_eq!(records, [&expected[..]], "{at:?}: one record, encoded with {after:?}");
             store.apply(changes);
             let tip = CompactBlockReader::new(store.applied()).tip_sizes();
             assert_eq!(tip, after, "{at:?}: tip sizes after its fold");

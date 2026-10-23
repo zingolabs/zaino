@@ -1,7 +1,8 @@
 //! - [`MockPeers`] = Zcash p2p network as a script (mempools and block `inv`s the test sets,
 //!   pushes recorded)
 //! - `MockChain` [`Ledger`] = UTXO set
-//! - [`ChainViewSnapshot`] fixtures: `fixed`, then `trusted_validator`, `ahead`, `behind`
+//! - [`ChainViewSnapshot`] fixtures: `fixed`, then `trusted_validator`, `ahead`, `behind`,
+//!   `peers_listed`
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -209,6 +210,14 @@ impl ChainViewSnapshot {
         let info = meta.info.as_mut().expect("a holder answered");
         info.tip = BlockRef { hash, height };
         info.estimated_height = height;
+        self
+    }
+
+    /// Consumers' tests: one fresh, empty mempool listing from each of `peers` (quorate iff they
+    /// span > `ECLIPSE_NETGROUPS` netgroups)
+    pub fn peers_listed(mut self, peers: &[SocketAddr]) -> Self {
+        let answers = peers.iter().map(|peer| (*peer, Some(Vec::new()))).collect();
+        self.listings.round(answers, tokio::time::Instant::now());
         self
     }
 }

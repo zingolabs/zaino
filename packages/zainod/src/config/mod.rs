@@ -625,7 +625,7 @@ mod tests {
     }
 
     /// Per index: file over defaults, env over file, `[sync]` budgets in each, utxo_set
-    /// beside compact_block (and off with it)
+    /// beside compact_block
     #[test]
     fn layers_resolve_every_index_through_defaults_file_and_env() {
         let dir = tempfile::tempdir().expect("tempdir");

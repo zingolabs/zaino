@@ -403,10 +403,32 @@ mod tests {
         }
     }
 
-    /// 32 MiB reply cap = 100 hex-encoded replies + their envelopes
+    /// - Full batch at the budget (100 replies, raw bytes summing to it) serializes within the cap
+    /// - Budget maximal under the `REPLY_ENVELOPE_BYTES` reservation (one byte more breaches it)
     #[test]
-    fn the_raw_batch_budget_at_the_reply_cap_fits_100_hex_replies() {
-        assert_eq!(raw_batch_bytes(ResponseSizeCap::MAX), 16_726_016, "budget at the 32 MiB cap");
+    fn the_raw_batch_budget_fits_100_hex_replies_within_the_reply_cap() {
+        let cases = [
+            ("32 MiB (max)", ResponseSizeCap::MAX),
+            ("5 MiB", ResponseSizeCap::new(5 << 20).expect("5 MiB holds a full block")),
+        ];
+        for (case, cap) in cases {
+            let budget = raw_batch_bytes(cap) as usize;
+            let each = budget / RAW_BATCH_CALLS;
+            let first = each + budget % RAW_BATCH_CALLS;
+            let replies: Vec<Value> = (0..RAW_BATCH_CALLS)
+                .map(|id| {
+                    let raw_len = if id == 0 { first } else { each };
+                    let hex = "ab".repeat(raw_len);
+                    serde_json::json!({ "jsonrpc": "2.0", "result": hex, "error": null, "id": id })
+                })
+                .collect();
+
+            let reply = serde_json::to_vec(&replies).expect("serializes");
+
+            assert!(reply.len() <= cap.bytes(), "{case}: {} > {}", reply.len(), cap.bytes());
+            let reserved = 2 * (budget + 1) + RAW_BATCH_CALLS * REPLY_ENVELOPE_BYTES;
+            assert!(reserved > cap.bytes(), "{case}: budget + 1 still within the cap");
+        }
     }
 
     /// - Both not-found codes = absent answer (missing block as a failure = sync stalls on a

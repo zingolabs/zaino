@@ -346,9 +346,11 @@ async fn the_precheck_refuses_an_expired_or_undecodable_send_before_any_ask() {
     };
     assert_eq!(*code, -25, "expired: {message}");
     assert!(message.contains("expiry height 50"), "names the expiry: {message}");
+    let garbage = garbage.err().map(|refused| refused.to_string());
     let malformed =
-        matches!(garbage, Err(SubmitError::Rejected(SendRawTransactionError::Malformed(_))));
-    assert!(malformed, "8 garbage bytes: {garbage:?}");
+        "transaction rejected: malformed transaction: malformed consensus bytes: failed to fill \
+         whole buffer";
+    assert_eq!(garbage.as_deref(), Some(malformed), "8 garbage bytes");
     let asked: usize =
         validators.iter().map(|v| v.calls("checkadmission") + v.calls("sendrawtransaction")).sum();
     assert_eq!(asked, 0, "nothing checked or pushed");
@@ -410,8 +412,8 @@ async fn a_refused_check_is_the_answer_at_once_and_nothing_is_relayed() {
     let rejected = view.validate_transaction(raw_transaction(8, 0).1).await;
 
     tokio::time::sleep(Duration::from_millis(1)).await;
-    let refusal = matches!(&rejected, Err(SubmitError::Rejected(said)) if *said == too_low);
-    assert!(refusal, "the holder's refusal: {rejected:?}");
+    let rejected = rejected.err().map(|refused| refused.to_string());
+    assert_eq!(rejected, Some(SubmitError::Rejected(too_low).to_string()), "the holder's refusal");
     let calls = |method| validators.iter().map(|v| v.calls(method)).sum::<usize>();
     assert_eq!(calls("checkadmission"), 1, "one check");
     assert_eq!(calls("sendrawtransaction"), 0, "never relayed");
@@ -438,8 +440,9 @@ async fn an_unchecked_send_every_entry_rejects_is_that_rejection_after_one_push_
     let validated = view.validate_transaction(raw_transaction(7, 0).1).await.expect("none judges");
     let rejected = view.broadcast_transaction(validated).await;
 
-    let refusal = matches!(&rejected, Err(SubmitError::Rejected(said)) if *said == too_low);
-    assert!(refusal, "the validators' rejection: {rejected:?}");
+    let rejected = rejected.err().map(|refused| refused.to_string());
+    let validators_rejection = SubmitError::Rejected(too_low).to_string();
+    assert_eq!(rejected, Some(validators_rejection), "the validators' rejection");
     let pushes: Vec<usize> = validators.iter().map(|v| v.calls("sendrawtransaction")).collect();
     assert_eq!(pushes, [1, 1, 1], "pushes per entry: each once");
     cancel.cancel();
@@ -464,8 +467,14 @@ async fn an_unchecked_send_no_entry_answers_is_unreachable_after_trying_each_nev
     let validated = view.validate_transaction(raw_transaction(6, 0).1).await.expect("none judges");
     let sent = view.broadcast_transaction(validated).await;
 
-    let unreachable = matches!(sent, Err(SubmitError::Unreachable { attempted: 3, .. }));
-    assert!(unreachable, "3 attempts, nothing learnt about the transaction: {sent:?}");
+    let sent = sent.err().map(|failed| failed.to_string());
+    let unreachable =
+        "no trusted validator accepted the transaction; 3 attempted, last failure: http status 503";
+    assert_eq!(
+        sent.as_deref(),
+        Some(unreachable),
+        "3 attempts, nothing learnt about the transaction"
+    );
     cancel.cancel();
 }
 

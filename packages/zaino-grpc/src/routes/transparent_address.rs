@@ -463,33 +463,25 @@ mod tests {
         let testnet =
             zcash_address::ZcashAddress::from_transparent_p2pkh(NetworkType::Test, [0x00; 20])
                 .encode();
-        let every_method = |address: &str| {
-            let range = Some(service::BlockRange {
-                start: Some(service::BlockId { height: 0, hash: Vec::new() }),
-                end: Some(service::BlockId { height: 0, hash: Vec::new() }),
-                pool_types: Vec::new(),
-            });
-            [
-                (
-                    Method::GetTaddressBalance,
-                    service::AddressList { addresses: vec![address.to_owned()] }.encode_to_vec(),
-                ),
-                (
-                    Method::GetAddressUtxos,
-                    service::GetAddressUtxosArg {
-                        addresses: vec![address.to_owned()],
-                        start_height: 0,
-                        max_entries: 0,
-                    }
-                    .encode_to_vec(),
-                ),
-                (
-                    Method::GetTaddressTransactions,
-                    service::TransparentAddressBlockFilter { address: address.to_owned(), range }
-                        .encode_to_vec(),
-                ),
-            ]
-        };
+        let address_list = service::AddressList { addresses: vec![testnet.clone()] };
+        let one_address = service::Address { address: testnet.clone() };
+        let utxos_arg =
+            service::GetAddressUtxosArg { addresses: vec![testnet.clone()], ..Default::default() };
+        let range = Some(service::BlockRange {
+            start: Some(service::BlockId { height: 0, hash: Vec::new() }),
+            end: Some(service::BlockId { height: 0, hash: Vec::new() }),
+            pool_types: Vec::new(),
+        });
+        let filter = service::TransparentAddressBlockFilter { address: testnet.clone(), range };
+        // TODO: REMOVE the `GetTaddressTxids` row with the deprecated alias
+        let every_method = [
+            (Method::GetTaddressBalance, address_list.encode_to_vec()),
+            (Method::GetTaddressBalanceStream, one_address.encode_to_vec()),
+            (Method::GetAddressUtxos, utxos_arg.encode_to_vec()),
+            (Method::GetAddressUtxosStream, utxos_arg.encode_to_vec()),
+            (Method::GetTaddressTransactions, filter.encode_to_vec()),
+            (Method::GetTaddressTxids, filter.encode_to_vec()),
+        ];
 
         let own = service::AddressList { addresses: vec![mainnet.to_owned()] }.encode_to_vec();
         let response = router.call(framed_request(Method::GetTaddressBalance, own.into())).await;
@@ -497,7 +489,7 @@ mod tests {
         let balances = decode_frames::<service::Balance>(&chunks.concat());
         assert_eq!(balances, [service::Balance { value_zat: 500 }], "own encoding: {status:?}");
 
-        for (method, request) in every_method(&testnet) {
+        for (method, request) in every_method {
             let response = router.call(framed_request(method, request.into())).await;
 
             let (_, status) = answer(response.expect("infallible")).await;

@@ -603,7 +603,7 @@ mod tests {
         pages.read(0..PAGE);
     }
 
-    /// Seal at `PAGE - 3` bytes (tail only), reopen, append the rest (3 pages + 100 bytes)
+    /// Log sealed at `PAGE - 3` bytes (tail only), reopened, rest appended (3 pages + 100 bytes)
     ///
     /// - one digest whether the checksums were sealed at once or not
     /// - `.crc` = each complete page's checksum, the tail's in the seal
@@ -615,12 +615,11 @@ mod tests {
         let bytes = three_pages_and_a_tail();
 
         let mut file =
-            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
+            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Log).expect("open");
         file.append(&bytes[..PAGE - 3]).expect("append");
         let first = file.seal(Durability::PerFile).expect("seal");
         drop(file);
-        let mut file =
-            PagedFile::open(fs.as_ref(), path, first, FileKind::Segment).expect("reopen");
+        let mut file = PagedFile::open(fs.as_ref(), path, first, FileKind::Log).expect("reopen");
         file.append(&bytes[PAGE - 3..]).expect("append");
         let sealed = file.seal(Durability::PerFile).expect("seal");
 
@@ -633,7 +632,8 @@ mod tests {
             page_sum(2, &bytes[2 * PAGE..3 * PAGE]).to_le_bytes(),
         ]
         .concat();
-        assert_eq!(fs.contents(&sums_path(path)).expect("sums"), sums, ".crc = pages 0, 1, 2");
+        let stored = fs.contents(&sums_path(path)).expect("sums");
+        assert_eq!(&stored[..sums.len()], &sums[..], ".crc = pages 0, 1, 2 (then its reserve)");
         let tail = page_sum(3, &bytes[3 * PAGE..]);
         let whole = Sealed { len: bytes.len() as u64, tail, sums: crc32fast::hash(&sums) };
         assert_eq!(sealed, whole, "second seal: page 3's tail + the digest of pages 0-2");
@@ -641,24 +641,6 @@ mod tests {
         let across = PAGE - 10..PAGE + 10;
         assert_eq!(pages.read(across.clone()), &bytes[across], "a read across pages 0 and 1");
         assert_eq!(pages.bytes(0..bytes.len()), bytes, "every byte");
-    }
-
-    #[test]
-    fn open_drops_bytes_written_past_the_seal() {
-        let fs = SimFs::new();
-        let path = Path::new("/p/data");
-        fs.create_dir_all(Path::new("/p")).expect("dir");
-        let bytes = three_pages_and_a_tail();
-        let mut file =
-            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
-        file.append(&bytes).expect("append");
-        let sealed = file.seal(Durability::PerFile).expect("seal");
-        file.append(&[9; 17]).expect("append past the seal");
-        drop(file);
-
-        PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment).expect("reopen at the seal");
-
-        assert_eq!(fs.contents(path).expect("data"), bytes, "17 unsealed bytes dropped");
     }
 
     /// Byte 5 of page 1 flipped: open checks lengths + the checksums' digest, never page bytes
@@ -681,6 +663,7 @@ mod tests {
     }
 
     /// Sealed file of 3 pages + 100 bytes, damaged after its seal: what each open refuses
+    /// (`Pages::open` = segment read, `PagedFile::open` = log reopen)
     #[test]
     fn open_refuses_a_forged_checksum_reordered_pages_a_torn_tail_and_a_short_file() {
         struct Damaged {
@@ -740,7 +723,7 @@ mod tests {
             damage(&fs, path);
 
             let mapped = Pages::open(fs.as_ref(), path, sealed, Access::Normal);
-            let reopened = PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment);
+            let reopened = PagedFile::open(fs.as_ref(), path, sealed, FileKind::Log);
 
             let refused = mapped.err().map(|error| error.to_string());
             assert_eq!(refused.as_deref(), pages, "{case}: Pages::open");

@@ -795,7 +795,7 @@ mod tests {
             "closed after {lived:?}, not age ± 10% + grace {window:?} ({closed:?})"
         );
         let reset = response.await.expect_err("held stream outlived its connection");
-        assert!(reset.is_go_away() || reset.is_io() || reset.is_reset(), "{reset:?}");
+        assert!(reset.is_io(), "connection dropped under it, no RST_STREAM: {reset:?}");
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@
 //! `check()`'s fire drills
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::Path;
 use std::sync::Arc;
@@ -165,7 +166,8 @@ fn one_snapshot_renders_every_gauge() {
         format!("zaino_chainview_push_stream{{endpoint=\"{first}\"}} 0"),
         format!("zaino_chainview_tip_height{{endpoint=\"{first}\"}} 5"),
     ] {
-        assert!(rendered.lines().any(|at| at == line), "{line:?} not in:\n{rendered}");
+        let rendered_line = rendered.lines().any(|at| at == line);
+        assert!(rendered_line, "gauge from one snapshot (G9): {line:?} not in:\n{rendered}");
     }
 }
 
@@ -265,7 +267,7 @@ fn serving_status_by_vouch_holder_health_and_the_clock() {
 
 /// Best A6, two validators configured, validator 0 the only candidate holder
 #[test]
-fn the_mempool_is_served_only_while_a_live_validator_holds_best() {
+fn the_mempool_is_served_only_while_a_live_validator_holds_best_or_peers_are_quorate() {
     let mut builder = MockChain::regtest();
     let a6 = builder.mine_empty(6);
     let chain = Arc::new(HeaderChainSnapshot::of(&builder, a6));
@@ -287,6 +289,9 @@ fn the_mempool_is_served_only_while_a_live_validator_holds_best() {
         &[],
     );
     let no_chain = ChainViewSnapshot::fixed(None, TrustedValidatorSet::at([0]), &addresses, &[]);
+    // one peer per /16 netgroup
+    let peers: Vec<SocketAddr> = (1..=6).map(|group| ([10, group, 0, 1], 8233).into()).collect();
+    let peers_in = |netgroups: usize| no_holder.clone().peers_listed(&peers[..netgroups]);
     #[rustfmt::skip]
     let cases = [
         // (case,                                  view,                                     mempool())
@@ -294,6 +299,8 @@ fn the_mempool_is_served_only_while_a_live_validator_holds_best() {
         ("Live, ahead, its hash at best read",     holding(Health::Live).ahead(0, 1, true),  Ok(())),
         ("Live, ahead, unread: not a holder",      holding(Health::Live).ahead(0, 1, false), not_held),
         ("catching-up holder: its mempool off",    holding(Health::CatchingUp),              not_held),
+        ("no holder, peers in 6 netgroups",        peers_in(6),                              Ok(())),
+        ("no holder, peers in 5 netgroups",        peers_in(5),                              not_held),
         ("no holder",                              no_holder,                                not_held),
         ("no verified chain",                      no_chain,                                 Err(Unavailable::NoChain)),
     ];
@@ -428,6 +435,25 @@ fn check_catches_a_served_tip_off_the_indexes() {
     let d = Drill::served_a3_then_a6();
     let tips = Tips { served: Some(d.a[5].block_ref()), ..d.next.tips };
     check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "synced under a chain (G4)")]
+fn check_catches_synced_without_a_chain() {
+    let d = Drill::served_a3_then_a6();
+    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+    let view = ChainViewSnapshot::fixed(None, TrustedValidatorSet::at([0, 1]), &addresses, &[]);
+    // G3 kept: best + finalized tip = the chainless view's None
+    let tips = Tips { best: None, finalized_tip: None, ..d.next.tips };
+    check(&d.prev, &GrpcSnapshot { tips, view: Arc::new(view), ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "synced = something served (G4)")]
+fn check_catches_synced_with_nothing_served() {
+    let d = Drill::served_a3_then_a6();
+    let tips = Tips { served: None, ..d.next.tips };
+    check(&d.prev, &GrpcSnapshot { tips, indexed: None, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]

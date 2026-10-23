@@ -182,14 +182,14 @@ impl TrafficCore {
             Input::Report(ticket) => {
                 if let MemberId::TrustedValidator(_) = ticket.member {
                     let member = self.members.get_mut(&ticket.member);
-                    member.expect("a configured validator").bench(now);
+                    member.expect("report: a configured validator").bench(now);
                 }
             }
             Input::Polled { validator, read } => self.polled(validator, read),
             Input::Push { validator, push } => {
                 let poller = self.members.get_mut(&MemberId::TrustedValidator(validator));
                 let poller =
-                    poller.and_then(|m| m.poller.as_mut()).expect("a configured validator");
+                    poller.and_then(|m| m.poller.as_mut()).expect("push: a configured validator");
                 if let Push::Link(up) = push {
                     poller.streaming = up;
                 }
@@ -358,7 +358,7 @@ impl TrafficCore {
 
     pub(crate) fn health(&self, validator: TrustedValidatorId) -> Health {
         let member = self.members.get(&MemberId::TrustedValidator(validator));
-        member.expect("a configured validator").health()
+        member.expect("health: a configured validator").health()
     }
 
     /// Each trusted member's health, configured order
@@ -414,21 +414,25 @@ impl TrafficCore {
                     self.members.contains_key(&member),
                     "a send's member configured: {ask_id:?} {class:?} sent to {member:?}"
                 );
-                let kind = matches!(member, MemberId::TrustedValidator(_)) || class.peers();
                 assert!(
-                    kind && route.admits(member),
-                    "a class reaches only the member kinds its route allows (T2): {ask_id:?} \
-                     {class:?} via {route:?} sent to {member:?}"
+                    matches!(member, MemberId::TrustedValidator(_)) || class.peers(),
+                    "a trusted-only class never reaches the peer set (T2): {ask_id:?} {class:?} \
+                     sent to {member:?}"
+                );
+                assert!(
+                    route.admits(member),
+                    "a send stays within its ask's route (T2): {ask_id:?} {class:?} via \
+                     {route:?} sent to {member:?}"
                 );
                 assert!(
                     asked.insert(member),
-                    "a round asks each member once (T5): {ask_id:?} {class:?} sent to {member:?} \
-                     twice"
+                    "a round sends to each member once (T5): {ask_id:?} {class:?} sent to \
+                     {member:?} twice"
                 );
                 assert!(
                     ask.tried.contains(&member),
-                    "a round asks each member once (T5): {ask_id:?} {class:?} sent to {member:?}, \
-                     absent from this round's tried {:?} (a re-ask could reach it)",
+                    "every send's member in its round's tried (T5): {ask_id:?} {class:?} sent \
+                     to {member:?}, tried {:?} (a re-ask could reach it)",
                     ask.tried
                 );
             }

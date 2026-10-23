@@ -261,10 +261,10 @@ mod tests {
         assert_eq!(records(&opening), unmined(&[1, 2]), "reopened at 11: the mempool as it stands");
     }
 
-    /// Parsed once per entry (projection cached); each answer its own slots + pools, a tx the
+    /// Every projection cached by the first ask; each answer its own slots + pools, a tx the
     /// selection empties dropped (as from a block), no gap for an excluded suffix
     #[tokio::test(start_paused = true)]
-    async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
+    async fn get_mempool_tx_caches_every_projection_on_its_first_ask_and_shapes_each_answer() {
         use prost::Message as _;
         use zaino_proto::proto::compact_formats::CompactTx;
         use zaino_source::testing::p2pkh;

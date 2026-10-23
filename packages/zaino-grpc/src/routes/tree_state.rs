@@ -339,10 +339,10 @@ mod tests {
         }
     }
 
-    /// No subtree complete yet: an empty `OK` stream, status in trailers (pepper-sync's resume
-    /// probe), any start / max (past `u16` too)
+    /// No subtree complete yet: each pool an empty `OK` stream, status in trailers (pepper-sync's
+    /// resume probe); start / max slicing = `a_root_request_is_one_slice_of_the_framed_list`
     #[tokio::test]
-    async fn subtree_roots_answer_whole_or_refuse_before_the_first_byte() {
+    async fn subtree_roots_before_any_completes_are_empty_per_pool_and_refuse_an_unknown_one() {
         use tower::Service as _;
 
         let chain = MockChain::regtest()
@@ -362,10 +362,6 @@ mod tests {
             ("sapling",                 sapling,  0,        0,        Code::Ok),
             ("orchard after sapling",   orchard,  0,        0,        Code::Ok),
             ("ironwood",                ironwood, 0,        0,        Code::Ok),
-            ("sapling from 1",          sapling,  1,        0,        Code::Ok),
-            ("orchard past u16",        orchard,  70_000,   0,        Code::Ok),
-            ("sapling at u32::MAX",     sapling,  u32::MAX, u32::MAX, Code::Ok),
-            ("orchard max past u16",    orchard,  0,        100_000,  Code::Ok),
             ("unknown pool 3",          3,        0,        0,        Code::Unimplemented),
         ];
         for (case, shielded_protocol, start_index, max_entries, code) in cases {

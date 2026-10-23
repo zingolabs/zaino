@@ -514,14 +514,12 @@ async fn the_peer_set_serves_tip_blocks_and_headers_and_a_report_never_benches_i
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lookup_never_reaches_the_peer_set_and_ends_with_the_trusted_failure() {
+async fn a_lookup_with_its_only_member_down_ends_with_that_transport_failure() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let validator = chain.validator(tip);
     validator.down(true);
-    let peers = Peers { transport: Arc::new(MockPeerSet::new(&chain, tip)), in_flight: 4 };
-    let (balancer, cancel) =
-        balancer_running(vec![trusted("validator", &validator, 0)], Some(peers));
+    let (balancer, cancel) = balancer_running(vec![trusted("validator", &validator, 0)], None);
     let txid = TxId::from_bytes([1; 32]);
 
     let lookup = balancer.lookup(move |source| async move { source.get_transaction(txid).await });

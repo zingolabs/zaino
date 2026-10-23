@@ -279,7 +279,7 @@ mod tests {
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::BlockHash;
 
-    use crate::{nodes::retained_nodes, ServeError};
+    use crate::ServeError;
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
@@ -349,8 +349,7 @@ mod tests {
                 let block = block_of_leaf[last_leaf];
                 let kept = match level {
                     0 => Some(index),
-                    _ => (index % 2 == 0 && index / 2 < retained_nodes(level, total))
-                        .then_some(index / 2),
+                    _ => (index % 2 == 0).then_some(index / 2),
                 };
                 if let Some(slot) = kept {
                     retained[block].nodes.insert((level, slot), nodes::encode(node));

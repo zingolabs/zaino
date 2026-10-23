@@ -9,10 +9,3 @@ pub fn block(height: u32) -> Vec<u8> {
     let hex = std::fs::read_to_string(&path).expect("fixture readable");
     const_hex::decode(hex.trim()).expect("fixture is hex")
 }
-
-/// The block at `height`'s transactions, each its own consensus bytes, in block order
-pub fn transactions(height: u32) -> Vec<Vec<u8>> {
-    let raw = block(height);
-    let spans = crate::decode::tx_spans(&raw).expect("fixture transactions decode");
-    spans.into_iter().map(|span| raw[span].to_vec()).collect()
-}

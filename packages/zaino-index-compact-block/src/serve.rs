@@ -340,7 +340,7 @@ mod tests {
                 .map(|&at| reader.block(h(at as u32)).expect("held"))
                 .collect();
             let expected = project(&records, Pools::ALL).expect("walks");
-            assert!(chunks.concat() == expected, "{range:?}: chunks = those heights' records");
+            assert_eq!(chunks.concat(), expected, "{range:?}: chunks = those heights' records");
         }
     }
 
@@ -393,7 +393,7 @@ mod tests {
                 walk.into_iter().map(|height| reader.block(h(height)).expect("held")).collect();
             let projected = project(&records, Pools::default()).expect("walks");
             let (shielded, all) = (range(Pools::default()), range(Pools::ALL));
-            assert!(shielded.concat() == projected, "{start} to {end}: projected records");
+            assert_eq!(shielded.concat(), projected, "{start} to {end}: projected records");
             assert_eq!(shielded.len(), all.len(), "{start} to {end}: same chunks");
         }
     }

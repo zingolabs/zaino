@@ -111,7 +111,10 @@ mod tests {
 
         spill.append_to(&mut out).expect("append");
 
-        assert!(fs.contents(&target).expect("segment") == pushed, "appended bytes != pushed");
+        let appended = fs.contents(&target).expect("segment");
+        let mismatch = appended.iter().zip(&pushed).position(|(got, want)| got != want);
+        let shape = (appended.len(), mismatch);
+        assert_eq!(shape, (pushed.len(), None), "appended (length, first byte != pushed)");
         assert_eq!(fs.contents(&path), None, "scratch left behind");
     }
 
