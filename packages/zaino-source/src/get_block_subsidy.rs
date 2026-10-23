@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{rpc::BlockSubsidy, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockSubsidy`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -19,10 +19,11 @@ pub enum GetBlockSubsidyError {
 ///
 /// Maps to `getblocksubsidy` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockSubsidy: Send + Sync {
+pub trait OneShotGetBlockSubsidy: ValidatorSource + Send + Sync {
     /// Fetch the subsidy split at a height.
     fn get_block_subsidy(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<BlockSubsidy, QueryError<GetBlockSubsidyError>>> + Send;
+    ) -> impl Future<Output = Result<BlockSubsidy, QueryError<GetBlockSubsidyError, Self::NonDomain>>>
+           + Send;
 }

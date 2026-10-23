@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{rpc::TxOut, OutputIndex, TransactionId};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetTxOut`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub enum GetTxOutError {
 ///
 /// Maps to `gettxout` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetTxOut: Send + Sync {
+pub trait OneShotGetTxOut: ValidatorSource + Send + Sync {
     /// Fetch an unspent output.
     ///
     /// `include_mempool` asks the validator to account for unconfirmed spends,
@@ -32,5 +32,5 @@ pub trait OneShotGetTxOut: Send + Sync {
         txid: TransactionId,
         index: OutputIndex,
         include_mempool: bool,
-    ) -> impl Future<Output = Result<Option<TxOut>, QueryError<GetTxOutError>>> + Send;
+    ) -> impl Future<Output = Result<Option<TxOut>, QueryError<GetTxOutError, Self::NonDomain>>> + Send;
 }

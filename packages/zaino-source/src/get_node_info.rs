@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::rpc::NodeInfo;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetNodeInfo`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -18,9 +18,9 @@ pub enum GetNodeInfoError {
 ///
 /// Maps to `getinfo` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetNodeInfo: Send + Sync {
+pub trait OneShotGetNodeInfo: ValidatorSource + Send + Sync {
     /// Fetch validator information.
     fn get_node_info(
         &self,
-    ) -> impl Future<Output = Result<NodeInfo, QueryError<GetNodeInfoError>>> + Send;
+    ) -> impl Future<Output = Result<NodeInfo, QueryError<GetNodeInfoError, Self::NonDomain>>> + Send;
 }

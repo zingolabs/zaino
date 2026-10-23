@@ -25,7 +25,7 @@ optional accelerator, not an alternative.
 ## Error classification: the part that matters
 
 Every method must decide whether a validator's error reply is an *answer*
-(`QueryError::Domain`) or a *failure* (`QueryError::Fetch`). Four helpers exist
+(`QueryError::Domain`) or a *failure* (`QueryError::NonDomain`). Four helpers exist
 so the decision is made once per class rather than once per method:
 
 | helper | for | maps |

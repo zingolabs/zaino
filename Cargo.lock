@@ -6175,6 +6175,7 @@ version = "0.2.2"
 dependencies = [
  "chrono",
  "serde_json",
+ "thiserror 2.0.20",
  "tokio",
  "tower 0.4.13",
  "tracing",

@@ -28,7 +28,7 @@ place, and each of the three has a different owner now.
 ## Errors
 
 `RpcError` distinguishes the envelope's failure modes, and converts into
-`zaino_source::FetchError` so the source layer's `FailureMode` classification
+`zaino_source::NonDomainError` so the source layer's `FailureMode` classification
 works end to end:
 
 ```rust

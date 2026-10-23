@@ -49,7 +49,7 @@ impl PolledChainTip {
     pub async fn spawn<S>(
         source: S,
         interval: Duration,
-    ) -> Result<Self, QueryError<GetChainTipError>>
+    ) -> Result<Self, QueryError<GetChainTipError, S::NonDomain>>
     where
         S: OneShotGetChainTip + Send + 'static,
     {

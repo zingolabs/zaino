@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{Height, TransactionId};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Per-transaction mempool metadata, as reported by the validator's own
 /// mempool listing.
@@ -53,9 +53,11 @@ pub enum GetMempoolMetadataError {
 /// shows additions, and should coalesce repeated calls rather than issuing one
 /// per poll.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetMempoolMetadata: Send + Sync {
+pub trait OneShotGetMempoolMetadata: ValidatorSource + Send + Sync {
     /// Fetch mempool metadata.
     fn get_mempool_metadata(
         &self,
-    ) -> impl Future<Output = Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError, Self::NonDomain>>,
+    > + Send;
 }

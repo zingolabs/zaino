@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, TreeRoots};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetCommitmentTreeRoots`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -19,10 +19,12 @@ pub enum GetCommitmentTreeRootsError {
 /// Available via Zebra ReadState; over JSON-RPC this is assembled
 /// from `z_gettreestate`.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetCommitmentTreeRoots: Send + Sync {
+pub trait OneShotGetCommitmentTreeRoots: ValidatorSource + Send + Sync {
     /// Fetch tree roots.
     fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
-    ) -> impl Future<Output = Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>>> + Send;
+    ) -> impl Future<
+        Output = Result<TreeRoots, QueryError<GetCommitmentTreeRootsError, Self::NonDomain>>,
+    > + Send;
 }
