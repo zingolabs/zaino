@@ -1,0 +1,14 @@
+# Every test killed after 60 s: the slowest takes ~10 s, so a stuck one (a busy loop starving a
+# paused clock) fails fast instead of holding CI or a mutation run for minutes
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Model suites only (proptest vs a naive oracle), sized by PROPTEST_CASES
+# (docs/testing.md "Model tests in bulk")
+[profile.models]
+default-filter = "test(/model|random_histories/)"
+slow-timeout = { period = "300s" }
+
+# Whole crate suite at heavy case counts (docs/testing.md "Heavy run")
+[profile.heavy]
+slow-timeout = { period = "300s" }
