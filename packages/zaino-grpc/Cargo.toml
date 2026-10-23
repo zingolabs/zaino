@@ -1,0 +1,76 @@
+[package]
+name = "zaino-grpc"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Lightwalletd-compatible gRPC (CompactTxStreamer) server routing each method to an index, the chain view or the validator."
+
+[dependencies]
+zaino-proto = { workspace = true }
+thiserror = { workspace = true }
+tonic.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
+http = "1"
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+
+# Claimed routes, one per index
+zaino-index-compact-block = { workspace = true }
+zaino-index-tree-state = { workspace = true }
+zaino-index-transparent-address = { workspace = true }
+# Domain values rendered onto the wire (index dispatches, `LightdInfo`'s upgrade schedule)
+zaino-primitives = { workspace = true }
+# TreeState carries its trees as hex strings.
+const-hex.workspace = true
+# t-address string -> `TransparentAddress` -> its locking script
+zcash_address = { workspace = true }
+zcash_transparent.workspace = true
+zcash_script.workspace = true
+# `NetworkType`: `LightdInfo.chainName` (declared)
+zcash_protocol = { workspace = true }
+prost.workspace = true
+http-body = "1.1.0"
+zaino-source.workspace = true
+metrics = { workspace = true }
+zaino-chainview.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+ppp = "2.3"
+ipnet = { version = "2.12", features = ["serde"] }
+socket2 = { version = "0.6", features = ["all"] }
+tracing.workspace = true
+hyper-util = { workspace = true, features = ["http2", "server", "server-auto", "server-graceful", "service", "tokio"] }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+arc-swap = { workspace = true }
+zaino-persistence.workspace = true
+zaino-nfs.workspace = true
+zaino-traffic.workspace = true
+zaino-grpc-snapshot.workspace = true
+serde = { workspace = true, features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+zaino-chainview = { workspace = true, features = ["testing"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-nfs = { workspace = true, features = ["testing"] }
+zaino-grpc-snapshot = { workspace = true, features = ["testing"] }
+h2 = "0.4"
+
+[lints.rust]
+unreachable_pub = "warn"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core = "0.9"
+netlink-packet-sock-diag = "0.5"
+netlink-sys = "0.9"

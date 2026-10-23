@@ -1,0 +1,237 @@
+//! Shared route-test infra: `RouteDeps` over a `MockValidator`'s client, request builders, indexes
+//! folded from a `MockChain`'s genesis, answers read back as data + `tonic::Status`
+
+use std::{num::NonZeroUsize, sync::Arc};
+
+use bytes::Bytes;
+use http::{HeaderMap, Request, Response};
+use http_body_util::Full;
+use tokio::sync::watch;
+use tonic::{body::Body, Status};
+use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedValidatorSet};
+use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
+use zaino_header_chain::HeaderChainSnapshot;
+use zaino_nfs::{ChainParams, NfsPublication};
+use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
+use zaino_primitives::protocol::compiled_schedule;
+use zaino_primitives::types::{BlockRef, FinalityDepth};
+use zaino_proto::frame::{frame_into, FRAME_HEADER};
+use zaino_source::testing::{MockChain, MockValidator};
+use zaino_source::ZcashLegacyRpcClient;
+use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
+use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::TxId;
+
+use crate::service::{Dispatch, Method, RouteDeps};
+
+/// Network the route tests declare (the transparent tests' addresses are mainnet encodings)
+pub(super) const MAINNET: NetworkType = NetworkType::Main;
+
+/// The routes' one trusted validator (balancer + chain view name it alike)
+const VALIDATOR: &str = "node:8232";
+
+/// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
+/// (compact-block's fees = the builder's: utxo-set's fold derives the same, in its tests)
+pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (IndexKind, DiskView) {
+    assert_ne!(kind, IndexKind::UtxoSet, "not a served index");
+    let schema = zaino_nfs::schema(kind, chain.schedule().network);
+    let engine = DiskEngine::new(
+        zaino_persistence::fs::SimFs::new(),
+        zaino_persistence::LsmConfig::default(),
+    );
+    let mut index =
+        engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
+    for block in chain.blocks(tip) {
+        let fees = chain.fees(block.header().hash);
+        let mut out = index.changes(block.block_ref());
+        let folded = zaino_nfs::fold(kind, index.applied(), &block, Some(&fees), &mut out);
+        folded.expect("canonical block");
+        index.apply(out);
+    }
+    index.commit().expect("SimFs commit");
+    (kind, index.durable())
+}
+
+/// `views` served at `tip` (the NFS root): genesis ..= `tip` verified, the chain's own params
+pub(super) fn indexed_at(
+    chain: &MockChain,
+    tip: BlockRef,
+    views: Vec<(IndexKind, DiskView)>,
+) -> NfsPublication<DiskView> {
+    let params = ChainParams::of(chain);
+    NfsPublication::fixed(Arc::new(HeaderChainSnapshot::of(chain, tip)), tip, params, views)
+}
+
+/// Fixed `GrpcSnapshot`: [`indexed_at`] `tip`, `held_by` holding `tip`, `mempool` = our relays
+/// (servable while held)
+pub(super) fn fixed_snapshots(
+    chain: &MockChain,
+    tip: BlockRef,
+    views: Vec<(IndexKind, DiskView)>,
+    held_by: TrustedValidatorSet,
+    mempool: &[(TxId, Bytes)],
+) -> GrpcSnapshots<DiskView> {
+    let verified = Some(Arc::new(HeaderChainSnapshot::of(chain, tip)));
+    let view = ChainViewSnapshot::fixed(verified, held_by, &[VALIDATOR], mempool);
+    GrpcSnapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
+}
+
+/// `RouteDeps` over `node` on `network`, `indexes` enabled (the balancer's driver + the view's poll
+/// merge back, unspawned)
+///
+/// - nothing verified, nothing served, never republished
+pub(super) fn routes_over(
+    node: &MockValidator,
+    network: NetworkType,
+    indexes: &[IndexKind],
+) -> (
+    RouteDeps<ZcashLegacyRpcClient, DiskView>,
+    TrafficDriver<ZcashLegacyRpcClient>,
+    ObservationMerge<ZcashLegacyRpcClient>,
+) {
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let (address, source) = (VALIDATOR.to_owned(), Arc::new(node.client()));
+    let trusted = TrustedValidator { address, source, priority: 0, limits };
+    let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
+    let schedule = compiled_schedule(network).expect("network compiled in");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let view = ChainView::new(validators.clone(), FinalityDepth::CONSENSUS, schedule, shutdown);
+    let merge = view.observation_merge();
+    let routes = RouteDeps {
+        grpc_snapshots: GrpcSnapshots::fixed(None, view.subscriber().current()),
+        chain_view: Arc::new(view),
+        validators,
+        network,
+        version: "0.11.0-test",
+        max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
+        indexes: indexes.to_vec(),
+    };
+    (routes, driver, merge)
+}
+
+/// [`routes_over`] a never-polled validator, serving `grpc_snapshots` (index methods only)
+pub(super) fn routes_serving(
+    network: NetworkType,
+    indexes: &[IndexKind],
+    grpc_snapshots: GrpcSnapshots<DiskView>,
+) -> RouteDeps<ZcashLegacyRpcClient, DiskView> {
+    let chain = MockChain::regtest();
+    let (routes, _never_driven, _never_merged) =
+        routes_over(&chain.validator(chain.genesis()), network, indexes);
+    RouteDeps { grpc_snapshots, ..routes }
+}
+
+/// Stands in for the NFS's publication watch
+pub(super) type NfsPublishes = watch::Sender<Option<Arc<NfsPublication<DiskView>>>>;
+
+/// `routes` read a live publisher over their chain view and the returned NFS watch (the
+/// publisher back, unspawned)
+pub(super) fn published(
+    routes: &mut RouteDeps<ZcashLegacyRpcClient, DiskView>,
+) -> (Publisher<DiskView>, NfsPublishes) {
+    let (nfs, indexed) = watch::channel(None);
+    let publisher =
+        Publisher::new(indexed, routes.chain_view.subscriber(), FinalityDepth::CONSENSUS);
+    routes.grpc_snapshots = publisher.handle();
+    (publisher, nfs)
+}
+
+/// [`routes_over`] `node` behind a live publisher, its balancer + poll merge + publisher spawned
+/// (stopped on drop); `nfs` stands in for the NFS, `chain_view.set_chain` for header sync
+pub(super) struct LiveRoutes {
+    pub(super) router: Dispatch<ZcashLegacyRpcClient, DiskView>,
+    pub(super) chain_view: Arc<ChainView<ZcashLegacyRpcClient>>,
+    pub(super) grpc_snapshots: GrpcSnapshots<DiskView>,
+    pub(super) nfs: NfsPublishes,
+    stop: tokio_util::sync::CancellationToken,
+}
+
+impl LiveRoutes {
+    pub(super) fn over(node: &MockValidator, network: NetworkType, indexes: &[IndexKind]) -> Self {
+        let (mut routes, balancing, merge) = routes_over(node, network, indexes);
+        let (publisher, nfs) = published(&mut routes);
+        let stop = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(publisher.run(stop.child_token()));
+        tokio::spawn(balancing.run(stop.child_token()));
+        tokio::spawn(merge.run(stop.child_token()));
+        let (chain_view, grpc_snapshots) =
+            (Arc::clone(&routes.chain_view), routes.grpc_snapshots.clone());
+        Self { router: dispatch(routes), chain_view, grpc_snapshots, nfs, stop }
+    }
+}
+
+impl Drop for LiveRoutes {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
+}
+
+pub(super) fn dispatch(
+    routes: RouteDeps<ZcashLegacyRpcClient, DiskView>,
+) -> Dispatch<ZcashLegacyRpcClient, DiskView> {
+    let dispatch = Dispatch::new(&crate::GrpcLimits::default());
+    dispatch.routing().route(routes);
+    dispatch
+}
+
+/// `method`'s gRPC request, body = one framed message
+pub(super) fn framed_request(method: Method, message: Bytes) -> Request<Full<Bytes>> {
+    request_at(&method.path(), message)
+}
+
+/// gRPC request at any `path`, body = one framed message, its method resolved as the serve stack
+/// resolves it
+pub(super) fn request_at(path: &str, message: Bytes) -> Request<Full<Bytes>> {
+    let mut framed = Vec::with_capacity(FRAME_HEADER + message.len());
+    frame_into(&mut framed, |out| out.extend_from_slice(&message));
+
+    let mut request = Request::builder()
+        .uri(format!("http://localhost{path}"))
+        .body(Full::new(Bytes::from(framed)))
+        .expect("request");
+    Method::resolve(&mut request);
+    request
+}
+
+/// Data frames, then the trailers a streaming body ends in
+pub(super) async fn drained(response: Response<Body>) -> (Vec<Bytes>, HeaderMap) {
+    use http_body_util::BodyExt as _;
+
+    let mut body = std::pin::pin!(response.into_body());
+    let mut chunks = Vec::new();
+    let mut trailers = None;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.expect("frame");
+        assert!(trailers.is_none(), "trailers are the last frame");
+        match frame.into_data() {
+            Ok(chunk) => chunks.push(chunk),
+            Err(frame) => trailers = frame.into_trailers().ok(),
+        }
+    }
+
+    (chunks, trailers.expect("a streaming body ends in trailers"))
+}
+
+/// `response` read to its end: data frames + its gRPC status (Trailers-Only headers, else the
+/// trailers; message percent-decoded)
+pub(super) async fn answer(response: Response<Body>) -> (Vec<Bytes>, Status) {
+    if let Some(refused) = Status::from_header_map(response.headers()) {
+        return (Vec::new(), refused);
+    }
+    let (chunks, trailers) = drained(response).await;
+    let status = Status::from_header_map(&trailers).expect("trailers carry grpc-status");
+    (chunks, status)
+}
+
+/// Each framed `M` of `framed`, in order
+pub(super) fn decode_frames<M: prost::Message + Default>(framed: &[u8]) -> Vec<M> {
+    let messages = crate::wire::messages(framed).expect("whole frames");
+    messages.into_iter().map(|message| M::decode(message).expect("decodes")).collect()
+}
+
+/// Resolves once `done` (checked each poll second; bound it with `zaino_source::testing::within`)
+pub(super) async fn until(done: impl Fn() -> bool) {
+    while !done() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
