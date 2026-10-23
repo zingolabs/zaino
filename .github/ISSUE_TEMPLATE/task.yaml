@@ -58,11 +58,23 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-state
-        - zaino-serve
-        - zaino-fetch
+        - zaino-chainview
+        - zaino-grpc
+        - zaino-header-chain
+        - zaino-index-compact-block
+        - zaino-index-transparent-address
+        - zaino-index-tree-state
+        - zaino-index-utxo-set
+        - zaino-internal-block-hash-to-height
+        - zaino-nfs
+        - zaino-peers
+        - zaino-persistence
+        - zaino-primitives
         - zaino-proto
-        - chain_index
+        - zaino-grpc-snapshot
+        - zaino-source
+        - zaino-sync
+        - zaino-traffic
         - Testing / CI
         - Documentation
         - Other
