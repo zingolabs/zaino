@@ -70,11 +70,11 @@ body:
       description: |
         Please include:
         - Zaino version or commit hash
-        - Backend version (zebra)
+        - zebrad version
         - OS and platform
       placeholder: |
         Zaino: v0.x.x or commit abc123
-        Backend: Zebra 27.0.0
+        zebrad: 6.2.3
         OS: Linux x86_64 / macOS ARM64
     validations:
       required: true
@@ -91,7 +91,7 @@ body:
     attributes:
       label: Logs
       description: |
-        Relevant log output. Use debug logging if possible (`level = "debug"` in config).
+        Relevant log output. Use debug logging if possible (`RUST_LOG=zaino=debug`).
         Wrap long logs in `<details>` tags.
       render: shell
 
