@@ -1,0 +1,2 @@
+# Width heuristics = max_width (100): calls, asserts and chains stay on one line whenever they fit
+use_small_heuristics = "Max"
