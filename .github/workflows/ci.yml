@@ -5,7 +5,8 @@ on:
   push:
     branches: [dev]
 
-# PR push supersedes its own run; every dev commit keeps its result
+# - PR push supersedes its own run
+# - every dev commit keeps its result
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -13,8 +14,10 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc: zaino-proto & zebra-rpc build.rs fall back to checked-in generated code
-# (protoc present = regenerate over tracked sources)
+# every run step inside the flake devshell (flake.lock pins all tools)
+defaults:
+  run:
+    shell: nix develop -c bash --noprofile --norc -eo pipefail {0}
 
 jobs:
   lint:
@@ -22,49 +25,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            tools/workbench
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make,cargo-deny,cargo-nextest
-
-      # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
-      - run: cargo make lint
+      # pre-push stage = every hook (stage-less hooks run in all stages)
+      - run: pre-commit run --all-files --hook-stage pre-push
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
-      - uses: taiki-e/install-action@nextest
-
-      - run: cargo nextest run --locked --workspace --no-fail-fast
-
-      # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
-      - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
-
-      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
-      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
+      - run: cargo nextest run --locked --workspace --all-features --no-fail-fast
 
   features:
     name: Each feature compiles
-    # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap
+    # dev only (each package ≤ 1 feature → --each-feature = --feature-powerset)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@cargo-hack
 
       - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
         env:
