@@ -1,0 +1,42 @@
+[package]
+name = "zaino-sync"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zaino's index sync plumbing: the finalized stream every index writer follows, its byte-bounded queues and the writers' commit cadence."
+
+[dependencies]
+futures.workspace = true
+metrics = { workspace = true }
+proptest = { workspace = true, optional = true }
+rayon.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+zaino-header-chain.workspace = true
+zaino-persistence.workspace = true
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+zaino-traffic.workspace = true
+zcash_protocol.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+zaino-traffic = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[features]
+# `SyncProgress::fixed` (no follower), `testing` (index-writer test kit)
+testing = ["dep:proptest", "tokio/test-util", "zaino-persistence/testing"]
