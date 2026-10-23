@@ -4573,6 +4573,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-index-transparent-address"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "proptest",
+ "thiserror",
+ "tokio",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-sync",
+ "zcash_protocol",
+ "zcash_script",
+ "zcash_transparent",
+]
+
+[[package]]
 name = "zaino-index-tree-state"
 version = "0.11.0-alpha.4"
 dependencies = [
