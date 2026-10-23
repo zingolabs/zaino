@@ -22,6 +22,8 @@ pub(super) struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub(super) enum Command {
+    /// Start the Zaino indexer service.
+    Start,
     /// Generate a configuration file with default values.
     GenerateConfig {
         /// Output path for the generated config file. Defaults to the --config path
