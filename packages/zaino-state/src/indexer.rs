@@ -968,6 +968,11 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return information about this lightwalletd instance and the blockchain
     fn get_lightd_info(&self) -> impl SendFut<Result<LightdInfo, Self::Error>>;
 
+    /// Return the validator's standard fee per logical action (`GetStandardFee`).
+    fn get_standard_fee(
+        &self,
+    ) -> impl SendFut<Result<zaino_proto::proto::service::StandardFee, Self::Error>>;
+
     /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
     ///
     /// NOTE: Currently unimplemented in Zaino.

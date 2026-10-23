@@ -151,18 +151,18 @@ fn spent_info_rejection(error: &NonDomainError) -> Option<zaino_source::GetSpent
     }
 }
 
-/// Classifies a transport failure on a mempool listing method.
+/// Classifies a transport failure on a method the validator may not implement.
 ///
-/// `-32601` is the validator saying it does not implement the method, which on
-/// `getrawmempool` means the backing node exposes no mempool at all. That is an
-/// answer about the node rather than a failure of this request: retrying cannot
-/// change it, so a consumer should be told rather than left to re-poll a
-/// validator that will never answer.
+/// `-32601` is the validator saying it does not implement the method (on
+/// `getrawmempool`, that it exposes no mempool at all). That is an answer about
+/// the node rather than a failure of this request: retrying cannot change it,
+/// so a consumer should be told rather than left to re-poll a validator that
+/// will never answer.
 ///
 /// Nothing else is classified. A mempool that is merely empty answers with an
 /// empty list, and a validator still starting up fails at the transport level —
 /// both of which are correctly *not* this.
-fn mempool_unavailable_or_fetch<E>(
+fn method_missing_or_fetch<E>(
     error: zaino_rpc::RpcError,
     unavailable: impl FnOnce() -> E,
 ) -> QueryError<E>
@@ -601,9 +601,7 @@ impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
             None,
             parse::parse_mempool_txids,
             |error| {
-                mempool_unavailable_or_fetch(error, || {
-                    zaino_source::GetMempoolTxidsError::Unavailable
-                })
+                method_missing_or_fetch(error, || zaino_source::GetMempoolTxidsError::Unavailable)
             },
         )
         .await
@@ -626,7 +624,7 @@ impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
             Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
             parse::parse_mempool_metadata,
             |error| {
-                mempool_unavailable_or_fetch(error, || {
+                method_missing_or_fetch(error, || {
                     zaino_source::GetMempoolMetadataError::Unavailable
                 })
             },
@@ -944,8 +942,16 @@ impl zaino_source::OneShotGetStandardFee for ZebraRpcAdapter {
         zaino_primitives::types::rpc::StandardFee,
         QueryError<zaino_source::GetStandardFeeError>,
     > {
-        self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee)
-            .await
+        self.call_parsed_classified(
+            "getstandardfee",
+            vec![],
+            None,
+            parse::parse_standard_fee,
+            |error| {
+                method_missing_or_fetch(error, || zaino_source::GetStandardFeeError::Unsupported)
+            },
+        )
+        .await
     }
 }
 
@@ -1227,12 +1233,26 @@ mod classification_tests {
     fn a_missing_mempool_method_is_the_ports_own_answer() {
         use zaino_source::GetMempoolTxidsError;
 
-        let classified = mempool_unavailable_or_fetch(rpc(-32601, "Method not found"), || {
+        let classified = method_missing_or_fetch(rpc(-32601, "Method not found"), || {
             GetMempoolTxidsError::Unavailable
         });
         assert!(matches!(
             classified,
             QueryError::Domain(GetMempoolTxidsError::Unavailable)
+        ));
+    }
+
+    /// A validator without `getstandardfee` is the port's `Unsupported` answer.
+    #[test]
+    fn a_missing_standard_fee_method_is_unsupported() {
+        use zaino_source::GetStandardFeeError;
+
+        let classified = method_missing_or_fetch(rpc(-32601, "Method not found"), || {
+            GetStandardFeeError::Unsupported
+        });
+        assert!(matches!(
+            classified,
+            QueryError::Domain(GetStandardFeeError::Unsupported)
         ));
     }
 
@@ -1245,7 +1265,7 @@ mod classification_tests {
         use zaino_source::GetMempoolTxidsError;
 
         for code in [-5, -8, -28, -1, -32603] {
-            let classified = mempool_unavailable_or_fetch(rpc(code, "something else"), || {
+            let classified = method_missing_or_fetch(rpc(code, "something else"), || {
                 GetMempoolTxidsError::Unavailable
             });
             assert!(

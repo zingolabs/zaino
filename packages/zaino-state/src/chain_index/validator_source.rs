@@ -214,7 +214,7 @@ fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
             rejection.to_string(),
         ),
         QueryError::Domain(rejection @ GetSpentInfoError::Unsupported) => {
-            (METHOD_NOT_FOUND, rejection.to_string())
+            return method_missing(rejection)
         }
         // A transport fault is not an answer; `err` already carries it with the
         // typed cause the serving layer needs.
@@ -227,11 +227,29 @@ fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
     )
 }
 
-/// The JSON-RPC envelope's "method not found".
-///
-/// Not a legacy full-node legacy code: the legacy full node implements every method Zaino forwards, so
-/// this only arises when the backing validator is not the legacy full node.
-const METHOD_NOT_FOUND: i64 = -32601;
+/// Flatten a `getstandardfee` port error, keeping `Unsupported` as `-32601`.
+fn standard_fee_err<N: std::error::Error + Send + Sync + 'static>(
+    error: QueryError<zaino_source::GetStandardFeeError, N>,
+) -> BlockchainSourceError {
+    match error {
+        QueryError::Domain(rejection @ zaino_source::GetStandardFeeError::Unsupported) => {
+            method_missing(rejection)
+        }
+        other => err(other),
+    }
+}
+
+/// A validator that does not implement the method, reported as the envelope's
+/// `-32601` — what the client would have seen asking the validator directly.
+fn method_missing(rejection: impl std::fmt::Display) -> BlockchainSourceError {
+    BlockchainSourceError::unrecoverable_context(
+        "validator rejected the query",
+        crate::error::LegacyRpcError {
+            code: crate::error::LegacyRpcError::METHOD_NOT_FOUND,
+            message: rejection.to_string(),
+        },
+    )
+}
 
 /// A domain height from a zebra one, rejecting values the protocol disallows.
 fn height(
@@ -987,7 +1005,10 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn get_standard_fee(
         &self,
     ) -> BlockchainSourceResult<zaino_primitives::types::rpc::StandardFee> {
-        self.validator.get_standard_fee().await.map_err(err)
+        self.validator
+            .get_standard_fee()
+            .await
+            .map_err(standard_fee_err)
     }
 
     async fn get_network_sol_ps(
@@ -1710,10 +1731,44 @@ mod error_source_chain {
             zaino_source::GetSpentInfoError::Unsupported,
         ));
 
-        assert_eq!(recovered_code(&rejected), Some(METHOD_NOT_FOUND));
+        assert_eq!(
+            recovered_code(&rejected),
+            Some(crate::error::LegacyRpcError::METHOD_NOT_FOUND)
+        );
         assert_ne!(
             recovered_code(&rejected),
             Some(zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64)
+        );
+    }
+
+    /// A validator without `getstandardfee` keeps `-32601` and reaches the
+    /// chain index as `Unimplemented`, which gRPC serves as `UNIMPLEMENTED`.
+    #[test]
+    fn an_unsupported_standard_fee_is_unimplemented() {
+        let rejected = standard_fee_err::<zaino_source::NonDomainError>(QueryError::Domain(
+            zaino_source::GetStandardFeeError::Unsupported,
+        ));
+
+        assert_eq!(
+            recovered_code(&rejected),
+            Some(crate::error::LegacyRpcError::METHOD_NOT_FOUND)
+        );
+        assert_eq!(
+            crate::error::ChainIndexError::backing_validator(rejected).kind(),
+            crate::error::ChainIndexErrorKind::Unimplemented
+        );
+    }
+
+    /// Any other `getstandardfee` failure stays an internal error.
+    #[test]
+    fn a_standard_fee_not_ready_stays_internal() {
+        let rejected = standard_fee_err::<zaino_source::NonDomainError>(QueryError::Domain(
+            zaino_source::GetStandardFeeError::NotReady,
+        ));
+
+        assert_eq!(
+            crate::error::ChainIndexError::backing_validator(rejected).kind(),
+            crate::error::ChainIndexErrorKind::InternalServerError
         );
     }
 

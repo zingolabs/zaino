@@ -1918,7 +1918,11 @@ impl zaino_source::OneShotGetStandardFee for ProptestMockchain {
         zaino_primitives::types::rpc::StandardFee,
         PortError<zaino_source::GetStandardFeeError>,
     > {
-        unimplemented!()
+        Ok(zaino_primitives::types::rpc::StandardFee {
+            fee_per_action: zaino_primitives::types::Zatoshis::new(1_000)
+                .expect("the ZIP 317 marginal fee is within the supply bound"),
+            version: 0,
+        })
     }
 }
 

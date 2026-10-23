@@ -12,6 +12,10 @@ pub enum GetStandardFeeError {
     /// The validator is not ready to report a fee.
     #[error("validator not ready")]
     NotReady,
+
+    /// The validator does not implement `getstandardfee` at all.
+    #[error("this validator does not implement getstandardfee")]
+    Unsupported,
 }
 
 /// Fetch the fee per logical action wallets should pay for a transaction

@@ -723,9 +723,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
     }
 
     async fn get_standard_fee(&self) -> Result<GetStandardFee, ErrorObjectOwned> {
-        self.service_subscriber
-            .inner_ref()
-            .get_standard_fee()
+        ZcashIndexer::get_standard_fee(self.service_subscriber.inner_ref())
             .await
             .map(GetStandardFee::from_domain)
             .map_err(invalid_params_error_object)

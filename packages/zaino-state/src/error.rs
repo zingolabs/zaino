@@ -31,6 +31,10 @@ pub struct LegacyRpcError {
 }
 
 impl LegacyRpcError {
+    /// The JSON-RPC envelope's "method not found": the backing validator does
+    /// not implement a method Zaino forwards to it.
+    pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+
     /// Construct a rejection from zebra's `LegacyCode` enum.
     pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
         Self {
@@ -381,11 +385,23 @@ impl ChainIndexError {
     /// The validator's own message is carried into `message`, not just `source`:
     /// only `message` crosses the gRPC boundary, so dropping it leaves a caller
     /// unable to tell a rejected transaction from an unreachable node.
+    ///
+    /// A validator that lacks the method is `Unimplemented`, not broken.
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         let message =
             format!("InternalServerError: error receiving data from backing node: {value}");
+        let method_missing = std::iter::successors(
+            Some(&value as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .filter_map(|error| error.downcast_ref::<LegacyRpcError>())
+        .any(|error| error.code == LegacyRpcError::METHOD_NOT_FOUND);
         Self {
-            kind: ChainIndexErrorKind::InternalServerError,
+            kind: if method_missing {
+                ChainIndexErrorKind::Unimplemented
+            } else {
+                ChainIndexErrorKind::InternalServerError
+            },
             message,
             source: Some(Box::new(value)),
         }

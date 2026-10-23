@@ -1579,9 +1579,12 @@ impl zaino_source::OneShotGetStandardFee for MockchainSource {
     async fn get_standard_fee(
         &self,
     ) -> Result<domain::rpc::StandardFee, PortError<zaino_source::GetStandardFeeError>> {
-        unimplemented!(
-            "MockchainSource cannot serve get_standard_fee until test vectors are extended"
-        )
+        // zebrad's answer on every test network: the static ZIP 317 marginal fee.
+        Ok(domain::rpc::StandardFee {
+            fee_per_action: domain::Zatoshis::new(1_000)
+                .expect("the ZIP 317 marginal fee is within the supply bound"),
+            version: 0,
+        })
     }
 }
 
