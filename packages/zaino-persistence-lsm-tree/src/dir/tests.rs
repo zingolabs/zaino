@@ -165,7 +165,10 @@ fn the_offline_reader_answers_the_newest_commit() {
 
     std::fs::write(path.join(MANIFEST), [1; 40]).expect("older layout");
     let older = read().expect_err("refused");
-    assert_eq!(older.kind(), io::ErrorKind::InvalidData, "{older}");
+    assert!(
+        matches!(older, ManifestError::Layout { len: 40 }),
+        "refused by its length, before any read: {older}"
+    );
 }
 
 /// Every file counted, nested included; missing directory = error

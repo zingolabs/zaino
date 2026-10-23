@@ -29,6 +29,7 @@ mod lsm;
 mod manifest;
 mod pages;
 mod sequence;
+mod tails;
 #[cfg(test)]
 mod testing;
 

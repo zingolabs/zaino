@@ -23,7 +23,7 @@ use std::{
 
 use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
-    spill::{scratch_path, Spill},
+    spill::{scratch_path, Scratch, Spill},
     Breach, Result, SegmentError, Tuning,
 };
 use crate::{fs::Fs, pages::PagedFile};
@@ -63,7 +63,7 @@ const TOMBSTONE: u8 = 1;
 ///
 /// - a tombstone on a map without deletes, or widths off the shape = `Internal` (callers check
 ///   both first)
-pub(crate) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<u8>) -> Result<()> {
+pub(super) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<u8>) -> Result<()> {
     if key.len() != shape.key_len {
         return Err(SegmentError::Internal("row key off its shape's width"));
     }
@@ -96,7 +96,7 @@ pub(crate) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<
 
 /// `(key, row)` of an encoded row; `None` = shorter than the shape, a flag that is neither, or a
 /// tombstone whose value bytes are not zero (page checksums passed, so a writer bug)
-pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<(&'a [u8], Row<'a>)> {
+pub(super) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<(&'a [u8], Row<'a>)> {
     let (key, rest) = row.split_at_checked(shape.key_len)?;
     let (value, flag) = rest.split_at_checked(shape.value_len)?;
     let decoded = match flag {
@@ -156,14 +156,14 @@ impl Shape {
     }
 
     /// Summary entries: one per `group_fences` fences
-    pub(crate) fn groups(&self, records: u64) -> Result<usize> {
+    pub(super) fn groups(&self, records: u64) -> Result<usize> {
         Ok(self.blocks(records)?.div_ceil(self.group_fences))
     }
 }
 
 /// Where a segment's sections sit (from its record count and total length)
 #[derive(Debug)]
-pub(crate) struct Sections {
+pub(super) struct Sections {
     pub(crate) shape: Shape,
     pub(crate) records: usize,
     pub(crate) fences: usize,
@@ -288,7 +288,7 @@ fn last_at_most<'a>(
 ///
 /// - fences + filter fingerprints via [`Spill`]s (memory bounded whatever the segment's size)
 /// - in memory: only the summary (1/100 of the fences) + the filter's shard table
-pub(crate) struct Navigation {
+pub(super) struct Navigation {
     segment: u32,
     shape: Shape,
     records: u64,
@@ -369,18 +369,32 @@ impl Navigation {
         self.records
     }
 
-    /// `fences ‖ summary ‖ filter`, appended to `out` after the records (scratch files removed)
-    pub(crate) fn finish(self, out: &mut PagedFile) -> Result<()> {
+    /// `fences ‖ summary ‖ filter`, appended to `out` after the records → the scratch files whose
+    /// removal failed; `pace` told the I/O as it goes (`None` = it stopped the copy)
+    pub(crate) fn finish(
+        self,
+        out: &mut PagedFile,
+        pace: &mut dyn FnMut(u64) -> bool,
+    ) -> Result<Option<Vec<Scratch>>> {
         let segment = self.segment;
-        self.spilled_fences.append_to(out)?;
+        let Some(mut kept) = self.spilled_fences.append_to(out, pace)? else {
+            return Ok(None);
+        };
         out.append(&self.summary)?;
         let (head, fingerprints) = self
             .filter
             .finish()
             .map_err(|error| filter_error(segment, error))?;
         out.append(&head)?;
-        fingerprints.append_to(out)?;
-        Ok(())
+        let appended = self.summary.len().saturating_add(head.len());
+        if !pace(appended as u64) {
+            return Ok(None);
+        }
+        let Some(filter) = fingerprints.append_to(out, pace)? else {
+            return Ok(None);
+        };
+        kept.extend(filter);
+        Ok(Some(kept))
     }
 }
 

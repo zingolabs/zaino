@@ -11,11 +11,11 @@ use crate::{
     manifest::{self, Identity, ManifestError},
 };
 
-const LOCK: &str = "LOCK";
+pub(crate) const LOCK: &str = "LOCK";
 pub(crate) const MANIFEST: &str = "MANIFEST";
 
 /// Manifest mid-creation: zeroed + synced here, then renamed to [`MANIFEST`] whole
-const CREATING: &str = "MANIFEST.creating";
+pub(crate) const CREATING: &str = "MANIFEST.creating";
 
 /// Locked for the life of this value; see `docs/durability.md` §2
 ///
@@ -84,8 +84,7 @@ impl IndexDir {
         fs.sync_dir(path)?;
 
         // past the page cache: commit only on what the device holds
-        let bytes = fs
-            .read_uncached(&path.join(MANIFEST))?
+        let bytes = manifest::read_file(fs.as_ref(), &path.join(MANIFEST))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MANIFEST vanished"))?;
         let committed = manifest::latest(&identity, &bytes)?;
         let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body.to_vec())));
@@ -103,6 +102,19 @@ impl IndexDir {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+
+    /// The last committed manifest's sequence number (0 = nothing committed)
+    pub(crate) fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// The sequence number the next [`commit`](Self::commit) writes
+    pub(crate) fn next_seq(&self) -> Result<u64, ManifestError> {
+        self.seq
+            .checked_add(1)
+            .ok_or(ManifestError::Body("commit sequence past u64"))
+    }
+
     /// `relative` created and durably linked into this directory, every level of it (`a/b`: `a`
     /// in this directory, `b` in `a`)
     pub(crate) fn subdir(&self, relative: &str) -> io::Result<PathBuf> {
@@ -123,10 +135,7 @@ impl IndexDir {
     ///   the filesystem journal)
     /// - a body past the slot = `Full`, nothing written
     pub(crate) fn commit(&mut self, body: &[u8]) -> Result<(), ManifestError> {
-        let seq = self
-            .seq
-            .checked_add(1)
-            .ok_or(ManifestError::Body("commit sequence past u64"))?;
+        let seq = self.next_seq()?;
         let slot = manifest::encode(&self.identity, seq, body)?;
         self.manifest
             .write_all_at(&slot, manifest::slot_offset(seq))?;

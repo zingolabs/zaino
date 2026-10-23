@@ -25,7 +25,7 @@ pub fn describe_metrics() {
     describe_histogram!(
         names::COMMIT_SECONDS,
         Unit::Seconds,
-        "One durable commit: every table written + synced, then the manifest, by index"
+        "One durable commit: every namespace written + synced, then the manifest, by index"
     );
     describe_counter!(
         names::COMMIT_BYTES_TOTAL,
@@ -52,8 +52,17 @@ pub(crate) fn committed(index: &str, bytes: usize, took: Duration) {
     metrics::counter!(names::COMMIT_BYTES_TOTAL, "index" => index).increment(bytes as u64);
 }
 
-pub(crate) fn versions(index: &str, live: usize, heap: usize) {
+/// `index`'s live-states and their heap gauges, moved by each state's creation and drop
+pub(crate) fn versions(index: &str) -> (metrics::Gauge, metrics::Gauge) {
     let index = index.to_owned();
-    metrics::gauge!(names::SNAPSHOTS_LIVE, "index" => index.clone()).set(live as f64);
-    metrics::gauge!(names::SNAPSHOT_HEAP_BYTES, "index" => index).set(heap as f64);
+    (
+        metrics::gauge!(names::SNAPSHOTS_LIVE, "index" => index.clone()),
+        metrics::gauge!(names::SNAPSHOT_HEAP_BYTES, "index" => index),
+    )
+}
+
+/// `emit` run in a `drop` so a panicking recorder can't unwind out of it (the metric is lost;
+/// unwinding out of a drop during a panic aborts the process)
+pub(crate) fn in_drop(emit: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(emit));
 }

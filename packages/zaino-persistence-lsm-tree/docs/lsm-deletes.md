@@ -43,7 +43,8 @@ segment order, and the non-adjacent merge policy (`merge_candidates`) stays:
 - point lookup: every segment whose filter admits the key is checked (a map without `deletes`
   stops at the first hit); a tombstone anywhere = absent
 - range scan: the cursor's k-way merge reads every row in range, and a key with a tombstone in any
-  segment is dropped; chunk budgets count live rows only (fjall `range.rs`, Pebble `Iterator`)
+  segment is dropped; chunk budgets count the live entries visited, never tombstoned rows (fjall
+  `range.rs`, Pebble `Iterator`)
 - the write buffer above the segments: a buffered removal masks the durable value, and a
   cancelled pair reads as removed
 

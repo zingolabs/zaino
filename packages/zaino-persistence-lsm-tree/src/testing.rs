@@ -21,9 +21,13 @@ use crate::{
 
 pub(crate) const ROOT: &str = "/idx";
 
-/// Spill threshold the tests run with: small enough that every segment-writing test (crash
-/// states included) goes through the scratch files
-pub(crate) const SPILL: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
+/// Spill threshold the tests run with: 64 bytes, so a segment of a few dozen rows (the crash
+/// workloads' included) streams its filter through a scratch file
+pub(crate) const SPILL: NonZeroUsize = NonZeroUsize::new(64).expect("non-zero");
+
+/// Pool threads the tests run with: real work-stealing, without every parallel test's backends
+/// claiming all cores
+pub(crate) const THREADS: NonZeroUsize = NonZeroUsize::new(2).expect("non-zero");
 
 /// `scanned` keys share an 8-byte account prefix
 pub(crate) const TUNING: [(Namespace, Tuning); 1] = [(
@@ -59,6 +63,7 @@ pub(crate) fn config(fanout: usize, write_buffer: NonZeroUsize) -> LsmTreeConfig
             ..LsmConfig::default()
         },
         write_buffer,
+        threads: Some(THREADS),
     }
 }
 
@@ -79,16 +84,36 @@ pub(crate) fn commit(
 }
 
 /// The backend on `SimFs`: crash = `SimFs::power_loss`; every reopen verifies clean
+///
+/// - `write_buffer` below `MAX`: the backend writes on its own once its buffer fills
 pub(crate) struct SimDisk {
     pub(crate) fs: Arc<SimFs>,
     pub(crate) fanout: usize,
+    pub(crate) write_buffer: NonZeroUsize,
+    pub(crate) threads: NonZeroUsize,
 }
 
 impl SimDisk {
+    /// Written only by `flush`
     pub(crate) fn new(fanout: usize) -> Self {
+        Self::writing_at(fanout, NonZeroUsize::MAX)
+    }
+
+    /// Written whenever the buffer reaches `write_buffer` too
+    pub(crate) fn writing_at(fanout: usize, write_buffer: NonZeroUsize) -> Self {
         Self {
             fs: SimFs::new(),
             fanout,
+            write_buffer,
+            threads: THREADS,
+        }
+    }
+
+    /// Its pool on one thread (a one-core host)
+    pub(crate) fn on_one_thread(self) -> Self {
+        Self {
+            threads: NonZeroUsize::MIN,
+            ..self
         }
     }
 }
@@ -97,7 +122,15 @@ impl Subject for SimDisk {
     type Backend = LsmTreeBackend;
 
     fn open(&self) -> LsmTreeBackend {
-        open(&self.fs, self.fanout)
+        let config = LsmTreeConfig {
+            threads: Some(self.threads),
+            ..config(self.fanout, self.write_buffer)
+        };
+        LsmTreeBackend::open(self.fs.clone(), Path::new(ROOT), &config).expect("open")
+    }
+
+    fn writes_on_its_own(&self) -> bool {
+        self.write_buffer != NonZeroUsize::MAX
     }
 
     fn power_loss(&mut self) -> bool {

@@ -1,6 +1,11 @@
 use super::*;
 use crate::fs::SimFs;
 
+/// A scrub that found nothing wrong
+fn clean(checked: &Checked) -> bool {
+    checked.lost.is_none() && !checked.bad_sums && checked.bad_pages.is_empty()
+}
+
 /// - appends across page boundaries seal to a from-scratch hash's CRCs
 /// - reopen continues the tail
 /// - flipped committed byte = `Corrupt` on first touch + scrub fault
@@ -156,6 +161,41 @@ fn reads_outside_the_seal_are_errors() {
     assert_eq!(pages.read(PAGE..PAGE + 1).expect("in range"), &[3]);
 }
 
+/// A log's next view, mapped after more appends: pages the last view checked stay checked (no
+/// re-check), but only complete ones (the tail page may have grown); only the sealed bytes are
+/// mapped, never the reserve past them
+#[test]
+fn a_new_view_keeps_the_checked_complete_pages_and_maps_only_the_seal() {
+    let fs = SimFs::new();
+    let path = Path::new("/p/log");
+    fs.create_dir_all(Path::new("/p")).expect("dir");
+    let mut file = PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Log).expect("open");
+    file.append(&vec![1; PAGE + 100]).expect("append");
+    let first_seal = file.seal().expect("seal");
+    let first = file.pages(first_seal, None).expect("pages");
+    first.read(0..PAGE + 100).expect("both pages checked");
+    assert!(first.is_checked(0) && first.is_checked(1));
+
+    file.append(&vec![2; PAGE]).expect("append");
+    let second_seal = file.seal().expect("seal");
+    assert!(
+        fs.contents(path).expect("log").len() as u64 > second_seal.len,
+        "a reserve past the seal"
+    );
+    let second = file.pages(second_seal, Some(&first)).expect("pages");
+    assert_eq!(
+        second.len() as u64,
+        second_seal.len,
+        "only the sealed bytes mapped"
+    );
+    assert!(second.is_checked(0), "a complete page checked before: kept");
+    assert!(
+        !second.is_checked(1),
+        "the old tail page grew since: checked again on its next read"
+    );
+    assert!(!second.is_checked(2), "a new page: unchecked");
+}
+
 /// Open's tail-page + checksum reads: failure = the read's `Err` (never a panic, never a file
 /// opened on unread bytes)
 #[test]
@@ -185,26 +225,16 @@ fn a_failed_read_at_open_surfaces_as_an_error() {
 
 /// Log beside a segment fed the same bytes:
 ///
-/// - log linked durably at creation (either of its two files missing counts)
+/// - open creates both files; their names are durable only once the owner syncs the directory
 /// - appends inside a zeroed reserve (size fixed between growth steps: seal = no metadata)
 /// - seals + reads = the segment's; reopen drops the reserve, next append rebuilds it
 #[test]
 fn a_log_grows_into_a_reserve_its_seals_never_see() {
     let fs = SimFs::new();
-    for dir in ["/segment", "/log", "/half"] {
+    for dir in ["/segment", "/log"] {
         fs.create_dir_all(Path::new(dir)).expect("dir");
     }
     fs.sync_dir(Path::new("/")).expect("link every directory");
-
-    // data durably linked, checksums never created (crash between the two): still linked
-    let half = Path::new("/half/data");
-    fs.open(half).expect("data only");
-    fs.sync_dir(Path::new("/half")).expect("link the data");
-    PagedFile::open(fs.as_ref(), half, Sealed::EMPTY, FileKind::Log).expect("open half");
-    assert!(
-        fs.power_loss().contents(&sums_path(half)).is_some(),
-        "the missing .crc linked"
-    );
     let (segment_path, log_path) = (Path::new("/segment/data"), Path::new("/log/data"));
     let bytes: Vec<u8> = (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect();
     let len = |path: &Path| fs.contents(path).expect("file").len() as u64;
@@ -212,15 +242,18 @@ fn a_log_grows_into_a_reserve_its_seals_never_see() {
     let open = |path, kind| PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, kind);
     let mut segment = open(segment_path, FileKind::Segment).expect("open segment");
     let mut log = open(log_path, FileKind::Log).expect("open log");
+    let linked = |crashed: &SimFs, path: &Path| crashed.contents(path).is_some();
     let crashed = fs.power_loss();
-    let linked = |path: &Path| crashed.contents(path).is_some();
     assert!(
-        linked(log_path) && linked(&sums_path(log_path)),
-        "a log is linked at creation"
+        !linked(&crashed, log_path) && !linked(&crashed, segment_path),
+        "created, not yet linked: the owner syncs the directory"
     );
+    fs.sync_dir(Path::new("/log"))
+        .expect("the owner links the log");
+    let crashed = fs.power_loss();
     assert!(
-        !linked(segment_path),
-        "a segment waits for its owner's directory sync"
+        linked(&crashed, log_path) && linked(&crashed, &sums_path(log_path)),
+        "both of a log's files linked by its directory's sync"
     );
 
     for piece in [&bytes[..10], &bytes[10..]] {
@@ -295,10 +328,10 @@ fn scrub_names_bad_pages_orphans_and_losses() {
     file.append(&bytes).expect("append");
     let sealed = file.seal().expect("seal");
 
-    let clean = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
-    assert!(clean.is_clean(), "{clean:?}");
-    assert_eq!(clean.committed_bytes, bytes.len() as u64);
-    let unit = clean.into_unit();
+    let scrubbed = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
+    assert!(clean(&scrubbed), "{scrubbed:?}");
+    assert_eq!(scrubbed.committed_bytes, bytes.len() as u64);
+    let unit = scrubbed.into_unit();
     assert_eq!((unit.name.as_str(), unit.problems), ("data", Vec::new()));
 
     let mut damaged = bytes.clone();
@@ -324,7 +357,7 @@ fn scrub_names_bad_pages_orphans_and_losses() {
     sums[0] ^= 1;
     std::fs::write(&sums_at, &sums).expect("write sums");
     let report = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
-    assert!(report.bad_sums && !report.is_clean(), "{report:?}");
+    assert!(report.bad_sums && !clean(&report), "{report:?}");
 
     std::fs::write(&path, &bytes[..PAGE]).expect("truncate");
     let truncated = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");

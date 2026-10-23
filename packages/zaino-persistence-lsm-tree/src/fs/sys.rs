@@ -6,7 +6,7 @@
 
 use std::{fs::File, io, ops::Range};
 
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapOptions};
 
 /// Bytes of `map[..len]` in page cache (`mincore`; sound: `map` = a live mapping, `len` <= its
 /// length, the vector one byte per page)
@@ -40,15 +40,18 @@ pub(crate) fn resident_bytes(_: &Mmap, _: usize) -> io::Result<u64> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
-/// - sound: mapped bytes below a committed length are never rewritten or truncated after
-///   publication (`docs/durability.md` §1); sealed segments are read-only files and the
-///   directory `LOCK` keeps other writers out
+/// The first `len` bytes of `file`, mapped read-only
+///
+/// - sound: `len` = a committed (sealed) length the file holds, and committed bytes are never
+///   rewritten or truncated after publication (`docs/durability.md` §1); bytes past it (still
+///   being written) are not mapped; sealed segments are read-only files and the directory
+///   `LOCK` keeps other writers out
 /// - **SIGBUS** (the process dies; no error can be returned) if a mapped page cannot be read:
 ///   the file truncated by something outside this crate, or a disk read error while faulting
 ///   the page in. Keep the data directory on a healthy disk and never modify its files.
 #[allow(unsafe_code)]
-pub(super) fn map_read_only(file: &File) -> io::Result<Mmap> {
-    unsafe { Mmap::map(file) }
+pub(super) fn map_read_only(file: &File, len: usize) -> io::Result<Mmap> {
+    unsafe { MmapOptions::new().len(len).map(file) }
 }
 
 /// `sync_file_range(SYNC_FILE_RANGE_WRITE)`: dirty pages in `range` queued, no wait (sound: fd

@@ -40,12 +40,12 @@ segment is one write's rows, sorted, and a merge never has to choose between two
 
 | Port                       | Here                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `LsmTreeBackend::open`     | lock the directory, read the manifest past the page cache, check name, format and namespaces, truncate to seals, map files    |
+| `LsmTreeBackend::open`     | lock the directory, read the manifest past the page cache, check name, format and namespaces, restore torn tails, truncate to seals, sync sequence directories, map files |
 | `BackendWriter::commit`    | check the batch, add it to the write buffer, publish; write the buffer once its heap reaches `write_buffer`                   |
 | `Backend::flush`           | write the buffer: every namespace written and sealed in parallel, then one manifest slot (the commit point)                   |
 | `Backend::reader`          | the last published state: mapped files and segments at one manifest, plus the buffer as it was                               |
 | `BackendReader::get`       | a sequence record by arithmetic; a map key from the buffer, then each segment whose filter admits it                          |
-| `BackendReader::scan_range`| lazy chunks: positions for a sequence, a resumable k-way cursor over segments merged with the buffer for a map                |
+| `BackendReader::scan_range`| lazy chunks, each bounded by the bytes it visits: positions for a sequence, a resumable k-way cursor over segments merged with the buffer for a map |
 | `MaintenanceReader::scan`  | `scan_range` drained into memory                                                                                              |
 | `Backend::verify`          | every committed byte scrubbed against its page checksums                                                                      |
 | `Backend::footprint`       | committed bytes and page-cache residency per namespace                                                                        |
@@ -76,16 +76,25 @@ write failed. A commit:
 1. **Buffers** the batch: one `imbl` structure per namespace, so a clone is cheap and a published
    state shares every node a later commit does not touch. A key inserted and removed while both are
    buffered is a cancelled pair ([lsm-deletes.md](./lsm-deletes.md)).
-1. **Publishes** the new state (an `ArcSwap` store); readers opened from then see it.
-1. **Writes the buffer** once its estimated heap reaches `write_buffer`, then publishes the
-   durable state over an empty buffer.
+1. Then one of two:
+   - below `write_buffer` (the buffer's estimated heap), **publishes** the new state (an
+     `ArcSwap` store); readers opened from then see it;
+   - at or past it, **writes the buffer** and publishes the durable state over an empty buffer.
+     A failed write publishes nothing.
 
 A write (`Engine::write`) first joins finished background merges and any the write would leave
 too far behind, then writes every namespace in parallel: each sequence appends and seals its
 files, each map sorts its rows into one new segment (and a tombstone-only segment for cancelled
-pairs). Everything that can fail runs before the manifest commit
-([durability.md](./durability.md) §4). A failed write refuses every later write until the backend
-is reopened, except a background merge's failure that a retry can clear (§5 there).
+pairs), and `TAILS` saves the sequence files' tail pages. Everything that can fail runs before the
+manifest commit ([durability.md](./durability.md) §4). A failed write refuses every later write
+until the backend is reopened, except a background merge's failure that a retry can clear, within
+its budget (§5 there).
+
+Parallel work (a write's namespaces, a commit's prefetch, batched lookups) runs on a rayon pool
+each backend builds at open, of `LsmTreeConfig::threads` threads (the machine's available
+parallelism by default), so one backend's work never queues behind another's or the process's
+global pool. Merges run on their own threads. Tests run the pool at 2 threads, at 1 (a one-core
+host) and at the default.
 
 ## 4. Reads
 
@@ -100,8 +109,11 @@ with cores; the state, and every file it maps, stays alive until the last reader
 - **Map ranges**: a `Cursor` walks each candidate segment's window of rows (a segment whose scope
   filter rejects the range is skipped) in a k-way merge, either direction, and merges in the
   buffer's rows. It keeps its position between chunks, so a `scan_range` never re-seeks.
+- **Chunks** are bounded by `chunk_bytes` of the entries visited, kept or skipped by the filter, so
+  a chunk whose entries were all skipped is empty (`Some(vec![])`) and still bounded; `None`
+  means the range is exhausted.
 - **Pages** are checked against their checksums the first time any read touches them; a segment's
-  filter is checked whole when it is mapped.
+  summary and filter are checked whole when it is mapped.
 
 ## 5. Layout of the crate
 
@@ -113,6 +125,7 @@ src/
   sequence.rs   sequence namespaces as positional files
   lsm/          map namespaces as size-tiered sorted segments
   pages.rs  manifest.rs  dir.rs    checksummed files, the commit point, the directory and its lock
+  tails.rs      TAILS, the doublewrite copy of the sequence files' tail pages
   fs.rs  fs/    the Fs seam: RealFs, SimFs (feature `testing`), and fs/sys.rs, the crate's only unsafe
   error.rs      internal errors and their mapping onto the port's
   emit.rs       metrics
@@ -127,13 +140,16 @@ The port's behaviour is tested through the port: `zaino_persistence::conformance
 - `history`: random commits over every namespace shape (a variable sequence, fixed ones, a scoped
   map with deletes, a point-lookup map), flushes, reopens and power loss, with reads, chunked
   scans in both directions and pinned readers checked against a `BTreeMap` / `Vec` model after
-  every step.
+  every step; with a backend that writes on its own, power loss must recover a prefix of the
+  commits.
 - `contract`: every commit rule refused with its own error and nothing applied, undeclared
-  namespaces, width checks, tips, footprint and verify.
+  namespaces, width checks, odd scan bounds, an empty batch, tips, footprint and verify.
 
-Then what only this engine can show: every crash state of a commit history, every failed I/O call,
-every failed read at open, its invariant checks firing (a key held twice, a corrupt merge input),
-failed and corrupt merges, leftover cleanup and its alerts, open's trimming and refusals, a changed
-scope, the manifest body's golden bytes, the 1 MiB slot outgrown, and verify (bad page, lost file,
-a file a merge retired mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans,
+Then what only this engine can show: every crash state of a commit history (nested namespaces
+and a write landing a merge included), every failed I/O call, every failed read at open, its
+invariant checks firing (a key held twice, a corrupt merge input, corruption found by a commit
+check), failed and corrupt merges and their retry budget, a panic inside a commit or flush,
+leftover cleanup and its alerts, open's trimming, tail restore and refusals, a changed scope, the
+manifest body's golden bytes, the 1 MiB slot outgrown, concurrent readers during writes and
+merges, and verify (bad page, lost file, a file a merge retired mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans,
 filters, merges, bandwidth and the cursor.

@@ -69,18 +69,21 @@ pub fn check_shape(
             (NamespaceKind::Sequence { record }, WriteOp::Put { value, .. }) => {
                 let expected = match next.get(&namespace) {
                     Some(&position) => position,
-                    None => state.sequence_len(namespace).map_err(CommitError::Check)?,
+                    None => state
+                        .sequence_len(namespace)
+                        .map_err(CommitError::from_check)?,
                 };
                 let got = sequence_position(key);
-                if got != Some(expected) {
+                // u64::MAX holds no record: its successor would not fit
+                let Some(after) = expected.checked_add(1).filter(|_| got == Some(expected)) else {
                     return Err(CommitError::NotNextPosition {
                         namespace: name(),
                         expected,
                         got,
                     });
-                }
+                };
                 check_width(namespace, Part::Record, record, value)?;
-                next.insert(namespace, expected.saturating_add(1));
+                next.insert(namespace, after);
             }
             (NamespaceKind::Sequence { .. }, WriteOp::Delete { .. }) => {
                 return Err(CommitError::DeleteNotAllowed { namespace: name() });
@@ -127,7 +130,7 @@ pub fn check_keys(
         let name = || namespace.to_string();
         let held = state
             .key_state(namespace, key)
-            .map_err(CommitError::Check)?;
+            .map_err(CommitError::from_check)?;
         match (op, held) {
             (WriteOp::Put { .. }, KeyState::Absent)
             | (WriteOp::Delete { .. }, KeyState::Present) => {}
@@ -152,12 +155,13 @@ fn op_key(op: &WriteOp) -> (Namespace, &[u8]) {
     }
 }
 
+fn find_spec(specs: &[NamespaceSpec], namespace: Namespace) -> Option<&NamespaceSpec> {
+    specs.iter().find(|spec| spec.namespace == namespace)
+}
+
 /// `namespace`'s spec, or `NamespaceNotFound`
 fn spec_of(specs: &[NamespaceSpec], namespace: Namespace) -> Result<&NamespaceSpec, CommitError> {
-    specs
-        .iter()
-        .find(|spec| spec.namespace == namespace)
-        .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
+    find_spec(specs, namespace).ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
 }
 
 /// A point read's key: `namespace` declared in `specs`, `key` of its key width
@@ -167,9 +171,7 @@ pub fn check_key(
     namespace: Namespace,
     key: &[u8],
 ) -> Result<(), ReadError> {
-    let spec = specs
-        .iter()
-        .find(|spec| spec.namespace == namespace)
+    let spec = find_spec(specs, namespace)
         .ok_or_else(|| ReadError::NamespaceNotFound(namespace.to_string()))?;
     let expected = match spec.kind {
         NamespaceKind::Sequence { .. } => SEQUENCE_KEY_LEN,

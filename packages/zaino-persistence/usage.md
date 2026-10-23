@@ -73,6 +73,7 @@ nothing.
 - Re-inserting or re-deleting a removed key is a caller error, refused with
   `KeyRemoved` while the backend still records the removal. A backend may forget
   a removal once nothing of the key is stored (the LSM tree does, after a merge).
+- An empty batch is valid: it commits and advances the tip.
 
 A backend implements [`CommitState`] (its tip, each sequence's length, each map
 key's [`KeyState`]) and calls [`check_commit`]; [`check_specs`] refuses a
@@ -88,14 +89,18 @@ commit is visible to every reader opened after `commit` returns; a held reader
 never sees it. A commit is durable after `Backend::flush`, or earlier if the
 backend writes on its own (e.g. when its buffer fills). After a crash or reopen
 the store holds a prefix of the commits: everything flushed, and possibly more.
+A `commit` or `flush` that returns an error may still have reached the disk: after
+reopening, the tip is the last acknowledged commit or the failed one.
 
 ## Range scans
 
 `BackendReader::scan_range` walks the keys of a namespace within a
 [`ScanRange`] — lower and upper `Bound`s, a [`ScanDirection`], and a
 `chunk_bytes` budget — and returns a lazy iterator of chunks. Each `next()`
-reads one chunk, so memory is bounded by the budget (or one oversized entry),
-not the range, and a consumer that stops pulling stops the reads.
+reads one chunk. The budget bounds the bytes of the entries a chunk visits,
+kept or skipped by the filter, so both memory and the work per chunk are
+bounded by it (or by one oversized entry, which gets a chunk of its own), not
+by the range; a consumer that stops pulling stops the reads.
 
 The filter is called once per entry on the borrowed key and value bytes and
 returns `Option<T>`: `None` skips the entry, `Some` keeps it. Decode in the
@@ -117,8 +122,9 @@ for chunk in reader.scan_range(ns, range, raw_entry) {
 }
 ```
 
-Chunks are never empty, and the iterator ends after the range is exhausted or
-after an `Err`. Every chunk reads the reader's snapshot, and no key is returned
+A chunk whose visited entries were all skipped is empty (`Some(Ok(vec![]))`);
+keep pulling. The iterator ends (`None`) after the range is exhausted or after
+an `Err`. Every chunk reads the reader's snapshot, and no key is returned
 twice. The iterator is `Send + 'static`, so an async caller can move it into a
 blocking task per chunk.
 
@@ -137,13 +143,16 @@ in the page cache.
 One error type per operation — [`OpenError`], [`CommitError`], [`ReadError`],
 [`FlushError`], [`VerifyError`], [`FootprintError`] — each preserving the
 backend's own failure as a boxed cause while naming no concrete backend type.
-[`CommitError`] distinguishes each broken rule, `OutOfSpace` and `ManifestFull`
-(no retry clears them on their own) and `Poisoned` (a write failed earlier:
-reopen). `MergeFailed` means a background merge failed or failed to start:
-nothing of the commit was applied and the backend stays usable, so retry it.
+[`CommitError`] distinguishes each broken rule, `OutOfSpace` (the disk or quota
+is full, with its cause: free space, then reopen) and `ManifestFull` (no retry
+clears them on their own) and `Poisoned` (a write failed earlier: reopen).
+`MergeFailed` means a background merge failed or failed to start: nothing of the
+commit was applied and the backend stays usable, so retry it.
 `CommitError::Corrupted` and [`ReadError::Corrupted`] mean stored bytes failed
 their integrity check: stop, verify, resync (a corrupted commit also refuses
-later writes). A `get` whose key is not of the namespace's key
+later writes). [`OpenError`] tells `Mismatch` (the store was committed under
+another name, format or namespaces) and `Corrupted` (open found committed data
+lost or corrupt) apart from an unavailable store. A `get` whose key is not of the namespace's key
 width (8 bytes for a sequence) fails with `ReadError::WidthMismatch` rather than
 reading as absent; `scan_range` bounds may be any length.
 
@@ -158,11 +167,12 @@ Behind the `testing` feature:
 
 - `in_memory` — a correct, IO-free backend for tests, benchmarks, and ephemeral
   runs, constructed with its specs (`InMemoryBackend::new(&specs)`); every commit
-  is kept at once, and a reader is an O(1) snapshot of persistent maps. It also ships a latency-injecting wrapper for
-  measuring commit cost.
+  is kept at once, and a reader is an O(1) snapshot of persistent maps.
 - `conformance` — the suite every backend runs: a backend crate implements
   `conformance::Subject` once, runs `contract` as a plain test and `history`
-  under proptest (`PROPTEST_CASES=1000` for a heavy run).
+  under proptest (`PROPTEST_CASES=1000` for a heavy run). A subject whose
+  backend writes on its own says so (`Subject::writes_on_its_own`), and power
+  loss is then checked to recover exactly a prefix of its commits.
 
 The on-disk backend lives in its own adapter crate, `zaino-persistence-lsm-tree`
 (see [its usage guide](../zaino-persistence-lsm-tree/usage.md)).

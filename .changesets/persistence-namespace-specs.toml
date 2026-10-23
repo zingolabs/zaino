@@ -69,8 +69,8 @@ migration = "Match the two new `CommitError` variants wherever `CommitError` is 
 crate = "zaino-persistence"
 kind = "feature"
 description = """
-`check_commit` is split into `check_shape`, every rule that needs no stored \
-state, and `check_keys`, map keys against their state, both exported, so a \
+`check_commit` is split into `check_shape`, every rule that needs no key \
+lookup, and `check_keys`, map keys against their state, both exported, so a \
 backend can run the cheap rules before reading any key. `check_commit` runs \
 both.
 """
@@ -81,12 +81,58 @@ kind = "feature"
 description = """
 The conformance suite also checks: every read of an undeclared namespace, over \
 any range, is `NamespaceNotFound`; a `scan_range` filter sees each entry once \
-in order, chunk budgets count kept entries only, and a chunk ends only where \
+in order, chunk budgets count visited entries, and a chunk ends only where \
 the next entry would not fit; chunks keep coming after the reader handle is \
 dropped; a lower tip is refused and a higher one with any hash accepted; \
 `footprint` is zero when fresh and non-zero once a namespace holds flushed \
 data, one entry per namespace in declaration order. `Subject::settle` is \
 optional.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`scan_range`'s `chunk_bytes` bounds the bytes of the entries a chunk visits, \
+kept or skipped by the filter, so the work per chunk is bounded too. A chunk \
+whose entries were all skipped is empty (`Some(Ok(vec![]))`); `None` still \
+means the range is exhausted. One oversized entry still gets a chunk of its own.
+"""
+migration = "Keep pulling past an empty chunk; stop only at `None` or an `Err`."
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`CommitError::OutOfSpace` carries its cause (`OutOfSpace(source)`). \
+`OpenError` gains `Mismatch` (the store was committed under another name, \
+format or namespaces) and `Corrupted` (open found committed data lost or \
+corrupt). New `CommitError::from_check` maps a read error met while checking a \
+commit, `Corrupted` kept as `Corrupted`. A failed `commit` or `flush` may still \
+have reached the disk, and an empty batch is a valid commit; both are \
+documented.
+"""
+migration = "Match `OutOfSpace(_)` and the two new `OpenError` variants wherever they are matched exhaustively."
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+Removed from the `testing` feature: `SlowBackend`, `SlowWriter`, \
+`InMemoryBackend::get_value` and `InMemoryBackend::entries`; \
+`conformance::NODES` is private.
+"""
+migration = "Read through `BackendReader::get` or `MaintenanceReader::scan` instead of `get_value` / `entries`."
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+The conformance suite gains `Subject::writes_on_its_own`: a backend that \
+writes without `flush` must recover exactly a prefix of its commits after a \
+power loss. It also checks scan bounds shorter and longer than the key in \
+every bound kind and direction, a scan held across flush, settle and reopen, \
+every namespace scanned, a tip jumping several heights, and an empty batch.
 """
 
 [[changes]]

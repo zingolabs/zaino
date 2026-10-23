@@ -9,7 +9,11 @@ use std::{
 
 use zaino_persistence::{CommitError, FootprintError, OpenError, ReadError, VerifyError};
 
-use crate::{lsm::SegmentError, manifest::ManifestError, pages::PageError};
+use crate::{
+    lsm::{MergeFault, SegmentError},
+    manifest::ManifestError,
+    pages::PageError,
+};
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +38,14 @@ pub(crate) enum StoreError {
     #[error("namespace {name}: {reason}")]
     Declared { name: String, reason: &'static str },
 
+    /// An `LsmConfig` setting out of range
+    #[error("lsm config: {0}")]
+    Config(&'static str),
+
+    /// The index's thread pool could not start (threads refused: limits, memory)
+    #[error("thread pool: {0}")]
+    Pool(#[from] rayon::ThreadPoolBuildError),
+
     /// The store's own state broke a precondition (a bug in this crate)
     #[error("store: {0}")]
     Internal(&'static str),
@@ -48,7 +60,7 @@ pub(crate) enum StoreError {
 
 impl StoreError {
     /// Any cause in the chain = the disk or quota is full
-    pub(crate) fn disk_full(&self) -> bool {
+    fn disk_full(&self) -> bool {
         self.chain().any(|error| {
             let kind = error.downcast_ref::<io::Error>().map(io::Error::kind);
             matches!(
@@ -61,7 +73,7 @@ impl StoreError {
     /// Stored bytes fail their integrity check (stop, verify, resync)
     ///
     /// - matched, not walked: `transparent` variants leave themselves out of the source chain
-    pub(crate) fn corrupted(&self) -> bool {
+    fn corrupted(&self) -> bool {
         match self {
             Self::Page(error) => page_corrupted(error),
             Self::Segment(error) => segment_corrupted(error),
@@ -91,17 +103,23 @@ impl StoreError {
         }
     }
 
-    /// A background merge failed for a cause a retry can clear, found before the write touched
-    /// anything (never a poison; a corrupt input is [`corrupted`](Self::corrupted))
+    /// A background merge failed for a cause a retry can clear, within its map's budget, found
+    /// before the write touched anything (the one write error that never poisons)
     pub(crate) fn merge_failed(&self) -> bool {
-        matches!(self, Self::Segment(SegmentError::MergeFailed { .. })) && !self.corrupted()
+        matches!(
+            self,
+            Self::Segment(SegmentError::MergeFailed {
+                fault: MergeFault::Transient,
+                ..
+            })
+        )
     }
 
     pub(crate) fn into_commit(self, operation: &'static str) -> CommitError {
         match self {
             error if error.corrupted() => CommitError::Corrupted(Box::new(error)),
             error if error.merge_failed() => CommitError::MergeFailed(Box::new(error)),
-            _ if self.disk_full() => CommitError::OutOfSpace,
+            error if error.disk_full() => CommitError::OutOfSpace(Box::new(error)),
             Self::Manifest(ManifestError::Full { .. }) => CommitError::ManifestFull,
             error => CommitError::WriteFailed {
                 operation,
@@ -110,10 +128,36 @@ impl StoreError {
         }
     }
 
+    /// Written as another index = `Mismatch`; committed data lost or corrupt = `Corrupted`
     pub(crate) fn into_open(self, operation: &'static str) -> OpenError {
-        OpenError::Unavailable {
-            operation,
-            source: Box::new(self),
+        let mismatch = matches!(
+            self,
+            Self::Specs(_)
+                | Self::Manifest(
+                    ManifestError::Name { .. }
+                        | ManifestError::Format { .. }
+                        | ManifestError::Magic
+                        | ManifestError::Layout { .. }
+                )
+        );
+        let corrupted = self.corrupted()
+            || matches!(
+                self,
+                Self::Manifest(
+                    ManifestError::Checksum
+                        | ManifestError::Sequence { .. }
+                        | ManifestError::BodyLength { .. }
+                        | ManifestError::Body(_)
+                        | ManifestError::Unmanifested { .. }
+                )
+            );
+        match (mismatch, corrupted) {
+            (true, _) => OpenError::Mismatch(Box::new(self)),
+            (false, true) => OpenError::Corrupted(Box::new(self)),
+            (false, false) => OpenError::Unavailable {
+                operation,
+                source: Box::new(self),
+            },
         }
     }
 
@@ -142,12 +186,13 @@ fn page_corrupted(error: &PageError) -> bool {
     )
 }
 
-/// A merge's failure is corrupt when its cause is (a retry reads the same bytes)
+/// Stored bytes found corrupt (a merge: its input, as its fault says; a merge's own output read
+/// back wrong is not stored data)
 fn segment_corrupted(error: &SegmentError) -> bool {
     match error {
         SegmentError::Page(error) => page_corrupted(error),
         SegmentError::Corrupt { .. } | SegmentError::Contract { .. } => true,
-        SegmentError::MergeFailed { source, .. } => segment_corrupted(source),
+        SegmentError::MergeFailed { fault, .. } => *fault == MergeFault::Corrupt,
         _ => false,
     }
 }
@@ -187,7 +232,7 @@ mod tests {
             assert!(error.disk_full(), "{error}");
             assert!(matches!(
                 error.into_commit("write"),
-                CommitError::OutOfSpace
+                CommitError::OutOfSpace(_)
             ));
         }
         let other = StoreError::Io(io::Error::other("EIO"));
@@ -223,38 +268,102 @@ mod tests {
         assert!(matches!(io.into_read("get"), ReadError::ReadFailed { .. }));
     }
 
+    /// Each merge failure's fault, and the commit error it ends as: corrupt input = `Corrupted`;
+    /// a sync, a bad read-back or a bug = `WriteFailed`; other I/O = `MergeFailed` (transient)
+    /// until escalated, then `OutOfSpace` on a full disk
     #[test]
-    fn a_merge_failed_on_corrupt_input_is_corrupted_others_are_merge_failed() {
-        let merge = |source: SegmentError| {
+    fn a_merge_failure_is_answered_by_its_fault() {
+        let merge = |fault, source: SegmentError| {
             StoreError::Segment(SegmentError::MergeFailed {
                 name: "scanned".to_owned(),
+                fault,
                 source: Box::new(source),
             })
         };
-        let corrupt = [
+        let corrupt_page = || {
             SegmentError::Page(PageError::Corrupt {
                 path: PathBuf::from("/x"),
                 page: 3,
-            }),
-            SegmentError::Contract {
-                segments: vec![1, 2],
-                breach: Breach::Repeated { held: 2 },
-            },
+            })
+        };
+        let eio = || io::Error::other("EIO");
+        let cases = [
+            (corrupt_page(), MergeFault::Corrupt),
+            (
+                SegmentError::Contract {
+                    segments: vec![1, 2],
+                    breach: Breach::Repeated { held: 2 },
+                },
+                MergeFault::Corrupt,
+            ),
+            (SegmentError::Io(eio()), MergeFault::Transient),
+            (
+                SegmentError::Page(PageError::Io(eio())),
+                MergeFault::Transient,
+            ),
+            (SegmentError::Sync(eio()), MergeFault::Fatal),
+            (
+                SegmentError::ReadBack {
+                    segment: 1,
+                    source: Box::new(corrupt_page()),
+                },
+                MergeFault::Fatal,
+            ),
+            (SegmentError::Internal("bug"), MergeFault::Fatal),
+            (
+                SegmentError::MergePanicked {
+                    name: "scanned".to_owned(),
+                },
+                MergeFault::Fatal,
+            ),
         ];
-        for source in corrupt {
-            let error = merge(source);
-            assert!(error.corrupted() && !error.merge_failed(), "{error}");
-            assert!(matches!(
-                error.into_commit("write"),
-                CommitError::Corrupted(_)
-            ));
+        for (source, fault) in cases {
+            let label = format!("{source}");
+            assert_eq!(MergeFault::of(&source), fault, "{label}");
+            let error = merge(fault, source);
+            let answer = error.into_commit("write");
+            let matched = match fault {
+                MergeFault::Corrupt => matches!(answer, CommitError::Corrupted(_)),
+                MergeFault::Fatal => matches!(answer, CommitError::WriteFailed { .. }),
+                MergeFault::Transient => matches!(answer, CommitError::MergeFailed(_)),
+            };
+            assert!(matched, "{label}: {answer:?}");
         }
-        let transient = merge(SegmentError::Page(PageError::Io(io::Error::other("EIO"))));
-        assert!(transient.merge_failed() && !transient.corrupted());
+        let escalated = merge(
+            MergeFault::Fatal,
+            SegmentError::Io(io::Error::from(ErrorKind::StorageFull)),
+        );
+        assert!(!escalated.merge_failed(), "past its budget: not transient");
         assert!(matches!(
-            transient.into_commit("write"),
-            CommitError::MergeFailed(_)
+            escalated.into_commit("write"),
+            CommitError::OutOfSpace(_)
         ));
+    }
+
+    /// Open refusals typed: another index = `Mismatch`, lost or corrupt data = `Corrupted`
+    #[test]
+    fn open_refusals_are_typed() {
+        let mismatched = [
+            StoreError::Specs("other namespaces".to_owned()),
+            StoreError::Manifest(ManifestError::Magic),
+            StoreError::Manifest(ManifestError::Layout { len: 1 }),
+        ];
+        for error in mismatched {
+            assert!(matches!(error.into_open("open"), OpenError::Mismatch(_)));
+        }
+        let corrupted = [
+            StoreError::Manifest(ManifestError::Checksum),
+            StoreError::Page(PageError::Lost {
+                path: PathBuf::from("/x"),
+                have: 1,
+                need: 2,
+            }),
+        ];
+        for error in corrupted {
+            assert!(matches!(error.into_open("open"), OpenError::Corrupted(_)));
+        }
+        let other = StoreError::Io(io::Error::other("EIO")).into_open("open");
+        assert!(matches!(other, OpenError::Unavailable { .. }));
     }
 
     #[test]

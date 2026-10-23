@@ -38,4 +38,5 @@ throughput does not separate them: it is about 400 ns per row over a row's life,
 
 Each shard holds at most 2²⁰ keys, chosen by the top bits of the key's first 8 bytes (zero-padded
 when the key is shorter), which must be uniform. That bounds build scratch at about 26 MiB whatever
-the segment's size, and since shards close in key order, a merge builds them as it streams.
+the segment's size, and since shards close in key order, a merge builds them as it streams. A
+filter has at most 2³¹ shards, both when written and when read back, far past any segment.

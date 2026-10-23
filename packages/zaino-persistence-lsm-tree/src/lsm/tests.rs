@@ -16,8 +16,8 @@ use super::{
     file_name,
     layout::{Row, Shape},
     writer::SegmentWriter,
-    Breach, Cursor, Lookup, LsmConfig, SegmentError, SegmentLog, SegmentMeta, Slots, Snapshot,
-    Tuning,
+    Breach, Cursor, Labels, Lookup, LsmConfig, MergeFault, SegmentError, SegmentLog, SegmentMeta,
+    Slots, Snapshot, Tuning,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
@@ -79,8 +79,20 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
         .collect()
 }
 
+/// `rows` written as segment `id` → its meta (every scratch file removed)
+fn segment(writer: &SegmentWriter, id: u32, rows: Vec<(&[u8], Option<&[u8]>)>) -> SegmentMeta {
+    let written = writer.write(id, rows).expect("write").expect("rows");
+    assert!(written.scratch.is_empty(), "kept: {:?}", written.scratch);
+    written.meta
+}
+
 fn slots() -> Arc<Slots> {
     Arc::new(Slots::new(4, u64::MAX))
+}
+
+/// Metric labels of map `set` in the tests' index
+fn labels(set: &str) -> Labels {
+    Labels::new("test", set)
 }
 
 /// Merging every `fanout` segments, spilling at the tests' threshold
@@ -154,7 +166,7 @@ fn a_row_the_map_cannot_hold_is_refused() {
     let mut log = SegmentLog::open(
         fs,
         Path::new("/m"),
-        "scanned",
+        &labels("scanned"),
         scanned(),
         &[],
         &config(2),
@@ -179,7 +191,7 @@ fn a_row_the_map_cannot_hold_is_refused() {
 }
 
 /// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
-/// - flipped committed byte passes open (lengths only), fails the first read / merge touching
+/// - flipped committed byte passes open (record pages unchecked), fails the first read / merge touching
 ///   its page with `Corrupt`
 /// - sealed segments are read-only files
 #[test]
@@ -195,14 +207,8 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
             .map(move |seq| scanned_row(owner, seq))
             .collect::<Vec<_>>()
     };
-    let kept = writer
-        .write(0, borrowed(&rows(1)))
-        .expect("write")
-        .expect("rows");
-    let orphan = writer
-        .write(1, borrowed(&[scanned_row(3, 0)]))
-        .expect("write")
-        .expect("rows");
+    let kept = segment(&writer, 0, borrowed(&rows(1)));
+    let orphan = segment(&writer, 1, borrowed(&[scanned_row(3, 0)]));
     // merge cut short by a crash leaves its scratch, even under a listed segment's id
     for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
         fs.open(&dir.join(leftover))
@@ -256,14 +262,11 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
     corrupt(snapshot.lookup_with(&scanned_row(1, 1).0, |_, _| ()));
 
     // same tier as `kept` at fanout 2 → opening both launches their merge (reads the page)
-    let second = writer
-        .write(2, borrowed(&rows(4)))
-        .expect("write")
-        .expect("rows");
+    let second = segment(&writer, 2, borrowed(&rows(4)));
     let mut log = SegmentLog::open(
         fs.clone(),
         dir,
-        "scanned",
+        &labels("scanned"),
         shape,
         &[kept, second],
         &config(2),
@@ -274,7 +277,7 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
     assert!(
         matches!(
             &merged,
-            Err(SegmentError::MergeFailed { name, source })
+            Err(SegmentError::MergeFailed { name, fault: MergeFault::Corrupt, source })
                 if name == "scanned"
                     && matches!(&**source, SegmentError::Page(PageError::Corrupt { page: 0, .. }))
         ),
@@ -295,10 +298,7 @@ fn open_checks_lengths_and_a_corrupt_page_fails_on_first_touch() {
     let id_shape = probed(false);
     let id_rows: Vec<_> = (0..3_000).map(probed_row).collect();
     let id_writer = SegmentWriter::open(fs.clone(), ids, id_shape);
-    let written = id_writer
-        .write(0, borrowed(&id_rows))
-        .expect("write")
-        .expect("rows");
+    let written = segment(&id_writer, 0, borrowed(&id_rows));
     fs.corrupt(&ids.join(file_name(written.id)), |bytes| {
         *bytes.last_mut().expect("bytes") ^= 1
     });
@@ -332,10 +332,11 @@ fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() 
     let rows = 3 * group_rows + 999;
     // even seqs only: every odd seq sits in a gap
     let written: Vec<_> = (0..rows).map(|n| scanned_row(7, 2 * n as u32)).collect();
-    let meta = SegmentWriter::open(fs.clone(), dir, shape)
-        .write(0, borrowed(&written))
-        .expect("write")
-        .expect("rows");
+    let meta = segment(
+        &SegmentWriter::open(fs.clone(), dir, shape),
+        0,
+        borrowed(&written),
+    );
     let file = SegmentFile::open(fs.as_ref(), dir, &meta, shape, Access::Normal).expect("open");
 
     let key = |seq: u32| scanned_row(7, seq).0;
@@ -392,10 +393,7 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
         .zip(&spans)
         .map(|(id, span)| {
             let rows: Vec<_> = span.clone().map(probed_row).collect();
-            writer
-                .write(id, borrowed(&rows))
-                .expect("write")
-                .expect("rows")
+            segment(&writer, id, borrowed(&rows))
         })
         .collect();
     writer.sync_dir().expect("sync");
@@ -468,10 +466,7 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
             let rows: Vec<_> = accounts
                 .flat_map(|a| (0..20).map(move |seq| scanned_row(a, seq + 100 * s as u32)))
                 .collect();
-            writer
-                .write(s as u32, borrowed(&rows))
-                .expect("write")
-                .expect("rows")
+            segment(&writer, s as u32, borrowed(&rows))
         })
         .collect();
     writer.sync_dir().expect("sync");
@@ -564,10 +559,7 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
                 let rows = rows
                     .iter()
                     .map(|((key, value), live)| (key.as_slice(), live.then_some(value.as_slice())));
-                writer
-                    .write(id, rows.collect())
-                    .expect("write")
-                    .expect("rows")
+                segment(&writer, id, rows.collect())
             })
             .collect();
         let slot = slots.acquire(0, &cancel).expect("free slot");
@@ -607,41 +599,58 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
     }
 }
 
-/// Value in one segment, its tombstone in a tombstone-only other, an unrelated third: whatever
-/// the list order, and after a merge of any two (adjacent or not), the key reads removed through
-/// `lookup_with` and `get_many`, and absent from every walk
-/// A merge failing for a cause a retry clears: the next write's `MergeFailed` with nothing
-/// staged, no partial file left; once the disk recovers, a later write's merge lands
-#[test]
-fn a_failed_merge_fails_the_next_write_and_runs_again_later() {
-    let fs = SimFs::new();
+/// A map of two 50-row segments whose merge was launched with `failing` switched on (it fails
+/// from its first create or write); the rows, the listed segments and the files on disk then
+struct FailingMerge {
+    log: SegmentLog,
+    rows: Rows,
+    listed: Vec<SegmentMeta>,
+    on_disk: Vec<String>,
+}
+
+fn failing_merge(fs: &Arc<SimFs>, failing: impl Fn(bool)) -> FailingMerge {
     let dir = Path::new("/retried");
     fs.create_dir_all(dir).expect("dir");
     let mut log = SegmentLog::open(
         fs.clone(),
         dir,
-        "scanned",
+        &labels("scanned"),
         scanned(),
         &[],
         &config(2),
         slots(),
     )
     .expect("open");
-    let owned: Vec<Rows> = (1..=2u64)
-        .map(|owner| (0..50).map(|seq| scanned_row(owner, seq)).collect())
-        .collect();
-    let [first, second] = owned.as_slice() else {
-        panic!("two batches");
-    };
-    commit(&mut log, borrowed(first)).expect("first");
-
-    // the second segment's commit launches the merge; every create fails from then on
+    let first: Rows = (0..50).map(|seq| scanned_row(1, seq)).collect();
+    let second: Rows = (0..50).map(|seq| scanned_row(2, seq)).collect();
+    commit(&mut log, borrowed(&first)).expect("first");
+    // the second segment's commit launches the merge; it fails from then on
     log.prepare(&[second.len() as u64]).expect("prepare");
-    let staged = log.batch(borrowed(second), Vec::new()).expect("batch");
-    fs.fail_creates(true);
+    let staged = log.batch(borrowed(&second), Vec::new()).expect("batch");
+    failing(true);
     log.committed(staged);
     let listed = log.snapshot().segments();
     let on_disk = fs.list(dir).expect("list");
+    FailingMerge {
+        log,
+        rows: [first, second].concat(),
+        listed,
+        on_disk,
+    }
+}
+
+/// A merge failing for a cause a retry clears: the next write's `MergeFailed` with nothing
+/// staged, no partial file left; once the disk recovers, a later write's merge lands
+#[test]
+fn a_failed_merge_fails_the_next_write_and_runs_again_later() {
+    let fs = SimFs::new();
+    let dir = Path::new("/retried");
+    let FailingMerge {
+        mut log,
+        rows,
+        listed,
+        on_disk,
+    } = failing_merge(&fs, |on| fs.fail_creates(on));
 
     let failed = eventually("the merge's failure surfaces", || {
         commit(&mut log, Vec::new()).err()
@@ -649,7 +658,7 @@ fn a_failed_merge_fails_the_next_write_and_runs_again_later() {
     assert!(
         matches!(
             &failed,
-            SegmentError::MergeFailed { name, source }
+            SegmentError::MergeFailed { name, fault: MergeFault::Transient, source }
                 if name == "scanned" && matches!(&**source, SegmentError::Page(PageError::Io(_)))
         ),
         "{failed:?}"
@@ -660,13 +669,69 @@ fn a_failed_merge_fails_the_next_write_and_runs_again_later() {
     fs.fail_creates(false);
     until_landed(&mut log, |segments| segments.len() == 1).expect("merged on retry");
     let snapshot = log.snapshot();
-    for (key, value) in first.iter().chain(second) {
+    for (key, value) in &rows {
         assert_eq!(
             lookup(snapshot, key),
             Lookup::Value(Bytes::copy_from_slice(value)),
             "every row kept"
         );
     }
+}
+
+/// A merge failing after creating its files (its writes refused): the next write removes its
+/// partial files, nothing is left over and nothing listed changed
+#[test]
+fn a_merge_failing_midway_leaves_no_partial_file() {
+    let fs = SimFs::new();
+    let dir = Path::new("/retried");
+    let FailingMerge {
+        mut log,
+        listed,
+        on_disk,
+        ..
+    } = failing_merge(&fs, |on| fs.fail_writes(on));
+    eventually("the merge created its output", || {
+        (fs.list(dir).expect("list").len() > on_disk.len()).then_some(())
+    });
+    let failed = eventually("the merge's failure surfaces", || {
+        commit(&mut log, Vec::new()).err()
+    });
+    assert!(
+        matches!(
+            failed,
+            SegmentError::MergeFailed {
+                fault: MergeFault::Transient,
+                ..
+            }
+        ),
+        "{failed:?}"
+    );
+    assert_eq!(log.snapshot().segments(), listed, "nothing staged");
+    assert_eq!(
+        fs.list(dir).expect("list"),
+        on_disk,
+        "its partial files removed"
+    );
+    assert_eq!(log.leftover().0, 0, "nothing left over");
+}
+
+/// A merge that keeps failing from I/O: `max_merge_failures` transient failures in a row, then
+/// fatal (retrying no longer helps; the tier would pile up)
+#[test]
+fn a_merge_failing_past_its_budget_is_fatal() {
+    let fs = SimFs::new();
+    let FailingMerge { mut log, .. } = failing_merge(&fs, |on| fs.fail_creates(on));
+    let budget = config(2).max_merge_failures;
+    let mut faults = Vec::new();
+    eventually("the merge's failures reach the budget", || {
+        if let Err(SegmentError::MergeFailed { fault, .. }) = commit(&mut log, Vec::new()) {
+            faults.push(fault);
+        }
+        faults.contains(&MergeFault::Fatal).then_some(())
+    });
+    let mut expected = vec![MergeFault::Transient; budget as usize];
+    expected.push(MergeFault::Fatal);
+    assert_eq!(faults, expected);
 }
 
 /// Rate = the rows read + written: the merge alone fits the one-second burst, so the half-second
@@ -682,10 +747,7 @@ fn a_merges_read_back_is_charged_to_its_bandwidth() {
     let segments: Vec<SegmentMeta> = (0..2u64)
         .map(|owner| {
             let owned: Vec<_> = (0..rows).map(|seq| scanned_row(owner, seq)).collect();
-            writer
-                .write(owner as u32, borrowed(&owned))
-                .expect("write")
-                .expect("rows")
+            segment(&writer, owner as u32, borrowed(&owned))
         })
         .collect();
     let merged_bytes = 2 * rows as u64 * shape.stride as u64;
@@ -704,6 +766,9 @@ fn a_merges_read_back_is_charged_to_its_bandwidth() {
     );
 }
 
+/// Value in one segment, its tombstone in a tombstone-only other, an unrelated third: whatever
+/// the list order, and after a merge of any two (adjacent or not), the key reads removed through
+/// `lookup_with` and `get_many`, and absent from every walk
 #[test]
 fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let fs = SimFs::new();
@@ -713,18 +778,9 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let writer = SegmentWriter::open(fs.clone(), dir, shape);
     let (removed, kept, other) = (probed_row(1), probed_row(2), probed_row(3));
     let held_rows = [removed.clone(), kept.clone()];
-    let held = writer
-        .write(0, borrowed(&held_rows))
-        .expect("write")
-        .expect("rows");
-    let unrelated = writer
-        .write(1, borrowed(std::slice::from_ref(&other)))
-        .expect("write")
-        .expect("rows");
-    let tombstone = writer
-        .write(2, vec![(removed.0.as_slice(), None)])
-        .expect("write")
-        .expect("rows");
+    let held = segment(&writer, 0, borrowed(&held_rows));
+    let unrelated = segment(&writer, 1, borrowed(std::slice::from_ref(&other)));
+    let tombstone = segment(&writer, 2, vec![(removed.0.as_slice(), None)]);
     let slots = Slots::new(1, u64::MAX);
     let cancel = AtomicBool::new(false);
     let merge = |id, inputs: &[_]| {
@@ -817,10 +873,7 @@ fn a_cursor_walks_every_range_in_order_across_segments() {
                 .map(|seq| scanned_row(1, seq))
                 .collect();
             model.extend(rows.iter().cloned());
-            writer
-                .write(s, borrowed(&rows))
-                .expect("write")
-                .expect("rows")
+            segment(&writer, s, borrowed(&rows))
         })
         .collect();
     writer.sync_dir().expect("sync");
@@ -879,7 +932,7 @@ fn a_cursor_walks_every_range_in_order_across_segments() {
     let mut log = SegmentLog::open(
         fs.clone(),
         dir,
-        "scanned",
+        &labels("scanned"),
         shape,
         &segments,
         &config(5),
@@ -905,14 +958,8 @@ fn a_key_in_two_segments_fails_the_walk() {
     let shape = scanned();
     let writer = SegmentWriter::open(fs.clone(), dir, shape);
     let rows = [scanned_row(1, 1)];
-    let first = writer
-        .write(0, borrowed(&rows))
-        .expect("write")
-        .expect("rows");
-    let second = writer
-        .write(1, borrowed(&rows))
-        .expect("write")
-        .expect("rows");
+    let first = segment(&writer, 0, borrowed(&rows));
+    let second = segment(&writer, 1, borrowed(&rows));
     let snapshot =
         Arc::new(Snapshot::open(fs.as_ref(), dir, shape, &[first, second]).expect("open"));
     let walked = walk(&snapshot, Unbounded, Unbounded, false);
@@ -935,8 +982,16 @@ fn short_keys_write_merge_and_read() {
             .map(|n| (n.to_be_bytes().to_vec(), vec![n as u8]))
             .collect()
     };
-    let mut log =
-        SegmentLog::open(fs.clone(), dir, "short", shape, &[], &config(2), slots()).expect("open");
+    let mut log = SegmentLog::open(
+        fs.clone(),
+        dir,
+        &labels("short"),
+        shape,
+        &[],
+        &config(2),
+        slots(),
+    )
+    .expect("open");
     for range in [0..500u16, 500..1_000] {
         let batch = rows(range);
         commit(&mut log, borrowed(&batch)).expect("batch");

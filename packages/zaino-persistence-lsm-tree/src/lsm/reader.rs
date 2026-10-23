@@ -99,7 +99,7 @@ fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
 
 impl Snapshot {
     /// `dir` holding exactly `listed`: every other segment file (and its checksums) and any
-    /// writer's scratch removed, every listed one mapped (lengths only; pages checked on touch)
+    /// writer's scratch removed, every listed one mapped (lengths, summary and filter checked; record pages on touch)
     pub(crate) fn open(
         fs: &dyn Fs,
         dir: &Path,

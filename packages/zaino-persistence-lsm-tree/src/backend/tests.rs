@@ -19,26 +19,106 @@ use zaino_persistence::{
 use super::*;
 use crate::{
     fs::SimFs,
-    testing::{commit, config, eventually, open, SimDisk, ROOT},
+    testing::{commit, config, eventually, open, SimDisk, ROOT, TUNING},
 };
 
 proptest! {
     // 64 cases ≈ seconds; heavy run after any change: PROPTEST_CASES=1000
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// Conformance history at fanouts merging every few commits and rarely
+    /// Conformance history at fanouts merging every few commits and rarely, on a pool of the
+    /// tests' size or of one thread
     #[test]
     fn random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss(
         fanout in prop_oneof![Just(2usize), Just(3), Just(8)],
+        one_thread in any::<bool>(),
         steps in conformance::steps(),
     ) {
-        conformance::history(SimDisk::new(fanout), &steps);
+        let disk = SimDisk::new(fanout);
+        let disk = if one_thread { disk.on_one_thread() } else { disk };
+        conformance::history(disk, &steps);
+    }
+
+    /// The same, the backend writing on its own whenever its buffer reaches a few KiB: a crash
+    /// or reopen holds a prefix of the commits
+    #[test]
+    fn random_histories_of_a_backend_writing_on_its_own_recover_a_prefix_of_the_commits(
+        fanout in prop_oneof![Just(2usize), Just(3)],
+        write_buffer in 512usize..8192,
+        steps in conformance::steps(),
+    ) {
+        let write_buffer = NonZeroUsize::new(write_buffer).expect("non-zero");
+        conformance::history(SimDisk::writing_at(fanout, write_buffer), &steps);
     }
 }
 
 #[test]
 fn the_backend_keeps_the_port_contract() {
     conformance::contract(SimDisk::new(2));
+    conformance::contract(SimDisk::new(2).on_one_thread());
+    let writing = NonZeroUsize::new(2048).expect("non-zero");
+    conformance::contract(SimDisk::writing_at(2, writing));
+}
+
+/// Readers on several threads while one writer commits, its buffer writes itself and merges
+/// land: every reader sees one whole committed state (the model at its tip), never part of one
+#[test]
+fn readers_on_many_threads_see_whole_states_while_writes_and_merges_run() {
+    let fs = SimFs::new();
+    let write_buffer = NonZeroUsize::new(2048).expect("non-zero");
+    let backend =
+        LsmTreeBackend::open(fs, Path::new(ROOT), &config(2, write_buffer)).expect("open");
+    let mut models = vec![Model::default()];
+    let mut commits = Vec::new();
+    for n in 0..120u16 {
+        let mut model = models.last().expect("seeded").clone();
+        let removals: &[u16] = if n % 5 == 4 { &[n] } else { &[] };
+        commits.push(model.advance(1, &[(n % 4) as u8], 1, removals));
+        models.push(model);
+    }
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+    let (done, views) = (AtomicBool::new(false), AtomicUsize::new(0));
+    let heights = std::sync::Mutex::new(std::collections::BTreeSet::new());
+    std::thread::scope(|scope| {
+        for thread in 0..4 {
+            let (backend, models, done, views, heights) =
+                (&backend, &models, &done, &views, &heights);
+            scope.spawn(move || {
+                while !done.load(Relaxed) {
+                    let reader = backend.reader().expect("reader");
+                    let height = reader
+                        .tip()
+                        .expect("tip")
+                        .map_or(0, |tip| u32::from(tip.height) as usize + 1);
+                    models[height].assert_view(&reader, &format!("thread {thread} at {height}"));
+                    heights.lock().expect("heights").insert(height);
+                    views.fetch_add(1, Relaxed);
+                }
+            });
+        }
+        for (at, (tip, ops)) in commits.into_iter().enumerate() {
+            commit(&backend, (tip, ops)).expect("commit");
+            if at % 10 == 9 {
+                backend.flush().expect("flush");
+            }
+            // each commit overlaps readers: at least one more view checked before the next
+            let checked = views.load(Relaxed);
+            while views.load(Relaxed) == checked {
+                std::thread::yield_now();
+            }
+        }
+        done.store(true, Relaxed);
+    });
+    let heights = heights.into_inner().expect("heights");
+    assert!(
+        heights.len() > 60,
+        "readers saw {} distinct states while the writer ran",
+        heights.len()
+    );
+    models
+        .last()
+        .expect("seeded")
+        .assert_view(&backend.reader().expect("reader"), "the last commit");
 }
 
 /// A commit taking the buffer past `write_buffer` writes it: durable without a flush
@@ -158,6 +238,227 @@ fn a_failed_merge_fails_one_write_and_never_poisons() {
     model.assert_view(&open(&fs, 2).reader().expect("reader"), "durable");
 }
 
+/// A merge that keeps failing from I/O: `max_merge_failures` writes fail with `MergeFailed`,
+/// then the next is fatal and writes stop
+#[test]
+fn a_merge_failing_past_its_budget_stops_writes() {
+    let fs = SimFs::new();
+    let mut model = Model::default();
+    let backend = open(&fs, 8);
+    for owner in [1, 2] {
+        commit(&backend, model.advance(0, &[owner], 0, &[])).expect("commit");
+        backend.flush().expect("flush");
+    }
+    drop(backend);
+
+    fs.fail_creates(true);
+    let backend = open(&fs, 2);
+    let mut failures = Vec::new();
+    eventually("the merge fails past its budget", || {
+        commit(&backend, model.advance(1, &[], 0, &[])).expect("buffered");
+        let Err(FlushError::Write(error)) = backend.flush() else {
+            return None;
+        };
+        let fatal = !matches!(error, CommitError::MergeFailed(_));
+        failures.push(error);
+        fatal.then_some(())
+    });
+    let budget = LsmConfig::default().max_merge_failures as usize;
+    assert_eq!(failures.len(), budget + 1, "{failures:?}");
+    assert!(
+        failures[..budget]
+            .iter()
+            .all(|error| matches!(error, CommitError::MergeFailed(_))),
+        "{failures:?}"
+    );
+    assert!(
+        matches!(failures[budget], CommitError::WriteFailed { .. }),
+        "{failures:?}"
+    );
+    let refused = commit(&backend, model.advance(1, &[], 0, &[]));
+    assert!(matches!(refused, Err(CommitError::Poisoned)), "{refused:?}");
+}
+
+/// A commit whose key check reads a corrupt page: `Corrupted` (stop, verify, resync), and writes
+/// stop, as when a merge finds it
+#[test]
+fn corruption_a_commit_check_finds_is_corrupted_and_stops_writes() {
+    let fs = SimFs::new();
+    let mut model = Model::default();
+    let backend = open(&fs, 8);
+    // several pages of rows: page 0 holds the smallest keys only (the filter, checked at open,
+    // is past it)
+    commit(&backend, model.advance(0, &[1; 1_000], 0, &[])).expect("commit");
+    backend.flush().expect("flush");
+    drop(backend);
+    let dir = Path::new(ROOT).join("scanned");
+    let segment = fs
+        .list(&dir)
+        .expect("list")
+        .into_iter()
+        .find(|name| name.ends_with(".seg"))
+        .expect("a segment");
+    fs.corrupt(&dir.join(segment), |bytes| bytes[9] ^= 1);
+
+    let backend = open(&fs, 8);
+    let (tip, _) = model.clone().advance(1, &[], 0, &[]);
+    let held = conformance::scanned_key(1, 1);
+    let checked = commit(
+        &backend,
+        (
+            tip,
+            vec![WriteOp::Put {
+                namespace: SCANNED,
+                key: held,
+                value: vec![0; 8],
+            }],
+        ),
+    );
+    assert!(
+        matches!(checked, Err(CommitError::Corrupted(_))),
+        "{checked:?}"
+    );
+    let refused = commit(&backend, model.advance(1, &[], 0, &[]));
+    assert!(matches!(refused, Err(CommitError::Poisoned)), "{refused:?}");
+}
+
+/// A metrics recorder that panics on every update once armed (a panic from outside this crate)
+struct Tripwire(Arc<std::sync::atomic::AtomicBool>);
+
+impl Tripwire {
+    fn check(&self) {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            panic!("tripwire recorder");
+        }
+    }
+}
+
+impl metrics::CounterFn for Tripwire {
+    fn increment(&self, _: u64) {
+        self.check();
+    }
+    fn absolute(&self, _: u64) {
+        self.check();
+    }
+}
+
+impl metrics::GaugeFn for Tripwire {
+    fn increment(&self, _: f64) {
+        self.check();
+    }
+    fn decrement(&self, _: f64) {
+        self.check();
+    }
+    fn set(&self, _: f64) {
+        self.check();
+    }
+}
+
+impl metrics::HistogramFn for Tripwire {
+    fn record(&self, _: f64) {
+        self.check();
+    }
+}
+
+impl metrics::Recorder for Tripwire {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        metrics::Counter::from_arc(Arc::new(Tripwire(Arc::clone(&self.0))))
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::from_arc(Arc::new(Tripwire(Arc::clone(&self.0))))
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::from_arc(Arc::new(Tripwire(Arc::clone(&self.0))))
+    }
+}
+
+/// A panic inside a commit, or inside a flush past its commit point: the call's error, writes
+/// refused after, readers on the last published state; the flushed commit durable (a failed write
+/// may have committed: re-read the tip after a reopen)
+#[test]
+fn a_panic_inside_a_commit_or_a_flush_stops_writes() {
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let recorder = Tripwire(Arc::clone(&armed));
+    let arm = |on| armed.store(on, std::sync::atomic::Ordering::Relaxed);
+    metrics::with_local_recorder(&recorder, || {
+        let fs = SimFs::new();
+        let mut model = Model::default();
+        let backend = open(&fs, 2);
+        commit(&backend, model.advance(1, &[1], 1, &[])).expect("commit");
+        let before = model.clone();
+        arm(true);
+        let failed = commit(&backend, model.clone().advance(1, &[], 0, &[]));
+        arm(false);
+        let message = failed.as_ref().err().map(|error| chain(error));
+        assert!(
+            message
+                .as_ref()
+                .is_some_and(|message| message.contains("tripwire recorder")),
+            "the panic is the commit's error: {failed:?}"
+        );
+        before.assert_view(
+            &backend.reader().expect("reader"),
+            "the last published state",
+        );
+        let refused = commit(&backend, model.clone().advance(1, &[], 0, &[]));
+        assert!(matches!(refused, Err(CommitError::Poisoned)), "{refused:?}");
+        drop(backend);
+
+        let backend = open(&fs, 2);
+        let mut model = Model::default();
+        commit(&backend, model.advance(1, &[1], 1, &[])).expect("commit");
+        arm(true);
+        let failed = backend.flush();
+        arm(false);
+        assert!(failed.is_err(), "the panic is the flush's error");
+        let refused = commit(&backend, model.clone().advance(1, &[], 0, &[]));
+        assert!(matches!(refused, Err(CommitError::Poisoned)), "{refused:?}");
+        drop(backend);
+        let reopened = open(&fs, 2);
+        model.assert_view(
+            &reopened.reader().expect("reader"),
+            "past its commit point: durable though the flush failed",
+        );
+    });
+}
+
+/// `error` and every cause below it, joined
+fn chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        out.push_str(": ");
+        out.push_str(&next.to_string());
+        cause = next.source();
+    }
+    out
+}
+
 /// A panic in a scan's filter: that chunk's error, the walk finished, the backend unharmed
 #[test]
 fn a_panicking_filter_is_a_read_error() {
@@ -194,7 +495,7 @@ fn open_refuses_unsafe_names_bad_tuning_and_other_namespaces() {
         scope: 4,
         cache_writes: false,
     };
-    const UNSAFE: &str = "not of `/`-separated [A-Za-z0-9_-] parts, or a reserved one";
+    const UNSAFE: &str = "not of `/`-separated [A-Za-z0-9_-] parts, or a reserved or device name";
     const CASE: &str = "equal to another ignoring case";
     const NESTED: &str = "nested with another namespace's path";
     type Case = (
@@ -211,6 +512,16 @@ fn open_refuses_unsafe_names_bad_tuning_and_other_namespaces() {
         ("MANIFEST", vec![sequence("MANIFEST")], vec![], UNSAFE),
         ("manifest", vec![sequence("x/manifest")], vec![], UNSAFE),
         ("LOCK", vec![sequence("LOCK")], vec![], UNSAFE),
+        ("TAILS", vec![sequence("tails")], vec![], UNSAFE),
+        ("a device", vec![sequence("CON")], vec![], UNSAFE),
+        ("a numbered device", vec![map("com1")], vec![], UNSAFE),
+        ("a nested device", vec![sequence("a/Lpt9")], vec![], UNSAFE),
+        (
+            "a device ignoring case",
+            vec![sequence("nUl")],
+            vec![],
+            UNSAFE,
+        ),
         (
             "MANIFEST.creating",
             vec![sequence("MANIFEST.creating")],
@@ -297,9 +608,72 @@ fn open_refuses_unsafe_names_bad_tuning_and_other_namespaces() {
         .expect("other namespaces refused");
     let cause = std::error::Error::source(&error).map(ToString::to_string);
     assert!(
-        cause.is_some_and(|cause| cause.contains("holds other namespaces")),
-        "{error:?}"
+        matches!(error, OpenError::Mismatch(_))
+            && cause.is_some_and(|cause| cause.contains("holds other namespaces")),
+        "a directory of another index: {error:?}"
     );
+
+    // every setting out of range refused before anything is created, maps declared or not
+    let sequences_only = [sequence("a")];
+    let out_of_range: [(LsmConfig, &[NamespaceSpec], &str); 4] = [
+        (
+            LsmConfig {
+                max_retries: LsmConfig::MAX_RETRIES + 1,
+                ..LsmConfig::default()
+            },
+            &conformance::SPECS,
+            "max_retries",
+        ),
+        (
+            LsmConfig {
+                fanout: 1,
+                ..LsmConfig::default()
+            },
+            &sequences_only,
+            "fanout",
+        ),
+        (
+            LsmConfig {
+                spill_bytes: NonZeroUsize::new(LsmConfig::MAX_SPILL_BYTES + 1).expect("non-zero"),
+                ..LsmConfig::default()
+            },
+            &conformance::SPECS,
+            "spill_bytes",
+        ),
+        (
+            LsmConfig {
+                max_merge_failures: 0,
+                ..LsmConfig::default()
+            },
+            &conformance::SPECS,
+            "max_merge_failures",
+        ),
+    ];
+    for (lsm, namespaces, setting) in out_of_range {
+        let untouched = SimFs::new();
+        let refused = LsmTreeBackend::open(
+            untouched.clone(),
+            Path::new(ROOT),
+            &LsmTreeConfig {
+                lsm,
+                namespaces,
+                tuning: &[],
+                ..config(2, NonZeroUsize::MAX)
+            },
+        );
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| std::error::Error::source(error)
+                    .is_some_and(|cause| cause.to_string().contains(setting))),
+            "{setting} out of range refused: {:?}",
+            refused.err()
+        );
+        assert!(
+            untouched.list(Path::new(ROOT)).is_err(),
+            "{setting}: nothing created"
+        );
+    }
 }
 
 /// Bounds of any length over 8-byte big-endian position keys = the positions a byte compare
@@ -492,9 +866,9 @@ fn a_removal_is_forgotten_only_when_a_merge_cancels_its_pair() {
     assert!(verified.is_clean(), "{verified:?}");
 }
 
-/// The scope changed between opens (none → 8 → 4 → none): segments written under the old one are
-/// rewritten before the map serves, every row read as committed; every crash state of the
-/// rewrites reopens to every row
+/// The scope changed between opens (none → 8 → 4 → none): every segment written under the old
+/// one is rewritten before the map serves (an unchanged scope rewrites nothing), every row read
+/// as committed; every crash state of the first change's rewrites reopens to every row
 #[test]
 fn a_changed_scope_rebuilds_filters_and_loses_no_row() {
     let open_scoped = |fs: Arc<SimFs>, scope: u32| {
@@ -521,14 +895,42 @@ fn a_changed_scope_rebuilds_filters_and_loses_no_row() {
         }
     }
     fs.set_tag(1);
+    let scanned_segments = |backend: &LsmTreeBackend| -> Vec<String> {
+        let verified = backend.verify().expect("verify");
+        assert!(verified.is_clean(), "{verified:?}");
+        let units = verified.units.into_iter().map(|unit| unit.name);
+        units.filter(|name| name.starts_with("scanned/")).collect()
+    };
+    let mut listed = scanned_segments(&open_scoped(fs.clone(), 0));
+    // the first change recorded for its crash states; the later ones run on a copy, unrecorded
+    let unrecorded = std::cell::OnceCell::new();
     for scope in [8, 4, 0] {
+        let fs = match scope {
+            8 => fs.clone(),
+            _ => Arc::clone(unrecorded.get_or_init(|| fs.restarted())),
+        };
         let backend = open_scoped(fs.clone(), scope);
         model.assert_view(
             &backend.reader().expect("reader"),
             &format!("scope {scope}"),
         );
-        let verified = backend.verify().expect("verify");
-        assert!(verified.is_clean(), "scope {scope}: {verified:?}");
+        let rewritten = scanned_segments(&backend);
+        assert_eq!(
+            rewritten.len(),
+            listed.len(),
+            "scope {scope}: one rewrite per segment"
+        );
+        assert!(
+            rewritten.iter().all(|name| !listed.contains(name)),
+            "scope {scope}: every segment rewritten under it: {listed:?} → {rewritten:?}"
+        );
+        drop(backend);
+        let unchanged = scanned_segments(&open_scoped(fs.clone(), scope));
+        assert_eq!(
+            unchanged, rewritten,
+            "scope {scope} again: nothing to rewrite"
+        );
+        listed = rewritten;
     }
     let rescoping: Vec<_> = fs
         .crash_states()
@@ -603,9 +1005,12 @@ fn a_failed_cleanup_never_fails_a_commit_and_is_retried() {
     let left = write_until_leftover(&backend, &mut model);
     drop(backend);
     let refused = LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &config(2, NonZeroUsize::MAX));
+    let cause = refused.as_ref().err().map(|error| chain(error));
     assert!(
-        refused.is_err(),
-        "an open that can't remove unlisted files is refused"
+        cause
+            .as_ref()
+            .is_some_and(|cause| cause.contains("injected remove")),
+        "an open that can't remove unlisted files is refused for that: {cause:?}"
     );
     fs.fail_removes(false);
     let backend = open(&fs, 2);
@@ -615,6 +1020,102 @@ fn a_failed_cleanup_never_fails_a_commit_and_is_retried() {
         left.iter().all(|name| !on_disk.contains(name)),
         "the open removed {left:?}: {on_disk:?}"
     );
+}
+
+/// Scratch files (`probed`'s) whose removal failed, on disk
+fn kept_scratch(fs: &SimFs) -> Vec<String> {
+    let names = fs
+        .list(&Path::new(ROOT).join(PROBED.as_str()))
+        .expect("list");
+    names
+        .into_iter()
+        .filter(|name| name.ends_with(".scratch"))
+        .collect()
+}
+
+/// `probed`'s listed segment files
+fn probed_segments(backend: &LsmTreeBackend) -> Vec<String> {
+    let units = backend.verify().expect("verify").units.into_iter();
+    let prefix = format!("{}/", PROBED.as_str());
+    units
+        .filter_map(|unit| unit.name.strip_prefix(&prefix).map(str::to_owned))
+        .filter(|name| name.ends_with(".seg"))
+        .collect()
+}
+
+/// Removals working again: the next write removes every kept scratch file, nothing lost
+fn retried(fs: &SimFs, backend: &LsmTreeBackend, model: &mut Model, label: &str) {
+    fs.fail_removes(false);
+    commit(backend, model.advance(1, &[], 0, &[])).expect("commit");
+    backend.flush().expect("flush");
+    assert_eq!(kept_scratch(fs), Vec::<String>::new(), "{label}: retried");
+    model.assert_view(&backend.reader().expect("reader"), label);
+}
+
+/// A segment written by a batch, a merge or a rescope, spilled to scratch files it can't remove:
+/// the write still commits (the segment is whole); the scratch files are retried with the
+/// leftovers, removed once removals work again
+#[test]
+fn a_scratch_file_that_cant_be_removed_never_fails_a_write() {
+    // 80 ids, filtered whole: a filter past the tests' 64-byte spill threshold
+    let ids = 80;
+
+    let fs = SimFs::new();
+    let backend = open(&fs, 1 << 20);
+    let mut model = Model::default();
+    fs.fail_removes(true);
+    commit(&backend, model.advance(0, &[], ids, &[])).expect("commit");
+    backend
+        .flush()
+        .expect("a kept scratch file never fails the write");
+    assert!(!kept_scratch(&fs).is_empty(), "the batch's scratch kept");
+    retried(&fs, &backend, &mut model, "batch");
+
+    // two segments of one tier at fanout 2: merged into one, which spills too
+    let fs = SimFs::new();
+    let backend = open(&fs, 2);
+    let mut model = Model::default();
+    // failing before the merge launches: it can't remove its scratch either
+    fs.fail_removes(true);
+    for _ in 0..2 {
+        commit(&backend, model.advance(0, &[], ids, &[])).expect("commit");
+        backend.flush().expect("flush");
+    }
+    eventually("the merge landed, its scratch kept", || {
+        commit(&backend, model.advance(1, &[], 0, &[])).expect("commit");
+        backend.flush().expect("flush");
+        let merged = probed_segments(&backend);
+        let kept = kept_scratch(&fs);
+        match merged.as_slice() {
+            [one] => kept
+                .iter()
+                .any(|name| name.starts_with(one.trim_end_matches("seg")))
+                .then_some(()),
+            _ => None,
+        }
+    });
+    retried(&fs, &backend, &mut model, "merge");
+    drop(backend);
+
+    // the merged segment rewritten at open under a new `probed` scope (its filter spills)
+    let tuning = [
+        TUNING[0],
+        (
+            PROBED,
+            Tuning {
+                scope: 8,
+                cache_writes: false,
+            },
+        ),
+    ];
+    let rescoped = LsmTreeConfig {
+        tuning: &tuning,
+        ..config(2, NonZeroUsize::MAX)
+    };
+    fs.fail_removes(true);
+    let backend = LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &rescoped).expect("open");
+    assert!(!kept_scratch(&fs).is_empty(), "the rescope's scratch kept");
+    retried(&fs, &backend, &mut model, "rescope");
 }
 
 /// Every log event: its level, message and `path` field
@@ -692,7 +1193,13 @@ fn gauges(
         .into_iter()
         .filter_map(|(key, _, _, value)| {
             let key = key.key();
-            let label = key.labels().next()?.value().to_owned();
+            // a map's metric by its `set`, an index's by its `index`
+            let label = key
+                .labels()
+                .find(|label| label.key() == "set")
+                .or_else(|| key.labels().find(|label| label.key() == "index"))?
+                .value()
+                .to_owned();
             match value {
                 metrics_util::debugging::DebugValue::Gauge(value) => {
                     Some(((key.name().to_owned(), label), value.0))
@@ -701,6 +1208,41 @@ fn gauges(
             }
         })
         .collect()
+}
+
+/// Gauges as an operator sees them: a snapshot swaps each gauge to 0, so the ones moved by
+/// increment / decrement are summed across reads, the ones set are their last value
+struct Gauges<'a> {
+    snapshotter: &'a metrics_util::debugging::Snapshotter,
+    seen: std::collections::HashMap<(String, String), f64>,
+}
+
+impl<'a> Gauges<'a> {
+    const MOVED: [&'static str; 3] = [
+        "zaino.store.snapshots_live",
+        "zaino.store.snapshot_heap_bytes",
+        "zaino.lsm.unlinked_mapped_bytes",
+    ];
+
+    fn new(snapshotter: &'a metrics_util::debugging::Snapshotter) -> Self {
+        Self {
+            snapshotter,
+            seen: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Every gauge's value now
+    fn read(&mut self) -> &std::collections::HashMap<(String, String), f64> {
+        for (key, value) in gauges(self.snapshotter) {
+            let moved = Self::MOVED.contains(&key.0.as_str());
+            let held = self.seen.entry(key).or_insert(0.0);
+            match moved {
+                true => *held += value,
+                false => *held = value,
+            }
+        }
+        &self.seen
+    }
 }
 
 /// `name`'s value for `label` in `set`
@@ -750,26 +1292,26 @@ fn cleanup_alerts_escalate_and_gauges_track_leftovers_and_snapshots() {
                 const LIVE: &str = "zaino.store.snapshots_live";
                 const HEAP: &str = "zaino.store.snapshot_heap_bytes";
                 const LEFTOVER: &str = "zaino.lsm.leftover_bytes";
-                let set = gauges(&snapshotter);
-                assert_eq!(gauge(&set, LIVE, "conformance"), 1.0, "the published state");
+                let mut seen = Gauges::new(&snapshotter);
+                let set = seen.read();
+                assert_eq!(gauge(set, LIVE, "conformance"), 1.0, "the published state");
 
                 let mut model = Model::default();
                 let held = backend.reader().expect("reader");
                 commit(&backend, model.advance(1, &[1], 1, &[])).expect("commit");
-                let set = gauges(&snapshotter);
+                let set = seen.read();
                 assert_eq!(
-                    gauge(&set, LIVE, "conformance"),
+                    gauge(set, LIVE, "conformance"),
                     2.0,
                     "the published state + the one a reader holds"
                 );
                 assert!(
-                    gauge(&set, HEAP, "conformance") > 0.0,
+                    gauge(set, HEAP, "conformance") > 0.0,
                     "the buffer's heap counted"
                 );
                 drop(held);
-                let set = gauges(&snapshotter);
                 assert_eq!(
-                    gauge(&set, LIVE, "conformance"),
+                    gauge(seen.read(), LIVE, "conformance"),
                     1.0,
                     "a dropped reader's state freed"
                 );
@@ -778,7 +1320,7 @@ fn cleanup_alerts_escalate_and_gauges_track_leftovers_and_snapshots() {
                 eventually("a merge landed, its inputs left over", || {
                     commit(&backend, model.advance(0, &[1], 0, &[])).expect("commit");
                     backend.flush().expect("flush");
-                    (gauge(&gauges(&snapshotter), LEFTOVER, "scanned") > 0.0).then_some(())
+                    (gauge(seen.read(), LEFTOVER, "scanned") > 0.0).then_some(())
                 });
                 assert!(
                     events.logged(tracing::Level::WARN, RETRY) >= 3,
@@ -795,7 +1337,7 @@ fn cleanup_alerts_escalate_and_gauges_track_leftovers_and_snapshots() {
                 commit(&backend, model.advance(1, &[], 0, &[])).expect("commit");
                 backend.flush().expect("flush");
                 assert_eq!(
-                    gauge(&gauges(&snapshotter), LEFTOVER, "scanned"),
+                    gauge(seen.read(), LEFTOVER, "scanned"),
                     0.0,
                     "removed at the next write"
                 );
@@ -841,15 +1383,10 @@ fn deleted_segments_a_reader_still_maps_are_counted_until_it_drops() {
     const UNLINKED: &str = "zaino.lsm.unlinked_mapped_bytes";
     let recorder = metrics_util::debugging::DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
-    // raised and lowered by deltas, and a snapshot swaps each gauge to 0: the running sum is
-    // its value
-    let mut unlinked = 0.0;
+    let mut seen = Gauges::new(&snapshotter);
     let mut read = || {
-        unlinked += gauges(&snapshotter)
-            .get(&(UNLINKED.to_owned(), "scanned".to_owned()))
-            .copied()
-            .unwrap_or(0.0);
-        unlinked
+        let key = (UNLINKED.to_owned(), "scanned".to_owned());
+        seen.read().get(&key).copied().unwrap_or(0.0)
     };
     metrics::with_local_recorder(&recorder, || {
         let fs = SimFs::new();

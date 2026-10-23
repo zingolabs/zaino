@@ -8,17 +8,27 @@ use tempfile::TempDir;
 use zaino_persistence::conformance::{self, Subject, SCANNED, SPECS};
 use zaino_persistence_lsm_tree::{LsmConfig, LsmTreeBackend, LsmTreeConfig, Tuning};
 
-/// A temporary directory reopened as the conformance index, merging every two segments
+/// A temporary directory reopened as the conformance index, merging every two segments; written
+/// only by `flush`, or also whenever the buffer reaches `write_buffer`
 struct RealDir {
     _root: TempDir,
     path: PathBuf,
+    write_buffer: NonZeroUsize,
 }
 
 impl RealDir {
     fn new() -> Self {
+        Self::writing_at(NonZeroUsize::MAX)
+    }
+
+    fn writing_at(write_buffer: NonZeroUsize) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("idx");
-        Self { _root: root, path }
+        Self {
+            _root: root,
+            path,
+            write_buffer,
+        }
     }
 }
 
@@ -40,18 +50,27 @@ impl Subject for RealDir {
             tuning: &tuning,
             lsm: LsmConfig {
                 fanout: 2,
-                spill_bytes: NonZeroUsize::new(4096).expect("non-zero"),
+                spill_bytes: NonZeroUsize::new(64).expect("non-zero"),
                 ..LsmConfig::default()
             },
-            write_buffer: NonZeroUsize::MAX,
+            write_buffer: self.write_buffer,
+            // the shipped default: the machine's available parallelism
+            threads: None,
         };
         LsmTreeBackend::open_real(&self.path, &config).expect("open")
+    }
+
+    fn writes_on_its_own(&self) -> bool {
+        self.write_buffer != NonZeroUsize::MAX
     }
 }
 
 #[test]
 fn the_backend_keeps_the_port_contract_on_a_real_filesystem() {
     conformance::contract(RealDir::new());
+    conformance::contract(RealDir::writing_at(
+        NonZeroUsize::new(2048).expect("non-zero"),
+    ));
 }
 
 proptest! {

@@ -77,12 +77,12 @@ pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>,
 /// (write amplification `log_fanout(N)`)
 ///
 /// - a fanout below 2 (refused at open) or an empty segment (never listed) = tier 0
-pub(crate) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
+pub(super) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
     tier_of_rows(segment.records, fanout)
 }
 
 /// [`tier_of`] a segment of `records` rows
-pub(crate) fn tier_of_rows(records: u64, fanout: usize) -> u32 {
+pub(super) fn tier_of_rows(records: u64, fanout: usize) -> u32 {
     let base = u64::try_from(fanout).unwrap_or(u64::MAX);
     records.checked_ilog(base).unwrap_or(0)
 }
@@ -93,7 +93,7 @@ pub(crate) fn tier_of_rows(records: u64, fanout: usize) -> u32 {
 /// - peers need not be adjacent (order never changes an answer: a key is a value in one segment,
 ///   at most a tombstone in another, and reads treat that pair alike in either order)
 /// - lowest first: cheapest merge, most segments retired per byte
-pub(crate) fn merge_candidates(
+pub(super) fn merge_candidates(
     segments: &[SegmentMeta],
     fanout: usize,
     busy: &[u32],
@@ -114,7 +114,7 @@ pub(crate) fn merge_candidates(
 }
 
 /// Per tier `(segments listed, merge running)`, `0..` highest occupied tier or `floor`
-pub(crate) fn tier_shape(
+pub(super) fn tier_shape(
     segments: &[SegmentMeta],
     merging: &[u32],
     fanout: usize,

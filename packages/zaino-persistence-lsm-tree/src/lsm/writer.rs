@@ -19,6 +19,7 @@ use super::{
     file_name,
     layout::{encode_row, Navigation, Row, Shape},
     slots::Slot,
+    spill::Scratch,
     Breach, Result, SegmentError, SegmentMeta,
 };
 use crate::{
@@ -57,16 +58,25 @@ impl Paced<'_, '_> {
 }
 
 /// What a finished merge wrote: its segment (`None` = every row cancelled) + the value/tombstone
-/// pairs it cancelled (output rows + 2 × cancelled = input rows)
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Merged {
+/// pairs it cancelled (output rows + 2 × cancelled = input rows) + the scratch files it could
+/// not remove
+#[derive(Debug)]
+pub(super) struct Merged {
     pub(crate) output: Option<SegmentMeta>,
     pub(crate) cancelled: u64,
+    pub(crate) scratch: Vec<Scratch>,
+}
+
+/// A sealed segment + the scratch files its write could not remove (the owner retries them)
+#[derive(Debug)]
+pub(super) struct Written {
+    pub(super) meta: SegmentMeta,
+    pub(super) scratch: Vec<Scratch>,
 }
 
 /// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
 #[derive(Debug, Clone)]
-pub(crate) struct SegmentWriter {
+pub(super) struct SegmentWriter {
     fs: Arc<dyn Fs>,
     dir: PathBuf,
     shape: Shape,
@@ -96,19 +106,25 @@ impl SegmentOut {
         Ok(())
     }
 
-    /// Records, then navigation, sealed (fsynced) → meta a manifest would list + rows' digest +
-    /// the file
-    fn finish(mut self) -> Result<(SegmentMeta, u32, PagedFile)> {
+    /// Records, then navigation, sealed (fsynced) → meta a manifest would list + kept scratch
+    /// files, rows' digest, the file; `None` = `pace` stopped it (cancelled)
+    fn finish(
+        mut self,
+        pace: &mut dyn FnMut(u64) -> bool,
+    ) -> Result<Option<(Written, u32, PagedFile)>> {
         self.file.append(&self.chunk)?;
         let records = self.navigation.records();
-        self.navigation.finish(&mut self.file)?;
+        let Some(scratch) = self.navigation.finish(&mut self.file, pace)? else {
+            return Ok(None);
+        };
         let meta = SegmentMeta {
             id: self.id,
             records,
             filtered: self.filtered,
-            sealed: self.file.seal()?,
+            sealed: self.file.seal().map_err(SegmentError::Sync)?,
         };
-        Ok((meta, self.digest.finalize(), self.file))
+        let written = Written { meta, scratch };
+        Ok(Some((written, self.digest.finalize(), self.file)))
     }
 }
 
@@ -133,7 +149,7 @@ impl SegmentWriter {
         &self,
         id: u32,
         mut rows: Vec<(&[u8], Option<&[u8]>)>,
-    ) -> Result<Option<SegmentMeta>> {
+    ) -> Result<Option<Written>> {
         if rows.is_empty() {
             return Ok(None);
         }
@@ -275,12 +291,12 @@ impl SegmentWriter {
             }
         }
         paced.settle();
-        let output = match out {
+        let (output, scratch) = match out {
             Some(out) => match self.sealed(out, Some(&mut paced))? {
-                Some(meta) => Some(meta),
+                Some(written) => (Some(written.meta), written.scratch),
                 None => return Ok(None),
             },
-            None => None,
+            None => (None, Vec::new()),
         };
         let written = output.map_or(0, |output| output.records);
         let read = sources
@@ -292,7 +308,11 @@ impl SegmentWriter {
                 reason: format!("{written} rows + {cancelled} cancelled pairs from {read} inputs"),
             });
         }
-        Ok(Some(Merged { output, cancelled }))
+        Ok(Some(Merged {
+            output,
+            cancelled,
+            scratch,
+        }))
     }
 
     /// `out` finished, read back through its page checksums (O(rows); RocksDB
@@ -303,25 +323,41 @@ impl SegmentWriter {
     fn sealed(
         &self,
         out: SegmentOut,
-        paced: Option<&mut Paced<'_, '_>>,
-    ) -> Result<Option<SegmentMeta>> {
-        let (meta, digest, file) = out.finish()?;
-        if !self.verify(&meta, digest, paced)? {
+        mut paced: Option<&mut Paced<'_, '_>>,
+    ) -> Result<Option<Written>> {
+        let mut pace = |bytes: u64| match paced.as_deref_mut() {
+            Some(paced) => {
+                paced.charge(usize::try_from(bytes).unwrap_or(usize::MAX));
+                !paced.cancelled()
+            }
+            None => true,
+        };
+        let Some((written, digest, file)) = out.finish(&mut pace)? else {
+            return Ok(None);
+        };
+        let id = written.meta.id;
+        let verified = self
+            .verify(&written.meta, digest, paced)
+            .map_err(|source| SegmentError::ReadBack {
+                segment: id,
+                source: Box::new(source),
+            })?;
+        if !verified {
             return Ok(None);
         }
         if !self.shape.cache_writes {
-            file.drop_cache()?;
+            file.drop_cache();
         }
         drop(file);
-        let path = self.dir.join(file_name(meta.id));
+        let path = self.dir.join(file_name(id));
         self.fs.set_read_only(&path)?;
         self.fs.set_read_only(&sums_path(&path))?;
-        Ok(Some(meta))
+        Ok(Some(written))
     }
 
-    /// Sealed segment re-read from disk: record count, strictly ascending keys, no filter false
-    /// negative, every row decoding, same row digest as written (TigerBeetle pair assertion:
-    /// checked writing + reading); `false` = cancelled
+    /// Sealed segment re-read from disk: its layout opening at the record count, strictly
+    /// ascending keys, no filter false negative, every row decoding, same row digest as written
+    /// (TigerBeetle pair assertion: checked writing + reading); `false` = cancelled
     fn verify(
         &self,
         meta: &SegmentMeta,
@@ -340,9 +376,13 @@ impl SegmentWriter {
             segment: meta.id,
             reason,
         };
-        if file.records() as u64 != meta.records {
-            let found = file.records();
-            return Err(failed(format!("{found} records, {} listed", meta.records)));
+        // a record count off the file's length fails its open (sections laid out by the count)
+        // index sections read at open (summary, whole filter); the rows as the loop reads them
+        if let Some(paced) = paced.as_deref_mut() {
+            let rows = file.records().saturating_mul(self.shape.stride) as u64;
+            paced.charge(
+                usize::try_from(meta.sealed.len.saturating_sub(rows)).unwrap_or(usize::MAX),
+            );
         }
         let mut digest = crc32fast::Hasher::new();
         let mut previous: Option<&[u8]> = None;
@@ -376,7 +416,7 @@ impl SegmentWriter {
 
     /// Segments written since the last call → durably linked
     pub(crate) fn sync_dir(&self) -> Result<()> {
-        Ok(self.fs.sync_dir(&self.dir)?)
+        self.fs.sync_dir(&self.dir).map_err(SegmentError::Sync)
     }
 
     fn create(&self, id: u32, records: u64) -> Result<SegmentOut> {
@@ -393,3 +433,7 @@ impl SegmentWriter {
         })
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
+mod tests;

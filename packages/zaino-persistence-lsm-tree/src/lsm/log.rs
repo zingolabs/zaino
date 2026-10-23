@@ -16,16 +16,17 @@ use std::{
 };
 
 use super::{
-    emit,
+    emit::{self, Labels},
     file::Probed,
-    file_name,
+    file_name, file_prefix,
     layout::Shape,
     meta::{merge_candidates, tier_of, tier_of_rows, tier_shape},
     reader::Snapshot,
     report::{self, Landed},
     slots::Slots,
+    spill::Scratch,
     writer::{Merged, SegmentWriter},
-    LsmConfig, Result, SegmentError, SegmentMeta,
+    LsmConfig, MergeFault, Result, SegmentError, SegmentMeta,
 };
 use crate::{fs::Fs, pages::sums_path};
 
@@ -55,20 +56,26 @@ pub(crate) struct SegmentLog {
     segments: Vec<SegmentMeta>,
     leftover: Vec<Leftover>,
     removal_failure: Option<String>,
+    labels: Labels,
     unlinked: metrics::Gauge,
     merges: Vec<Merge>,
     ready: Vec<Ready>,
     launch_failed: Option<SegmentError>,
+    /// Transient merge failures in a row (reset by a merge that succeeds)
+    failures: u32,
+    max_merge_failures: u32,
     shape_tiers: usize,
 }
 
 /// List awaiting the owner's manifest, mapped, + merge inputs it no longer lists + merges it lands
+/// + scratch files its writes could not remove
 #[derive(Debug)]
 pub(crate) struct Staged {
     segments: Vec<SegmentMeta>,
     snapshot: Arc<Snapshot>,
     retired: Vec<SegmentMeta>,
     landed: Vec<Landed>,
+    scratch: Vec<Scratch>,
 }
 
 /// A merge joined before a write, its output sealed: swapped in by that write's batch
@@ -107,9 +114,9 @@ struct Merge {
 }
 
 impl SegmentLog {
-    /// Map `name`'s segments in `dir`, at the committed `listed`, run by `lsm`
+    /// Map `name`'s segments in `dir`, at the committed `listed`, run by `lsm` (checked by the
+    /// engine's open)
     ///
-    /// - `fanout` below 2 refused (a merge of one segment = no merge)
     /// - unlisted files removed ([`Snapshot::open`])
     /// - merges launched on every idle tier holding `fanout` segments (reopen cancelled the last
     ///   process's: else no stall bounds a tier until the next commit); none while a segment's
@@ -117,19 +124,14 @@ impl SegmentLog {
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         dir: &Path,
-        name: &str,
+        labels: &Labels,
         shape: Shape,
         listed: &[SegmentMeta],
         lsm: &LsmConfig,
         slots: Arc<Slots>,
     ) -> Result<Self> {
+        let name = labels.set();
         let fanout = lsm.fanout;
-        if fanout < 2 {
-            return Err(SegmentError::Shape {
-                name: name.to_owned(),
-                reason: format!("merge fanout {fanout} < 2"),
-            });
-        }
         let snapshot = Arc::new(Snapshot::open(fs.as_ref(), dir, shape, listed)?);
         let mut next: u32 = 0;
         for segment in listed {
@@ -153,13 +155,16 @@ impl SegmentLog {
             segments: listed.to_vec(),
             leftover: Vec::new(),
             removal_failure: None,
-            unlinked: emit::unlinked(name),
+            unlinked: emit::unlinked(labels),
+            labels: labels.clone(),
             merges: Vec::new(),
             ready: Vec::new(),
             launch_failed: None,
+            failures: 0,
+            max_merge_failures: lsm.max_merge_failures,
             shape_tiers: 0,
         };
-        emit::stall_at(&log.name, stall_at(fanout));
+        emit::stall_at(&log.labels, stall_at(fanout));
         if log.stale().is_empty() {
             log.launch_merges()?;
         }
@@ -193,6 +198,7 @@ impl SegmentLog {
         }
         report::rescoping(&self.name, &stale);
         let mut segments = self.segments.clone();
+        let mut scratch = Vec::new();
         let cancel = AtomicBool::new(false);
         for old in &stale {
             let id = self.allocate()?;
@@ -204,6 +210,7 @@ impl SegmentLog {
                 .writer
                 .merge(id, std::slice::from_ref(old), &cancel, &slot)?
                 .ok_or(SegmentError::Internal("a rescope cancelled"))?;
+            scratch.extend(merged.scratch);
             let rewritten = merged
                 .output
                 .filter(|output| output.records == old.records)
@@ -221,6 +228,7 @@ impl SegmentLog {
             snapshot,
             retired: stale,
             landed: Vec::new(),
+            scratch,
         }))
     }
 
@@ -231,7 +239,7 @@ impl SegmentLog {
     ///
     /// - a merge that failed, or failed to start at the last write = `MergeFailed`: nothing
     ///   written, its partial files removed, its inputs still listed (merged again at a later
-    ///   write)
+    ///   write); the most severe failure when several merges failed
     pub(crate) fn prepare(&mut self, upcoming: &[u64]) -> Result<()> {
         if let Some(error) = self.launch_failed.take() {
             return Err(self.merge_failed(error));
@@ -249,7 +257,7 @@ impl SegmentLog {
             stalled.extend(joined);
         }
         if !stalled.is_empty() {
-            emit::stalled(&self.name, waited.elapsed());
+            emit::stalled(&self.labels, waited.elapsed());
             report::stalled(&self.name, &stalled, waited.elapsed());
         }
         match failure {
@@ -258,9 +266,19 @@ impl SegmentLog {
         }
     }
 
-    fn merge_failed(&self, error: SegmentError) -> SegmentError {
+    /// `error` as the write's `MergeFailed`: a transient failure past `max_merge_failures` in a
+    /// row is fatal (retrying no longer helps; segments would pile up)
+    fn merge_failed(&mut self, error: SegmentError) -> SegmentError {
+        let mut fault = MergeFault::of(&error);
+        if fault == MergeFault::Transient {
+            self.failures = self.failures.saturating_add(1);
+            if self.failures > self.max_merge_failures {
+                fault = MergeFault::Fatal;
+            }
+        }
         SegmentError::MergeFailed {
             name: self.name.clone(),
+            fault,
             source: Box::new(error),
         }
     }
@@ -309,6 +327,7 @@ impl SegmentLog {
             snapshot: Arc::clone(&self.snapshot),
             retired: Vec::new(),
             landed: Vec::new(),
+            scratch: Vec::new(),
         };
         for ready in std::mem::take(&mut self.ready) {
             staged.swap(ready.inputs, ready.landed)?;
@@ -322,8 +341,9 @@ impl SegmentLog {
             }
             let id = self.allocate()?;
             if let Some(segment) = self.writer.write(id, rows)? {
-                emit::batched(&self.name, &segment);
-                staged.segments.push(segment);
+                emit::batched(&self.labels, &segment.meta);
+                staged.segments.push(segment.meta);
+                staged.scratch.extend(segment.scratch);
                 written = true;
             }
         }
@@ -344,12 +364,12 @@ impl SegmentLog {
         Ok(staged)
     }
 
-    /// Owner's manifest with `staged`'s list durable → swapped in; retired inputs removed and
-    /// merges launched on every idle tier holding `fanout` segments (never an error: the commit
-    /// is durable; a removal failure kept as a leftover, a launch failure returned by the next
-    /// write)
-    pub(crate) fn committed(&mut self, staged: Staged) {
-        let retired = staged
+    /// Owner's manifest with `staged`'s list durable → swapped in; retired inputs and scratch
+    /// files its writes could not remove are removed, and merges launched on every idle tier
+    /// holding `fanout` segments (never an error: the commit is durable; a removal failure kept
+    /// as a leftover, a launch failure returned by the next write)
+    pub(crate) fn committed(&mut self, mut staged: Staged) {
+        let mut removed: Vec<Leftover> = staged
             .retired
             .iter()
             .flat_map(|segment| {
@@ -368,46 +388,78 @@ impl SegmentLog {
                 ]
             })
             .collect();
+        let merges = staged
+            .landed
+            .iter_mut()
+            .flat_map(|landed| std::mem::take(&mut landed.merged.scratch));
+        removed.extend(
+            staged
+                .scratch
+                .drain(..)
+                .chain(merges)
+                .map(|scratch| Leftover {
+                    path: scratch.path,
+                    bytes: scratch.bytes,
+                    mapped: None,
+                }),
+        );
         self.segments = staged.segments;
         self.snapshot = staged.snapshot;
         for landed in &staged.landed {
             report::swapped(&self.name, landed);
+            emit::merged(&self.labels, landed.tier, &landed.merged, landed.took);
         }
-        self.clean(retired);
+        self.clean(removed);
         if let Err(error) = self.launch_merges() {
-            emit::launch_failed(&self.name);
+            emit::launch_failed(&self.labels);
             report::launch_failed(&self.name, &error);
             self.launch_failed = Some(error);
         }
     }
 
     /// Older leftovers removed, one attempt each (no wait: their cause is not transient); `new`
-    /// ones retried `max_retries` times 10, 20, 40 ms … apart; those still failing kept for the
-    /// next write
+    /// ones retried in rounds, up to `max_retries` times, 10, 20, 40 ms … apart (one pause per
+    /// round for all of them: a write waits at most the pauses' sum, whatever the file count);
+    /// those still failing kept for the next write
     fn clean(&mut self, new: Vec<Leftover>) {
-        let mut kept = Vec::new();
-        let old = std::mem::take(&mut self.leftover)
-            .into_iter()
-            .map(|old| (old, 0));
-        let retries = self.max_retries;
-        for (leftover, retries) in old.chain(new.into_iter().map(|new| (new, retries))) {
-            match self.remove(&leftover.path, retries) {
-                Ok(()) => {
+        let old = std::mem::take(&mut self.leftover);
+        let mut kept = self.remove_once(old);
+        let mut pending = self.remove_once(new);
+        let mut pause = Duration::from_millis(10);
+        for retried in 0..self.max_retries {
+            if pending.is_empty() {
+                break;
+            }
+            for (leftover, error) in &pending {
+                report::removal_retry(&self.name, &leftover.path, retried, error);
+            }
+            thread::sleep(pause);
+            pause = pause.saturating_mul(2);
+            let failed = pending.into_iter().map(|(leftover, _)| leftover).collect();
+            pending = self.remove_once(failed);
+        }
+        kept.extend(pending);
+        self.removal_failure = kept.last().map(|(_, error)| error.to_string());
+        self.leftover = kept.into_iter().map(|(leftover, _)| leftover).collect();
+        emit::leftover(&self.labels, self.leftover().1);
+    }
+
+    /// One removal attempt each (already gone = done); those that failed, with why
+    fn remove_once(&self, leftovers: Vec<Leftover>) -> Vec<(Leftover, std::io::Error)> {
+        let mut failed = Vec::new();
+        for leftover in leftovers {
+            match self.fs.remove(&leftover.path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    failed.push((leftover, error));
+                }
+                _ => {
                     if let Some(file) = leftover.mapped.as_ref().and_then(Weak::upgrade) {
                         file.unlinked(&self.unlinked);
                     }
                 }
-                Err(error) => {
-                    self.removal_failure = Some(error.to_string());
-                    kept.push(leftover);
-                }
             }
         }
-        if kept.is_empty() {
-            self.removal_failure = None;
-        }
-        self.leftover = kept;
-        emit::leftover(&self.name, self.leftover().1);
+        failed
     }
 
     /// Leftover files no manifest lists and removal keeps failing on: count, bytes, last error
@@ -419,34 +471,15 @@ impl SegmentLog {
         (self.leftover.len(), bytes, self.removal_failure.as_deref())
     }
 
-    /// `path` unlinked (already gone = done), retried `retries` times with doubling pauses
-    fn remove(&self, path: &Path, retries: u32) -> std::io::Result<()> {
-        let mut pause = Duration::from_millis(10);
-        let mut retried = 0u32;
-        loop {
-            match self.fs.remove(path) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) if retried >= retries => return Err(error),
-                Err(error) => {
-                    report::removal_retry(&self.name, path, retried, &error);
-                    thread::sleep(pause);
-                    pause = pause.saturating_mul(2);
-                    retried = retried.saturating_add(1);
-                }
-            }
-        }
-    }
-
     /// A failed merge's partial files (its output segment, checksums and scratch) removed; any
     /// still failing kept as leftovers
     fn remove_partial(&mut self, id: u32) {
-        let prefix = format!("{id:010}.");
+        let prefix = file_prefix(id);
         let names = match self.fs.list(&self.dir) {
             Ok(names) => names,
             Err(error) => {
                 // unlisted, so removed at the next open in any case
-                self.removal_failure = Some(error.to_string());
+                report::partial_unlisted(&self.name, id, &error);
                 return;
             }
         };
@@ -480,8 +513,13 @@ impl SegmentLog {
                 self.publish_shape();
                 return Ok(());
             };
-            let merge = self.launch(tier, inputs)?;
-            self.merges.push(merge);
+            match self.launch(tier, inputs) {
+                Ok(merge) => self.merges.push(merge),
+                Err(error) => {
+                    self.publish_shape();
+                    return Err(error);
+                }
+            }
         }
     }
 
@@ -490,7 +528,7 @@ impl SegmentLog {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
         self.shape_tiers = shape.len();
-        emit::shape(&self.name, &shape);
+        emit::shape(&self.labels, &shape);
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
@@ -506,8 +544,7 @@ impl SegmentLog {
         let thread = thread::Builder::new()
             .name(format!("merge {} t{tier}", self.name))
             .spawn({
-                let (inputs, cancel, name) =
-                    (inputs.clone(), Arc::clone(&cancel), self.name.clone());
+                let (inputs, cancel) = (inputs.clone(), Arc::clone(&cancel));
                 let slots = Arc::clone(&self.slots);
                 let span = tracing::Span::current();
                 move || {
@@ -521,9 +558,7 @@ impl SegmentLog {
                         return Ok(None);
                     };
                     writer.sync_dir()?;
-                    let took = started.elapsed();
-                    emit::merged(&name, tier, &merged, took);
-                    Ok(Some((merged, took)))
+                    Ok(Some((merged, started.elapsed())))
                 }
             })?;
         Ok(Merge {
@@ -556,32 +591,30 @@ impl SegmentLog {
                 .join()
                 .map_err(|_| SegmentError::MergePanicked { name })
                 .and_then(|joined| joined)
+                // its rows checked against its inputs' by the merge itself (`SelfCheck`)
                 .and_then(|merged| {
                     merged.ok_or(SegmentError::Internal("merge cancelled outside drop"))
-                })
-                .and_then(|(merged, took)| {
-                    let inputs = merge
-                        .inputs
-                        .iter()
-                        .fold(0u64, |sum, input| sum.saturating_add(input.records));
-                    let written = merged.output.map_or(0, |output| output.records);
-                    match written.saturating_add(merged.cancelled.saturating_mul(2)) == inputs {
-                        true => Ok((merged, took)),
-                        false => Err(SegmentError::Internal("merge rows off its inputs")),
-                    }
                 });
             match joined {
-                Ok((merged, took)) => self.ready.push(Ready {
-                    inputs: merge.inputs,
-                    landed: Landed {
-                        tier: merge.tier,
-                        merged,
-                        took,
-                    },
-                }),
+                Ok((merged, took)) => {
+                    self.failures = 0;
+                    self.ready.push(Ready {
+                        inputs: merge.inputs,
+                        landed: Landed {
+                            tier: merge.tier,
+                            merged,
+                            took,
+                        },
+                    });
+                }
                 Err(error) => {
                     self.remove_partial(id);
-                    failure.get_or_insert(error);
+                    let worse = failure
+                        .as_ref()
+                        .is_none_or(|kept| severity(&error) > severity(kept));
+                    if worse {
+                        *failure = Some(error);
+                    }
                 }
             }
         }
@@ -598,6 +631,15 @@ impl SegmentLog {
 }
 
 /// `tiers` (one per listed segment) hold [`stall_at`] of `tier`
+/// How badly a failed merge ends: corrupt input > fatal > transient
+fn severity(error: &SegmentError) -> u8 {
+    match MergeFault::of(error) {
+        MergeFault::Corrupt => 2,
+        MergeFault::Fatal => 1,
+        MergeFault::Transient => 0,
+    }
+}
+
 fn behind(tier: u32, tiers: &[u32], fanout: usize) -> bool {
     tiers.iter().filter(|listed| **listed == tier).count() >= stall_at(fanout)
 }
@@ -664,3 +706,6 @@ impl fmt::Debug for SegmentLog {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests;

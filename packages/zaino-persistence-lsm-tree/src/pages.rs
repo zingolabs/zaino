@@ -178,8 +178,8 @@ pub(crate) enum FileKind {
 /// Zeroed, flushed room past the end of a [`FileKind::Log`] (appends below EOF = no metadata
 /// change: seal's `fdatasync` never waits on the journal / other files' writeback)
 ///
-/// - zeros, not `fallocate` (unwritten extents = metadata change on first write); usage.md
-///   "Write-ahead reserve"
+/// - zeros, not `fallocate` (unwritten extents = metadata change on first write);
+///   `docs/durability.md` §3
 #[derive(Debug)]
 struct Reserve {
     end: u64,
@@ -233,21 +233,16 @@ impl PagedFile {
     /// `path` at `sealed` (fresh = [`Sealed::EMPTY`]): bytes past it dropped, shorter file
     /// refused, tail page + checksums' digest read back and checked (`.crc` = 1/1024 of the data)
     ///
-    /// - [`FileKind::Log`] with either file created here → directory synced (survives a crash
-    ///   before any manifest names it; commits never sync directories)
+    /// - files created if absent; their names are durable only once the owner syncs the
+    ///   directory, before any manifest names them (commits never sync directories)
     pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
         sealed: Sealed,
         kind: FileKind,
     ) -> Result<Self, PageError> {
-        let created =
-            fs.open_existing(path)?.is_none() || fs.open_existing(&sums_path(path))?.is_none();
         let data = fs.open(path)?;
         let sums = fs.open(&sums_path(path))?;
-        if kind == FileKind::Log && created {
-            fs.sync_dir(path.parent().unwrap_or(Path::new("")))?;
-        }
         let sums_len = sealed.sums_len();
         truncate(data.as_ref(), path, sealed.len)?;
         truncate(sums.as_ref(), &sums_path(path), sums_len)?;
@@ -293,6 +288,26 @@ impl PagedFile {
         self.len
     }
 
+    /// Just after a [`seal`](Self::seal): the data's and the checksums' bytes past their last
+    /// full page (what the next appends rewrite in place), each with its file's path
+    pub(crate) fn tails(&self) -> io::Result<[(PathBuf, crate::tails::Tail); 2]> {
+        let page = PAGE as u64;
+        let data = crate::tails::Tail {
+            offset: self.len.saturating_sub(self.tail_page.len() as u64),
+            bytes: self.tail_page.clone(),
+        };
+        let sums_len = self
+            .sealed_pages
+            .checked_mul(SUM as u64)
+            .ok_or_else(|| io::Error::other("checksum list past u64"))?;
+        let offset = sums_len.saturating_sub(sums_len.checked_rem(page).unwrap_or(0));
+        let mut bytes =
+            vec![0; usize::try_from(sums_len.saturating_sub(offset)).map_err(io::Error::other)?];
+        self.sums.read_exact_at(&mut bytes, offset)?;
+        let sums = crate::tails::Tail { offset, bytes };
+        Ok([(self.path.clone(), data), (sums_path(&self.path), sums)])
+    }
+
     /// At the end; neither durable nor sealed until [`seal`](Self::seal)
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
@@ -330,9 +345,9 @@ impl PagedFile {
         Ok(())
     }
 
-    /// Synced data out of page cache (advisory)
-    pub(crate) fn drop_cache(&self) -> io::Result<()> {
-        self.data.drop_cache()
+    /// Synced data out of page cache (advisory: a refusal changes nothing stored)
+    pub(crate) fn drop_cache(&self) {
+        let _ = self.data.drop_cache();
     }
 
     /// Data fsync → completed pages' CRCs written + fsynced → seal for the owner's next manifest
@@ -380,16 +395,22 @@ impl PagedFile {
     }
 }
 
-fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageError> {
+/// `file` holds at least `need` bytes, or committed bytes were lost
+fn holds(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageError> {
     let have = file.len()?;
-    if have < need {
-        return Err(PageError::Lost {
+    match have >= need {
+        true => Ok(()),
+        false => Err(PageError::Lost {
             path: path.to_owned(),
             have,
             need,
-        });
+        }),
     }
-    if have > need {
+}
+
+fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageError> {
+    holds(file, path, need)?;
+    if file.len()? > need {
         file.set_len(need)?;
     }
     Ok(())
@@ -457,19 +478,8 @@ impl Pages {
         let sums = fs
             .open_read_only(&sums_at)?
             .ok_or_else(|| missing(&sums_at))?;
-        for (file, at, need) in [
-            (&data, path, sealed.len),
-            (&sums, sums_at.as_path(), sealed.sums_len()),
-        ] {
-            let have = file.len()?;
-            if have < need {
-                return Err(PageError::Lost {
-                    path: at.to_owned(),
-                    have,
-                    need,
-                });
-            }
-        }
+        holds(data.as_ref(), path, sealed.len)?;
+        holds(sums.as_ref(), &sums_at, sealed.sums_len())?;
         let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
         if crc32fast::hash(&pages.inner.sums) != sealed.sums {
             return Err(PageError::Sums {
@@ -490,24 +500,19 @@ impl Pages {
         let len = usize::try_from(sealed.len).map_err(|_| overflow(path, "sealed length"))?;
         let sums_len =
             usize::try_from(sealed.sums_len()).map_err(|_| overflow(path, "checksum list"))?;
-        let mapping = data.map()?;
-        let sums_mapping = sums.map()?;
+        // exactly the sealed bytes mapped (a file shorter than its seal = committed bytes lost)
+        let map = |file: &dyn FileHandle, at: &Path, need: usize| -> Result<_, PageError> {
+            holds(file, at, need as u64)?;
+            Ok(file.map(need)?)
+        };
+        let mapping = map(data, path, len)?;
+        let sums_mapping = map(sums, &sums_path(path), sums_len)?;
         for mapped in mapping.iter().chain(&sums_mapping) {
             mapped.advise(access);
         }
-        let prefix = |mapped: Option<&Mapping>, at: &Path, need: usize| {
-            let bytes = mapped.map(Mapping::bytes).cloned().unwrap_or_default();
-            match bytes.len() >= need {
-                true => Ok(bytes.slice(..need)),
-                false => Err(PageError::Lost {
-                    path: at.to_owned(),
-                    have: bytes.len() as u64,
-                    need: need as u64,
-                }),
-            }
-        };
-        let bytes = prefix(mapping.as_ref(), path, len)?;
-        let sums = prefix(sums_mapping.as_ref(), &sums_path(path), sums_len)?;
+        let bytes_of = |mapped: Option<&Mapping>| mapped.map(Mapping::bytes).cloned();
+        let bytes = bytes_of(mapping.as_ref()).unwrap_or_default();
+        let sums = bytes_of(sums_mapping.as_ref()).unwrap_or_default();
 
         let pages = len.div_ceil(PAGE);
         let checked: Box<[AtomicU64]> =
@@ -657,11 +662,6 @@ pub(crate) enum Lost {
 }
 
 impl Checked {
-    #[cfg(test)]
-    pub(crate) fn is_clean(&self) -> bool {
-        self.lost.is_none() && !self.bad_sums && self.bad_pages.is_empty()
-    }
-
     /// As the port reports it
     pub(crate) fn into_unit(self) -> Unit {
         let lost = self.lost.map(|lost| match lost {
@@ -709,15 +709,17 @@ pub(crate) fn scrub(
         report.lost = Some(Lost::Missing);
         return Ok(report);
     };
-    let (len, sums) = (data.len()?, sums.read_all()?);
-    if len < sealed.len || (sums.len() as u64) < sealed.sums_len() {
+    let len = data.len()?;
+    if len < sealed.len || sums.len()? < sealed.sums_len() {
         report.lost = Some(Lost::Truncated);
         return Ok(report);
     }
     report.orphaned_bytes = len.saturating_sub(sealed.len);
-    let committed_len = usize::try_from(sealed.sums_len()).map_err(io::Error::other)?;
-    let committed_sums = sums.get(..committed_len).unwrap_or(&sums);
-    report.bad_sums = crc32fast::hash(committed_sums) != sealed.sums;
+    // only the sealed checksums: no read sized by bytes past the seal
+    let mut sums_read = vec![0; usize::try_from(sealed.sums_len()).map_err(io::Error::other)?];
+    sums.read_exact_at(&mut sums_read, 0)?;
+    let sums = sums_read;
+    report.bad_sums = crc32fast::hash(&sums) != sealed.sums;
 
     let mut page = vec![0u8; PAGE];
     for index in 0..sealed.len.div_ceil(PAGE as u64) {

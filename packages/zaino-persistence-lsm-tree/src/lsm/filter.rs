@@ -1,4 +1,4 @@
-//! Per-segment membership filter for probed sets: sharded binary fuse, 8-bit fingerprints
+//! Per-segment membership filter for probed maps: sharded binary fuse, 8-bit fingerprints
 //!
 //! - BinaryFuse8: ≈9 bits/key, FPR 2^-8; sizing in `docs/index-data-structures.md`
 //! - shard = top bits of the key's first 8 bytes (zero-padded when shorter) → monotone in key
@@ -12,7 +12,7 @@ use xorf::{BinaryFuse8, BinaryFuse8Ref, DmaSerializable, Filter, FilterRef};
 use super::spill::Spill;
 
 /// Target keys per shard (xorf build scratch ≈ 25 B/key → ≈ 26 MiB per shard)
-pub(crate) const SHARD_KEYS: u64 = 1 << 20;
+const SHARD_KEYS: u64 = 1 << 20;
 
 /// Serialized `Descriptor` (seed u64, three u32)
 const DESCRIPTOR: usize = BinaryFuse8::DESCRIPTOR_LEN;
@@ -20,14 +20,15 @@ const DESCRIPTOR: usize = BinaryFuse8::DESCRIPTOR_LEN;
 /// Per-shard table entry: descriptor ‖ fingerprint count u32 LE
 const ENTRY: usize = DESCRIPTOR + 4;
 
-/// Shard bits past which a table cannot be addressed (2^63 shards)
-const MAX_BITS: u8 = 63;
+/// Most shard bits a filter is written with, and read back ([`FilterLayout::parse`]): 2^31
+/// shards of 2^20 keys, far past any segment
+const MAX_BITS: u8 = 31;
 
 /// Filter input for one encoded key (distinct keys → distinct inputs w.h.p.; dups deduped per
 /// shard)
 ///
 /// - first word = key's own uniform prefix; later words folded through splitmix64's finalizer
-pub(crate) fn probe_hash(key: &[u8]) -> u64 {
+fn probe_hash(key: &[u8]) -> u64 {
     let (first, rest) = key.split_at(key.len().min(8));
     let mut hash = word(first);
     for chunk in rest.chunks(8) {
@@ -53,7 +54,7 @@ fn mix(mut z: u64) -> u64 {
 }
 
 /// Shard bits for a segment of `records` keys (`records / 2^bits ≤ SHARD_KEYS`)
-pub(crate) fn shard_bits(records: u64) -> u8 {
+fn shard_bits(records: u64) -> u8 {
     let shards = records.div_ceil(SHARD_KEYS).max(1);
     shards
         .checked_next_power_of_two()
@@ -90,7 +91,7 @@ impl Fingerprints for Spill {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FilterError {
+pub(super) enum FilterError {
     #[error("{0}")]
     Build(&'static str),
     #[error(transparent)]
@@ -101,7 +102,7 @@ pub(crate) enum FilterError {
 ///
 /// - only the shard being built and the table stay in memory; each closed shard's fingerprints
 ///   go straight to `S`
-pub(crate) struct FilterWriter<S> {
+pub(super) struct FilterWriter<S> {
     bits: u8,
     current: usize,
     hashes: Vec<u64>,
@@ -171,7 +172,7 @@ impl<S: Fingerprints> FilterWriter<S> {
 
 /// Filter section, parsed once (offsets within the section) and probed in place
 #[derive(Debug)]
-pub(crate) struct FilterLayout {
+pub(super) struct FilterLayout {
     bits: u8,
     len: usize,
     shard_ranges: Vec<[Range<usize>; 2]>,
@@ -189,7 +190,7 @@ impl FilterLayout {
         let Some(&bits) = read(0..1)?.first() else {
             return Ok(None);
         };
-        if bits >= 32 {
+        if bits > MAX_BITS {
             return Ok(None);
         }
         let count = 1usize << bits;
@@ -258,6 +259,17 @@ mod tests {
     use std::convert::Infallible;
 
     use super::*;
+
+    /// Shard bits grow with the records (at most `SHARD_KEYS` a shard), capped at the most the
+    /// reader parses (`MAX_BITS`): a segment of any size writes a filter it can open
+    #[test]
+    fn shard_bits_stay_within_what_a_reader_parses() {
+        assert_eq!(shard_bits(0), 0);
+        assert_eq!(shard_bits(SHARD_KEYS), 0);
+        assert_eq!(shard_bits(SHARD_KEYS + 1), 1);
+        assert_eq!(shard_bits(SHARD_KEYS << 31), MAX_BITS);
+        assert_eq!(shard_bits(u64::MAX), MAX_BITS, "capped");
+    }
 
     /// - golden inputs (persisted filter readable only while these stay byte-identical)
     /// - sharding monotone in key order; every written key found, strangers mostly refused

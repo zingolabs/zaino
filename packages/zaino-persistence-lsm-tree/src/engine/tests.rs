@@ -24,11 +24,13 @@ use crate::{
 #[test]
 fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
     let fs = SimFs::recording();
+    // the last batch's 80 probed ids (filtered whole): a filter past the tests' 64-byte spill
+    // threshold
     let batches: [(u8, &[u8], u16, &[u16]); 4] = [
         (2, &[1, 2, 1], 2, &[]),
         (1, &[1, 3], 1, &[0]),
         (0, &[], 1, &[0, 1]),
-        (3, &[4], 0, &[]),
+        (3, &[4], 80, &[]),
     ];
     let mut models = vec![Model::default()];
     {
@@ -47,6 +49,18 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
         states.len() > 50,
         "enumerated {} crash states",
         states.len()
+    );
+    let ops = fs.recorded_ops();
+    assert!(
+        ops.iter().any(|op| op.contains(".scratch")),
+        "the workload's segments spill: crash points while scratch files exist"
+    );
+    assert!(
+        states
+            .iter()
+            .any(|state| state.label.contains("blocks.dat: ")
+                && state.label.contains("first sector garbled")),
+        "an append's garbled first sector: a committed tail damaged, restored from TAILS"
     );
     for state in states {
         let label = &state.label;
@@ -78,6 +92,89 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
             &format!("{label}: commits continue at the recovered end"),
         );
     }
+}
+
+/// A write that lands a map's merge without rows of its own for that map (so it syncs no map
+/// directory itself): every crash state around it reopens to an acknowledged or the attempted
+/// commit, the merged segment's name durable before any manifest lists it
+#[test]
+fn every_crash_state_of_a_write_landing_a_merge_without_rows_reopens_whole() {
+    let fs = SimFs::recording();
+    let mut models = vec![Model::default()];
+    let config = crate::testing::config(2, std::num::NonZeroUsize::MAX);
+    {
+        let backend = LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &config).expect("open");
+        // two scanned segments: their merge launches
+        for owner in [1u8, 2] {
+            let mut model = models.last().expect("seeded").clone();
+            commit(&backend, model.advance(0, &[owner], 0, &[])).expect("commit");
+            backend.flush().expect("flush");
+            models.push(model);
+            fs.set_tag((models.len() - 1) as u64);
+        }
+        // writes with no scanned rows until one lands the merge
+        let scanned = |backend: &LsmTreeBackend| {
+            let units = backend.verify().expect("verify").units;
+            units
+                .iter()
+                .filter(|unit| unit.name.starts_with("scanned/"))
+                .count()
+        };
+        eventually("a write without scanned rows lands the merge", || {
+            let mut model = models.last().expect("seeded").clone();
+            commit(&backend, model.advance(1, &[], 0, &[])).expect("commit");
+            backend.flush().expect("flush");
+            models.push(model);
+            fs.set_tag((models.len() - 1) as u64);
+            (scanned(&backend) == 1).then_some(())
+        });
+    }
+    let states = fs.crash_states();
+    for state in states {
+        let label = &state.label;
+        let backend = LsmTreeBackend::open(state.fs.clone(), Path::new(ROOT), &config)
+            .unwrap_or_else(|error| panic!("{label}: {}", chain(&error)));
+        let reader = backend.reader().expect("reader");
+        let recovered = reader
+            .tip()
+            .expect("tip")
+            .map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let acked = usize::try_from(state.tag).expect("small");
+        assert!(
+            recovered == acked || recovered == acked + 1,
+            "{label}: recovered {recovered}"
+        );
+        models[recovered].assert_view(&reader, label);
+    }
+}
+
+/// A first open that fails (or is killed) after creating a nested sequence's files but before
+/// syncing their directory: the next open makes their names durable, so a commit acknowledged
+/// then survives a power loss (it was lost, and the open after refused, before every open synced
+/// every sequence directory)
+#[test]
+fn a_nested_sequence_a_failed_open_created_survives_a_power_loss_after_its_first_commit() {
+    let config = crate::testing::config(2, std::num::NonZeroUsize::MAX);
+    let failed = (0..400u64).find_map(|op| {
+        let fs = SimFs::new();
+        fs.fail_from(op);
+        match LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &config) {
+            Ok(_) => None,
+            Err(error) => chain(&error).contains("sync_dir /idx/pool").then_some(fs),
+        }
+    });
+    let failed = failed.expect("an open fails at the nested directory's sync");
+    let fs = failed.restarted();
+    let mut model = Model::default();
+    {
+        let backend = LsmTreeBackend::open(fs.clone(), Path::new(ROOT), &config).expect("reopen");
+        commit(&backend, model.advance(2, &[1], 1, &[])).expect("commit");
+        backend.flush().expect("acknowledged");
+    }
+    let crashed = fs.power_loss();
+    let backend = LsmTreeBackend::open(crashed, Path::new(ROOT), &config)
+        .unwrap_or_else(|error| panic!("the acknowledged commit survives: {}", chain(&error)));
+    model.assert_view(&backend.reader().expect("reader"), "after the power loss");
 }
 
 /// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`); each = the injected `Err`
@@ -250,6 +347,7 @@ fn a_key_held_twice_is_named_by_reads_and_merges() {
             Arc::clone(&specs),
             &tunings,
             lsm,
+            Some(crate::testing::THREADS),
         )
         .expect("open");
         let op = WriteOp::Put {
@@ -306,8 +404,9 @@ fn a_key_held_twice_is_named_by_reads_and_merges() {
     }
 }
 
-/// - open drops bytes past the manifest
-/// - refused: lost file, torn tail page, data in a directory that never committed
+/// - open drops bytes past the manifest; restores a torn tail page from `TAILS`
+/// - refused: lost file, a torn tail page `TAILS` can't restore, data in a directory that never
+///   committed
 #[test]
 fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let populated = || {
@@ -345,12 +444,30 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
             .expect("refused");
         chain(&error)
     };
-    let short = refused(&|fs| fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10)));
+    // cut inside its tail page, TAILS would restore it: lost only with TAILS gone too
+    let short = refused(&|fs| {
+        fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10));
+        fs.corrupt(&path("TAILS"), |bytes| bytes.fill(0));
+    });
     assert!(
         short.ends_with("/idx/pool/nodes.dat is 10 bytes, the committed state needs 32"),
         "{short}"
     );
-    let torn = refused(&|fs| fs.corrupt(&path("blocks.idx"), |bytes| bytes[3] ^= 1));
+    // a torn tail page: restored from TAILS; refused only when TAILS can't restore it
+    let fs = populated();
+    fs.corrupt(&path("blocks.idx"), |bytes| bytes[3] ^= 1);
+    let backend = open(&fs, 2);
+    let blocks = backend
+        .reader()
+        .expect("reader")
+        .scan(BLOCKS)
+        .expect("scan");
+    assert_eq!(blocks.len(), 4, "restored: every record readable");
+    drop(backend);
+    let torn = refused(&|fs| {
+        fs.corrupt(&path("blocks.idx"), |bytes| bytes[3] ^= 1);
+        fs.corrupt(&path("TAILS"), |bytes| bytes.fill(0));
+    });
     assert!(
         torn.ends_with("/idx/blocks.idx: tail page fails its checksum"),
         "{torn}"
@@ -493,16 +610,32 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     );
     assert_eq!(names.len(), 4 + 2, "one merged segment per map");
 
-    let mut reads = [before.clone(), after.clone()]
-        .into_iter()
-        .chain(std::iter::repeat(after));
+    // a scrub of the older manifest, its merged-away inputs gone by the time it reads them:
+    // the manifest read once more no longer lists them, so they are skipped, not lost; one pass
+    let mut reads = [before.clone(), after].into_iter();
+    let mut manifest_reads = 0;
     let rescrubbed = verify_committed(fs.as_ref(), &path, &SPECS, || {
-        Ok(reads.next().expect("endless"))
+        manifest_reads += 1;
+        Ok(reads.next().expect("two reads at most"))
     })
     .expect("verify");
+    assert_eq!(manifest_reads, 2, "one pass, one recheck");
+    let names: Vec<&str> = rescrubbed
+        .units
+        .iter()
+        .map(|unit| unit.name.as_str())
+        .collect();
     assert_eq!(
-        rescrubbed, clean,
-        "retired inputs: scrubbed again against the newer manifest"
+        names,
+        ["blocks.dat", "blocks.idx", "heights.dat", "pool/nodes.dat"],
+        "the files committed when it started, retired segments skipped"
+    );
+    assert!(
+        rescrubbed
+            .units
+            .iter()
+            .all(|unit| !unit.problems.iter().any(|problem| problem.is_damage())),
+        "{rescrubbed:?}"
     );
     let stale =
         verify_committed(fs.as_ref(), &path, &SPECS, || Ok(before.clone())).expect("verify");
@@ -510,7 +643,7 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
         .units
         .iter()
         .any(|unit| unit.problems.contains(&zaino_persistence::Problem::Missing));
-    assert!(lost, "a listed file missing is lost: {stale:?}");
+    assert!(lost, "a file still listed but missing is lost: {stale:?}");
 
     let heights = path.join("heights.dat");
     let mut bytes = std::fs::read(&heights).expect("read");
@@ -539,21 +672,31 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     );
     assert!(matches!(read, Err(ReadError::Corrupted { .. })), "{read:?}");
 
-    let fresh =
-        verify(fs.as_ref(), &root.path().join("absent"), &identity, &SPECS).expect("verify");
-    assert_eq!(fresh, Verification::default());
+    let absent = verify(fs.as_ref(), &root.path().join("absent"), &identity, &SPECS);
+    assert!(
+        absent
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("no index here")),
+        "a path holding no index is an error, never a clean report: {absent:?}"
+    );
 }
 
-/// The alert compares every map's leftovers together: two maps each under it, summed past it
+/// Every map's leftovers summed for the alert, with the error of a map that left something over
 #[test]
 fn leftovers_are_totalled_across_maps() {
+    // a map whose last failure left nothing over: its error is not the leftovers'
     let maps = [
+        (0, 0, Some("listing failed")),
         (2, 400, Some("EIO")),
         (0, 0, None),
         (1, 700, Some("EACCES")),
     ];
     let total = leftover_total(maps.into_iter());
     assert_eq!(total, Some((3, 1_100, "EIO")));
-    assert!(total.is_some_and(|(_, bytes, _)| bytes >= 1_000));
     assert_eq!(leftover_total([(0, 0, None)].into_iter()), None);
+    assert_eq!(
+        leftover_total([(0, 0, Some("listing failed"))].into_iter()),
+        None,
+        "nothing left over, nothing reported"
+    );
 }

@@ -17,7 +17,7 @@ use crate::{
 
 /// Seek's two reads, in order: fence group, then block of records
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Prefetch {
+pub(super) enum Prefetch {
     Fences,
     Records,
 }
@@ -25,7 +25,7 @@ pub(crate) enum Prefetch {
 /// - `summary` = the summary section, copied into memory at open (one key per page of fences)
 /// - `unlinked` = its file deleted while mapped: counted there until dropped
 #[derive(Debug)]
-pub(crate) struct SegmentFile {
+pub(super) struct SegmentFile {
     pub(crate) meta: SegmentMeta,
     filtered: usize,
     pages: Pages,
@@ -37,7 +37,8 @@ pub(crate) struct SegmentFile {
 impl Drop for SegmentFile {
     fn drop(&mut self) {
         if let Some(unlinked) = self.unlinked.get() {
-            unlinked.decrement(self.meta.sealed.len as f64);
+            let bytes = self.meta.sealed.len as f64;
+            crate::emit::in_drop(|| unlinked.decrement(bytes));
         }
     }
 }
@@ -207,7 +208,7 @@ impl SegmentFile {
 /// A segment whose filter section was checked whole ([`SegmentFile::probed`]): probes read it
 /// with no page check
 #[derive(Debug)]
-pub(crate) struct Probed {
+pub(super) struct Probed {
     file: SegmentFile,
     filter: Bytes,
 }

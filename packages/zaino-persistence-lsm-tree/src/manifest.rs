@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
-//! slot = magic b"ZAINOMS3" ‖ format u16 ‖ name_len u8 ‖ name ‖ seq u64 ‖ body_len u32
+//! slot = magic b"ZAINOMS4" ‖ format u16 ‖ name_len u8 ‖ name ‖ seq u64 ‖ body_len u32
 //!        ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
@@ -14,8 +14,9 @@
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
-/// Layout version of the slot and body (3: per-segment filter prefix in segment lists)
-const MAGIC: [u8; 8] = *b"ZAINOMS3";
+/// Layout version of the directory (3: per-segment filter prefix in segment lists; 4: `TAILS`
+/// beside the manifest, saved before each commit)
+const MAGIC: [u8; 8] = *b"ZAINOMS4";
 const CRC: usize = 4;
 
 /// Where the name starts: after magic ‖ format u16 ‖ name_len u8
@@ -142,41 +143,29 @@ enum Slot<'a> {
     Committed { seq: u64, body: &'a [u8] },
 }
 
-/// Bytes `n` on from `slot[*at..]`, advancing `at`; `None` = past the slot's end
-fn take<'a>(slot: &'a [u8], at: &mut usize, n: usize) -> Option<&'a [u8]> {
-    let end = at.checked_add(n)?;
-    let bytes = slot.get(*at..end)?;
-    *at = end;
-    Some(bytes)
-}
-
-fn array<const N: usize>(slot: &[u8], at: &mut usize) -> Option<[u8; N]> {
-    take(slot, at, N)?.try_into().ok()
-}
-
 /// `Err` = whole, checksummed slot of another index or format (refused outright, never mistaken
 /// for a torn write)
 fn decode_slot<'a>(identity: &Identity, slot: &'a [u8]) -> Result<Slot<'a>, ManifestError> {
     if slot.iter().all(|byte| *byte == 0) {
         return Ok(Slot::Unwritten);
     }
-    let at = &mut 0;
-    if array::<8>(slot, at) != Some(MAGIC) {
+    let mut reader = BodyReader::new(slot);
+    if reader.array::<8>().ok() != Some(MAGIC) {
         return Ok(Slot::Torn(ManifestError::Magic));
     }
     let header = (|| {
-        let format = u16::from_le_bytes(array(slot, at)?);
-        let [name_len] = array::<1>(slot, at)?;
-        let name = take(slot, at, usize::from(name_len))?;
-        let seq = u64::from_le_bytes(array(slot, at)?);
-        let claimed = u32::from_le_bytes(array(slot, at)?);
-        Some((format, name, seq, claimed))
+        let format = u16::from_le_bytes(reader.array()?);
+        let [name_len] = reader.array::<1>()?;
+        let name = reader.take(usize::from(name_len))?;
+        let seq = reader.u64()?;
+        let claimed = reader.u32()?;
+        Ok::<_, ManifestError>((format, name, seq, claimed))
     })();
-    let Some((format, name, seq, claimed)) = header else {
+    let Ok((format, name, seq, claimed)) = header else {
         return Ok(Slot::Torn(ManifestError::Body("truncated header")));
     };
-    let header_len = *at;
-    let rest = slot.get(header_len..).unwrap_or_default();
+    let rest = reader.rest;
+    let header_len = slot.len().saturating_sub(rest.len());
     let body_len = usize::try_from(claimed).unwrap_or(usize::MAX);
     let crc_end = body_len.checked_add(CRC);
     let (Some(body), Some(crc)) = (
@@ -252,13 +241,27 @@ pub(crate) fn read(
     fs: &dyn crate::fs::Fs,
     dir: &std::path::Path,
     identity: &Identity,
-) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(bytes) = fs.read_uncached(&dir.join(crate::dir::MANIFEST))? else {
+) -> Result<Option<Vec<u8>>, ManifestError> {
+    let Some(bytes) = read_file(fs, &dir.join(crate::dir::MANIFEST))? else {
         return Ok(None);
     };
-    latest(identity, &bytes)
-        .map(|committed| committed.map(|(_, body)| body.to_vec()))
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    latest(identity, &bytes).map(|committed| committed.map(|(_, body)| body.to_vec()))
+}
+
+/// `path`'s bytes as the device holds them (`None` = absent); a file not of the two-slot layout
+/// refused before any read (no allocation sized by a foreign file)
+pub(crate) fn read_file(
+    fs: &dyn crate::fs::Fs,
+    path: &std::path::Path,
+) -> Result<Option<Vec<u8>>, ManifestError> {
+    let Some(file) = fs.open_read_only(path)? else {
+        return Ok(None);
+    };
+    let len = file.len()?;
+    if len != FILE_LEN {
+        return Err(ManifestError::Layout { len });
+    }
+    Ok(fs.read_uncached(path, FILE_LEN)?)
 }
 
 /// Committed tip (`None` = nothing committed): every body's first 40 bytes
@@ -273,7 +276,7 @@ impl Committed {
     pub(crate) const EMPTY: Self = Self { tip: None };
 
     /// Last committed height, inclusive (`None` = nothing committed)
-    pub(crate) fn height(&self) -> Option<Height> {
+    fn height(&self) -> Option<Height> {
         self.tip.map(|tip| tip.height)
     }
 
@@ -342,8 +345,17 @@ impl<'a> BodyReader<'a> {
         Ok(head)
     }
 
+    pub(crate) fn u16(&mut self) -> Result<u16, ManifestError> {
+        self.array().map(u16::from_le_bytes)
+    }
+
     pub(crate) fn u32(&mut self) -> Result<u32, ManifestError> {
         self.array().map(u32::from_le_bytes)
+    }
+
+    /// Bytes not yet read
+    pub(crate) fn remaining(&self) -> usize {
+        self.rest.len()
     }
 
     pub(crate) fn u64(&mut self) -> Result<u64, ManifestError> {

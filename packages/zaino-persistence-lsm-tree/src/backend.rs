@@ -13,10 +13,7 @@ use std::{
     num::NonZeroUsize,
     ops::{Bound, Range},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard,
-    },
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use arc_swap::ArcSwap;
@@ -54,6 +51,9 @@ pub struct LsmTreeConfig<'a> {
     pub lsm: LsmConfig,
     /// Buffered heap at which a commit writes the buffer
     pub write_buffer: NonZeroUsize,
+    /// Threads of the backend's pool for parallel writes and commit checks (`None` = the
+    /// machine's available parallelism)
+    pub threads: Option<NonZeroUsize>,
 }
 
 /// On-disk backend: positional files for sequences, an LSM tree for maps, one manifest commit
@@ -97,12 +97,12 @@ struct ReadState {
 }
 
 /// Published states alive, and their buffers' estimated heap (an upper bound: states share most
-/// nodes), as metrics
+/// nodes), as gauges moved by each state's creation and drop (atomic in the recorder: right
+/// across reopens and concurrent drops)
 #[derive(Debug)]
 struct Versions {
-    index: String,
-    live: AtomicUsize,
-    heap: AtomicUsize,
+    live: metrics::Gauge,
+    heap: metrics::Gauge,
 }
 
 impl ReadState {
@@ -112,15 +112,8 @@ impl ReadState {
         buffer: Buffer,
         versions: &Arc<Versions>,
     ) -> Self {
-        let live = versions
-            .live
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let heap = versions
-            .heap
-            .fetch_add(buffer.heap(), Ordering::Relaxed)
-            .saturating_add(buffer.heap());
-        emit::versions(&versions.index, live, heap);
+        versions.live.increment(1.0);
+        versions.heap.increment(buffer.heap() as f64);
         Self {
             specs,
             view,
@@ -132,16 +125,11 @@ impl ReadState {
 
 impl Drop for ReadState {
     fn drop(&mut self) {
-        let versions = &self.versions;
-        let live = versions
-            .live
-            .fetch_sub(1, Ordering::Relaxed)
-            .saturating_sub(1);
-        let heap = versions
-            .heap
-            .fetch_sub(self.buffer.heap(), Ordering::Relaxed)
-            .saturating_sub(self.buffer.heap());
-        emit::versions(&versions.index, live, heap);
+        let (versions, heap) = (&self.versions, self.buffer.heap());
+        emit::in_drop(|| {
+            versions.live.decrement(1.0);
+            versions.heap.decrement(heap as f64);
+        });
     }
 }
 
@@ -178,13 +166,11 @@ impl LsmTreeBackend {
             Arc::clone(&specs),
             &tunings,
             config.lsm,
+            config.threads,
         )?;
         let buffer = Buffer::empty(&specs);
-        let versions = Arc::new(Versions {
-            index: config.name.to_owned(),
-            live: AtomicUsize::new(0),
-            heap: AtomicUsize::new(0),
-        });
+        let (live, heap) = emit::versions(config.name);
+        let versions = Arc::new(Versions { live, heap });
         let published = ArcSwap::from_pointee(ReadState::new(
             Arc::clone(&specs),
             engine.view().clone(),
@@ -287,9 +273,11 @@ impl Shared {
         let next = {
             let mut state = Pending::new(&self.specs, writing.engine.view(), &writing.buffer);
             check_shape(&self.specs, &state, tip, ops)?;
-            state
-                .prefetch(ops)
-                .map_err(|error| CommitError::Check(error.into_read("commit check")))?;
+            writing
+                .engine
+                .pool()
+                .install(|| state.prefetch(ops))
+                .map_err(|error| CommitError::from_check(error.into_read("commit check")))?;
             check_keys(&self.specs, &state, ops)?;
             writing
                 .buffer
@@ -349,12 +337,9 @@ impl Backend for LsmTreeBackend {
             return Ok(());
         }
         let buffer = writing.buffer.clone();
-        match guarded(|| shared.write(&mut writing, &buffer)) {
+        match poisoning_panics(&mut writing, |writing| shared.write(writing, &buffer)) {
             Ok(written) => written.map_err(flush_error),
-            Err(panicked) => {
-                writing.poisoned = true;
-                Err(flush_error(panicked))
-            }
+            Err(panicked) => Err(flush_error(panicked)),
         }
     }
 
@@ -394,14 +379,30 @@ impl BackendWriter for LsmTreeWriter {
         if writing.poisoned {
             return Err(CommitError::Poisoned);
         }
-        match guarded(|| shared.commit(&mut writing, tip, &ops)) {
-            Ok(committed) => committed,
-            Err(panicked) => {
-                writing.poisoned = true;
-                Err(panicked.into_commit("commit"))
+        match poisoning_panics(&mut writing, |writing| shared.commit(writing, tip, &ops)) {
+            Ok(committed) => {
+                // corrupt stored bytes found by the checks: no write may build on them
+                if matches!(committed, Err(CommitError::Corrupted(_))) {
+                    writing.poisoned = true;
+                }
+                committed
             }
+            Err(panicked) => Err(panicked.into_commit("commit")),
         }
     }
+}
+
+/// `run` on the writer state, a panic inside it caught as an error that poisons writes (the
+/// state may be half changed)
+fn poisoning_panics<R>(
+    writing: &mut Writing,
+    run: impl FnOnce(&mut Writing) -> R,
+) -> Result<R, StoreError> {
+    let ran = guarded(|| run(writing));
+    if ran.is_err() {
+        writing.poisoned = true;
+    }
+    ran
 }
 
 /// The state a commit is checked against: buffer first, then durable (its map keys looked up in
@@ -739,8 +740,7 @@ where
             }
             None => Err(StoreError::Internal("a scan without its walk")),
         };
-        let chunk = filled.map_err(|error| error.into_read("scan_range"))?;
-        Ok((!chunk.is_empty()).then_some(chunk))
+        filled.map_err(|error| error.into_read("scan_range"))
     }
 
     /// The walk over namespace `index`
@@ -775,7 +775,8 @@ where
     }
 }
 
-/// Up to `budget` kept bytes of records `left`, in walk order, durable then buffered
+/// The kept records among up to `budget` visited bytes of records `left`, in walk order, durable
+/// then buffered (`None` = nothing left to visit)
 fn fill_sequence<T>(
     state: &ReadState,
     index: usize,
@@ -783,13 +784,17 @@ fn fill_sequence<T>(
     reverse: bool,
     budget: usize,
     filter: &mut impl FnMut(&[u8], &[u8]) -> Option<T>,
-) -> Result<Vec<T>, StoreError> {
+) -> Result<Option<Vec<T>>, StoreError> {
     let Some(Durable::Sequence(pages)) = state.view.held(index) else {
         return Err(StoreError::Internal("a sequence walk over another kind"));
     };
+    if left.is_empty() {
+        return Ok(None);
+    }
     pages.will_need(left.clone(), budget, reverse)?;
     let durable = pages.len();
-    let (mut chunk, mut bytes) = (Vec::new(), 0usize);
+    let mut chunk = Vec::new();
+    let mut visited = Visited::default();
     while !left.is_empty() {
         let at = match reverse {
             false => left.start,
@@ -804,20 +809,40 @@ fn fill_sequence<T>(
         }
         .ok_or(StoreError::Internal("a sequence position past its records"))?;
         let key = at.to_be_bytes();
-        let size = key.len().saturating_add(record.len());
-        if !chunk.is_empty() && bytes.saturating_add(size) > budget {
+        if !visited.admits(&key, record, budget) {
             break;
         }
-        if let Some(item) = filter(&key, record) {
-            chunk.push(item);
-            bytes = bytes.saturating_add(size);
-        }
+        chunk.extend(filter(&key, record));
         match reverse {
             false => left.start = left.start.saturating_add(1),
             true => left.end = at,
         }
     }
-    Ok(chunk)
+    Ok(Some(chunk))
+}
+
+/// Raw bytes a chunk has visited, kept or skipped
+#[derive(Default)]
+struct Visited {
+    bytes: Option<usize>,
+}
+
+impl Visited {
+    /// `key ‖ value` visited, unless it would take a chunk that visited something past `budget`
+    fn admits(&mut self, key: &[u8], value: &[u8], budget: usize) -> bool {
+        let size = key.len().saturating_add(value.len());
+        match self.bytes {
+            Some(bytes) if bytes.saturating_add(size) > budget => false,
+            bytes => {
+                self.bytes = Some(bytes.unwrap_or(0).saturating_add(size));
+                true
+            }
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.bytes.is_some()
+    }
 }
 
 /// Which side holds the next key of a map walk
@@ -828,8 +853,9 @@ enum Next {
     Both,
 }
 
-/// Up to `budget` kept bytes of the durable cursor merged with the buffer's `above` entries, in
-/// walk order; returns where the buffer resumes
+/// The kept rows among up to `budget` visited bytes of the durable cursor merged with the
+/// buffer's `above` entries, in walk order (`None` = nothing left to visit); and where the
+/// buffer resumes
 ///
 /// - a buffered value or removal of a key masks its durable row
 fn fill_map<'a, T>(
@@ -838,13 +864,14 @@ fn fill_map<'a, T>(
     reverse: bool,
     budget: usize,
     filter: &mut impl FnMut(&[u8], &[u8]) -> Option<T>,
-) -> Result<(Vec<T>, Above), StoreError> {
-    let (mut chunk, mut bytes) = (Vec::new(), 0usize);
+) -> Result<(Option<Vec<T>>, Above), StoreError> {
+    let mut chunk = Vec::new();
+    let mut visited = Visited::default();
     loop {
         let durable = cursor.current()?;
         let buffered = above.peek().copied();
         let next = match (durable, buffered) {
-            (None, None) => return Ok((chunk, Above::Done)),
+            (None, None) => return Ok((visited.any().then_some(chunk), Above::Done)),
             (Some(_), None) => Next::Durable,
             (None, Some(_)) => Next::Above,
             (Some((key, _)), Some((other, _))) => match (key.cmp(other.as_ref()), reverse) {
@@ -863,18 +890,14 @@ fn fill_map<'a, T>(
             _ => None,
         };
         if let Some((key, value)) = row {
-            let size = key.len().saturating_add(value.len());
-            if !chunk.is_empty() && bytes.saturating_add(size) > budget {
+            if !visited.admits(key, value, budget) {
                 let resume = match buffered {
                     Some((key, _)) => Above::From(key.clone()),
                     None => Above::Done,
                 };
-                return Ok((chunk, resume));
+                return Ok((Some(chunk), resume));
             }
-            if let Some(item) = filter(key, value) {
-                chunk.push(item);
-                bytes = bytes.saturating_add(size);
-            }
+            chunk.extend(filter(key, value));
         }
         if matches!(next, Next::Above | Next::Both) {
             above.next();

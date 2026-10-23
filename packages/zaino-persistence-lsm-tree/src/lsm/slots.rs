@@ -109,6 +109,8 @@ impl Slots {
             if state.running < self.capacity && state.waiting.peek() == Some(&ticket) {
                 state.waiting.pop();
                 state.running = state.running.saturating_add(1);
+                // the next waiter is now first: it may take a slot still free
+                self.freed.notify_all();
                 return Some(Slot { slots: self });
             }
             state = self
@@ -160,10 +162,11 @@ mod tests {
                     let _slot = slots.acquire(tier, &AtomicBool::new(false)).expect("slot");
                     order.lock().expect("order").push(tier);
                 });
-                // every waiter queued before the slot frees
-                while slots.lock().waiting.len() <= queued {
-                    thread::yield_now();
-                }
+                // every waiter queued before the slot frees (a waiter failing to queue fails the
+                // test at the deadline, never hangs it)
+                crate::testing::eventually("the waiter queued", || {
+                    (slots.lock().waiting.len() > queued).then_some(())
+                });
                 handle
             })
             .collect();
@@ -216,9 +219,11 @@ mod tests {
         assert!(slots.acquire(0, &cancel).is_some(), "taken again");
     }
 
-    /// One second's worth free, the rest paced: 30 MB at 20 MB/s ≈ 0.5 s, whoever charges it
+    /// Three chargers sharing 30 MB at 20 MB/s, a 20 MB burst free: together they take at least
+    /// about half a second (only that lower bound: how much slower a busy machine runs is not the
+    /// pacer's)
     #[test]
-    fn bandwidth_lets_one_seconds_burst_through_then_paces_every_charger_to_the_rate() {
+    fn bandwidth_slows_chargers_sharing_it_once_its_burst_is_spent() {
         let bandwidth = Arc::new(Bandwidth::new(20_000_000));
         let started = Instant::now();
         let chargers: Vec<_> = (0..3)
@@ -230,8 +235,6 @@ mod tests {
         for charger in chargers {
             charger.join().expect("charger");
         }
-        // a lower bound only: pacing must slow the work; how much slower a busy machine runs is
-        // not the pacer's
         let took = started.elapsed();
         assert!(
             took.as_secs_f64() >= 0.4,

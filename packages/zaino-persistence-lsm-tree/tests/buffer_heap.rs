@@ -2,7 +2,8 @@
 //!
 //! - own binary: `#[global_allocator]` counts every allocation of this process only
 
-#![cfg(target_os = "linux")]
+// glibc's malloc: `malloc_usable_size` + its 8-byte chunk header is what an allocation costs
+#![cfg(all(target_os = "linux", target_env = "gnu"))]
 // the counting allocator: forwards to `System`, adds `malloc_usable_size`
 #![allow(unsafe_code)]
 
@@ -121,14 +122,16 @@ fn a_commit_writes_the_buffer_when_its_real_heap_reaches_write_buffer_within_10_
             tuning: &[],
             lsm: LsmConfig::default(),
             write_buffer: WRITE_BUFFER,
+            threads: NonZeroUsize::new(2),
         };
         let backend = LsmTreeBackend::open_real(dir.path(), &config).expect("open");
         let mut writer = backend.writer().expect("writer");
-        let before = LIVE.load(Ordering::Relaxed);
+        let before = LIVE.load(Ordering::Relaxed) as i64;
         let mut buffered = 0;
         let mut written = false;
         for (at, first) in (0..ROWS).step_by(per_commit as usize).enumerate() {
-            buffered = LIVE.load(Ordering::Relaxed) - before;
+            // signed: memory allocated at open can be freed as the buffer reshapes
+            buffered = LIVE.load(Ordering::Relaxed) as i64 - before;
             let ops = (first..first + per_commit).map(fill).collect();
             let tip = BlockRef {
                 height: Height::try_from(at as u32).expect("height"),

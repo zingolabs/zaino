@@ -164,7 +164,7 @@ pub struct ScanRange {
     pub upper: Bound<RawKey>,
     /// Visit order.
     pub direction: ScanDirection,
-    /// Raw bytes (key + value) of kept entries per chunk.
+    /// Raw bytes (key + value) of the entries one chunk visits, kept or skipped.
     pub chunk_bytes: NonZeroUsize,
 }
 
@@ -218,6 +218,10 @@ pub trait Backend: Send + Sync {
     fn writer(&self) -> Result<Self::Writer, OpenError>;
 
     /// Make every commit durable (a backend may buffer commits until then).
+    ///
+    /// A failed flush may still have made some or all buffered commits durable
+    /// (a failed sync cannot say what reached the disk): after a reopen, read
+    /// [`BackendReader::tip`] before writing again.
     fn flush(&self) -> Result<(), FlushError>;
 
     /// Check that the stored bytes are exactly the bytes last made durable.
@@ -237,6 +241,9 @@ pub trait BackendWriter: Send {
     /// - `tip` must be above the last committed tip.
     /// - A batch breaking any rule of [`check_commit`](crate::check_commit)
     ///   fails with that rule's [`CommitError`] and applies nothing.
+    /// - An empty batch is valid: it commits nothing but `tip`.
+    /// - A commit that fails while the backend writes may still be durable,
+    ///   as for [`Backend::flush`].
     fn commit(&mut self, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError>;
 }
 
@@ -259,13 +266,15 @@ pub trait BackendReader: Send {
     /// Entries of `namespace` within `range`, mapped through `filter`, as
     /// lazily read chunks in `range.direction` order.
     ///
-    /// - Each `next()` reads one chunk; `filter` runs on the borrowed bytes,
-    ///   is called at most once per entry, and entries it maps to `None` are
-    ///   skipped.
-    /// - A chunk ends before an entry whose raw size would take it past
-    ///   `range.chunk_bytes`, but always holds at least one entry.
-    /// - Chunks are never empty; `None` means the range is exhausted. An
-    ///   empty or inverted range yields nothing.
+    /// - Each `next()` visits one chunk of entries; `filter` runs on the
+    ///   borrowed bytes, is called exactly once per visited entry, and entries
+    ///   it maps to `None` are skipped.
+    /// - A chunk ends before an entry whose raw size would take the bytes it
+    ///   visited past `range.chunk_bytes`, but always visits at least one
+    ///   entry: the work per `next()` is bounded, whatever the filter keeps.
+    /// - A chunk is empty when the filter skipped everything it visited;
+    ///   `None` means the range is exhausted. An empty or inverted range
+    ///   yields nothing.
     /// - An undeclared namespace yields [`ReadError::NamespaceNotFound`] first.
     /// - Every chunk reads the reader's snapshot, even after the handle is
     ///   dropped. No key is returned twice.

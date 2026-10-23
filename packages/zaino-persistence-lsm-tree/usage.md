@@ -26,17 +26,34 @@ recovery, failure policy), [lsm-deletes.md](./docs/lsm-deletes.md) and
   point lookups over whole keys). `cache_writes` keeps written pages in the
   page cache (by default they are dropped once synced, so bulk writes never
   evict what readers use).
-- `lsm`: the maps' [`LsmConfig`]: `fanout` (same-tier segments merged into
-  one, default 16), `merge_slots` (merges doing I/O at once, default 4),
-  `merge_mib_per_sec` (their shared bandwidth, default 200), `max_retries` and
-  `cleanup_alert_bytes` (removing merged-away files, below).
+- `lsm`: the maps' [`LsmConfig`]:
+  - `fanout`: same-tier segments merged into one (default 16, at least 2);
+  - `merge_slots`: merges doing I/O at once (default 4);
+  - `merge_mib_per_sec`: their shared bandwidth, every byte a merge reads or
+    writes included (default 200);
+  - `max_retries` (default 3, at most 6) and `cleanup_alert_bytes` (default
+    1 GiB): removing merged-away files (below);
+  - `max_merge_failures`: merges of one map that may fail in a row and be
+    retried before writes stop (default 3, at least 1; below);
+  - `spill_bytes`: segment index bytes (fences, filter fingerprints) a write
+    or merge holds in memory before spilling them to a scratch file: memory
+    against scratch I/O (default 1 MiB, at most 1 GiB).
+
+  A setting out of range refuses the open.
 - `write_buffer`: the buffered heap at which a commit writes the buffer to
   disk. Commits below it are visible to readers at once and durable after the
   next `flush` or the write that crosses it.
 
+- `threads`: the size of the thread pool each backend builds at open for its
+  writes and commit checks (`None` = the machine's available parallelism).
+  Merges run on their own threads. A process opening several indexes can cap
+  each one so their pools don't oversubscribe the cores. An open whose pool
+  cannot start is refused.
+
 Namespace names are `/`-separated parts of `[A-Za-z0-9_-]`, unique ignoring
 case. A map owns its directory, so no namespace may sit inside a map's path.
-`MANIFEST`, `LOCK` and `MANIFEST.creating` are reserved.
+`MANIFEST`, `LOCK`, `MANIFEST.creating` and `TAILS` are reserved, as are the Windows device
+names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), all ignoring case.
 
 ## On disk
 
@@ -44,6 +61,7 @@ case. A map owns its directory, so no namespace may sit inside a map's path.
 <dir>/
   LOCK                exclusive lock for the backend's life
   MANIFEST            two 1 MiB slots: the commit point
+  TAILS               two slots: each sequence file's committed tail page, restored if torn
   <sequence>.dat      records back to back (+ <sequence>.idx end offsets if Variable)
   <map>/<id>.seg      immutable sorted segments, one per write or merge
   *.crc               page checksums beside every data file
@@ -64,15 +82,18 @@ case. A map owns its directory, so no namespace may sit inside a map's path.
 
 `Backend::verify` scrubs every committed byte against its page checksums.
 [`verify_dir`] does the same offline, with no lock, so it is safe beside a live
-backend. Either returns the port's `Verification`; anything but a clean report
-means stop, verify the disk, and resync.
+backend; a path holding no index (no `MANIFEST`) is an error. Either covers the
+files committed when it started: a file a merge retires meanwhile is skipped,
+not reported lost. Either returns the port's `Verification`; anything but a
+clean report means stop, verify the disk, and resync.
 
 ## Metrics
 
 Call [`describe_metrics`] once after installing a recorder, and use
 [`METRIC_BUCKETS`] and [`LSM_METRIC_BUCKETS`] for the histograms' buckets.
-Metrics are labelled by index (`zaino.store.*`) or by namespace (`zaino.lsm.*`,
-label `set`):
+Every metric is labelled `index` (the index name); `zaino.lsm.*` metrics also
+carry `set` (the map namespace), and the per-tier ones (`segments`, `merging`,
+`merge_duration_seconds`) `tier`:
 
 - `zaino.store.commit_seconds`, `commit_bytes_total`: durable writes.
 - `zaino.store.snapshots_live`, `snapshot_heap_bytes`: memory held by
@@ -114,17 +135,36 @@ freed only when the last such reader is gone.
 ## Failed writes and merges
 
 A write that fails refuses every later write (`CommitError::Poisoned`) until
-the backend is reopened; readers keep reading the last published state.
+the backend is reopened; readers keep reading the last published state. A
+failed write may still have reached the disk: after reopening, the tip is the
+last acknowledged commit or the one that failed.
 
-A background merge that fails, or fails to start, fails the next write with
-`CommitError::MergeFailed`: nothing of that write is applied, the merge's
-partial files are removed, and it runs again later. A merge whose input is
-corrupt can never succeed: that write fails with `CommitError::Corrupted` and
-writes are refused until the directory is verified and resynced.
+A background merge that fails, or fails to start, fails the next write before
+that write touches anything: nothing of it is applied, and the merge's partial
+files are removed. What follows depends on why it failed:
 
-Files a merge replaced are removed after the commit that replaced them. A
-removal that fails never fails the commit: it is retried `max_retries` times
-(10, 20, 40 ms … apart), then once at every later write, with
+- an I/O error a retry can clear (a create, write or read failing, a full disk,
+  a thread that could not start): `CommitError::MergeFailed`, writes stay open
+  and the merge runs again later;
+- a corrupt or contract-breaking input, which no retry can merge:
+  `CommitError::Corrupted`, writes refused until the directory is verified and
+  resynced;
+- a failed `fsync` of its output, a failed read-back of what it wrote, or a
+  bug: `CommitError::WriteFailed`, writes refused.
+
+After `max_merge_failures` retryable failures in a row in one map (a merge
+that lands there resets the count), the next one refuses writes as
+`CommitError::OutOfSpace` if the disk or quota is full, else as
+`CommitError::WriteFailed`.
+
+Corruption found while checking a commit's keys fails it with
+`CommitError::Corrupted` and refuses later writes.
+
+Files a merge replaced are removed after the commit that replaced them, as are
+scratch files a write or merge spilled to and could not remove. A removal that
+fails never fails the commit: every failing file is retried
+together, up to `max_retries` rounds (10, 20, 40 ms … apart, so a write pauses
+at most their sum), then once at every later write, with
 `zaino.lsm.leftover_bytes` showing what is left. Each such write logs a
 warning, or an error once the leftovers across all maps reach
 `cleanup_alert_bytes` (default 1 GiB), since the disk may be failing. An open
@@ -155,6 +195,12 @@ When the kernel fails to flush a write, it may keep the unflushed bytes in the
 page cache as if they were written. Open therefore reads the `MANIFEST` (the
 commit point) from the device itself, bypassing the cache: every file the
 on-disk manifest lists was flushed successfully before it was written. This is
-guaranteed on Linux (`O_DIRECT`); on macOS it is best effort (`F_NOCACHE`
-leaves pages already cached in place), so restart the process after a failed
-write there.
+guaranteed on Linux (`O_DIRECT`). On tmpfs, which has no device behind its
+cache, the manifest is read plainly; on any other Linux filesystem that refuses
+`O_DIRECT` the open is refused. On macOS it is best effort (`F_NOCACHE` leaves
+pages already cached in place), so restart the process after a failed write
+there.
+
+An open refused because the directory belongs to another name, format or
+namespaces is `OpenError::Mismatch`; one that finds committed data lost or
+corrupt is `OpenError::Corrupted`.

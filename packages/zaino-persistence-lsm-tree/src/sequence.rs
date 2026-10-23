@@ -7,7 +7,10 @@
 //!
 //! - both files = `crate::pages` append logs (checksummed, sealed per commit)
 
-use std::{ops::Range, path::Path};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use zaino_persistence::Width;
 
@@ -121,6 +124,15 @@ impl SequenceFile {
         })
     }
 
+    /// Just after a [`seal`](Self::seal): every one of its files' bytes past their last full page
+    pub(crate) fn tails(&self) -> Result<Vec<(PathBuf, crate::tails::Tail)>, StoreError> {
+        let mut tails = Vec::with_capacity(4);
+        for file in std::iter::once(&self.data).chain(&self.ends) {
+            tails.extend(file.tails()?);
+        }
+        Ok(tails)
+    }
+
     /// File names a fresh directory must not hold data in
     pub(crate) fn names(name: &str, width: Width) -> Vec<String> {
         let names = match width {
@@ -148,8 +160,7 @@ impl SequenceFile {
         Ok(())
     }
 
-    /// Files fsynced if grown (fsync cost ∝ files: tree-state holds ~100) → seals for the next
-    /// manifest
+    /// Files fsynced if grown (fsync cost ∝ grown files) → seals for the next manifest
     pub(crate) fn seal(&mut self) -> Result<Seals, StoreError> {
         if self.grown {
             self.sealed.data = self.data.seal()?;
@@ -158,9 +169,9 @@ impl SequenceFile {
             }
             // synced = clean: dropping costs nothing now, one 4 KiB re-read of the tail page later
             if !self.cache_writes {
-                self.data.drop_cache()?;
+                self.data.drop_cache();
                 if let Some(ends) = &self.ends {
-                    ends.drop_cache()?;
+                    ends.drop_cache();
                 }
             }
             self.grown = false;

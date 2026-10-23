@@ -63,26 +63,6 @@ impl InMemoryBackend {
             data: Arc::new(Mutex::new(Arc::new(state))),
         })
     }
-
-    /// Read all entries for a given namespace. For assertions.
-    pub fn entries(&self, namespace: Namespace) -> Result<HashMap<RawKey, RawValue>, ReadError> {
-        let state = current(&self.data)?;
-        Ok(declared(&state, namespace)?
-            .entries
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
-    }
-
-    /// Read a single value. For assertions.
-    pub fn get_value(
-        &self,
-        namespace: Namespace,
-        key: &[u8],
-    ) -> Result<Option<RawValue>, ReadError> {
-        let state = current(&self.data)?;
-        Ok(declared(&state, namespace)?.entries.get(key).cloned())
-    }
 }
 
 /// The store, locked; a poisoned lock = a writer panicked mid-commit.
@@ -278,7 +258,7 @@ where
             },
             _ => self.done = true,
         }
-        (!fill.chunk.is_empty()).then_some(Ok(fill.chunk))
+        fill.last_visited.is_some().then_some(Ok(fill.chunk))
     }
 }
 
@@ -289,8 +269,8 @@ struct Fill<'a, T> {
     exhausted: bool,
 }
 
-/// Map `entries` through `filter` until the next entry would take the chunk
-/// past `budget` raw bytes, or the entries run out.
+/// Map `entries` through `filter` until the next entry would take the bytes
+/// visited past `budget`, or the entries run out (at least one entry visited)
 fn fill_chunk<'a, T>(
     entries: impl Iterator<Item = (&'a [u8], &'a [u8])>,
     budget: usize,
@@ -301,17 +281,17 @@ fn fill_chunk<'a, T>(
         last_visited: None,
         exhausted: true,
     };
-    let mut bytes = 0usize;
+    let mut visited = 0usize;
     for (key, value) in entries {
         let size = key.len().saturating_add(value.len());
-        if !fill.chunk.is_empty() && bytes.saturating_add(size) > budget {
+        if fill.last_visited.is_some() && visited.saturating_add(size) > budget {
             fill.exhausted = false;
             break;
         }
         fill.last_visited = Some(key);
+        visited = visited.saturating_add(size);
         if let Some(item) = filter(key, value) {
             fill.chunk.push(item);
-            bytes = bytes.saturating_add(size);
         }
     }
     fill
@@ -335,7 +315,8 @@ pub struct InMemoryWriter {
 
 impl BackendWriter for InMemoryWriter {
     fn commit(&mut self, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError> {
-        let mut guard = lock(&self.data).map_err(CommitError::Check)?;
+        // poisoned = a writer panicked mid-commit
+        let mut guard = self.data.lock().map_err(|_| CommitError::Poisoned)?;
         // Check the whole batch first so a rejected batch applies nothing.
         check_commit(&guard.specs, &**guard, tip, &ops)?;
         // Built aside and swapped in whole: readers keep theirs, a failure applies nothing.
@@ -359,67 +340,6 @@ impl BackendWriter for InMemoryWriter {
         state.tip = Some(tip);
         *guard = Arc::new(state);
         Ok(())
-    }
-}
-
-/// Backend wrapper that adds configurable latency to commits.
-///
-/// Simulates durable write cost. Reads are unaffected.
-#[derive(Clone)]
-pub struct SlowBackend<B> {
-    inner: B,
-    commit_delay: std::time::Duration,
-}
-
-impl<B> SlowBackend<B> {
-    /// Wrap `inner` with a fixed delay per `commit` call.
-    pub fn new(inner: B, commit_delay: std::time::Duration) -> Self {
-        Self {
-            inner,
-            commit_delay,
-        }
-    }
-}
-
-impl<B: Backend> Backend for SlowBackend<B> {
-    type Reader = B::Reader;
-    type Writer = SlowWriter<B::Writer>;
-
-    fn reader(&self) -> Result<Self::Reader, OpenError> {
-        self.inner.reader()
-    }
-
-    fn writer(&self) -> Result<Self::Writer, OpenError> {
-        let inner = self.inner.writer()?;
-        Ok(SlowWriter {
-            inner,
-            delay: self.commit_delay,
-        })
-    }
-
-    fn flush(&self) -> Result<(), FlushError> {
-        self.inner.flush()
-    }
-
-    fn verify(&self) -> Result<Verification, VerifyError> {
-        self.inner.verify()
-    }
-
-    fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError> {
-        self.inner.footprint()
-    }
-}
-
-/// Writer that sleeps before delegating to the inner writer.
-pub struct SlowWriter<W> {
-    inner: W,
-    delay: std::time::Duration,
-}
-
-impl<W: BackendWriter> BackendWriter for SlowWriter<W> {
-    fn commit(&mut self, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError> {
-        std::thread::sleep(self.delay);
-        self.inner.commit(tip, ops)
     }
 }
 

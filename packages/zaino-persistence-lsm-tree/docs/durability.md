@@ -27,12 +27,13 @@ of repairing anything in place. Every index directory follows the same six rules
 1. **One disk check, the same everywhere.** Once data is durable, the only question left is
    whether the bytes on disk are the bytes that were sealed. Every file of every index answers it
    with page checksums (§3).
-1. **Recovery never guesses.** Opening an index truncates every file to its sealed length (a
-   reserve of zeros past it included, §3) and deletes every segment the manifest does not list. A
-   file shorter than its seal means committed bytes were lost, and the open is refused.
+1. **Recovery never guesses.** Opening an index truncates every sequence file to its sealed length
+   (a reserve of zeros past it included, §3), restores a torn tail page from its saved copy (§3)
+   and deletes every segment the manifest does not list. A file shorter than its seal means
+   committed bytes were lost, and the open is refused.
 1. **Stop, don't repair.** An I/O error on a write path, a checksum mismatch or a violated check
    is returned as a typed error, and a failed write refuses every later write until the backend
-   is reopened (§6). Nothing retries a failed `fsync` and nothing rewrites committed data: the
+   is reopened (§5). Nothing retries a failed `fsync` and nothing rewrites committed data: the
    next open either opens the sealed state or refuses to.
 
 ## 2. The manifest
@@ -41,7 +42,7 @@ of repairing anything in place. Every index directory follows the same six rules
 
 ```text
 field       bytes  meaning
-magic       8      b"ZAINOMS3"
+magic       8      b"ZAINOMS4"
 format      2      u16 LE, the caller's layout version
 name_len    1      u8
 name        n      the index name the caller opens it as (at most 255 bytes)
@@ -67,14 +68,16 @@ rename it in, fsync the directory) changes metadata twice. On ext4 and XFS each 
 forces a journal commit, and a journal commit first waits for the dirty data of every other file
 on the filesystem, so every index's commit would stall behind every other index's writeback.
 
-Open reads both slots, bypassing the page cache (`O_DIRECT` on Linux; best effort with
-`F_NOCACHE` on macOS), so a write the kernel failed to flush cannot pass as committed:
+Open checks the file is exactly two slots long, then reads both bypassing the page cache, so a
+write the kernel failed to flush cannot pass as committed. On Linux that is `O_DIRECT`; on tmpfs,
+which has no device behind its cache, a plain read; anywhere else a refused direct read refuses
+the open. On macOS `F_NOCACHE` is best effort (it does not evict pages already cached).
 
 - A slot of zeros was never written.
 - A slot failing its magic, length or CRC check is read as a torn write, a commit a crash
   interrupted before it was acknowledged. The other slot's commit stands.
-- A slot that passes its CRC but names another index name or format is refused, as is a file
-  that is not exactly two slots long or two torn slots.
+- A slot that passes its CRC but names another index name or format is refused
+  (`OpenError::Mismatch`), as is a file that is not exactly two slots long or two torn slots.
 
 A CRC cannot tell a torn write from bit rot, so a live slot damaged on disk also rolls the index
 back one commit. For a segment store that rollback usually still fails, because the older manifest
@@ -88,7 +91,12 @@ manifest before its first data write, so data without a committed manifest is ne
 a crash. Missing directory levels are created one at a time, each new level's parent fsynced.
 
 Because a commit does not fsync the directory, a data file's own name must be made durable before
-any manifest names it. The code that creates it does that (§3).
+any manifest names it. Open fsyncs every directory holding sequence files, once per directory,
+on every open; the segment writer fsyncs a map's directory before a segment is listed (§3).
+
+Next to the manifest sits `TAILS`, the doublewrite copy of every sequence file's committed tail
+page (§3). It has two slots like the manifest, magic `ZAINOTL1`, and commit `seq` writes slot
+`seq % 2` and fsyncs it before its manifest.
 
 Each index directory also holds a `LOCK` file under an exclusive lock for the life of the backend.
 Two processes can never open one directory, because the second one's open-time truncation would
@@ -100,7 +108,7 @@ All I/O goes through the `fs::Fs` trait. Writes are positional, so a partial wri
 where the next one lands, and a new file, rename or removal is durable only once its parent
 directory is fsynced (Linux semantics). `RealFs` is `std::fs` plus `memmap2`. `SimFs` (feature
 `testing`) keeps a volatile and a durable image of every file and directory, and enumerates every
-state a power loss could leave (§7).
+state a power loss could leave (§6).
 
 Every file is written through `pages`:
 
@@ -118,12 +126,12 @@ committed page with a stale checksum.
 
 A `PagedFile` is opened as one of two kinds (`pages::FileKind`):
 
-- `Segment`, an LSM segment: written once, then sealed for good and made read-only. It grows by
-  exactly what is appended, and the segment writer fsyncs its directory before the segment is
-  listed.
-- `Log`, a sequence namespace's files: appended to commit after commit. When open creates the
-  file (or its `.crc`), it fsyncs the parent directory, so the name is durable before any manifest
-  names it. The file then grows into a **reserve**: room past its end, written with zeros and
+- `Segment`, an LSM segment: written once, sealed (data and `.crc` fsynced), read back through
+  its checksums, then made read-only, and the segment writer fsyncs its directory before the
+  segment is listed. Open never truncates one, and maps exactly its sealed length.
+- `Log`, a sequence namespace's files: appended to commit after commit. Open fsyncs the
+  directory holding them every time (§2), so a name a crash left unsynced is durable before any
+  manifest names it. The file then grows into a **reserve**: room past its end, written with zeros and
   fsynced, each step the file's size again (64 KiB to 64 MiB). Appends overwrite that room in
   place, so a seal's `fdatasync` finds no size change and no new block to allocate, and never
   waits on the journal (§2). `fallocate` cannot make that room: it leaves unwritten extents, and
@@ -143,16 +151,25 @@ the last seal. Every file is sealed before the manifest that carries its seal. A
 writeback (`sync_file_range`) every 1 MiB so the seal's fsync finds little left dirty (RocksDB's
 `bytes_per_sync`).
 
-Open checks each file is at least as long as its seal (then truncated to it), reads the tail page
-back against the manifest, and reads the whole `.crc` back against the `sums` digest. The `.crc`
-file is 1/1024 of the data. A read checks each page the first time it touches it and records it in
-a per-file bitset that carries across commits; a map segment's filter is checked whole when the
-segment is mapped. A mismatch is `ReadError::Corrupted` naming the file and page (§6).
+A log file's tail page is rewritten in place by the next commit's appends. A device that tears
+inside a sector could damage its committed bytes, so before each manifest the write saves every
+grown log file's committed tail page to `TAILS` (§2). Open restores a tail page that fails its
+checksum from the slot of the manifest it opens, only for the index's own log files and only
+within their last committed page; a file already shorter than its seal is still refused as lost.
 
-`Backend::verify`, and `verify_dir` offline, scrub every committed byte of every file the manifest
-seals, read sequentially against the same checksums, into the port's `Verification`. `verify_dir`
-takes no lock, so it is safe beside a live backend; a segment a merge retired between reading the
-manifest and scrubbing it is scrubbed again against the newer manifest.
+Open checks each log file is at least as long as its seal (then truncated to it), reads the tail
+page back against the manifest, and reads the sealed `.crc` back against the `sums` digest. The
+`.crc` file is 1/1024 of the data. A read checks each page the first time it touches it and
+records it in a per-file bitset that carries across commits; a map segment's summary and filter
+are checked whole when the segment is mapped. A mismatch is `ReadError::Corrupted` naming the
+file and page (§5).
+
+`Backend::verify`, and `verify_dir` offline, scrub every committed byte of every file the starting
+manifest seals, read sequentially against the same checksums, into the port's `Verification`. A
+file found missing is checked against the manifest once more: one a merge retired meanwhile is
+skipped, one still listed is reported lost. Verify therefore covers the files committed when it
+started. `verify_dir` takes no lock, so it is safe beside a live backend; a missing `MANIFEST` is
+an error, not a clean report.
 
 ## 4. The engine's namespaces
 
@@ -174,20 +191,22 @@ body = namespaces ‖ tip
   `filtered` bytes (the map's `scope`, or the whole key when the scope is 0). Each segment records
   its own `filtered`, so a changed scope is rebuilt at open (each segment rewritten under the merge
   bandwidth limit) without misreading the old ones. A write writes and seals one segment per map
-  with rows, fsyncs the map directories, then writes a manifest listing the old segments plus the
-  new ones.
+  with rows (two when the buffer holds a key inserted and removed: the values, then a newer
+  tombstone-only segment), fsyncs the map directories, then writes a manifest listing the old
+  segments plus the new ones.
 
 Every step of a write that can fail runs before the manifest commit: the segments and sequence
-pages are written, sealed and mapped first. After the commit only two things can go wrong, and
-neither fails it: removing files a merge replaced (retried, §6) and starting the next merges (a
-failure is returned by the next write).
+pages are written, sealed and mapped, and `TAILS` saved, first. After the commit only two things
+can go wrong, and neither fails it: removing files a merge replaced (retried, §5) and starting the
+next merges (a failure is returned by the next write).
 
 Merges are size-tiered. When a tier holds `fanout` segments (`LsmConfig`, 16 by default), a
 background thread merges them, one merge per tier at a time so small merges never queue behind a
 large one, and at most `merge_slots` doing I/O at once within `merge_mib_per_sec`. The merge
 streams its inputs through their page checksums, so a corrupt input stops the merge instead of
-propagating, then reads its output back through its checksums (charged to the same bandwidth),
-seals it and fsyncs its directory. It does not commit on its own: the next write's manifest lists
+propagating, seals its output, reads it back through its checksums and fsyncs its directory;
+every byte it reads or writes (spill scratch, fences and filter included) is charged to the same
+bandwidth, and a cancelled merge stops between chunks. It does not commit on its own: the next write's manifest lists
 the output in place of the inputs, and the inputs are unlinked only once that manifest is durable.
 A crash therefore leaves either the old list, where the output is unlisted and the next open
 deletes it, or the new one, where the inputs are. If a tier's merge falls two windows behind, the
@@ -205,15 +224,29 @@ and the public entry points catch a panic from a dependency or a caller's scan f
   success for data that never reached the disk (see
   <https://wiki.postgresql.org/wiki/Fsync_Errors>). The reopen reads the manifest past the page
   cache for the same reason (§2).
-- **A failed background merge** is returned by the next write as `CommitError::MergeFailed`,
-  found before that write touched anything: nothing is applied, the merge's partial files are
-  removed, and writes stay open; the merge runs again later. A merge whose input is corrupt can
-  never succeed, so that write fails as `CommitError::Corrupted` and refuses later writes.
-- **A file a merge replaced that cannot be removed** never fails the commit that replaced it. The
-  removal is retried with short pauses, then once at every later write; the leftover bytes are a
-  metric, logged as a warning, and as an error past `LsmConfig::cleanup_alert_bytes`. At open,
-  such a file is removed or the open is refused.
-- **A read that finds corruption** is `ReadError::Corrupted`: stop, verify, resync.
+- **A failed background merge** is returned by the next write, found before that write touched
+  anything: nothing is applied and the merge's partial files are removed. The failure's class
+  decides what follows:
+  - a corrupt or contract-breaking input can never succeed: `CommitError::Corrupted`, writes
+    refused;
+  - a failed `fsync` of its output or directory, a failed read-back of its own output, or a bug
+    (a self-check, an internal error, a panic): `CommitError::WriteFailed`, writes refused;
+  - any other I/O error (a create, write or read, a full disk, a thread that failed to start):
+    `CommitError::MergeFailed`, writes stay open and the merge runs again later.
+
+  Retries are budgeted: `LsmConfig::max_merge_failures` (3) transient failures in a row in one
+  map, reset by any merge that lands there. The next one refuses writes as
+  `CommitError::OutOfSpace` when the disk or quota is full, else `WriteFailed`.
+- **Corruption found while checking a commit's keys** fails that commit as
+  `CommitError::Corrupted` and refuses later writes.
+- **A file a merge replaced, or a write's scratch file, that cannot be removed** never fails the
+  commit (scratch files are never listed, and the segment that spilled to one is whole). The
+  removal is retried in shared rounds, every failing file once per round with pauses of 10, 20,
+  40 ms and so on between rounds (`LsmConfig::max_retries` rounds, at most 6), then once at
+  every later write; the leftover bytes are a metric, logged as a warning, and as an error past
+  `LsmConfig::cleanup_alert_bytes`. At open, such a file is removed or the open is refused.
+- **A read that finds corruption** is `ReadError::Corrupted`, and an open that finds lost or
+  corrupt data is `OpenError::Corrupted`: stop, verify, resync.
 
 ## 6. Testing
 
@@ -230,25 +263,31 @@ and the public entry points catch a panic from a dependency or a caller's scan f
 - **The crash model.** A crash drops, keeps, reorders or tears any write since the last fsync. We
   tear writes in half, on 512-byte sector boundaries (only the first sector, all but the last),
   and with every other sector landing, since a device promises sector atomicity only and may
-  persist a write's sectors in any order. We also lose one file's unsynced writes while every
-  other file keeps its own, which is the case where the data and the manifest reach the disk but
-  the checksums do not. Tests write with a 4 KiB spill threshold, so every enumerated workload
-  also runs through the merge scratch files.
+  persist a write's sectors in any order, and garble the first sector of a write that starts
+  mid-sector (a device tearing inside a sector, which `TAILS` repairs). We also lose one file's
+  unsynced writes while every other file keeps its own, which is the case where the data and the
+  manifest reach the disk but the checksums do not; persist some of a directory's unsynced
+  entries and not others; and vary several files at once in a fixed number of seeded samples, so
+  every run enumerates the same states. A failed `fsync` drops that file's pending writes, as
+  Linux does, and making a file read-only is a crash point. Tests write with a 64-byte spill
+  threshold, so every enumerated workload also runs through the merge scratch files.
 - **Failed I/O.** `SimFs::fail_from` returns `EIO` from the nth mutating call on (Pebble
   `errorfs`), and the workload reruns failing at the 0th, 1st, 2nd call and so on until it
   succeeds. Each failure must surface as the injected error, never a panic and never swallowed.
   The backend must then refuse every later commit, and a restart must recover an acknowledged
   commit or the attempted one. `fail_reads_from` does the same for positional reads while
   reopening: each failure is the open's error, and the open that succeeds finds every commit.
-  `fail_removes` and `fail_creates` pin the leftover and failed-merge paths of §5. Mapped reads are
+  `fail_removes`, `fail_creates` and `fail_writes` pin the leftover and failed-merge paths of §5,
+  and a panicking metrics recorder pins a panic inside a commit or flush. Mapped reads are
   not injectable in-process; on a real disk they fail as `SIGBUS`.
 - **Planted bugs.** Each LSM invariant check is fed the bug it guards against (a duplicate key,
   including one surfacing inside a merge, a key in two segments, a tip that does not advance, a
   corrupt merge input) and must fire. A check never seen firing is not known to work (RocksDB).
 - **Model-based.** The port's conformance suite runs generated histories against a `BTreeMap` and
   `Vec` model at fanout 2, 3 and 8 through commits, merges, reopens and power loss mid-merge,
-  random-bound chunked scans in both directions, and pinned readers re-checked after every later
-  step.
+  random-bound chunked scans in both directions (bounds shorter and longer than the key
+  included), and pinned readers re-checked after every later step. A backend that writes on its
+  own (a small write buffer) must recover exactly a prefix of its commits after a power loss.
 - **Not yet done.** `cargo-fuzz` targets for the decoders, and a run of the store scenarios on a
   [LazyFS](https://github.com/dsrhaslab/lazyfs) mount to check `SimFs` against real syscalls.
 

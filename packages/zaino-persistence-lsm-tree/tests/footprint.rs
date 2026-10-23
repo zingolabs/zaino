@@ -1,6 +1,38 @@
 //! `Backend::footprint` on a real filesystem (page cache = the kernel's, read by `mincore`)
 
 #![cfg(target_os = "linux")]
+// the probe below maps a file and asks `mincore` which of its pages are cached
+#![allow(unsafe_code)]
+
+/// Whether this kernel drops a synced file's pages when told to (`POSIX_FADV_DONTNEED`): what
+/// the residency checks rely on (a kernel under its own policies, or a filesystem caching
+/// elsewhere, may keep them)
+fn kernel_drops_clean_pages(dir: &std::path::Path) -> bool {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+
+    const LEN: usize = 16 * 4096;
+    let path = dir.join("probe");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .expect("probe");
+    file.write_all(&[1; LEN]).expect("write");
+    file.sync_all().expect("sync");
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is this live file's; no memory passed
+    let advised = unsafe { libc::posix_fadvise(fd, 0, LEN as i64, libc::POSIX_FADV_DONTNEED) };
+    // SAFETY: the file holds `LEN` bytes and nothing truncates it while mapped
+    let map = unsafe { memmap2::Mmap::map(&file) }.expect("map");
+    let mut resident = vec![0u8; LEN / 4096];
+    // SAFETY: `map` is a live mapping of `LEN` bytes; one result byte per page
+    let read = unsafe { libc::mincore(map.as_ptr() as *mut _, LEN, resident.as_mut_ptr()) };
+    let _ = fs::remove_file(&path);
+    advised == 0 && read == 0 && resident.iter().all(|page| page & 1 == 0)
+}
 
 use std::{
     fs,
@@ -46,6 +78,7 @@ fn footprint_reports_each_namespaces_committed_bytes_and_their_page_cache_share(
         tuning: &tuning,
         lsm: LsmConfig::default(),
         write_buffer: NonZeroUsize::MAX,
+        threads: NonZeroUsize::new(2),
     };
     let backend = LsmTreeBackend::open_real(dir.path(), &config).expect("open");
     let mut writer = backend.writer().expect("writer");
@@ -110,6 +143,10 @@ fn footprint_reports_each_namespaces_committed_bytes_and_their_page_cache_share(
     let filesystem = rustix::fs::statfs(dir.path()).expect("statfs");
     if filesystem.f_type as i64 == TMPFS_MAGIC {
         eprintln!("residency not checked: the temporary directory is on tmpfs");
+        return;
+    }
+    if !kernel_drops_clean_pages(dir.path()) {
+        eprintln!("residency not checked: this kernel keeps pages it was told to drop");
         return;
     }
     let opened = footprint

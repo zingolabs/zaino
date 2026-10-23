@@ -3,11 +3,17 @@
 //! - file content: durable bytes + writes pending since the last `sync_data`
 //! - namespace: durable entries + changes pending since the parent's last `sync_dir`
 //! - crash points recorded around persistence points only (just before and after each
-//!   `sync_data` / `sync_dir`, after each `rename` / `remove`; CrashMonkey: bugs surface there)
+//!   `sync_data` / `sync_dir`, after each `rename` / `remove` / `set_read_only`; CrashMonkey:
+//!   bugs surface there)
 //! - `Image::crash_states` = what a crash at that point could leave (ALICE model: unsynced
 //!   writes dropped, prefix-applied, reordered, torn (in half, and on 512 B sector boundaries,
-//!   sectors out of order), zero- or garbage-filled, lost in one file while kept in the rest;
-//!   unsynced entries lost or kept)
+//!   sectors out of order, a mid-sector write's first sector garbled whole on a device without
+//!   sector atomicity), zero- or garbage-filled, lost in one file while kept in the rest, several
+//!   files varying at once (seeded samples); unsynced entries lost or kept, all of a directory's
+//!   or some)
+//! - a failed `sync_data` loses that file's pending writes for good while reads still see them
+//!   (Linux: pages marked clean after a writeback error)
+//! - read-only flags are kept through every crash state (chmod modelled as durable at once)
 //! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`);
 //!   `SimFs::fail_reads_from` = same for positional reads
 //! - `SimFs::power_loss` / [`SimFs::restarted`] = crash / process exit at any instant
@@ -22,12 +28,18 @@ use std::{
 
 use bytes::Bytes;
 
-use super::{FileHandle, Fs, LockGuard, Mapping};
+use super::{too_long, FileHandle, Fs, LockGuard, Mapping};
 
 type FileId = usize;
 
 /// Device's atomic write unit (torn writes tear on these boundaries)
 const SECTOR: usize = 512;
+
+/// Crash states per persistence point with several files varying at once
+const MIXED_SAMPLES: usize = 4;
+
+/// A file's crash variants: what each leaves, labelled
+type Variants = Vec<(String, Vec<u8>)>;
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -52,7 +64,9 @@ impl Op {
     }
 }
 
-/// `current` = `durable` with every `pending` op applied (kept materialized: reads are hot)
+/// `durable` = what the device holds; `pending` = writes it may or may not hold yet; `current`
+/// = what reads see (the page cache: `durable` with every `pending` op applied, plus any write a
+/// failed writeback lost, which no later sync persists: Linux after a failed `fsync`)
 #[derive(Debug, Clone, Default)]
 struct Content {
     durable: Vec<u8>,
@@ -76,8 +90,19 @@ impl Content {
     }
 
     fn sync(&mut self) {
-        self.durable.clone_from(&self.current);
+        self.durable = self.with(&self.pending);
         self.pending.clear();
+    }
+
+    /// A failed writeback: the pending writes never reach the device (pages marked clean, still
+    /// cached: reads keep seeing them until the process exits)
+    fn writeback_failed(&mut self) {
+        self.pending.clear();
+    }
+
+    /// The most a crash can keep: every pending write applied (never one a failed writeback lost)
+    fn kept_at_most(&self) -> Vec<u8> {
+        self.with(&self.pending)
     }
 
     fn with(&self, ops: &[Op]) -> Vec<u8> {
@@ -116,6 +141,20 @@ impl Content {
             variants.push(torn("torn", bytes[..bytes.len() / 2].to_vec()));
             variants.push(torn("zero-filled", vec![0; bytes.len()]));
             variants.push(torn("garbage", vec![0xa5; bytes.len()]));
+            // a device without sector atomicity: the sector holding a mid-sector write's start
+            // garbled whole, bytes before the write included
+            let start = usize::try_from(*offset).expect("sim offsets fit usize");
+            if start % SECTOR != 0 {
+                let sector = start / SECTOR * SECTOR;
+                let end = (sector + SECTOR).min(start + bytes.len());
+                let mut data = self.with(prior);
+                Op::Write {
+                    at: sector as u64,
+                    bytes: vec![0x5a; end - sector],
+                }
+                .apply(&mut data);
+                variants.push((format!("op {at} its first sector garbled whole"), data));
+            }
             // device: sector atomicity only, sectors persisted in any order → torn at sector
             // boundaries, every other sector kept
             if bytes.len() > SECTOR {
@@ -235,23 +274,6 @@ impl Image {
         }
     }
 
-    /// `durable` with `dir`'s direct children taken from `volatile`
-    fn with_dir_persisted(&self, dir: &Path) -> BTreeMap<PathBuf, Node> {
-        let mut namespace: BTreeMap<_, _> = self
-            .durable
-            .iter()
-            .filter(|(path, _)| parent(path) != dir)
-            .map(|(path, node)| (path.clone(), *node))
-            .collect();
-        namespace.extend(
-            self.volatile
-                .iter()
-                .filter(|(path, _)| parent(path) == dir)
-                .map(|(path, node)| (path.clone(), *node)),
-        );
-        namespace
-    }
-
     /// Only what was synced: durable entries, durable bytes
     fn power_loss(&self) -> Image {
         self.settle(&self.durable, |id| self.files[id].durable.clone())
@@ -264,46 +286,140 @@ impl Image {
             ("nothing pending survives".to_owned(), self.power_loss()),
             (
                 "everything pending survives".to_owned(),
-                self.settle(&self.volatile, |id| self.files[id].current.clone()),
+                self.settle(&self.volatile, |id| self.files[id].kept_at_most()),
             ),
         ];
         states.extend(self.directory_states());
         states.extend(self.content_states());
+        states.extend(self.mixed_states());
         states
     }
 
-    /// Per directory with pending entries: those persisted, every file's bytes durable or current
+    /// Per directory with pending entries: all of them persisted (every file's bytes durable or
+    /// kept), and each one alone, or all but it (a directory's entries need not persist together)
     fn directory_states(&self) -> Vec<(String, Image)> {
-        let dirs: HashSet<&Path> = self
+        let dirs: BTreeSet<&Path> = self
             .volatile
             .keys()
             .chain(self.durable.keys())
             .map(|path| parent(path))
             .collect();
-        let children = |namespace: &BTreeMap<PathBuf, Node>, dir: &Path| -> Vec<(PathBuf, Node)> {
-            namespace
-                .iter()
-                .filter(|(path, _)| parent(path) == dir)
-                .map(|(path, node)| (path.clone(), *node))
-                .collect()
-        };
         let mut states = Vec::new();
         for dir in dirs {
-            if children(&self.volatile, dir) == children(&self.durable, dir) {
+            let changed = self.changed_children(dir);
+            if changed.is_empty() {
                 continue;
             }
-            let namespace = self.with_dir_persisted(dir);
-            let (durable, current) = (
-                self.settle(&namespace, |id| self.files[id].durable.clone()),
-                self.settle(&namespace, |id| self.files[id].current.clone()),
+            let all = self.with_entries_persisted(dir, &|_| true);
+            let (durable, kept) = (
+                self.settle(&all, |id| self.files[id].durable.clone()),
+                self.settle(&all, |id| self.files[id].kept_at_most()),
             );
+            let dir_name = dir.display();
             states.push((
-                format!("{} entries persisted, bytes durable", dir.display()),
+                format!("{dir_name} entries persisted, bytes durable"),
                 durable,
             ));
+            states.push((format!("{dir_name} entries persisted, bytes kept"), kept));
+            if changed.len() < 2 {
+                continue;
+            }
+            for child in &changed {
+                for (which, persisted) in [
+                    (
+                        "alone",
+                        &(|path: &Path| path == child) as &dyn Fn(&Path) -> bool,
+                    ),
+                    ("all but it", &|path: &Path| path != child),
+                ] {
+                    let namespace = self.with_entries_persisted(dir, persisted);
+                    let image = self.settle(&namespace, |id| self.files[id].kept_at_most());
+                    let label = format!("{dir_name}: {} entry {which} persisted", child.display());
+                    states.push((label, image));
+                }
+            }
+        }
+        states
+    }
+
+    /// `dir`'s children whose entry differs between `volatile` and `durable`
+    fn changed_children(&self, dir: &Path) -> Vec<PathBuf> {
+        let under = |namespace: &BTreeMap<PathBuf, Node>| -> BTreeSet<PathBuf> {
+            namespace
+                .keys()
+                .filter(|path| parent(path) == dir)
+                .cloned()
+                .collect()
+        };
+        under(&self.volatile)
+            .union(&under(&self.durable))
+            .filter(|path| self.volatile.get(*path) != self.durable.get(*path))
+            .cloned()
+            .collect()
+    }
+
+    /// `durable` with the changes to `dir`'s entries that `persisted` picks taken from `volatile`
+    fn with_entries_persisted(
+        &self,
+        dir: &Path,
+        persisted: &dyn Fn(&Path) -> bool,
+    ) -> BTreeMap<PathBuf, Node> {
+        let mut namespace = self.durable.clone();
+        for child in self.changed_children(dir) {
+            if !persisted(&child) {
+                continue;
+            }
+            match self.volatile.get(&child) {
+                Some(node) => namespace.insert(child, *node),
+                None => namespace.remove(&child),
+            };
+        }
+        namespace
+    }
+
+    /// Several files varying at once (a pending write kept in one, torn in another, lost in a
+    /// third): [`MIXED_SAMPLES`] combinations of each file's crash variants, chosen by a generator
+    /// seeded from the image (deterministic: the same run samples the same states)
+    fn mixed_states(&self) -> Vec<(String, Image)> {
+        let pending: Vec<(FileId, Variants)> = self
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, content)| !content.pending.is_empty())
+            .map(|(id, content)| (id, content.crash_variants()))
+            .collect();
+        if pending.len() < 2 {
+            return Vec::new();
+        }
+        let mut seed = self.fingerprint();
+        let mut next = || {
+            // splitmix64
+            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as usize
+        };
+        let mut states = Vec::new();
+        for sample in 0..MIXED_SAMPLES {
+            let mut chosen: BTreeMap<FileId, Vec<u8>> = BTreeMap::new();
+            let mut labels = Vec::new();
+            for (id, variants) in &pending {
+                let (label, bytes) = &variants[next() % variants.len()];
+                chosen.insert(*id, bytes.clone());
+                labels.push(format!("{}: {label}", self.path_of(*id)));
+            }
+            let namespace = match sample % 2 {
+                0 => &self.durable,
+                _ => &self.volatile,
+            };
+            let image = self.settle(namespace, |id| match chosen.get(&id) {
+                Some(bytes) => bytes.clone(),
+                None => self.files[id].durable.clone(),
+            });
             states.push((
-                format!("{} entries persisted, bytes current", dir.display()),
-                current,
+                format!("mixed sample {sample}: {}", labels.join("; ")),
+                image,
             ));
         }
         states
@@ -336,7 +452,7 @@ impl Image {
             for (space, namespace) in spaces {
                 let image = self.settle(namespace, |other| match other == id {
                     true => self.files[other].durable.clone(),
-                    false => self.files[other].current.clone(),
+                    false => self.files[other].kept_at_most(),
                 });
                 let label =
                     format!("{path}: pending lost, every other file's kept, {space} entries");
@@ -386,6 +502,7 @@ struct Inner {
     fail_reads_from: Option<u64>,
     fail_removes: bool,
     fail_creates: bool,
+    fail_writes: bool,
 }
 
 impl Inner {
@@ -507,6 +624,14 @@ impl SimFs {
         states
     }
 
+    /// Every persistence point recorded so far, as its op (`sync_data <path>`, `remove <path>`, …)
+    #[cfg(test)]
+    pub(crate) fn recorded_ops(&self) -> Vec<String> {
+        let inner = self.lock_inner();
+        let points = inner.recorded.iter().flatten();
+        points.map(|point| point.op.clone()).collect()
+    }
+
     /// Mutating call `op` (0-based, [`SimFs::mutations`] order) and every later one fail with
     /// `EIO`, nothing applied (Pebble `errorfs.OnIndex`: loop `op` until a workload succeeds)
     pub fn fail_from(&self, op: u64) {
@@ -523,6 +648,12 @@ impl SimFs {
     #[cfg(test)]
     pub(crate) fn fail_creates(&self, on: bool) {
         self.lock_inner().fail_creates = on;
+    }
+
+    /// Every write to a file fails with `EIO` while `on` (files are still created)
+    #[cfg(test)]
+    pub(crate) fn fail_writes(&self, on: bool) {
+        self.lock_inner().fail_writes = on;
     }
 
     /// `EIO` from the nth positional read on (failing disk surfacing on read)
@@ -668,13 +799,20 @@ impl Fs for SimFs {
     }
 
     /// No page cache here: the current bytes (one counted read)
-    fn read_uncached(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
         let mut inner = self.lock_inner();
         let Some(id) = inner.image.file(path)? else {
             return Ok(None);
         };
+        // the device: pending writes (a direct read flushes them first), never one a failed
+        // writeback lost
+        let device = inner.image.files[id].kept_at_most();
+        let len = device.len() as u64;
+        if len > limit {
+            return Err(too_long(path, len, limit));
+        }
         inner.read(path)?;
-        Ok(Some(inner.image.files[id].current.clone()))
+        Ok(Some(device))
     }
 
     fn set_read_only(&self, path: &Path) -> io::Result<()> {
@@ -682,6 +820,7 @@ impl Fs for SimFs {
         let id = inner.image.file(path)?.ok_or_else(|| not_found(path))?;
         inner.mutate(|| format!("set_read_only {}", path.display()))?;
         inner.image.read_only.insert(id);
+        inner.record(|| format!("set_read_only {}", path.display()));
         Ok(())
     }
 
@@ -816,6 +955,12 @@ impl SimFile {
 
     fn push(&self, op: Op) -> io::Result<()> {
         let mut inner = self.lock_inner();
+        if inner.fail_writes && matches!(op, Op::Write { .. }) {
+            return Err(io::Error::other(format!(
+                "sim: injected write EIO: {}",
+                self.path.display()
+            )));
+        }
         inner.mutate(|| match &op {
             Op::Write { at, bytes } => {
                 format!("write {}B at {at} {}", bytes.len(), self.path.display())
@@ -860,7 +1005,10 @@ impl FileHandle for SimFile {
 
     fn sync_data(&self) -> io::Result<()> {
         let mut inner = self.lock_inner();
-        inner.mutate(|| format!("sync_data {}", self.path.display()))?;
+        if let Err(error) = inner.mutate(|| format!("sync_data {}", self.path.display())) {
+            inner.image.files[self.id].writeback_failed();
+            return Err(error);
+        }
         if inner.image.files[self.id].pending.is_empty() {
             return Ok(());
         }
@@ -878,11 +1026,17 @@ impl FileHandle for SimFile {
         Ok(())
     }
 
-    fn map(&self) -> io::Result<Option<Mapping>> {
+    fn map(&self, len: usize) -> io::Result<Option<Mapping>> {
         let inner = self.lock_inner();
         let data = &inner.image.files[self.id].current;
-        Ok((!data.is_empty()).then(|| Mapping {
-            bytes: Bytes::copy_from_slice(data),
+        let Some(bytes) = data.get(..len) else {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "a file shorter than its mapping",
+            ));
+        };
+        Ok((len > 0).then(|| Mapping {
+            bytes: Bytes::copy_from_slice(bytes),
             advice: None,
         }))
     }
@@ -948,6 +1102,28 @@ mod tests {
             !torn.is_empty(),
             "zero-filled / garbage variants of the unsynced writes: {seen:?}"
         );
+    }
+
+    /// A failed `sync_data` loses the file's pending writes (Linux marks the pages clean): reads
+    /// still see them, the device never holds them, a direct read and a power loss find the synced
+    /// bytes
+    #[test]
+    fn a_failed_sync_drops_the_files_pending_writes_from_the_device() {
+        let fs = SimFs::new();
+        let path = Path::new("/a");
+        let file = fs.open(path).expect("create a");
+        file.write_all_at(b"v1", 0).expect("write");
+        file.sync_data().expect("sync a");
+        fs.sync_dir(Path::new("/")).expect("sync root");
+        file.write_all_at(b"XY", 0).expect("unsynced write");
+        fs.fail_from(fs.mutations());
+        file.sync_data().expect_err("the injected sync failure");
+
+        assert_eq!(fs.contents(path), Some(b"XY".to_vec()), "still cached");
+        let device = |fs: &SimFs| fs.read_uncached(path, 2).expect("read").expect("a");
+        assert_eq!(device(&fs), b"v1", "never reached the device");
+        assert_eq!(device(&fs.restarted()), b"v1", "nor after a restart");
+        assert_eq!(fs.power_loss().contents(path), Some(b"v1".to_vec()));
     }
 
     /// `fail_from(2)`: calls 0-1 apply, 2 on = named `EIO` + nothing applied; `restarted()` = same

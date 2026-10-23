@@ -12,7 +12,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroUsize},
-    ops::Bound,
+    ops::{Bound, RangeBounds},
 };
 
 use proptest::{prelude::*, strategy::Union};
@@ -29,7 +29,7 @@ pub const BLOCKS: Namespace = Namespace::new("blocks");
 /// Fixed 8-byte sequence
 pub const HEIGHTS: Namespace = Namespace::new("heights");
 /// Fixed 4-byte sequence, in a sub-directory for engines with them
-pub const NODES: Namespace = Namespace::new("pool/nodes");
+const NODES: Namespace = Namespace::new("pool/nodes");
 /// `account ‖ seq` → 8 bytes, removable, read per account
 pub const SCANNED: Namespace = Namespace::new("scanned");
 /// Hash-like 16-byte ids → 4 bytes, insert-only point lookups
@@ -55,11 +55,17 @@ pub trait Subject {
     type Backend: Backend<Reader: MaintenanceReader>;
 
     /// Backend over the storage as it stands now, declared with [`SPECS`] (reopen = fresh
-    /// `open`; commits are written only by `flush`)
+    /// `open`)
     fn open(&self) -> Self::Backend;
 
     /// Commits survive a reopen without a flush (nothing buffered)
     fn keeps_unflushed(&self) -> bool {
+        false
+    }
+
+    /// The backend may write commits before a flush (e.g. once its buffer fills): a reopen or
+    /// crash then holds a prefix of the commits, from the last flushed one to the last one
+    fn writes_on_its_own(&self) -> bool {
         false
     }
 
@@ -239,22 +245,16 @@ impl Model {
 
     /// `scanned` rows within the bounds, in key order
     fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Vec<(RawKey, RawValue)> {
-        let within = |key: &[u8]| {
-            let above = match lower {
-                Bound::Included(lo) => key >= lo,
-                Bound::Excluded(lo) => key > lo,
-                Bound::Unbounded => true,
-            };
-            let below = match upper {
-                Bound::Included(hi) => key <= hi,
-                Bound::Excluded(hi) => key < hi,
-                Bound::Unbounded => true,
-            };
-            above && below
-        };
-        let rows = self.scanned.iter().filter(|(key, _)| within(key));
-        rows.map(|(key, value)| (key.clone(), value.clone()))
-            .collect()
+        let rows: Vec<_> = self.scanned.clone().into_iter().collect();
+        within(&rows, (lower, upper))
+    }
+
+    /// The next tip, committed with no ops
+    fn advance_empty(&mut self) -> BlockRef {
+        self.advances += 1;
+        let tip = salted_ref(self.advances, self.salt);
+        self.tip = Some(tip);
+        tip
     }
 
     /// `owner` + `raw` seq reduced into 0 to `seq + 1` (lands on, between and past issued rows);
@@ -268,9 +268,14 @@ impl Model {
         }
     }
 
-    /// - tip; every sequence record one at a time, whole, and as a forward + reverse chunked range
-    /// - full + per-owner scans; sampled values + a miss; every removed key absent
-    /// - values over every id issued + as many never issued
+    /// `probed` rows, in key order
+    fn probed_entries(&self) -> Vec<(RawKey, RawValue)> {
+        self.probed.clone().into_iter().collect()
+    }
+
+    /// - tip; every sequence record one at a time, whole, as chunked ranges (whole, a middle run)
+    /// - `scanned`: full and per-owner scans; sampled values + a miss; every removed key absent
+    /// - `probed`: values over every id issued + as many never issued; full scans
     pub fn assert_view(&self, reader: &impl MaintenanceReader, label: &str) {
         assert_eq!(reader.tip().expect("tip"), self.tip, "{label}: tip");
         for (namespace, model) in [
@@ -289,38 +294,15 @@ impl Model {
             let whole = sequence_entries(model);
             let scanned = reader.scan(namespace).expect("scan");
             assert_eq!(scanned, whole, "{label}: {namespace} scan");
-            for direction in [ScanDirection::Forward, ScanDirection::Reverse] {
-                let got = chunked(
-                    reader,
-                    namespace,
-                    Bound::Unbounded,
-                    Bound::Unbounded,
-                    direction,
-                    40,
-                );
-                assert_eq!(
-                    got,
-                    ordered(&whole, direction),
-                    "{label}: {namespace} {direction:?}"
-                );
-                filtered(
-                    reader,
-                    namespace,
-                    (Bound::Unbounded, Bound::Unbounded),
-                    direction,
-                    40,
-                    &ordered(&whole, direction),
-                    &format!("{label}: {namespace} {direction:?} filtered"),
-                );
-            }
+            let label = format!("{label}: {namespace}");
+            let unbounded = (Bound::Unbounded, Bound::Unbounded);
+            walks(reader, namespace, unbounded, &whole, &[40, 20], &label);
             let middle = len / 3..len - len / 3;
-            let (lower, upper) = (
+            let bounds = (
                 Bound::Included(sequence_key(middle.start)),
                 Bound::Excluded(sequence_key(middle.end)),
             );
-            let expected = &whole[middle.start as usize..middle.end as usize];
-            let got = chunked(reader, namespace, lower, upper, ScanDirection::Forward, 40);
-            assert_eq!(got, expected, "{label}: {namespace} middle range");
+            walks(reader, namespace, bounds, &whole, &[40], &label);
         }
 
         let every = self.scan(Bound::Unbounded, Bound::Unbounded);
@@ -331,11 +313,15 @@ impl Model {
         );
         for owner in [0u8, 3, 9] {
             let (from, to) = (scanned_key(owner, 0), scanned_key(owner, u32::MAX));
-            let expected = self.scan(Bound::Included(&from[..]), Bound::Excluded(&to[..]));
-            let lower = Bound::Included(from.clone());
-            let upper = Bound::Excluded(to.clone());
-            let got = chunked(reader, SCANNED, lower, upper, ScanDirection::Forward, 64);
-            assert_eq!(got, expected, "{label}: owner {owner}");
+            let bounds = (Bound::Included(from), Bound::Excluded(to));
+            walks(
+                reader,
+                SCANNED,
+                bounds,
+                &every,
+                &[64],
+                &format!("{label}: owner {owner}"),
+            );
         }
         for (key, value) in self.scanned.iter().step_by(7) {
             let got = reader.get(SCANNED, key).expect("get");
@@ -355,45 +341,60 @@ impl Model {
             let got = reader.get(PROBED, &id).expect("get");
             assert_eq!(got.as_ref(), self.probed.get(&id), "{label}: probed {n}");
         }
+        let probed = self.probed_entries();
+        assert_eq!(
+            reader.scan(PROBED).expect("scan"),
+            probed,
+            "{label}: {PROBED} scan"
+        );
+        let label = format!("{label}: {PROBED}");
+        let unbounded = (Bound::Unbounded, Bound::Unbounded);
+        walks(reader, PROBED, unbounded, &probed, &[64], &label);
+    }
+
+    /// Every namespace scanned with bounds shorter and longer than its keys ([`odd_bounds`])
+    fn assert_odd_bounds(&self, reader: &impl BackendReader, label: &str) {
+        for (namespace, model) in [
+            (BLOCKS, &self.blocks),
+            (HEIGHTS, &self.heights),
+            (NODES, &self.nodes),
+        ] {
+            let whole = sequence_entries(model);
+            odd_bounds(reader, namespace, &whole, &format!("{label}: {namespace}"));
+        }
+        let every = self.scan(Bound::Unbounded, Bound::Unbounded);
+        odd_bounds(reader, SCANNED, &every, &format!("{label}: {SCANNED}"));
+        odd_bounds(
+            reader,
+            PROBED,
+            &self.probed_entries(),
+            &format!("{label}: {PROBED}"),
+        );
     }
 
     /// `scan_range` of `scanned` within the bounds, both directions, at `budget` and 1 byte
     fn assert_scans(
         &self,
         reader: &impl BackendReader,
-        (lower, upper): (Bound<Vec<u8>>, Bound<Vec<u8>>),
+        bounds: (Bound<Vec<u8>>, Bound<Vec<u8>>),
         budget: u16,
         label: &str,
     ) {
-        let expected = self.scan(
-            lower.as_ref().map(Vec::as_slice),
-            upper.as_ref().map(Vec::as_slice),
-        );
-        for direction in [ScanDirection::Forward, ScanDirection::Reverse] {
-            for budget in [usize::from(budget).max(1), 1] {
-                let got = chunked(
-                    reader,
-                    SCANNED,
-                    lower.clone(),
-                    upper.clone(),
-                    direction,
-                    budget,
-                );
-                let expected = ordered(&expected, direction);
-                let label = format!("{label}: {lower:?}..{upper:?} {direction:?} {budget}");
-                assert_eq!(got, expected, "{label}");
-                filtered(
-                    reader,
-                    SCANNED,
-                    (lower.clone(), upper.clone()),
-                    direction,
-                    budget,
-                    &expected,
-                    &format!("{label} filtered"),
-                );
-            }
-        }
+        let every = self.scan(Bound::Unbounded, Bound::Unbounded);
+        let budgets = [usize::from(budget).max(1), 1];
+        walks(reader, SCANNED, bounds, &every, &budgets, label);
     }
+}
+
+/// `entries` (ascending) within `bounds`, in key order
+fn within(
+    entries: &[(RawKey, RawValue)],
+    bounds: (Bound<&[u8]>, Bound<&[u8]>),
+) -> Vec<(RawKey, RawValue)> {
+    let held = entries
+        .iter()
+        .filter(|(key, _)| bounds.contains(key.as_slice()));
+    held.cloned().collect()
 }
 
 /// A sequence's records as the backend keys them
@@ -404,85 +405,124 @@ fn sequence_entries(records: &[Vec<u8>]) -> Vec<(RawKey, RawValue)> {
         .collect()
 }
 
-/// `entries` in `direction` order (`entries` ascending)
-fn ordered(entries: &[(RawKey, RawValue)], direction: ScanDirection) -> Vec<(RawKey, RawValue)> {
-    let mut entries = entries.to_vec();
-    if direction == ScanDirection::Reverse {
-        entries.reverse();
-    }
-    entries
-}
-
 /// Raw bytes of an entry
 fn size((key, value): &(RawKey, RawValue)) -> usize {
     key.len() + value.len()
 }
 
-/// A `scan_range`, joined, checking every chunk is non-empty, within `budget` (or one entry) and
-/// full: a chunk ends only where the next entry would take it past `budget`
-fn chunked(
-    reader: &impl BackendReader,
-    namespace: Namespace,
-    lower: Bound<RawKey>,
-    upper: Bound<RawKey>,
-    direction: ScanDirection,
-    budget: usize,
-) -> Vec<(RawKey, RawValue)> {
-    let range = ScanRange {
-        lower,
-        upper,
-        direction,
-        chunk_bytes: NonZeroUsize::new(budget).expect("budgets are non-zero"),
-    };
-    let chunks: Vec<Vec<(RawKey, RawValue)>> = reader
-        .scan_range(namespace, range, raw_entry)
-        .collect::<Result<_, _>>()
-        .expect("scan_range");
-    for (at, chunk) in chunks.iter().enumerate() {
-        let bytes: usize = chunk.iter().map(size).sum();
-        assert!(!chunk.is_empty(), "{namespace}: an empty chunk");
-        assert!(
-            chunk.len() == 1 || bytes <= budget,
-            "{namespace}: a {bytes}-byte chunk over its {budget}-byte budget"
-        );
-        if let Some(next) = chunks.get(at + 1).and_then(|next| next.first()) {
-            assert!(
-                bytes + size(next) > budget,
-                "{namespace}: a {bytes}-byte chunk ended before an entry that fit its \
-                 {budget}-byte budget"
-            );
-        }
-    }
-    chunks.concat()
+/// What a walk's filter keeps
+#[derive(Debug, Clone, Copy)]
+enum Keep {
+    All,
+    /// Every other entry it sees, from the first
+    EveryOther,
 }
 
-/// A `scan_range` through a filter keeping every other entry, checking the filter sees every
-/// entry in `entries` (all of the range, in walk order) exactly once, and each chunk counts only
-/// kept entries against `budget` and ends only where the next entry seen would pass it
-fn filtered(
+/// Every [`walk`] of `namespace` within `bounds` (`all` = the namespace, ascending): both
+/// directions, both [`Keep`]s, each budget
+fn walks(
     reader: &impl BackendReader,
     namespace: Namespace,
-    (lower, upper): (Bound<RawKey>, Bound<RawKey>),
-    direction: ScanDirection,
-    budget: usize,
-    entries: &[(RawKey, RawValue)],
+    bounds: (Bound<RawKey>, Bound<RawKey>),
+    all: &[(RawKey, RawValue)],
+    budgets: &[usize],
     label: &str,
 ) {
+    let (lower, upper) = &bounds;
+    let mut entries = within(
+        all,
+        (
+            lower.as_ref().map(Vec::as_slice),
+            upper.as_ref().map(Vec::as_slice),
+        ),
+    );
+    for direction in [ScanDirection::Forward, ScanDirection::Reverse] {
+        if direction == ScanDirection::Reverse {
+            entries.reverse();
+        }
+        for &budget in budgets {
+            for keep in [Keep::All, Keep::EveryOther] {
+                let range = ScanRange {
+                    lower: lower.clone(),
+                    upper: upper.clone(),
+                    direction,
+                    chunk_bytes: NonZeroUsize::new(budget).expect("budgets are non-zero"),
+                };
+                let label = format!("{label}: {range:?} {keep:?}");
+                walk(reader, namespace, range, &entries, keep, &label);
+            }
+        }
+    }
+}
+
+/// Bounds shorter and longer than the key width, around the middle entry of `all` (ascending):
+/// a prefix of it, it with a byte appended, a one-byte bound, every bound kind
+fn odd_bounds(
+    reader: &impl BackendReader,
+    namespace: Namespace,
+    all: &[(RawKey, RawValue)],
+    label: &str,
+) {
+    let Some((key, _)) = all.get(all.len() / 2) else {
+        return;
+    };
+    let prefix = key[..key.len() - 1].to_vec();
+    let longer = [key.clone(), vec![0]].concat();
+    let past = [key.clone(), vec![0xff]].concat();
+    for bounds in [
+        (
+            Bound::Included(prefix.clone()),
+            Bound::Excluded(longer.clone()),
+        ),
+        (
+            Bound::Excluded(prefix.clone()),
+            Bound::Included(longer.clone()),
+        ),
+        (Bound::Excluded(past), Bound::Unbounded),
+        (Bound::Unbounded, Bound::Included(vec![key[0]])),
+        (Bound::Included(vec![key[0]]), Bound::Excluded(prefix)),
+        (Bound::Excluded(longer), Bound::Excluded(vec![0xff; 2])),
+    ] {
+        walks(
+            reader,
+            namespace,
+            bounds,
+            all,
+            &[40],
+            &format!("{label}: odd bounds"),
+        );
+    }
+}
+
+/// One `scan_range` of `entries` (all of `range`, in walk order) through a [`Keep`] filter,
+/// checking the port's chunk rule:
+///
+/// - the filter sees every entry exactly once, in walk order
+/// - each chunk visits at least one entry, and at most `chunk_bytes` raw bytes unless it visits
+///   one
+/// - a chunk ends only where the next entry would take the bytes it visited past `chunk_bytes`
+/// - each chunk holds exactly the entries it visited that the filter kept (empty if none)
+fn walk(
+    reader: &impl BackendReader,
+    namespace: Namespace,
+    range: ScanRange,
+    entries: &[(RawKey, RawValue)],
+    keep: Keep,
+    label: &str,
+) {
+    let budget = range.chunk_bytes.get();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let filter = {
         let seen = std::sync::Arc::clone(&seen);
         move |key: &[u8], value: &[u8]| {
             let mut seen = seen.lock().expect("filter log");
-            let keep = seen.len() % 2 == 0;
+            let kept = match keep {
+                Keep::All => true,
+                Keep::EveryOther => seen.len() % 2 == 0,
+            };
             seen.push(key.to_vec());
-            keep.then(|| (key.to_vec(), value.to_vec()))
+            kept.then(|| (key.to_vec(), value.to_vec()))
         }
-    };
-    let range = ScanRange {
-        lower,
-        upper,
-        direction,
-        chunk_bytes: NonZeroUsize::new(budget).expect("budgets are non-zero"),
     };
     let mut chunks = Vec::new();
     let mut seen_by = Vec::new();
@@ -497,25 +537,27 @@ fn filtered(
         keys,
         "{label}: the filter sees every entry once, in walk order"
     );
-    let kept: Vec<(RawKey, RawValue)> = entries.iter().step_by(2).cloned().collect();
-    assert_eq!(chunks.concat(), kept, "{label}: exactly the kept entries");
-    for (at, chunk) in chunks.iter().enumerate() {
-        let bytes: usize = chunk.iter().map(size).sum();
-        assert!(!chunk.is_empty(), "{label}: an empty chunk");
+    let mut start = 0;
+    for (at, (chunk, &end)) in chunks.iter().zip(&seen_by).enumerate() {
+        let visited = &entries[start..end];
+        assert!(!visited.is_empty(), "{label}: chunk {at} visited nothing");
+        let bytes: usize = visited.iter().map(size).sum();
         assert!(
-            chunk.len() == 1 || bytes <= budget,
-            "{label}: {bytes} kept bytes over the {budget}-byte budget"
+            visited.len() == 1 || bytes <= budget,
+            "{label}: chunk {at} visited {bytes} bytes, over its {budget}-byte budget"
         );
-        let stopped_before = seen_by
-            .get(at)
-            .filter(|_| at + 1 < chunks.len())
-            .and_then(|&seen| entries.get(seen));
-        if let Some(next) = stopped_before {
+        if at + 1 < chunks.len() {
             assert!(
-                bytes + size(next) > budget,
-                "{label}: a chunk of {bytes} kept bytes ended before an entry that fit {budget}"
+                bytes + size(&entries[end]) > budget,
+                "{label}: chunk {at} ended after {bytes} bytes, before an entry that fit {budget}"
             );
         }
+        let kept: Vec<_> = (start..end)
+            .filter(|index| matches!(keep, Keep::All) || index % 2 == 0)
+            .map(|index| entries[index].clone())
+            .collect();
+        assert_eq!(chunk, &kept, "{label}: chunk {at} = its kept entries");
+        start = end;
     }
 }
 
@@ -568,6 +610,20 @@ impl Oracle {
         self.nodes.drain(..self.applied);
         self.applied = 0;
     }
+
+    /// Reopened a backend that writes on its own: the applied prefix it holds (found by its tip)
+    /// is now durable, the rest unapplied
+    fn recovered(&mut self, tip: Option<BlockRef>, label: &str) {
+        let held = (0..=self.applied).rev().find(|&count| {
+            let model = count
+                .checked_sub(1)
+                .map_or(&self.durable, |at| &self.nodes[at].model);
+            model.tip == tip
+        });
+        self.applied =
+            held.unwrap_or_else(|| panic!("{label}: tip {tip:?} ends no prefix of the commits"));
+        self.flushed();
+    }
 }
 
 /// - `Grow`: node above the newest (`records` blocks + nodes, one height, `removals` of held
@@ -578,7 +634,8 @@ impl Oracle {
 /// - `Settle`: background work finishes; `Reopen`: exit mid-work; `PowerLoss`: crash now (both:
 ///   unflushed commits lost unless the subject keeps them; nodes kept and re-applied later)
 /// - `Pin`: a reader + the model it must keep answering, re-checked every later step
-/// - `Scan`: raw bounds reduced at run time, both directions, `budget` and 1-byte chunks
+/// - `Scan`: raw bounds reduced at run time, both directions, `budget` and 1-byte chunks; then
+///   every namespace with bounds shorter and longer than its keys
 #[derive(Debug, Clone)]
 pub enum Step {
     /// Grow a node.
@@ -697,7 +754,8 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
 /// - a new reader sees every committed node; a flush makes them durable
 /// - a pinned reader keeps its snapshot through commits, flushes, background work and reopens
 /// - reopen or crash = exactly the durable nodes (plus the committed ones, for a subject that
-///   keeps unflushed commits); [`Subject::check`] holds
+///   keeps unflushed commits; a prefix of the committed ones, for one that writes on its own);
+///   [`Subject::check`] holds
 pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
     let mut backend = subject.open();
     let mut oracle = Oracle::default();
@@ -738,9 +796,13 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 let crashed = matches!(step, Step::PowerLoss) && subject.power_loss();
                 drop(backend);
                 backend = subject.open();
-                match !crashed && subject.keeps_unflushed() {
-                    true => oracle.flushed(),
-                    false => oracle.applied = 0,
+                if !crashed && subject.keeps_unflushed() {
+                    oracle.flushed();
+                } else if subject.writes_on_its_own() {
+                    let tip = backend.reader().expect("reader").tip().expect("tip");
+                    oracle.recovered(tip, &label);
+                } else {
+                    oracle.applied = 0;
                 }
                 reopened = true;
             }
@@ -753,6 +815,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 let bounds = (visible.bound(*from), visible.bound(*to));
                 let reader = backend.reader().expect("reader");
                 visible.assert_scans(&reader, bounds, *budget, &label);
+                visible.assert_odd_bounds(&reader, &label);
             }
         }
         subject.check(&backend, reopened, &label);
@@ -791,7 +854,12 @@ pub fn contract<S: Subject>(subject: S) {
     let backend = subject.open();
     let reader = || backend.reader().expect("reader");
     model.assert_view(&reader(), "fresh");
-    for (namespace, key) in [(BLOCKS, vec![0; 4]), (PROBED, vec![0; 15])] {
+    for (namespace, key) in [
+        (BLOCKS, vec![0; 4]),
+        (BLOCKS, vec![0; 9]),
+        (PROBED, vec![0; 15]),
+        (PROBED, vec![0; 17]),
+    ] {
         assert!(
             matches!(reader().get(namespace, &key), Err(ReadError::WidthMismatch { actual, .. }) if actual == key.len()),
             "{namespace}: a {}-byte point read refused",
@@ -878,12 +946,28 @@ pub fn contract<S: Subject>(subject: S) {
     );
     backend.flush().expect("flush");
     model.assert_view(&reader(), "flushed");
+    model.assert_odd_bounds(&reader(), "flushed");
     let footprint = backend.footprint().expect("footprint");
     assert!(
         footprint.iter().all(|namespace| namespace.bytes > 0),
         "flushed: every namespace holds data {footprint:?}"
     );
     backend.flush().expect("an empty flush");
+
+    // a scan started before a commit, a flush, background work and a reopen: its snapshot
+    let scanned = model.clone();
+    let range = ScanRange {
+        lower: Bound::Unbounded,
+        upper: Bound::Unbounded,
+        direction: ScanDirection::Reverse,
+        chunk_bytes: NonZeroUsize::MIN,
+    };
+    let mut chunks = reader().scan_range(SCANNED, range, raw_entry);
+    let started = chunks.next().expect("scanned rows held").expect("chunk");
+    let (tip, ops) = model.advance(1, &[4, 5], 1, &[0]);
+    commit(&backend, tip, ops).expect("commit");
+    backend.flush().expect("flush");
+    subject.settle(&backend);
     drop(backend);
 
     let backend = subject.open();
@@ -893,6 +977,14 @@ pub fn contract<S: Subject>(subject: S) {
         backend.verify().expect("verify").is_clean(),
         "reopened: verify clean"
     );
+    let rest: Vec<_> = chunks.collect::<Result<_, _>>().expect("chunks");
+    let mut expected = scanned.scan(Bound::Unbounded, Bound::Unbounded);
+    expected.reverse();
+    assert_eq!(
+        [vec![started], rest].concat().concat(),
+        expected,
+        "a scan across a commit, flush, settle and reopen: its snapshot"
+    );
 
     let flushed = model.clone();
     let (tip, ops) = model.advance(1, &[3], 1, &[0]);
@@ -900,7 +992,8 @@ pub fn contract<S: Subject>(subject: S) {
     drop(backend);
     let backend = subject.open();
     let reader = || backend.reader().expect("reader");
-    match subject.keeps_unflushed() {
+    let reopened_tip = reader().tip().expect("tip");
+    match subject.keeps_unflushed() || (subject.writes_on_its_own() && reopened_tip == Some(tip)) {
         true => model.assert_view(&reader(), "reopened: unflushed kept"),
         false => {
             flushed.assert_view(&reader(), "reopened: unflushed lost");
@@ -908,6 +1001,11 @@ pub fn contract<S: Subject>(subject: S) {
         }
     }
     model.assert_view(&reader(), "recommitted");
+
+    // an empty batch commits its tip alone
+    let tip = model.advance_empty();
+    commit(&backend, tip, Vec::new()).expect("an empty batch");
+    model.assert_view(&reader(), "an empty batch: its tip, nothing else");
 
     // each violation: refused, nothing applied, the next commit fine
     let above = block_ref(model.advances + 1);
@@ -960,7 +1058,17 @@ pub fn contract<S: Subject>(subject: S) {
             "an append at a held position",
             next(),
             vec![put(BLOCKS, sequence_key(0), vec![1])],
-            Box::new(|e| matches!(e, CommitError::NotNextPosition { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::NotNextPosition { namespace, .. } if ns(namespace, BLOCKS)),
+            ),
+        ),
+        (
+            "one position appended twice in one batch",
+            next(),
+            vec![ok_append(), ok_append()],
+            Box::new(
+                move |e| matches!(e, CommitError::NotNextPosition { expected, got: Some(got), .. } if *expected == heights + 1 && *got == heights),
+            ),
         ),
         (
             "a sequence key of the wrong length",
@@ -1014,16 +1122,36 @@ pub fn contract<S: Subject>(subject: S) {
             }),
         ),
         (
+            "a delete key of the wrong width",
+            next(),
+            vec![ok_append(), delete(SCANNED, vec![0; 11])],
+            Box::new(move |e| {
+                matches!(
+                    e,
+                    CommitError::WidthMismatch {
+                        namespace,
+                        part: Part::Key,
+                        actual: 11,
+                        ..
+                    } if ns(namespace, SCANNED)
+                )
+            }),
+        ),
+        (
             "a delete in a sequence",
             next(),
             vec![delete(BLOCKS, sequence_key(0))],
-            Box::new(|e| matches!(e, CommitError::DeleteNotAllowed { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::DeleteNotAllowed { namespace } if ns(namespace, BLOCKS)),
+            ),
         ),
         (
             "a delete in a map without deletes",
             next(),
             vec![delete(PROBED, probed_key(0))],
-            Box::new(|e| matches!(e, CommitError::DeleteNotAllowed { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::DeleteNotAllowed { namespace } if ns(namespace, PROBED)),
+            ),
         ),
         (
             "a key inserted twice in one batch",
@@ -1032,7 +1160,9 @@ pub fn contract<S: Subject>(subject: S) {
                 put(PROBED, probed_key(9_999), vec![0; 4]),
                 put(PROBED, probed_key(9_999), vec![1; 4]),
             ],
-            Box::new(|e| matches!(e, CommitError::DuplicateInBatch { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::DuplicateInBatch { namespace } if ns(namespace, PROBED)),
+            ),
         ),
         (
             "a key inserted and removed in one batch",
@@ -1041,40 +1171,52 @@ pub fn contract<S: Subject>(subject: S) {
                 put(SCANNED, fresh.clone(), vec![0; 8]),
                 delete(SCANNED, fresh.clone()),
             ],
-            Box::new(|e| matches!(e, CommitError::DuplicateInBatch { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::DuplicateInBatch { namespace } if ns(namespace, SCANNED)),
+            ),
         ),
         (
-            "a key already present",
-            next(),
-            vec![ok_append(), put(PROBED, probed_key(0), vec![0; 4])],
-            Box::new(|e| matches!(e, CommitError::KeyExists { .. })),
-        ),
-        (
-            "a delete of an absent key",
-            next(),
-            vec![ok_append(), delete(SCANNED, fresh.clone())],
-            Box::new(|e| matches!(e, CommitError::KeyAbsent { .. })),
-        ),
-        (
-            "a re-insert of a removed key",
-            next(),
-            vec![ok_append(), put(SCANNED, removed.clone(), vec![0; 8])],
-            Box::new(|e| matches!(e, CommitError::KeyRemoved { .. })),
-        ),
-        (
-            "a second delete of a removed key",
-            next(),
-            vec![ok_append(), delete(SCANNED, removed.clone())],
-            Box::new(|e| matches!(e, CommitError::KeyRemoved { .. })),
-        ),
-        (
-            "a valid op before a refused one",
+            "a held key removed and re-inserted in one batch",
             next(),
             vec![
                 delete(SCANNED, held.clone()),
                 put(SCANNED, held.clone(), vec![0; 8]),
             ],
-            Box::new(|e| matches!(e, CommitError::DuplicateInBatch { .. })),
+            Box::new(
+                move |e| matches!(e, CommitError::DuplicateInBatch { namespace } if ns(namespace, SCANNED)),
+            ),
+        ),
+        (
+            "a key already present, after a valid append",
+            next(),
+            vec![ok_append(), put(PROBED, probed_key(0), vec![0; 4])],
+            Box::new(
+                move |e| matches!(e, CommitError::KeyExists { namespace } if ns(namespace, PROBED)),
+            ),
+        ),
+        (
+            "a delete of an absent key",
+            next(),
+            vec![ok_append(), delete(SCANNED, fresh.clone())],
+            Box::new(
+                move |e| matches!(e, CommitError::KeyAbsent { namespace } if ns(namespace, SCANNED)),
+            ),
+        ),
+        (
+            "a re-insert of a removed key",
+            next(),
+            vec![ok_append(), put(SCANNED, removed.clone(), vec![0; 8])],
+            Box::new(
+                move |e| matches!(e, CommitError::KeyRemoved { namespace } if ns(namespace, SCANNED)),
+            ),
+        ),
+        (
+            "a second delete of a removed key",
+            next(),
+            vec![ok_append(), delete(SCANNED, removed.clone())],
+            Box::new(
+                move |e| matches!(e, CommitError::KeyRemoved { namespace } if ns(namespace, SCANNED)),
+            ),
         ),
     ];
     for (what, tip, ops, expected) in cases {
@@ -1113,4 +1255,10 @@ pub fn contract<S: Subject>(subject: S) {
     commit(&backend, rehashed, ops).expect("a higher tip, another hash");
     model.tip = Some(rehashed);
     model.assert_view(&reader(), "a higher tip with another hash");
+
+    // tips need not be consecutive
+    let jump = block_ref(model.advances + 5);
+    commit(&backend, jump, Vec::new()).expect("a tip several heights above");
+    model.tip = Some(jump);
+    model.assert_view(&reader(), "a tip several heights above");
 }

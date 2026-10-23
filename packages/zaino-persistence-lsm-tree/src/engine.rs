@@ -11,31 +11,50 @@
 //!   parallel → manifest (commit point) → readable
 //! - a failed write poisons the backend (`docs/durability.md` §5): recovery = reopen
 
-use std::{path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeSet, HashSet},
+    num::NonZeroUsize,
+    path::Path,
+    sync::Arc,
+    time::Instant,
+};
 
 use rayon::prelude::*;
 use zaino_persistence::{
-    Namespace, NamespaceFootprint, NamespaceKind, NamespaceSpec, Unit, Verification, Width,
+    Namespace, NamespaceFootprint, NamespaceKind, NamespaceSpec, Verification, Width,
 };
 use zaino_primitives::types::BlockRef;
 
 use crate::{
     buffer::{Buffer, Row},
-    dir::{IndexDir, MANIFEST},
+    dir::{IndexDir, CREATING, LOCK, MANIFEST},
     error::StoreError,
     fs::Fs,
     lsm::{
-        decode_list, encode_list, file_name, report_leftover, SegmentLog, SegmentMeta, Shape,
-        Slots, Snapshot, Staged,
+        decode_list, encode_list, file_name, report_leftover, Labels, SegmentLog, SegmentMeta,
+        Shape, Slots, Snapshot, Staged,
     },
     lsm::{LsmConfig, Tuning},
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     pages::{footprint, scrub, Sealed},
     sequence::{self, Seals, SequenceFile, SequencePages},
+    tails::{Tail, Tails, TAILS},
 };
 
 /// Names the directory reserves for itself (never a namespace path component)
-const RESERVED: [&str; 3] = [MANIFEST, "LOCK", "MANIFEST.creating"];
+const RESERVED: [&str; 4] = [MANIFEST, LOCK, CREATING, TAILS];
+
+/// Windows device names, which no file there may take (parts carry no extension: `.` is not a
+/// name character)
+fn windows_device(part: &str) -> bool {
+    let upper = part.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        upper
+            .strip_prefix(prefix)
+            .is_some_and(|digit| digit.len() == 1 && digit.bytes().all(|b| b.is_ascii_digit()))
+    };
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+}
 
 /// Index of `namespace` in `specs` (`None` = undeclared)
 pub(crate) fn position(specs: &[NamespaceSpec], namespace: Namespace) -> Option<usize> {
@@ -48,7 +67,7 @@ pub(crate) fn position(specs: &[NamespaceSpec], namespace: Namespace) -> Option<
 /// - `/`-separated parts of `[A-Za-z0-9_-]`, at most 255 bytes, none reserved
 /// - compared ignoring case (case-insensitive filesystems: `Blocks` = `blocks`)
 /// - a map owns its directory: no namespace's path inside it
-pub(crate) fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
+fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
     let refused = |spec: &NamespaceSpec, reason| StoreError::Declared {
         name: spec.namespace.to_string(),
         reason,
@@ -67,6 +86,7 @@ pub(crate) fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
                 && !RESERVED
                     .iter()
                     .any(|reserved| reserved.eq_ignore_ascii_case(part))
+                && !windows_device(part)
                 && part
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
@@ -74,7 +94,7 @@ pub(crate) fn check_names(specs: &[NamespaceSpec]) -> Result<(), StoreError> {
         if !parts_safe {
             return Err(refused(
                 spec,
-                "a name not of `/`-separated [A-Za-z0-9_-] parts, or a reserved one",
+                "a name not of `/`-separated [A-Za-z0-9_-] parts, or a reserved or device name",
             ));
         }
         if !seen.insert(name.as_str()) {
@@ -117,6 +137,12 @@ pub(crate) struct Engine {
     files: Vec<Files>,
     view: DiskView,
     alert_bytes: u64,
+    /// This index's parallel work (writes, sorts, batched lookups): never the process-wide pool,
+    /// whose other users' CPU work would queue ahead of commits and whose threads our fsyncs
+    /// would block
+    pool: Arc<rayon::ThreadPool>,
+    /// Log files' committed tail pages, saved before each manifest
+    tails: Tails,
 }
 
 /// Committed state: what readers read below the buffer
@@ -320,9 +346,23 @@ impl Engine {
         specs: Arc<[NamespaceSpec]>,
         tunings: &[Tuning],
         lsm: LsmConfig,
+        threads: Option<NonZeroUsize>,
     ) -> Result<Self, StoreError> {
         check_names(&specs)?;
+        if let Some(reason) = lsm.refusal() {
+            return Err(StoreError::Config(reason));
+        }
         let name = identity.name().to_owned();
+        let pool = {
+            let index = name.clone();
+            let threads = threads
+                .or_else(|| std::thread::available_parallelism().ok())
+                .map_or(1, NonZeroUsize::get);
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(move |at| format!("lsm {index} {at}"))
+                .build()?
+        };
         let opened = IndexDir::open(Arc::clone(fs), path, identity)?;
         let mut dir = opened.dir;
         let body = match &opened.body {
@@ -343,16 +383,33 @@ impl Engine {
             }
         };
 
+        // a tail page a crash tore mid-append restored before any file's checks read it
+        let log_files = specs.iter().flat_map(|spec| match spec.kind {
+            NamespaceKind::Sequence { record } => {
+                SequenceFile::names(spec.namespace.as_str(), record)
+            }
+            NamespaceKind::Map { .. } => Vec::new(),
+        });
+        let tails = Tails::open(fs.as_ref(), dir.path(), log_files)?;
+        let restored = tails.restore(fs.as_ref(), dir.path(), dir.seq())?;
+        if restored > 0 {
+            tracing::warn!(index = %name, restored, "Restored log files' torn tail pages from TAILS");
+        }
+
         let bytes_per_sec = u64::from(lsm.merge_mib_per_sec.get()) << 20;
         let slots = Arc::new(Slots::new(lsm.merge_slots.get(), bytes_per_sec));
+        let index = name.as_str();
         let mut files = Vec::with_capacity(specs.len());
+        let mut sequence_dirs = BTreeSet::new();
         for ((spec, stored), tuning) in specs.iter().zip(&body.stored).zip(tunings) {
             let name = spec.namespace.as_str();
             files.push(match (spec.kind, stored) {
                 (NamespaceKind::Sequence { record }, Stored::Sequence(seals)) => {
-                    if let Some(parent) = parent(name) {
-                        dir.subdir(parent)?;
-                    }
+                    let holder = match parent(name) {
+                        Some(parent) => dir.subdir(parent)?,
+                        None => dir.path().to_path_buf(),
+                    };
+                    sequence_dirs.insert(holder);
                     let file = SequenceFile::open(
                         fs.as_ref(),
                         dir.path(),
@@ -375,13 +432,20 @@ impl Engine {
                     let shape = Shape::of(name, key, value, deletes, *tuning, lsm.spill_bytes)?;
                     let fs = Arc::clone(fs);
                     let slots = Arc::clone(&slots);
-                    let log = SegmentLog::open(fs, &map_dir, name, shape, list, &lsm, slots)?;
+                    let labels = Labels::new(index, name);
+                    let log = SegmentLog::open(fs, &map_dir, &labels, shape, list, &lsm, slots)?;
                     Files::Map(log)
                 }
                 _ => return Err(StoreError::Internal("a body entry of another kind")),
             });
         }
+        // every sequence file's name durable before a manifest names it, on every open: a create
+        // whose directory sync a crash or a failed open lost is still pending
+        for holder in &sequence_dirs {
+            fs.sync_dir(holder)?;
+        }
         if opened.body.is_none() {
+            save_tails(&files, &tails, dir.path(), dir.next_seq()?)?;
             dir.commit(&body.encode(&specs)?)?;
         }
 
@@ -397,6 +461,7 @@ impl Engine {
             }
         }
         if !rescoped.is_empty() {
+            save_tails(&files, &tails, dir.path(), dir.next_seq()?)?;
             dir.commit(&body.encode(&specs)?)?;
             for (index, staged) in rescoped {
                 if let Some(Files::Map(log)) = files.get_mut(index) {
@@ -416,11 +481,18 @@ impl Engine {
             files,
             view,
             alert_bytes: lsm.cleanup_alert_bytes,
+            pool: Arc::new(pool),
+            tails,
         })
     }
 
     pub(crate) fn view(&self) -> &DiskView {
         &self.view
+    }
+
+    /// The index's own thread pool (run parallel work in it with `install`)
+    pub(crate) fn pool(&self) -> &rayon::ThreadPool {
+        &self.pool
     }
 
     /// `buffer` written + sealed and the next view mapped, every namespace in parallel →
@@ -452,30 +524,52 @@ impl Engine {
             });
         }
 
-        let view = &self.view;
-        let prepared = self
-            .files
-            .par_iter_mut()
-            .zip(rows)
-            .enumerate()
-            .map(|(index, (files, rows))| match (files, rows) {
-                (Files::Sequence(file), _) => {
-                    for record in buffer.records(index).into_iter().flatten() {
-                        file.append(record)?;
-                    }
-                    let seals = file.seal()?;
-                    let old = match view.held.get(index) {
-                        Some(Durable::Sequence(pages)) => Some(pages),
-                        _ => None,
-                    };
-                    Ok(Prepared::Sequence(seals, file.pages(old)?))
+        // sequences sealed, then their tails saved for this commit's manifest, while the maps'
+        // segments are written alongside
+        let seq = self.dir.next_seq()?;
+        let (view, pool, tails, dir) = (&self.view, &self.pool, &self.tails, self.dir.path());
+        let mut sequences = Vec::new();
+        let mut maps = Vec::new();
+        for (index, (files, rows)) in self.files.iter_mut().zip(rows).enumerate() {
+            match (files, rows) {
+                (Files::Sequence(file), _) => sequences.push((index, file)),
+                (Files::Map(log), Some(rows)) => maps.push((index, log, rows)),
+                (Files::Map(_), None) => {
+                    return Err(StoreError::Internal("a map without its rows"))
                 }
-                (Files::Map(log), Some((rows, cancelled))) => {
-                    Ok(Prepared::Map(log.batch(rows, cancelled)?))
-                }
-                (Files::Map(_), None) => Err(StoreError::Internal("a map without its rows")),
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+            }
+        }
+        let (sealed, written) = pool.install(|| {
+            rayon::join(
+                || -> Result<Vec<(usize, Prepared)>, StoreError> {
+                    let sealed = sequences
+                        .par_iter_mut()
+                        .map(|(index, file)| {
+                            for record in buffer.records(*index).into_iter().flatten() {
+                                file.append(record)?;
+                            }
+                            let seals = file.seal()?;
+                            let old = view.sequence_pages(*index);
+                            Ok((*index, Prepared::Sequence(seals, file.pages(old)?)))
+                        })
+                        .collect::<Result<Vec<_>, StoreError>>()?;
+                    let saved = relative_tails(sequences.iter().map(|(_, file)| &**file), dir)?;
+                    tails.write(seq, &saved)?;
+                    Ok(sealed)
+                },
+                || -> Result<Vec<(usize, Prepared)>, StoreError> {
+                    maps.into_par_iter()
+                        .map(|(index, log, (rows, cancelled))| {
+                            Ok((index, Prepared::Map(log.batch(rows, cancelled)?)))
+                        })
+                        .collect()
+                },
+            )
+        });
+        let mut prepared = sealed?;
+        prepared.extend(written?);
+        prepared.sort_by_key(|(index, _)| *index);
+        let prepared: Vec<Prepared> = prepared.into_iter().map(|(_, prepared)| prepared).collect();
 
         let body = Body {
             committed: Committed { tip: Some(tip) },
@@ -504,6 +598,34 @@ type MapRows<'a> = (Vec<Row<'a>>, Vec<&'a [u8]>);
 
 /// Every map's leftover files reported together: a warning, an error from `alert_bytes` on
 /// (the disk may be failing)
+/// Every sequence's committed tail pages saved for manifest `seq` (before it is written)
+fn save_tails(files: &[Files], tails: &Tails, dir: &Path, seq: u64) -> Result<(), StoreError> {
+    let sequences = files.iter().filter_map(|files| match files {
+        Files::Sequence(file) => Some(file),
+        Files::Map(_) => None,
+    });
+    tails.write(seq, &relative_tails(sequences, dir)?)
+}
+
+/// `sequences`' tails, each keyed by its path under `dir`
+fn relative_tails<'a>(
+    sequences: impl Iterator<Item = &'a SequenceFile>,
+    dir: &Path,
+) -> Result<Vec<(String, Tail)>, StoreError> {
+    let mut saved = Vec::new();
+    for file in sequences {
+        for (path, tail) in file.tails()? {
+            let relative = path
+                .strip_prefix(dir)
+                .ok()
+                .and_then(Path::to_str)
+                .ok_or(StoreError::Internal("a log file outside its directory"))?;
+            saved.push((relative.to_owned(), tail));
+        }
+    }
+    Ok(saved)
+}
+
 fn report_leftovers(files: &[Files], alert_bytes: u64) {
     let maps = files.iter().filter_map(|files| match files {
         Files::Map(log) => Some(log.leftover()),
@@ -522,7 +644,7 @@ fn leftover_total<'a>(
     for (files, held, error) in maps {
         count = count.saturating_add(files);
         bytes = bytes.saturating_add(held);
-        failure = failure.or(error);
+        failure = failure.or(error.filter(|_| files > 0));
     }
     failure
         .filter(|_| count > 0)
@@ -558,13 +680,7 @@ fn read_side(files: &[Files], previous: Option<&DiskView>) -> Result<Vec<Durable
         .enumerate()
         .map(|(index, files)| match files {
             Files::Sequence(file) => {
-                let old =
-                    previous
-                        .and_then(|view| view.held.get(index))
-                        .and_then(|old| match old {
-                            Durable::Sequence(pages) => Some(pages),
-                            Durable::Map(_) => None,
-                        });
+                let old = previous.and_then(|view| view.sequence_pages(index));
                 Ok(Durable::Sequence(file.pages(old)?))
             }
             Files::Map(log) => Ok(Durable::Map(Arc::clone(log.snapshot()))),
@@ -580,6 +696,14 @@ impl DiskView {
     /// Namespace `index`'s committed read side
     pub(crate) fn held(&self, index: usize) -> Option<&Durable> {
         self.held.get(index)
+    }
+
+    /// Namespace `index`'s sequence pages, if it is a sequence
+    fn sequence_pages(&self, index: usize) -> Option<&SequencePages> {
+        match self.held.get(index)? {
+            Durable::Sequence(pages) => Some(pages),
+            Durable::Map(_) => None,
+        }
     }
 
     /// Each namespace's committed bytes and those in page cache, declaration order
@@ -605,47 +729,65 @@ impl DiskView {
 }
 
 /// Every file the directory's committed manifest names, scrubbed (read only, no lock: safe beside
-/// a live writer)
+/// a live writer); a path holding no index (no `MANIFEST`) is an error, never a clean report
 pub(crate) fn verify(
     fs: &dyn Fs,
     path: &Path,
     identity: &Identity,
     specs: &[NamespaceSpec],
 ) -> Result<Verification, StoreError> {
+    if fs.open_read_only(&path.join(MANIFEST))?.is_none() {
+        let missing = format!("{}: no index here (no {MANIFEST})", path.display());
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, missing).into());
+    }
     verify_committed(fs, path, specs, || Ok(manifest::read(fs, path, identity)?))
 }
 
-/// Every file the manifest `committed` reads names, scrubbed
+/// Every file the manifest `committed` reads names, scrubbed once: the files committed when it
+/// started
 ///
-/// - live writer's merge may retire a listed segment mid-scrub: lost file + manifest moved since
-///   = scrub again against the newer one
+/// - a live writer's merge may retire a listed segment mid-scrub: a file found lost is checked
+///   against the manifest read once more after the pass, and skipped if no longer listed (a file
+///   is removed only once a durable manifest stops listing it; segment ids are never reused)
 fn verify_committed(
     fs: &dyn Fs,
     path: &Path,
     specs: &[NamespaceSpec],
     mut committed: impl FnMut() -> Result<Option<Vec<u8>>, StoreError>,
 ) -> Result<Verification, StoreError> {
-    let mut manifest = committed()?;
-    loop {
-        let Some(bytes) = &manifest else {
-            return Ok(Verification::default());
-        };
-        let body = Body::decode(bytes, specs)?;
-        let checked = body
-            .files(specs)
-            .into_iter()
-            .map(|(name, sealed)| scrub(fs, path, &name, sealed))
-            .collect::<Result<Vec<_>, _>>()?;
-        if checked.iter().any(|unit| unit.lost.is_some()) {
-            let newer = committed()?;
-            if newer != manifest {
-                manifest = newer;
-                continue;
-            }
-        }
-        let units: Vec<Unit> = checked.into_iter().map(|unit| unit.into_unit()).collect();
-        return Ok(Verification { units });
-    }
+    let Some(bytes) = committed()? else {
+        return Ok(Verification::default());
+    };
+    let checked = Body::decode(&bytes, specs)?
+        .files(specs)
+        .into_iter()
+        .map(|(name, sealed)| scrub(fs, path, &name, sealed))
+        .collect::<Result<Vec<_>, _>>()?;
+    // still listed once the pass is done = lost; no longer listed = a merge retired it
+    let listed: Option<HashSet<String>> = match checked.iter().any(|unit| unit.lost.is_some()) {
+        false => None,
+        true => match committed()? {
+            Some(newer) => Some(
+                Body::decode(&newer, specs)?
+                    .files(specs)
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect(),
+            ),
+            None => Some(HashSet::new()),
+        },
+    };
+    let units = checked
+        .into_iter()
+        .filter(|unit| {
+            unit.lost.is_none()
+                || listed
+                    .as_ref()
+                    .is_none_or(|listed| listed.contains(&unit.name))
+        })
+        .map(|unit| unit.into_unit())
+        .collect();
+    Ok(Verification { units })
 }
 
 #[cfg(test)]

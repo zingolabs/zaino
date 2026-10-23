@@ -1,4 +1,4 @@
-//! LSM metrics, labelled `set` = the segment set's directory name
+//! LSM metrics, labelled `index` = the index's name and `set` = the map (segment set) in it
 //!
 //! - write amplification = `merge_rows_total / batch_rows_total`
 
@@ -41,106 +41,137 @@ pub(crate) fn describe_metrics() {
 
     describe_gauge!(
         names::SEGMENTS,
-        "Committed segments a read searches, by set and size tier (⌊log_fanout rows⌋)"
+        "Committed segments a read searches, by index, set and size tier (⌊log_fanout rows⌋)"
     );
     describe_gauge!(
         names::MERGING,
-        "1 = a background merge of this size tier is running, by set and tier"
+        "1 = a background merge of this size tier is running, by index, set and tier"
     );
     describe_gauge!(
         names::STALL_AT,
-        "Segments a merging tier may list before a commit waits on its merge, by set"
+        "Segments a merging tier may list before a commit waits on its merge, by index and set"
     );
     describe_counter!(
         names::BATCH_ROWS_TOTAL,
-        "Rows written as new segments by commits, by set"
+        "Rows written as new segments by commits, by index and set"
     );
     describe_counter!(
         names::MERGE_ROWS_TOTAL,
-        "Rows rewritten by finished background merges, by set"
+        "Rows rewritten by background merges a commit adopted, by index and set"
     );
     describe_counter!(
         names::MERGE_BYTES_TOTAL,
         Unit::Bytes,
-        "Segment bytes written by finished background merges, by set"
+        "Segment bytes written by background merges a commit adopted, by index and set"
     );
     describe_counter!(
         names::MERGE_CANCELLED_TOTAL,
-        "Key value + tombstone pairs dropped by finished background merges, by set"
+        "Key value + tombstone pairs dropped by background merges a commit adopted, by index and \
+         set"
     );
     describe_histogram!(
         names::MERGE_DURATION_SECONDS,
         Unit::Seconds,
-        "One background merge, read through sealed and linked, by set and input tier"
+        "One adopted background merge, read through sealed and linked, by index, set and input tier"
     );
     describe_histogram!(
         names::STALL_DURATION_SECONDS,
         Unit::Seconds,
-        "Commit time spent waiting on a merge that fell two windows behind, by set"
+        "Commit time spent waiting on a merge that fell two windows behind, by index and set"
     );
     describe_gauge!(
         names::LEFTOVER_BYTES,
         Unit::Bytes,
-        "Merge-replaced segment bytes whose removal keeps failing, by set"
+        "Bytes of files no manifest lists (merge-replaced segments, a failed merge's partial \
+         files) whose removal keeps failing, by index and set"
     );
     describe_counter!(
         names::MERGE_LAUNCH_FAILED_TOTAL,
-        "Background merges that failed to start (retried at the next write), by set"
+        "Background merges that failed to start, by index and set"
     );
     describe_gauge!(
         names::UNLINKED_MAPPED_BYTES,
         Unit::Bytes,
-        "Deleted segment bytes still mapped by a reader (disk freed when it drops), by set"
+        "Deleted segment bytes still mapped by a reader (disk freed when it drops), by index and \
+         set"
     );
+}
+
+/// One map's metric labels: its index and its set
+#[derive(Debug, Clone)]
+pub(crate) struct Labels {
+    index: String,
+    set: String,
+}
+
+impl Labels {
+    pub(crate) fn new(index: &str, set: &str) -> Self {
+        Self {
+            index: index.to_owned(),
+            set: set.to_owned(),
+        }
+    }
+
+    /// The map's name
+    pub(crate) fn set(&self) -> &str {
+        &self.set
+    }
+
+    fn of(&self) -> [(&'static str, String); 2] {
+        [("index", self.index.clone()), ("set", self.set.clone())]
+    }
+
+    fn with_tier(&self, tier: impl ToString) -> [(&'static str, String); 3] {
+        let [index, set] = self.of();
+        [index, set, ("tier", tier.to_string())]
+    }
 }
 
 /// Per tier `0..shape.len()`: `(segments listed, merge running)`
 ///
 /// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
-pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
+pub(super) fn shape(labels: &Labels, shape: &[(usize, bool)]) {
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
-        let labels = [("set", set.to_owned()), ("tier", tier.to_string())];
+        let labels = labels.with_tier(tier);
         metrics::gauge!(names::SEGMENTS, &labels).set(segments as f64);
         metrics::gauge!(names::MERGING, &labels).set(if merging { 1.0 } else { 0.0 });
     }
 }
 
-pub(super) fn stall_at(set: &str, segments: usize) {
-    metrics::gauge!(names::STALL_AT, "set" => set.to_owned()).set(segments as f64);
+pub(super) fn stall_at(labels: &Labels, segments: usize) {
+    metrics::gauge!(names::STALL_AT, &labels.of()).set(segments as f64);
 }
 
-pub(super) fn batched(set: &str, segment: &SegmentMeta) {
-    metrics::counter!(names::BATCH_ROWS_TOTAL, "set" => set.to_owned()).increment(segment.records);
+pub(super) fn batched(labels: &Labels, segment: &SegmentMeta) {
+    metrics::counter!(names::BATCH_ROWS_TOTAL, &labels.of()).increment(segment.records);
 }
 
-/// `tier` = the inputs' tier (output lands one above)
-pub(super) fn merged(set: &str, tier: u32, merged: &Merged, took: Duration) {
-    let set = set.to_owned();
+/// A merge a commit adopted; `tier` = the inputs' tier (output lands one above)
+pub(super) fn merged(labels: &Labels, tier: u32, merged: &Merged, took: Duration) {
     let (rows, bytes) = merged
         .output
         .map_or((0, 0), |output| (output.records, output.sealed.len));
-    metrics::counter!(names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(rows);
-    metrics::counter!(names::MERGE_BYTES_TOTAL, "set" => set.clone()).increment(bytes);
-    metrics::counter!(names::MERGE_CANCELLED_TOTAL, "set" => set.clone())
-        .increment(merged.cancelled);
-    metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
-        .record(took);
+    let of = labels.of();
+    metrics::counter!(names::MERGE_ROWS_TOTAL, &of).increment(rows);
+    metrics::counter!(names::MERGE_BYTES_TOTAL, &of).increment(bytes);
+    metrics::counter!(names::MERGE_CANCELLED_TOTAL, &of).increment(merged.cancelled);
+    metrics::histogram!(names::MERGE_DURATION_SECONDS, &labels.with_tier(tier)).record(took);
 }
 
-pub(super) fn stalled(set: &str, took: Duration) {
-    metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set.to_owned()).record(took);
+pub(super) fn stalled(labels: &Labels, took: Duration) {
+    metrics::histogram!(names::STALL_DURATION_SECONDS, &labels.of()).record(took);
 }
 
-/// Merge-replaced bytes still on disk (removal failing: retried every write)
-pub(super) fn leftover(set: &str, bytes: u64) {
-    metrics::gauge!(names::LEFTOVER_BYTES, "set" => set.to_owned()).set(bytes as f64);
+/// Bytes of unlisted files whose removal keeps failing (retried every write)
+pub(super) fn leftover(labels: &Labels, bytes: u64) {
+    metrics::gauge!(names::LEFTOVER_BYTES, &labels.of()).set(bytes as f64);
 }
 
 /// Deleted segment bytes still mapped: raised at unlink, lowered as the last reader drops
-pub(super) fn unlinked(set: &str) -> metrics::Gauge {
-    metrics::gauge!(names::UNLINKED_MAPPED_BYTES, "set" => set.to_owned())
+pub(super) fn unlinked(labels: &Labels) -> metrics::Gauge {
+    metrics::gauge!(names::UNLINKED_MAPPED_BYTES, &labels.of())
 }
 
-pub(super) fn launch_failed(set: &str) {
-    metrics::counter!(names::MERGE_LAUNCH_FAILED_TOTAL, "set" => set.to_owned()).increment(1);
+pub(super) fn launch_failed(labels: &Labels) {
+    metrics::counter!(names::MERGE_LAUNCH_FAILED_TOTAL, &labels.of()).increment(1);
 }

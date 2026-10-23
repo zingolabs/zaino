@@ -25,6 +25,15 @@ pub use real::RealFs;
 pub use sim::{CrashState, SimFs};
 pub(crate) use sys::{background_priority, resident_bytes};
 
+/// A file past a read's `limit` (refused before any read)
+fn too_long(path: &Path, len: u64, limit: u64) -> io::Error {
+    let path = path.display();
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{path} is {len} bytes, past the {limit} read"),
+    )
+}
+
 /// Directory operations (Linux semantics; `docs/durability.md` §3)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// `dir` and every missing ancestor created
@@ -40,11 +49,13 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>>;
 
     /// The whole file as the device holds it, bypassing the page cache (after a failed flush the
-    /// cache may hold bytes the device never got); `None` when absent
+    /// cache may hold bytes the device never got); `None` when absent; a file past `limit` bytes
+    /// refused (`InvalidData`) before any read
     ///
-    /// - Linux: guaranteed (`O_DIRECT`); macOS: best effort (`F_NOCACHE` leaves pages already
-    ///   cached in place)
-    fn read_uncached(&self, path: &Path) -> io::Result<Option<Vec<u8>>>;
+    /// - Linux: `O_DIRECT`; a filesystem refusing it is an error (`Unsupported`), except tmpfs,
+    ///   whose page cache is its storage
+    /// - macOS: best effort (`F_NOCACHE` leaves pages already cached in place)
+    fn read_uncached(&self, path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>>;
 
     /// `from` linked at `to`, replacing it
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
@@ -91,21 +102,14 @@ pub trait FileHandle: Send + Sync + fmt::Debug {
     /// `sync_data`; RocksDB `bytes_per_sync`)
     fn write_behind(&self, range: Range<u64>) -> io::Result<()>;
 
-    /// Read-only view of the whole file; `None` when empty (mmap refuses zero length)
-    fn map(&self) -> io::Result<Option<Mapping>>;
+    /// Read-only view of the first `len` bytes (the sealed ones: never bytes still being
+    /// written); `None` for 0 (mmap refuses zero length); a file shorter than `len` refused
+    /// (`UnexpectedEof`)
+    fn map(&self, len: usize) -> io::Result<Option<Mapping>>;
 
     /// Its clean pages out of page cache (`POSIX_FADV_DONTNEED`; advisory: later reads fault them
     /// back in)
     fn drop_cache(&self) -> io::Result<()>;
-}
-
-impl dyn FileHandle {
-    pub(crate) fn read_all(&self) -> io::Result<Vec<u8>> {
-        let len = usize::try_from(self.len()?).map_err(io::Error::other)?;
-        let mut bytes = vec![0; len];
-        self.read_exact_at(&mut bytes, 0)?;
-        Ok(bytes)
-    }
 }
 
 /// Held lock; released on drop

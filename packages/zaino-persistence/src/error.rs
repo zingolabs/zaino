@@ -16,6 +16,13 @@ pub enum OpenError {
     /// Two specs declare the same namespace.
     #[error("namespace declared twice: {0}")]
     DuplicateNamespace(String),
+    /// The storage was written as another index: another name, format or
+    /// namespaces than this open declares.
+    #[error("storage written as another index")]
+    Mismatch(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// Committed data is lost or fails its integrity check: verify, resync.
+    #[error("stored data lost or corrupted, found at open")]
+    Corrupted(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The backend is not available (closed, corrupted, etc.). `operation` names
     /// the open step that failed.
     #[error("backend unavailable during {operation}")]
@@ -34,12 +41,10 @@ pub enum CommitError {
     /// A referenced namespace does not exist.
     #[error("namespace not found: {0}")]
     NamespaceNotFound(String),
-    /// The database is out of space: the reserved storage is exhausted. Distinct
-    /// from a generic write failure because it is neither corruption nor
-    /// transient — the caller must reopen the backend with a larger map size
-    /// (backed by enough disk); retrying without that fails identically.
-    #[error("database out of space: the reserved storage is full; reopen the backend with a larger map size (and enough disk to back it)")]
-    OutOfSpace,
+    /// The disk or quota is full. Neither corruption nor transient: the backend
+    /// refuses writes; free space, then reopen.
+    #[error("out of space: the disk or quota is full; free space, then reopen")]
+    OutOfSpace(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// An item's length differs from its namespace's declared width.
     #[error("{namespace}: a {actual}-byte {part}, declared {expected}")]
     WidthMismatch {
@@ -110,8 +115,9 @@ pub enum CommitError {
     /// this write was applied, the backend stays usable and merges again later.
     #[error("a background merge failed; nothing applied")]
     MergeFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
-    /// Stored bytes failed their integrity check while writing (e.g. a merge's
-    /// input): the backend refuses writes; stop, verify, resync.
+    /// Stored bytes failed their integrity check while committing (checking the
+    /// batch, or a merge's input): the backend refuses writes; stop, verify,
+    /// resync.
     #[error("stored data corrupted, found while writing")]
     Corrupted(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// Reading the state a commit is checked against failed.
@@ -127,6 +133,18 @@ pub enum CommitError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+impl CommitError {
+    /// Reading the state a commit is checked against failed: stored bytes found
+    /// corrupt are [`CommitError::Corrupted`] (stop, verify, resync), anything
+    /// else [`CommitError::Check`].
+    pub fn from_check(error: ReadError) -> Self {
+        match error {
+            ReadError::Corrupted { .. } => Self::Corrupted(Box::new(error)),
+            error => Self::Check(error),
+        }
+    }
 }
 
 /// Error when reading from the backend.

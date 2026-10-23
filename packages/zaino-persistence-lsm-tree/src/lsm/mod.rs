@@ -37,8 +37,8 @@ mod writer;
 )]
 mod tests;
 
-pub(crate) use emit::describe_metrics;
 pub use emit::METRIC_BUCKETS;
+pub(crate) use emit::{describe_metrics, Labels};
 pub(crate) use layout::Shape;
 pub(crate) use log::{SegmentLog, Staged};
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
@@ -64,13 +64,40 @@ pub struct LsmConfig {
     /// Merge read + write bandwidth, MiB per second, shared
     pub merge_mib_per_sec: NonZeroU32,
     /// Immediate retries (10, 20, 40 ms … apart) of removing merge-replaced files after a commit
+    /// (at most [`MAX_RETRIES`](Self::MAX_RETRIES))
     pub max_retries: u32,
     /// Merge-replaced bytes left on disk at which each write logs an error (the disk may be
     /// failing), not a warning
     pub cleanup_alert_bytes: u64,
-    /// Segment index bytes a writer holds in memory before spilling to a scratch file
-    #[doc(hidden)]
+    /// Bytes of segment index (fences, filter fingerprints) a segment writer holds in memory
+    /// before spilling them to a scratch file: memory per write or merge vs scratch I/O (at most
+    /// [`MAX_SPILL_BYTES`](Self::MAX_SPILL_BYTES))
     pub spill_bytes: NonZeroUsize,
+    /// Merges of one map that may fail in a row from I/O (retried at later writes) before the
+    /// next failure stops writes (>= 1)
+    pub max_merge_failures: u32,
+}
+
+impl LsmConfig {
+    /// Most `max_retries` (pauses double from 10 ms: 630 ms in all)
+    pub const MAX_RETRIES: u32 = 6;
+    /// Most `spill_bytes`
+    pub const MAX_SPILL_BYTES: usize = 1 << 30;
+
+    /// The first setting out of range, if any
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        if self.fanout < 2 {
+            Some("fanout below 2 (a merge of one segment is no merge)")
+        } else if self.max_retries > Self::MAX_RETRIES {
+            Some("max_retries above LsmConfig::MAX_RETRIES")
+        } else if self.spill_bytes.get() > Self::MAX_SPILL_BYTES {
+            Some("spill_bytes above LsmConfig::MAX_SPILL_BYTES")
+        } else if self.max_merge_failures == 0 {
+            Some("max_merge_failures of 0")
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for LsmConfig {
@@ -82,6 +109,7 @@ impl Default for LsmConfig {
             max_retries: 3,
             cleanup_alert_bytes: 1 << 30,
             spill_bytes: NonZeroUsize::new(1 << 20).unwrap_or(NonZeroUsize::MIN),
+            max_merge_failures: 3,
         }
     }
 }
@@ -128,15 +156,28 @@ pub(crate) enum SegmentError {
     #[error("segment {segment}: read back {reason}")]
     SelfCheck { segment: u32, reason: String },
 
+    /// A just-written segment failed while being read back (its own bytes, not a committed one)
+    #[error("segment {segment}: read back failed")]
+    ReadBack {
+        segment: u32,
+        #[source]
+        source: Box<SegmentError>,
+    },
+
+    /// A seal or directory sync failed: what reached the disk is unknown, never retried
+    #[error("segment sync failed")]
+    Sync(#[source] std::io::Error),
+
     /// A merge thread panicked (outside this crate's code: it never panics)
     #[error("map {name}: a merge thread panicked")]
     MergePanicked { name: String },
 
-    /// A background merge failed, or failed to start (nothing of the write that found it was
-    /// applied; the merge runs again later)
-    #[error("map {name}: a background merge failed")]
+    /// A background merge failed, or failed to start, found before the write that returns it
+    /// touched anything; `fault` = how it is answered
+    #[error("map {name}: a background merge failed ({fault:?})")]
     MergeFailed {
         name: String,
+        fault: MergeFault,
         #[source]
         source: Box<SegmentError>,
     },
@@ -160,11 +201,58 @@ pub(crate) enum Breach {
     Repeated { held: usize },
 }
 
+/// How a failed merge is answered
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MergeFault {
+    /// An input failed its integrity check or broke the contract: no retry can succeed (writes
+    /// stop: verify, resync)
+    Corrupt,
+    /// A sync failed, the output read back wrong, or a bug (writes stop)
+    Fatal,
+    /// Any other I/O, or a failed launch: retried, up to `LsmConfig::max_merge_failures` in a row
+    Transient,
+}
+
+impl MergeFault {
+    /// The fault `error`, raised by a merge or its launch, is
+    ///
+    /// - integrity failures only ever come from reading inputs: a merge's own output is read back
+    ///   under [`SegmentError::ReadBack`], its syncs fail as [`SegmentError::Sync`]
+    pub(crate) fn of(error: &SegmentError) -> Self {
+        match error {
+            SegmentError::Io(_) | SegmentError::Page(PageError::Io(_)) => Self::Transient,
+            SegmentError::Page(
+                PageError::Lost { .. }
+                | PageError::Tail { .. }
+                | PageError::Sums { .. }
+                | PageError::Corrupt { .. },
+            )
+            | SegmentError::Corrupt { .. }
+            | SegmentError::Contract { .. } => Self::Corrupt,
+            SegmentError::MergeFailed { fault, .. } => *fault,
+            SegmentError::Page(_)
+            | SegmentError::Filter { .. }
+            | SegmentError::Shape { .. }
+            | SegmentError::SelfCheck { .. }
+            | SegmentError::ReadBack { .. }
+            | SegmentError::Sync(_)
+            | SegmentError::MergePanicked { .. }
+            | SegmentError::Internal(_)
+            | SegmentError::Overflow(_) => Self::Fatal,
+        }
+    }
+}
+
 type Result<T> = std::result::Result<T, SegmentError>;
 
 /// `<id:010>.seg`, zero-padded so a listing sorts by id
 pub(crate) fn file_name(segment: u32) -> String {
-    format!("{segment:010}.seg")
+    format!("{}seg", file_prefix(segment))
+}
+
+/// `<id:010>.`: what every file of segment `segment` starts with (data, checksums, scratch)
+fn file_prefix(segment: u32) -> String {
+    format!("{segment:010}.")
 }
 
 /// Id of a segment file or its checksums; `None` for anything else in the directory

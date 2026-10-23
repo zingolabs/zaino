@@ -18,7 +18,7 @@ fn an_identity_name_fits_its_length_byte() {
 fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
     let identity = identity("tree", 3);
     let encoded = encode(&identity, 7, &[0xaa, 0xbb]).expect("fits");
-    let mut expected = b"ZAINOMS3".to_vec();
+    let mut expected = b"ZAINOMS4".to_vec();
     expected.extend_from_slice(&[3, 0, 4]);
     expected.extend_from_slice(b"tree");
     expected.extend_from_slice(&7u64.to_le_bytes());
@@ -96,9 +96,9 @@ fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
     let one = file(None, commit(1, &[1]));
     let name = latest(&self::identity("blocks", 3), &one);
     let format = latest(&self::identity("tree", 4), &one);
-    // the previous layout (segment entries without a filter prefix): refused, never misread
+    // the previous layout (no TAILS beside it): refused, never misread
     let mut foreign_magic = encode(&identity, 1, &[1]).expect("fits");
-    foreign_magic[..8].copy_from_slice(b"ZAINOMS2");
+    foreign_magic[..8].copy_from_slice(b"ZAINOMS3");
     let foreign_pair = file(Some(foreign_magic.clone()), Some(foreign_magic));
     let older_magic = latest(&identity, &foreign_pair);
     assert!(

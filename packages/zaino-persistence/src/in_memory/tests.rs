@@ -217,26 +217,37 @@ fn joined_chunks_equal_full_scan() {
 
 #[test]
 fn filter_maps_and_skips_entries() {
-    // Every entry is 11 raw bytes; only kept entries count toward the budget.
+    // Every entry is 11 raw bytes and the budget counts every visited one: two per chunk.
     let backend = sequence_with(&[3; 10]);
-    let chunks: Vec<Vec<(u8, usize)>> = backend
-        .reader()
-        .expect("in-memory reader is infallible")
-        .scan_range(
-            SEQ,
-            range(Unbounded, Unbounded, Forward, 22),
-            |key: &[u8], value: &[u8]| {
-                let position = key.last().copied()?;
-                position
-                    .is_multiple_of(2)
-                    .then_some((position, value.len()))
-            },
-        )
-        .collect::<Result<_, _>>()
-        .expect("in-memory scan is infallible");
+    let scan = |keep: fn(u8) -> bool| -> Vec<Vec<(u8, usize)>> {
+        backend
+            .reader()
+            .expect("in-memory reader is infallible")
+            .scan_range(
+                SEQ,
+                range(Unbounded, Unbounded, Forward, 22),
+                move |key: &[u8], value: &[u8]| {
+                    let position = key.last().copied()?;
+                    keep(position).then_some((position, value.len()))
+                },
+            )
+            .collect::<Result<_, _>>()
+            .expect("in-memory scan is infallible")
+    };
     assert_eq!(
-        chunks,
-        [vec![(0, 3), (2, 3)], vec![(4, 3), (6, 3)], vec![(8, 3)]]
+        scan(|position| position.is_multiple_of(2)),
+        [
+            vec![(0, 3)],
+            vec![(2, 3)],
+            vec![(4, 3)],
+            vec![(6, 3)],
+            vec![(8, 3)]
+        ]
+    );
+    assert_eq!(
+        scan(|_| false),
+        vec![Vec::new(); 5],
+        "a filter keeping nothing still visits two entries per chunk"
     );
 }
 
@@ -353,8 +364,9 @@ fn commit_naming_undeclared_namespace_applies_nothing() {
             matches!(&result, Err(CommitError::NamespaceNotFound(name)) if name == OTHER.as_str()),
             "{result:?}"
         );
+        let reader = backend.reader().expect("in-memory reader is infallible");
         assert!(
-            backend.entries(SEQ).expect("declared").is_empty(),
+            reader.scan(SEQ).expect("declared").is_empty(),
             "rejected batch applied nothing"
         );
     }

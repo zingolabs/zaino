@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use super::{writer::Merged, SegmentError, SegmentMeta};
 
 /// Merge the log swaps in: `tier` → `merged`, `took` = its thread's wall time
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(super) struct Landed {
     pub(super) tier: u32,
     pub(super) merged: Merged,
@@ -60,6 +60,11 @@ pub(super) fn rescoping(set: &str, stale: &[SegmentMeta]) {
 
 pub(super) fn removal_retry(set: &str, path: &Path, retried: u32, error: &io::Error) {
     warn!(set, path = %path.display(), retried, %error, "Removing a merged-away file failed; retrying");
+}
+
+/// A failed merge's files could not be listed: removed at the next open (none is listed)
+pub(super) fn partial_unlisted(set: &str, segment: u32, error: &io::Error) {
+    warn!(set, segment, %error, "A failed merge's files could not be listed; the next open removes them");
 }
 
 /// Every map's leftovers together; `alert` = at or past `LsmConfig::cleanup_alert_bytes`: an
