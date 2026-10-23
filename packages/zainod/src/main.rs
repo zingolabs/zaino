@@ -13,6 +13,7 @@ use crate::telemetry::logging;
 mod cli;
 mod config;
 mod error;
+mod health;
 mod telemetry;
 
 // Every build, not musl only (profiles + benchmarks measure the shipped allocator)
