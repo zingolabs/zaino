@@ -4,6 +4,7 @@ members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
     "packages/zaino-proto",
+    "packages/zaino-peers",
     # live-tests/ = standalone workspace (ztest harness, links no production crate)
 ]
 
