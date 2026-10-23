@@ -8,10 +8,12 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
+use crate::telemetry::logging;
 
 mod cli;
 mod config;
 mod error;
+mod telemetry;
 
 // Every build, not musl only (profiles + benchmarks measure the shipped allocator)
 #[global_allocator]
@@ -27,6 +29,11 @@ fn main() -> ExitCode {
     }));
 
     let cli = Cli::parse();
+
+    if let Err(error) = logging::init() {
+        eprintln!("Error: RUST_LOG: {error}");
+        return ExitCode::from(2);
+    }
     let config = cli.config.unwrap_or_else(config::paths::default_config);
     match cli.command {
         Command::GenerateConfig { output } => {
