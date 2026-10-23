@@ -1,0 +1,51 @@
+[package]
+name = "zaino-source"
+publish.workspace = true
+description = "Zaino's validator source: the ChainDataSource port and its JSON-RPC and Zebra indexer gRPC clients."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[dependencies]
+zaino-primitives = { workspace = true }
+metrics = { workspace = true }
+orchard = { workspace = true }
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+zcash_encoding = "0.4"
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+zaino-proto.workspace = true
+tonic = { workspace = true, features = ["tls-ring"] }
+tokio-util.workspace = true
+const-hex.workspace = true
+zcash_transparent.workspace = true
+sapling-crypto = { workspace = true, optional = true }
+redjubjub = { version = "0.9", optional = true }
+nonempty = { version = "0.11", optional = true }
+zcash_script = { workspace = true, optional = true }
+
+[features]
+# `testing::{MockChain, MockValidator}`: regtest chains of real consensus bytes, served over JSON-RPC
+testing = ["dep:sapling-crypto", "dep:redjubjub", "dep:nonempty", "dep:zcash_script"]
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-util"] }
+zcash_primitives = { workspace = true, features = ["test-dependencies"] }
+zaino-source = { workspace = true, features = ["testing"] }
+rcgen.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
