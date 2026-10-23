@@ -1,0 +1,44 @@
+[package]
+name = "zaino-chainview"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The best chain by proof of work, the mempool and submission, over trusted validators"
+
+[features]
+# `ChainView::set_chain` (standing in for header sync), `TrustedValidatorSet::at`,
+# `ChainViewSnapshot` fixtures (`testing`)
+testing = []
+
+[dependencies]
+arc-swap.workspace = true
+bytes.workspace = true
+fastrand = "2"
+futures.workspace = true
+imbl.workspace = true
+metrics.workspace = true
+serde = { workspace = true, features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zaino-header-chain.workspace = true
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+zaino-traffic.workspace = true
+zcash_protocol.workspace = true
+zcash_transparent.workspace = true
+
+[dev-dependencies]
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+zaino-traffic = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unreachable_pub = "warn"
