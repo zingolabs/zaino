@@ -15,6 +15,7 @@ members = [
     "packages/zaino-primitives",
     "packages/zaino-sync",
     "packages/zaino-source",
+    "packages/zainod",
     "packages/zaino-proto",
     "packages/zaino-peers",
     "packages/zaino-traffic",
