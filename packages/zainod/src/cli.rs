@@ -3,16 +3,6 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use zaino_common::xdg::resolve_path_with_xdg_config_defaults;
-
-/// Returns the default config path following XDG Base Directory spec.
-///
-/// Uses `$XDG_CONFIG_HOME/zaino/zainod.toml` if set,
-/// otherwise falls back to `$HOME/.config/zaino/zainod.toml`,
-/// or `/tmp/zaino/.config/zaino/zainod.toml` if HOME is unset.
-pub fn default_config_path() -> PathBuf {
-    resolve_path_with_xdg_config_defaults("zaino/zainod.toml")
-}
 
 /// The Zcash Indexing Service.
 #[derive(Parser, Debug)]
@@ -22,57 +12,43 @@ pub fn default_config_path() -> PathBuf {
     about = "Zaino - The Zcash Indexing Service",
     long_about = None
 )]
-pub struct Cli {
-    /// Subcommand to execute.
+pub(super) struct Cli {
+    /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
+    #[arg(short, long, value_name = "FILE", global = true)]
+    pub(super) config: Option<PathBuf>,
     #[command(subcommand)]
-    pub command: Command,
+    pub(super) command: Command,
 }
 
-/// Available subcommands.
 #[derive(Subcommand, Debug, Clone)]
-pub enum Command {
+pub(super) enum Command {
     /// Start the Zaino indexer service.
-    Start {
-        /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
-        #[arg(short, long, value_name = "FILE")]
-        config: Option<PathBuf>,
-    },
+    Start,
     /// Generate a configuration file with default values.
     GenerateConfig {
-        /// Output path for the generated config file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
+        /// Output path for the generated config file. Defaults to the --config path
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
-}
-
-impl Command {
-    /// Generate a configuration file with default values.
-    pub fn generate_config(output: Option<PathBuf>) {
-        let path = output.unwrap_or_else(default_config_path);
-
-        let content = match crate::config::generate_default_config() {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("Error generating config: {}", e);
-                std::process::exit(1);
-            }
-        };
-
-        // Create parent directories if needed
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!("Error creating directory {}: {}", parent.display(), e);
-                    std::process::exit(1);
-                }
-            }
-        }
-
-        if let Err(e) = std::fs::write(&path, &content) {
-            eprintln!("Error writing to {}: {}", path.display(), e);
-            std::process::exit(1);
-        }
-
-        eprintln!("Generated config file: {}", path.display());
-    }
+    /// Check every file each enabled index has made durable against its page checksums.
+    ///
+    /// Read-only and safe beside a running zainod: it opens nothing for writing, creates no
+    /// directory and takes no lock. Each file is checked up to its durable length. Bytes a
+    /// live writer appended past it are reported as orphaned, not as corruption.
+    ///
+    /// Prints the full report as JSON on stdout and a summary on stderr. Exits 0 when every
+    /// page is intact, 1 when any file is lost or corrupt, and 2 when the indexes could not be
+    /// read at all.
+    Verify,
+    #[command(flatten)]
+    Hold(crate::command::hold::Action),
+    /// Override when this node reports `Overloaded`, across restarts: markers in `[serve]
+    /// state_dir`/overload over `[grpc.overload]`, read by the running zainod within a second.
+    ///
+    /// Prints the settings in force. Exits 0 once the marker matches, 1 on an invalid key or
+    /// value, or an unreadable config or state directory.
+    Overload {
+        #[command(subcommand)]
+        action: crate::command::overload::Action,
+    },
 }
