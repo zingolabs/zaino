@@ -372,6 +372,16 @@ mod verify_reported_upgrades {
         .expect("the public Testnet NU7 schedule matches the compiled one");
     }
 
+    /// Mainnet's NU7 schedule, as a zebrad 7.0.0 validator reports it ahead of
+    /// activation, agrees with the compiled parameters: NU7 at 3,543,405 after NU6.3.
+    #[test]
+    fn accepts_the_mainnet_nu7_schedule() {
+        let upgrades = [upgrade(NU6_3, 3_428_143), upgrade(NU7, 3_543_405)];
+
+        super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
+            .expect("the Mainnet NU7 schedule matches the compiled one");
+    }
+
     /// A validator placing NU7 one block off on the public Testnet is a
     /// schedule drift, caught before a single block is indexed.
     #[test]
@@ -388,8 +398,7 @@ mod verify_reported_upgrades {
 
     /// An upgrade the compiled schedule disables on this network must be
     /// rejected when the validator reports a height for it. A regtest schedule
-    /// with NU7 unset stands in for the compiled side, so the test does not
-    /// depend on which public network has an NU7 height yet.
+    /// with NU7 unset stands in for the compiled side.
     #[test]
     fn rejects_an_upgrade_the_compiled_schedule_lacks() {
         let network = ActivationHeights::default().to_regtest_network();

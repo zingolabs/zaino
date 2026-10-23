@@ -1551,22 +1551,6 @@ fn relink_chain(genesis_segment: &mut ChainSegment, branching_segments: &mut [Ch
     }
 }
 
-/// Replaces an empty-but-present transparent bundle with an absent one.
-///
-/// Workaround for zebra-chain 13.0.1 and 14.0.0: `Transaction::with_transparent_inputs` keeps
-/// `Some(empty)` when the generator drops every input, and ZIP-244 hashes that
-/// differently from the `None` its bytes deserialize to. Remove once fixed upstream.
-fn without_empty_transparent_bundle(
-    transaction: &Arc<zebra_chain::transaction::Transaction>,
-) -> Arc<zebra_chain::transaction::Transaction> {
-    match transaction.transparent_bundle() {
-        Some(bundle) if bundle.vin.is_empty() && bundle.vout.is_empty() => {
-            Arc::new((**transaction).clone().with_transparent_outputs(Vec::new()))
-        }
-        _ => Arc::clone(transaction),
-    }
-}
-
 /// [`relink_chain`] over one segment, whose first block's parent becomes `parent` when given, yielding the relinked tip's hash.
 fn relink_segment(
     segment: &mut ChainSegment,
@@ -1575,11 +1559,6 @@ fn relink_segment(
     let mut parent = parent;
     for block in segment.0.iter_mut() {
         let mut relinked = (**block).clone();
-        relinked.transactions = relinked
-            .transactions
-            .iter()
-            .map(without_empty_transparent_bundle)
-            .collect();
         let mut header = *relinked.header;
         header.merkle_root = relinked
             .transactions

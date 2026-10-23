@@ -338,8 +338,8 @@ mod consensus_agreement {
         );
     }
 
-    /// NU7's deployment facts (ZIP 259 branch id and Testnet height, ZIP 218
-    /// block spacing) as zebra states them. A zebra bump that drops or moves
+    /// NU7's deployment facts (ZIP 259 branch id, Mainnet and Testnet heights,
+    /// ZIP 218 block spacing) as zebra states them. A zebra bump that drops or moves
     /// any of these would otherwise surface only on a live chain.
     #[test]
     fn nu7_deployment_agrees() {
@@ -348,6 +348,10 @@ mod consensus_agreement {
         assert_eq!(
             NetworkUpgrade::Nu7.branch_id(),
             Some(ConsensusBranchId::from(0x7719_0ad9u32))
+        );
+        assert_eq!(
+            NetworkUpgrade::Nu7.activation_height(&Network::Mainnet),
+            Some(zebra_chain::block::Height(3_543_405))
         );
         assert_eq!(
             NetworkUpgrade::Nu7.activation_height(&Network::new_default_testnet()),

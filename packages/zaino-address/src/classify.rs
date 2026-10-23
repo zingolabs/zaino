@@ -56,9 +56,9 @@ pub fn z_validate_address<P: Parameters>(raw_address: String, params: &P) -> ZVa
     // The transparent and unified arms echo the caller's string; the Sapling arm
     // re-encodes, because `convert_if_network` has already proved the address
     // belongs to this network and the canonical encoding is what the legacy full node
-    // reports. Unified addresses are not re-encoded: `UnifiedAddress::encode` emits the
-    // ZIP 316 Revision 2 shielded-only form, which changes the HRP and drops any
-    // transparent receiver.
+    // reports. Unified addresses are not re-encoded: a UA has more than one valid ZIP 316
+    // revision encoding, and `UnifiedAddress::encode` may pick a different one (and HRP)
+    // than the caller sent.
     match parse_for_network(&raw_address, params) {
         Some(Address::Transparent(TransparentAddress::PublicKeyHash(_))) => {
             ZValidatedAddress::P2pkh {

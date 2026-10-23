@@ -578,6 +578,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
             addresses: parse_addresses(addresses)?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
+            max_entries: None,
         };
 
         let hashes = match read(&self.state, request).await? {
@@ -644,6 +645,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
             addresses: parse_addresses(addresses.clone())?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
+            max_entries: None,
         };
 
         let located = match read(&self.state, request).await? {

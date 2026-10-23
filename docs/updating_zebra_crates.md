@@ -75,12 +75,6 @@ When zebra pins a pre-release (`=0.11.0-pre.0`), write the full pre-release
 string: a caret on a pre-release only matches that series, and a plain `0.11`
 does not match it at all.
 
-## Check the test-only workarounds
-
-`proptest_blockgen.rs` (`without_empty_transparent_bundle`) works around a
-zebra-chain 13 and 14 test-generator bug in `Transaction::with_transparent_inputs`.
-Remove it once the upstream fix is released.
-
 ## Pinning to an unreleased zebra (git rev)
 
 Sometimes Zaino needs a zebra change that has not yet been published to
