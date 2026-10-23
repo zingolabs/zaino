@@ -420,62 +420,45 @@ async fn a_refused_check_is_the_answer_at_once_and_nothing_is_relayed() {
     cancel.cancel();
 }
 
-/// No `checkadmission` anywhere (zcashd, stock zebrad), every entry rejecting
+/// No `checkadmission` anywhere (zcashd, stock zebrad): every entry rejecting, or every
+/// `sendrawtransaction` unreachable (nothing learnt about the transaction: never a rejection)
 #[tokio::test(start_paused = true)]
-async fn an_unchecked_send_every_entry_rejects_is_that_rejection_after_one_push_each() {
-    let mut chain = MockChain::regtest();
-    let best = chain.mine_empty(50);
-    let validators: Vec<Arc<MockValidator>> =
-        (0..3).map(|_| Arc::new(chain.validator(best))).collect();
+async fn an_unchecked_send_every_entry_fails_is_their_rejection_or_unreachable_after_trying_each() {
     let too_low = SendRawTransactionError::Rejected { code: -26, message: "too low fee".into() };
-    for validator in &validators {
-        validator.lacks(&["checkadmission"]);
-        validator.relay(Err(too_low.clone()));
-    }
-    let (view, balancer, cancel) =
-        view_merging_polls(&validators, &["a:8232", "b:8232", "c:8232"], None);
-    next_poll_merged(&balancer).await;
-    view.set_chain(Some(HeaderChainSnapshot::of(&chain, best)));
-
-    let validated = view.validate_transaction(raw_transaction(7, 0).1).await.expect("none judges");
-    let rejected = view.broadcast_transaction(validated).await;
-
-    let rejected = rejected.err().map(|refused| refused.to_string());
-    let validators_rejection = SubmitError::Rejected(too_low).to_string();
-    assert_eq!(rejected, Some(validators_rejection), "the validators' rejection");
-    let pushes: Vec<usize> = validators.iter().map(|v| v.calls("sendrawtransaction")).collect();
-    assert_eq!(pushes, [1, 1, 1], "pushes per entry: each once");
-    cancel.cancel();
-}
-
-/// No `checkadmission` anywhere, every `sendrawtransaction` unreachable
-#[tokio::test(start_paused = true)]
-async fn an_unchecked_send_no_entry_answers_is_unreachable_after_trying_each_never_a_rejection() {
-    let mut chain = MockChain::regtest();
-    let best = chain.mine_empty(50);
-    let validators: Vec<Arc<MockValidator>> =
-        (0..3).map(|_| Arc::new(chain.validator(best))).collect();
-    for validator in &validators {
-        validator.lacks(&["checkadmission"]);
-        validator.reachable(&["sendrawtransaction"], false);
-    }
-    let (view, balancer, cancel) =
-        view_merging_polls(&validators, &["a:8232", "b:8232", "c:8232"], None);
-    next_poll_merged(&balancer).await;
-    view.set_chain(Some(HeaderChainSnapshot::of(&chain, best)));
-
-    let validated = view.validate_transaction(raw_transaction(6, 0).1).await.expect("none judges");
-    let sent = view.broadcast_transaction(validated).await;
-
-    let sent = sent.err().map(|failed| failed.to_string());
+    let rejection = SubmitError::Rejected(too_low.clone()).to_string();
     let unreachable =
         "no trusted validator accepted the transaction; 3 attempted, last failure: http status 503";
-    assert_eq!(
-        sent.as_deref(),
-        Some(unreachable),
-        "3 attempts, nothing learnt about the transaction"
-    );
-    cancel.cancel();
+    #[rustfmt::skip]
+    let rows = [
+        // (row,          reachable, expected,           pushes answered per entry)
+        ("each rejects",  true,      rejection.as_str(), [1, 1, 1]),
+        ("none answers",  false,     unreachable,        [0, 0, 0]),
+    ];
+    for (row, reachable, expected, answered) in rows {
+        let mut chain = MockChain::regtest();
+        let best = chain.mine_empty(50);
+        let validators: Vec<Arc<MockValidator>> =
+            (0..3).map(|_| Arc::new(chain.validator(best))).collect();
+        for validator in &validators {
+            validator.lacks(&["checkadmission"]);
+            validator.relay(Err(too_low.clone()));
+            validator.reachable(&["sendrawtransaction"], reachable);
+        }
+        let (view, balancer, cancel) =
+            view_merging_polls(&validators, &["a:8232", "b:8232", "c:8232"], None);
+        next_poll_merged(&balancer).await;
+        view.set_chain(Some(HeaderChainSnapshot::of(&chain, best)));
+
+        let validated =
+            view.validate_transaction(raw_transaction(7, 0).1).await.expect("none judges");
+        let sent = view.broadcast_transaction(validated).await;
+
+        let sent = sent.err().map(|failed| failed.to_string());
+        assert_eq!(sent.as_deref(), Some(expected), "{row}: the submission's error");
+        let pushes: Vec<usize> = validators.iter().map(|v| v.calls("sendrawtransaction")).collect();
+        assert_eq!(pushes, answered, "{row}: pushes answered per entry");
+        cancel.cancel();
+    }
 }
 
 /// Every validator accepting, none gossiping on its own; no header chain = nothing to check with
@@ -890,33 +873,10 @@ async fn with_its_only_holder_failing_the_tip_has_no_holder_and_no_mempool_until
     cancel.cancel();
 }
 
-/// a, b at 101 on the trunk; c on a heavier fork from 100
+/// a, b at 101 on the trunk; c on a heavier fork from 100 (the tip), then back onto the trunk
+/// between its tip read and its `getblockhash` answer
 #[tokio::test(start_paused = true)]
-async fn a_heavier_fork_one_validator_holds_is_the_tip_held_by_it_alone() {
-    let mut chain = MockChain::regtest().varied_work();
-    let at_101 = chain.mine_empty(101);
-    let fork = chain.fork(h(100)).outweigh().mine_empty(1).tip();
-    let validators: Vec<Arc<MockValidator>> =
-        [at_101, at_101, fork].map(|tip| Arc::new(chain.validator(tip))).to_vec();
-    let (view, balancer, cancel) =
-        view_merging_polls(&validators, &["a:8232", "b:8232", "c:8232"], None);
-
-    next_poll_merged(&balancer).await;
-    view.set_chain(Some(HeaderChainSnapshot::of(&chain, fork)));
-
-    let pinned = view.subscriber().current();
-    assert_eq!(pinned.best(), Some(fork), "the tip follows the work");
-    assert_eq!(pinned.held_by(), TrustedValidatorSet::at([2]), "c alone holds the fork");
-    let agreements: Vec<Agreement> = pinned.agreements().collect();
-    let expected = [Agreement::Diverged, Agreement::Diverged, Agreement::Agreed];
-    assert_eq!(agreements, expected, "a, b on the lighter trunk");
-    cancel.cancel();
-}
-
-/// c on a heavier fork from 100 (the tip), then back onto the trunk between its tip read and its
-/// `getblockhash` answer
-#[tokio::test(start_paused = true)]
-async fn a_validator_reorging_mid_poll_holds_the_fork_for_that_poll_and_nothing_after() {
+async fn a_heavier_fork_is_held_by_its_one_validator_through_its_raced_poll_and_nothing_after() {
     let mut chain = MockChain::regtest().varied_work();
     let at_101 = chain.mine_empty(101);
     let fork = chain.fork(h(100)).outweigh().mine_empty(1).tip();
@@ -927,6 +887,7 @@ async fn a_validator_reorging_mid_poll_holds_the_fork_for_that_poll_and_nothing_
     next_poll_merged(&balancer).await;
     view.set_chain(Some(HeaderChainSnapshot::of(&chain, fork)));
     let reader = view.subscriber();
+    let forked = reader.current();
     let mut c = balancer.observe(v(2));
     c.borrow_and_update();
 
@@ -938,6 +899,11 @@ async fn a_validator_reorging_mid_poll_holds_the_fork_for_that_poll_and_nothing_
     within("c's next poll", c.changed()).await.expect("driver running");
     tokio::time::sleep(Duration::from_millis(1)).await;
 
+    assert_eq!(forked.best(), Some(fork), "the tip follows the work");
+    assert_eq!(forked.held_by(), TrustedValidatorSet::at([2]), "c alone holds the fork");
+    let agreements: Vec<Agreement> = forked.agreements().collect();
+    let expected = [Agreement::Diverged, Agreement::Diverged, Agreement::Agreed];
+    assert_eq!(agreements, expected, "a, b on the lighter trunk");
     assert_eq!(raced, Some(true), "a race is not a failure");
     assert_eq!(raced_holders, TrustedValidatorSet::at([2]), "the raced poll: its claim, as read");
     let reasked = reader.current();
@@ -947,9 +913,10 @@ async fn a_validator_reorging_mid_poll_holds_the_fork_for_that_poll_and_nothing_
     cancel.cancel();
 }
 
-/// one and two, each its own peers; one's metadata read then fails, then answers anew
+/// one and two, each its own peers; one's metadata read then fails, then answers anew; one's push
+/// stream up, then down
 #[tokio::test(start_paused = true)]
-async fn metadata_rides_one_poll_a_minute_keyed_by_address_and_a_failed_read_keeps_the_last() {
+async fn metadata_rides_one_poll_a_minute_a_failed_read_keeps_the_last_streaming_the_next_poll() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(10);
     let [one, two] = [(); 2].map(|_| Arc::new(chain.validator(tip)));
@@ -966,16 +933,24 @@ async fn metadata_rides_one_poll_a_minute_keyed_by_address_and_a_failed_read_kee
             .collect()
     };
 
+    let streaming = || reader.current().trusted_validators()[0].streaming;
+
     next_poll_merged(&balancer).await;
     let first = peers();
+    let unpushed = streaming();
     one.telemetry(Telemetry::default());
     tokio::time::sleep(METADATA_EVERY).await;
     let failed = (peers(), reader.current().trusted_validators()[0].health);
     one.telemetry(Telemetry { peers: Some(Vec::new()), release: None });
+    balancer.pushed(v(0), Push::Link(true));
     next_poll_merged(&balancer).await;
     let unrefreshed = peers();
+    let up = streaming();
     tokio::time::sleep(METADATA_EVERY).await;
     let refreshed = peers();
+    balancer.pushed(v(0), Push::Link(false));
+    next_poll_merged(&balancer).await;
+    let down = streaming();
 
     let inbound = PeerInfo { addr: "x:1".to_owned(), inbound: true };
     let one_peers = vec![outbound("seed-a:8233"), inbound];
@@ -988,6 +963,8 @@ async fn metadata_rides_one_poll_a_minute_keyed_by_address_and_a_failed_read_kee
     assert_eq!(failed.1, Health::Live, "a metadata failure is not a poll failure (else Degraded)");
     assert_eq!(unrefreshed, first, "read once per refresh, not per poll");
     assert_eq!(refreshed[0].1, [], "a fresh answer replaces it (isolated = empty, not an error)");
+    let pushes = [unpushed, up, down];
+    assert_eq!(pushes, [false, true, false], "one streaming: before, after up, after down");
     cancel.cancel();
 }
 
@@ -1020,27 +997,6 @@ async fn a_release_halting_within_a_week_raises_ending_and_an_upgrade_clears_it(
         upgraded.trusted_validators()[0].telemetry.release.as_ref().map(|r| r.build.clone());
     assert_eq!(build.as_deref(), Some("v6.5.0"), "the upgrade read at the next refresh");
     assert!(!upgraded.alarms().raised(Alarm::Ending), "upgraded: {:?}", upgraded.alarms());
-    cancel.cancel();
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_push_streams_state_shows_from_the_next_poll() {
-    let mut chain = MockChain::regtest();
-    let tip = chain.mine_empty(10);
-    let validator = Arc::new(chain.validator(tip));
-    let (view, balancer, cancel) = view_merging_polls(&[validator], &["one:8232"], None);
-    let streaming = || view.subscriber().current().trusted_validators()[0].streaming;
-    next_poll_merged(&balancer).await;
-    let before = streaming();
-
-    balancer.pushed(v(0), Push::Link(true));
-    next_poll_merged(&balancer).await;
-    let up = streaming();
-    balancer.pushed(v(0), Push::Link(false));
-    next_poll_merged(&balancer).await;
-    let down = streaming();
-
-    assert_eq!([before, up, down], [false, true, false], "streaming: before, after up, after down");
     cancel.cancel();
 }
 

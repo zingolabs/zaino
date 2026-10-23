@@ -21,8 +21,7 @@ pub(crate) const REPLY_ENVELOPE_BYTES: usize = 1024;
 /// One `getblock` reply: a full block as hex + its envelope
 const BLOCK_REPLY_BYTES: usize = 2 * MAX_BLOCK_BYTES + REPLY_ENVELOPE_BYTES;
 
-/// Largest JSON-RPC reply buffered (no OOM from one hostile reply): one full block's reply ..= 32
-/// MiB
+/// Largest reply buffered: one full block's reply ..= 32 MiB (no OOM from one hostile reply)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponseSizeCap {
     bytes: usize,
@@ -59,8 +58,6 @@ pub(crate) struct Call {
     pub(crate) params: Vec<Value>,
 }
 
-/// - `name` = metric label (the validator's configured address)
-/// - `auth` = basic (user, password)
 pub(crate) struct RpcClientConfig {
     pub(crate) url: String,
     pub(crate) name: String,
@@ -133,8 +130,6 @@ impl RpcClient {
         metrics::received(&self.name, n);
     }
 
-    /// `result` deserialized straight off the body as `T` (no `Value` hop: a multi-MB hex block
-    /// is decoded from the body bytes once)
     pub(crate) async fn call<T: DeserializeOwned>(
         &self,
         method: &str,

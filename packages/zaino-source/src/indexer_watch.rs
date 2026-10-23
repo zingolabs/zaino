@@ -8,7 +8,7 @@
 //! ```
 //!
 //! - an event carries nothing the poll relies on: a hint to read now, never data
-//! - zebrad ends a stream on lag rather than drop events, so any end = reconnect + poll at once
+//! - any stream end = reconnect + poll at once (zebrad ends a lagged stream, never drops events)
 
 use std::time::Duration;
 

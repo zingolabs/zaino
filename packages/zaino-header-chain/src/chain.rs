@@ -1,23 +1,8 @@
 //! Trusted validators' header tree above the finalized boundary + its most-work tip
 //!
-//! ```text
-//!   anchor ─ finalized (last max(2·depth, CONTEXT) in memory)   tree (every branch, bounded)
-//!   ●──●──●──●──●  finalized tip ──┬──●──●──●──●   A   work 1000.7   ◀── best (best_path)
-//!                                  └──●──●         B   work 1000.2   (kept: may still win)
-//! ```
-//!
-//! - trusted: a header enters on its parent link + its nBits work alone (zebra validated it)
-//! - untrusted ([`HeaderChain::insert_untrusted`]): every consensus rule first, over the
-//!   ancestors held
-//! - anchored, never from genesis: [`HeaderChain::anchor`] = one trusted header as the finalized
-//!   tip, work counted from it
+//! - trusted = parent link + nBits work alone (zebra validated it), untrusted = every rule first
 //! - pure core: no clock, no lock, no I/O, one owner (`HeaderSync`)
-//! - H1 best = max work, H2 descends from finalized, H4 bounded, H5 published never changes, H6
-//!   finalized = settled, H7 witnesses closed under parents: asserted by [`HeaderChain::check`]
-//!   and on every finalize
-//! - settled = vouched, or witnessed by peers in > 5 netgroups with no difficulty collapse since
-//!   the last vouch ([`HeaderChain::witness`])
-//! - finalized = min(highest settled on best, best − depth)
+//! - H1–H7 (usage.md) asserted by [`HeaderChain::check`] + on every finalize
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -82,12 +67,10 @@ pub(crate) struct Node {
     pub(crate) witnesses: Witnesses,
 }
 
-/// - `finalized_headers` = the newest finalized headers, oldest first, the finalized tip last
-///   (empty = no anchor)
-/// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
-/// - `last_vouched` = (height, own work) of the highest block a trusted validator vouched for,
-///   else the anchor: peer finality's difficulty reference (never moved by peers)
-/// - `revision` = +1 per change (a snapshot worth publishing)
+/// - `finalized_headers` oldest first, finalized tip last (empty = no anchor)
+/// - `best_path[i]` = best branch at `base() + i`
+/// - `last_vouched` = (height, own work) of highest vouched block, else anchor (peer finality's
+///   difficulty reference, never moved by peers)
 /// - every collection `imbl` (O(1) into each [`HeaderChainSnapshot`])
 pub struct HeaderChain {
     depth: FinalityDepth,
@@ -190,7 +173,7 @@ impl HeaderChain {
         self.parent(header.prev_hash()).ok().map(|(height, _)| height)
     }
 
-    /// An untrusted header: every consensus rule (`validate`) over the ancestors held, then
+    /// Untrusted `header`: every consensus rule (`validate`) over the ancestors held, then
     /// [`insert`](Self::insert)
     ///
     /// - `now_unix` = the local clock (the 2 h future bound)
@@ -208,7 +191,7 @@ impl HeaderChain {
         self.insert(header)
     }
 
-    /// A trusted header: attach to a held parent, its work, best, bounds
+    /// Trusted `header`: attach to a held parent, its work, best, bounds
     pub fn insert(&mut self, header: &Header) -> Result<Inserted, Rejected> {
         let hash = header.hash();
         if self.known(hash) {

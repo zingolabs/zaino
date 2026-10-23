@@ -305,8 +305,8 @@ mod tests {
         );
     }
 
-    /// Never fail the poll on what it does not read: lossy pool floats (the old mainnet-boot
-    /// crash), an upgrade this build does not know (a validator ahead of the pin), names, statuses
+    /// Never fail the poll on what it does not read: lossy pool floats, an upgrade this build
+    /// does not know (a validator ahead of the pin), names, statuses
     #[test]
     fn blockchain_info_reads_tip_estimate_and_known_activations_and_ignores_the_rest() {
         let info = json!({
@@ -355,28 +355,23 @@ mod tests {
         }
     }
 
-    /// Side-chain tx (`-1`) reported as unmined = reads as pending
+    /// Side-chain tx (`-1`) = reads as off the best chain, any other negative height refused
     #[test]
     fn transactions_place_themselves() {
         use TransactionLocation::{BestChain, Mempool, NonBestChain};
+        let refused = Err("height -7: neither -1 nor a block height".to_owned());
         #[rustfmt::skip]
         let cases = [
-            ("height 12345", json!({ "hex": "00", "height": 12345 }), BestChain(BlockHeight::from(12345))),
-            ("height -1",    json!({ "hex": "00", "height": -1 }),    NonBestChain),
-            ("no height",    json!({ "hex": "00" }),                  Mempool),
+            ("height 12345", json!({ "hex": "00", "height": 12345 }), Ok(BestChain(BlockHeight::from(12345)))),
+            ("height -1",    json!({ "hex": "00", "height": -1 }),    Ok(NonBestChain)),
+            ("no height",    json!({ "hex": "00" }),                  Ok(Mempool)),
+            ("height -7",    json!({ "hex": "00", "height": -7 }),    refused),
         ];
         for (case, reply, expected) in cases {
             let location =
                 parse_transaction(reply).map(|tx| tx.location).map_err(|e| e.to_string());
-            assert_eq!(location, Ok(expected), "{case}");
+            assert_eq!(location, expected, "{case}");
         }
-    }
-
-    #[test]
-    fn a_negative_height_other_than_minus_one_is_refused() {
-        let refused = parse_transaction(json!({ "hex": "00", "height": -7 })).map(|tx| tx.location);
-
-        assert!(matches!(refused, Err(ParseError::Height(-7))), "height -7: {refused:?}");
     }
 
     /// zebrad 6.4.2's shapes: mainnet → halt height, other networks → omitted, a release before

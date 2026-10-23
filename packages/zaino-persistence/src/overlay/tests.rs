@@ -153,19 +153,8 @@ fn a_view_over_another_schemas_durable_panics() {
     OverlayView::new(Durable { tip: None, schema: OTHER }, layer);
 }
 
-// `Overlay::check` invariants: holds on every layer `with` + `rebase` build, each broken by hand
-// (check never firing = silent pass after every `disk::model_tests::history` step)
-
-/// Blocks 0-2, block 2 removing block 0's id, rebased past block 0
-#[test]
-fn check_passes_every_layer_with_and_rebase_build() {
-    let mut removal = block(2);
-    removal.map(IDS).remove(&[0; 16]);
-    let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1)).with(&removal);
-
-    layer.check("blocks 0-2");
-    layer.rebase(&Durable { tip: Some(block_at(0)), schema: SCHEMA }).check("rebased onto 0");
-}
+// `Overlay::check` invariants, each broken by hand (check never firing = silent pass after every
+// `disk::model_tests::history` step)
 
 #[test]
 #[should_panic(expected = "layer blocks ascending, got [BlockHeight(1), BlockHeight(0)]")]

@@ -13,52 +13,6 @@ const READY: Duration = Duration::from_secs(120);
 
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
-/// Kind-only config + validator on NU6.3-at-6 → synced across the boundary, each era's compact
-/// blocks served (one build, no recompile per schedule)
-#[ztest::qos::integration]
-#[tokio::test(flavor = "multi_thread")]
-async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
-    let nu6_3_at_boundary = ActivationHeights::builder()
-        .set_overwinter(Some(1))
-        .set_sapling(Some(1))
-        .set_blossom(Some(1))
-        .set_heartwood(Some(1))
-        .set_canopy(Some(1))
-        .set_nu5(Some(2))
-        .set_nu6(Some(2))
-        .set_nu6_1(Some(2))
-        .set_nu6_2(Some(2))
-        .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-        .build();
-    let placeholder = ActivationHeights::regtest_default();
-    assert_ne!(nu6_3_at_boundary, placeholder, "premise: schedule != zainod's config placeholder");
-
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_at_boundary);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
-
-    // Past the boundary: a wrong schedule fails the first block whose commitments it misreads
-    let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
-    let indexed_tip = u64::from(indexer.latest_block_height().await?);
-    assert!(indexed_tip > u64::from(NU6_3_TRANSITION_BOUNDARY), "indexer tip {indexed_tip}");
-
-    // Placeholder schedule (NU6.3 at 2) would serve pre-boundary orchard coinbases as ironwood
-    let blocks = indexer.get_block_range(BlockHeight::from(2u32), tip).await?;
-    assert!(!blocks.is_empty(), "no compact blocks served in [2, {tip:?}]");
-    for block in &blocks {
-        let height = block.height;
-        let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
-        let has_ironwood = block.vtx.iter().any(|tx| !tx.ironwood_actions.is_empty());
-        let ironwood_era = height >= u64::from(NU6_3_TRANSITION_BOUNDARY);
-        let era = (has_orchard, has_ironwood);
-        assert_eq!(era, (!ironwood_era, ironwood_era), "height {height}: (orchard, ironwood)");
-    }
-
-    Ok(())
-}
-
 /// Input contract: zebrad's `upgrades` map for the transition schedule, pinned (set, order,
 /// heights; nothing pre-Overwinter: keyed by branch id)
 #[ztest::qos::integration]

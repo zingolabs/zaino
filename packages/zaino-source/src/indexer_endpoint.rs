@@ -8,7 +8,8 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
 use crate::endpoint::validator_url;
 use crate::{EndpointError, Timeouts};
 
-/// Mutual TLS to a validator's indexer (zakurad refuses plaintext off loopback: `[rpc.indexer_tls]`)
+/// Mutual TLS to a validator's indexer (zakurad: plaintext refused off loopback,
+/// `[rpc.indexer_tls]`)
 ///
 /// - `ca_path` verifies the server
 /// - `cert_path` (leaf first) + `key_path` (PKCS#8, PKCS#1 or SEC1) = this client, signed by the

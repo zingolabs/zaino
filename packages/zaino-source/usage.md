@@ -239,9 +239,8 @@ assert_eq!(validator.calls("getblockheader"), 12);   // each batch item counted
 - The seam is `RpcClient`'s wire: HTTP in production, an in-process server under `testing` (no
   socket, so a paused clock stays deterministic).
 
-`testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`, as whole blocks
-(`block(height)`) or each transaction's own bytes (`transactions(height)`), for tests that need
-real transactions of every pool and version.
+`testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS` (`block(height)`),
+for tests that need real transactions of every pool and version.
 
 A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a bare feature gate
 that nothing enables compiles nothing, and its tests silently never run.

@@ -242,25 +242,6 @@ async fn a_send_is_refused_with_zebrads_code_for_why() {
     );
 }
 
-#[tokio::test]
-async fn a_scripted_refusal_answers_sends_and_checks_alike() {
-    let chain = MockChain::regtest();
-    let validator = chain.validator(chain.tip());
-    let client = validator.client();
-    let fee_too_low =
-        SendRawTransactionError::Rejected { code: -26, message: "fee too low".into() };
-
-    validator.relay(Err(fee_too_low.clone()));
-    let sent = client.send_raw_transaction(raw_transaction(3, 0).1).await;
-    let checked = client.check_admission(raw_transaction(3, 0).1).await;
-
-    assert!(matches!(&sent, Err(QueryError::Domain(r)) if *r == fee_too_low), "sent: {sent:?}");
-    assert!(
-        matches!(&checked, Err(QueryError::Domain(r)) if *r == fee_too_low),
-        "checked: {checked:?}"
-    );
-}
-
 /// `-32601` (zcashd, stock zebrad) = unsupported, never a failure
 #[tokio::test]
 async fn a_node_lacking_checkadmission_reads_as_unsupported() {
@@ -332,9 +313,10 @@ async fn a_slow_method_delays_only_requests_carrying_it() {
     assert_eq!(poll_took, Duration::ZERO, "poll carries no getblockheader");
 }
 
-/// Unreachable method = HTTP 503 for requests carrying it; `calls` counts each batch item
+/// - HTTP 503: requests carrying an unreachable method, every request once `down`
+/// - `calls` counts each answered batch item, nothing of a refused request
 #[tokio::test]
-async fn an_unreachable_method_refuses_its_requests_and_calls_count_each_item() {
+async fn refused_requests_answer_503_and_calls_count_each_answered_item() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(2);
     let validator = chain.validator(tip);
@@ -342,26 +324,21 @@ async fn an_unreachable_method_refuses_its_requests_and_calls_count_each_item() 
     validator.reachable(&["sendrawtransaction"], false);
 
     client.get_block_links(&[h(0), h(1), h(2)]).await.expect("reachable");
-    let refused = client.send_raw_transaction(raw_transaction(4, 0).1).await;
-
-    assert!(
-        matches!(&refused, Err(QueryError::NonDomain(cause)) if cause.mode == FailureMode::HttpStatus(503)),
-        "{refused:?}"
-    );
-    assert_eq!(validator.calls("getblockheader"), 3, "three headers in one batch");
-    assert_eq!(validator.calls("sendrawtransaction"), 0, "a refused request answers nothing");
-}
-
-#[tokio::test]
-async fn a_down_node_refuses_every_request() {
-    let chain = MockChain::regtest();
-    let validator = chain.validator(chain.tip());
-    let client = validator.client();
-
+    let unreachable = client.send_raw_transaction(raw_transaction(4, 0).1).await;
     validator.down(true);
     let down = client.get_poll_reading(false, &[]).await;
 
-    assert!(matches!(&down, Err(cause) if cause.mode == FailureMode::HttpStatus(503)), "{down:?}");
+    let unreachable = unreachable.map_err(|error| match error {
+        QueryError::NonDomain(cause) => Some(cause.mode),
+        _ => None,
+    });
+    let refused = Some(FailureMode::HttpStatus(503));
+    assert_eq!(unreachable, Err(refused), "send with sendrawtransaction unreachable");
+    let down = down.map(|_| ()).map_err(|cause| Some(cause.mode));
+    assert_eq!(down, Err(refused), "poll on a down node");
+    assert_eq!(validator.calls("getblockheader"), 3, "three headers in one batch");
+    assert_eq!(validator.calls("sendrawtransaction"), 0, "unreachable: answered nothing");
+    assert_eq!(validator.calls("getblockchaininfo"), 0, "down: answered nothing");
 }
 
 #[test]

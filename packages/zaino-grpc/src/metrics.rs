@@ -74,7 +74,6 @@ fn reply(method: Option<Method>) -> Reply {
     method.map_or(Reply::One, |method| method.route().reply)
 }
 
-/// Every metric this crate emits
 pub const METRICS: &[Metric] = &[
     Metric::counter(REQUESTS_TOTAL, "Finished requests, by method and gRPC status code"),
     Metric::histogram(

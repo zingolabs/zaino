@@ -31,13 +31,11 @@ pub struct UtxoSetIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -491,8 +489,6 @@ mod tests {
     /// - a writer on it resolves the next block's fees from the recovered outputs + commits it
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_durable_prefix_whose_outputs_still_resolve() {
-        // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
-        // recovered output
         let alice = p2pkh([0xaa; 20]);
         let mut chain =
             MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));

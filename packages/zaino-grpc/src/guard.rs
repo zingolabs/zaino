@@ -23,7 +23,6 @@ use crate::service::Method;
 use crate::stall::{self, Ticket};
 use crate::{metrics, summary};
 
-/// One per connection (`stalls`, `activity` = its own)
 #[derive(Clone, Debug)]
 pub(crate) struct Guard<Inner> {
     inner: Inner,
@@ -313,29 +312,6 @@ mod tests {
         assert_eq!(in_flight(), 0, "read to its end: returned before the drop");
     }
 
-    /// A queue would hang a wallet behind the open stream
-    #[tokio::test]
-    async fn a_full_work_pool_refuses_at_once_with_pushback() {
-        use futures::FutureExt as _;
-
-        let limits =
-            crate::GrpcLimits { max_work_streams: NonZeroUsize::MIN, ..Default::default() };
-        let state = Arc::new(AdmissionState::new(&limits));
-        let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
-        let _open = guard.call(request("/open")).await.expect("infallible");
-
-        let refused =
-            guard.call(request("/open")).now_or_never().expect("refused at once, never queued");
-
-        let refused = refused.expect("infallible");
-        let status = Status::from_header_map(refused.headers()).expect("Trailers-Only refusal");
-        let pushback = refused.headers().get("grpc-retry-pushback-ms");
-        let retry_after = HeaderValue::from_static("250");
-        let refusal = (status.code(), status.message(), pushback);
-        assert_eq!(refusal, (Code::Unavailable, "work stream limit reached", Some(&retry_after)));
-        assert_eq!(state.report().in_flight, 1, "a refusal takes no slot of its own");
-    }
-
     #[tokio::test]
     async fn subscriptions_have_their_own_pool_beside_work() {
         let one = NonZeroUsize::MIN;
@@ -369,19 +345,23 @@ mod tests {
 
     /// Default limits (`max_work_streams` 2048, adaptive from 256):
     ///
-    /// - 257th open work stream refused below the ceiling, `UNAVAILABLE` + pushback
+    /// - 257th open work stream refused at once (a queue would hang a wallet behind the open
+    ///   streams), below the ceiling, `UNAVAILABLE` + pushback, taking no slot
     /// - report says so once the window closes
-    /// - subscription never held to the work limit
     #[tokio::test]
-    async fn work_past_the_adaptive_limit_is_refused_below_the_ceiling() {
+    async fn work_past_the_adaptive_limit_is_refused_at_once_below_the_ceiling() {
+        use futures::FutureExt as _;
+
         let state = Arc::new(AdmissionState::new(&crate::GrpcLimits::default()));
         let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
         let mut open = Vec::new();
         for _ in 0..256 {
             open.push(guard.call(request("/open")).await.expect("infallible"));
         }
-        let refused = guard.call(request("/open")).await.expect("infallible");
-        let status = Status::from_header_map(refused.headers()).expect("a status");
+        let refused =
+            guard.call(request("/open")).now_or_never().expect("refused at once, never queued");
+        let refused = refused.expect("infallible");
+        let status = Status::from_header_map(refused.headers()).expect("Trailers-Only refusal");
         let pushback = refused.headers().get("grpc-retry-pushback-ms");
         let refusal = (status.code(), status.message(), pushback);
         let retry_after = HeaderValue::from_static("250");
@@ -392,10 +372,6 @@ mod tests {
         let report = state.report();
         let expected =
             AdmissionReport { limit: 256, in_flight: 256, refused_per_s: 1.0, overload: None };
-        assert_eq!(report, expected, "refused below the 2048 ceiling");
-
-        let mempool = Method::GetMempoolStream.path();
-        let subscribed = guard.call(request(&mempool)).await.expect("infallible");
-        assert_eq!(subscribed.headers().get("grpc-status"), None, "subscriptions: own pool");
+        assert_eq!(report, expected, "refused below the 2048 ceiling, no slot of its own");
     }
 }

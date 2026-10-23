@@ -173,7 +173,6 @@ impl<F> NfsCore<F> {
         headed && (u32::from(best) + 1).saturating_sub(u32::from(next)) <= self.window
     }
 
-    /// Durable tips never move back
     fn durable(&mut self, tips: Vec<Option<BlockRef>>) {
         assert_eq!(tips.len(), self.durable.len(), "one durable tip per enabled index");
         for (index, tip) in tips.into_iter().enumerate() {

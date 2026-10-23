@@ -74,14 +74,14 @@ impl<S: ChainDataSource> ChainView<S> {
         Self { peers: Some(peers), ..self }
     }
 
-    /// The runnable merging peers' block announcements into the view (`None` = no peers)
+    /// Runnable merging peers' block announcements into the view (`None` = no peers)
     pub fn peer_watch(&self) -> Option<PeerWatch> {
         let peers = Arc::clone(self.peers.as_ref()?);
         Some(PeerWatch::new(Arc::clone(&self.core), peers))
     }
 
-    /// The runnable polling the peers' mempools into the view, admitting what a quorum holds
-    /// and `utxos` funds (`None` = no peers)
+    /// Runnable polling peers' mempools into the view, admitting what a quorum holds and `utxos`
+    /// funds (`None` = no peers)
     pub fn peer_mempool(&self, utxos: Arc<dyn UnspentOutputs>) -> Option<PeerMempool> {
         let peers = Arc::clone(self.peers.as_ref()?);
         Some(PeerMempool::new(Arc::clone(&self.core), peers, utxos, self.schedule))
@@ -93,13 +93,12 @@ impl<S: ChainDataSource> ChainView<S> {
         self.core.apply_headers(chain.map(Arc::new));
     }
 
-    /// The runnable that feeds `chain` from the validators and publishes its best tip into this
-    /// view
+    /// Runnable feeding `chain` from the validators, publishing its best tip into this view
     pub fn header_sync(&self, chain: HeaderChain) -> HeaderSync<S> {
         HeaderSync::new(Arc::clone(&self.core), self.balancer.clone(), chain)
     }
 
-    /// The runnable merging each trusted member's polls into this view
+    /// Runnable merging each trusted member's polls into this view
     pub fn observation_merge(&self) -> ObservationMerge<S> {
         let (core, balancer) = (Arc::clone(&self.core), self.balancer.clone());
         ObservationMerge { core, balancer }

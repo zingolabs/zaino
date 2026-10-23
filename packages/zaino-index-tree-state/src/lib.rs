@@ -15,7 +15,6 @@ pub use reader::TreeStateReader;
 pub use serve::{pool_activations, ServeError};
 pub use writer::{fold, FoldError, TreeStateIndexWriter};
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&tables::SEQUENCES, &[]);

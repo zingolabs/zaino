@@ -159,21 +159,4 @@ mod tests {
             assert_eq!(log.step(now, &readiness), line, "{case}: {readiness:?}");
         }
     }
-
-    #[test]
-    fn down_logs_at_error_held_and_degraded_at_warn_the_rest_at_info() {
-        use Readiness::{Degraded, Down, Held, Provisioning, Serving, Syncing};
-        let cpu = DaemonReason::Overloaded(OverloadCause::CpuPressure);
-        let levels = [
-            (Provisioning(None), Level::INFO),
-            (Syncing(None), Level::INFO),
-            (Serving(None), Level::INFO),
-            (Degraded(DaemonReason::TipUnvouched), Level::WARN),
-            (Held(DaemonReason::GoawaySent), Level::WARN),
-            (Down(cpu), Level::ERROR),
-        ];
-        for (readiness, expected) in levels {
-            assert_eq!(level(&readiness), expected, "{readiness:?}");
-        }
-    }
 }

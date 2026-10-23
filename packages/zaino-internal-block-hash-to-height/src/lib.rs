@@ -15,7 +15,6 @@ pub use writer::{fold, BlockHashIndexWriter};
 /// Block hash width
 pub(crate) const HASH: usize = 32;
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&[], &[BY_HASH]);

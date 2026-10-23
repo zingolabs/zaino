@@ -18,7 +18,6 @@ const DEPTH: u32 = 10;
 const SEND: u64 = 250_000;
 /// zaino's mempool mirror poll period
 const MEMPOOL_POLL: Duration = Duration::from_millis(500);
-/// `PoolType` wire enum: transparent, sapling, orchard, ironwood
 const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 
 #[rstest]

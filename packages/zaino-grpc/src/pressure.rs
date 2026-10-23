@@ -55,13 +55,8 @@ mod tests {
         format!("some avg10=1.00 total={some_total_us}\nfull avg10=0.00 total=9\n")
     }
 
-    #[test]
-    fn psi_reads_the_some_line_total_and_ignores_full() {
-        assert_eq!(some_total_us(&psi(42)), Some(42), "{:?}", psi(42));
-        assert_eq!(some_total_us("full avg10=0.00 total=1\n"), None, "no `some` line");
-    }
-
-    /// Window = Δ some total / its length, capped at 1; no PSI file = unmeasured
+    /// Window = Δ `some` total (never `full`'s) / its length, capped at 1; no PSI file or no
+    /// `some` line = unmeasured
     #[test]
     fn a_window_is_the_stalled_share_of_its_length() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -73,9 +68,12 @@ mod tests {
         let quarter = cpu.share(minute);
         std::fs::write(&file, psi(136_000_000)).expect("write");
         let over = cpu.share(minute);
+        std::fs::write(&file, "full avg10=0.00 total=1\n").expect("write");
+        let no_some_line = cpu.share(minute);
 
         assert_eq!(quarter, Some(0.25), "15 s stalled of 60 s");
         assert_eq!(over, Some(1.0), "120 s stalled of 60 s: capped");
+        assert_eq!(no_some_line, None, "no `some` line");
         assert_eq!(Pressure { file: None, last_us: None }.share(minute), None, "no PSI file");
     }
 }

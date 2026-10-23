@@ -1,27 +1,8 @@
 //! Trusted validators' and peers' headers into the header chain, its [`HeaderChainSnapshot`] into
-//! the view and onto a watch (`docs/architecture.md` §4)
-//!
-//! ```text
-//!   view changed ─▶ answering validators' claims + getblockhash answers, live peers' invs
-//!                   ─▶ witnessed, finalize
-//!               ─▶ first validator whose claim we lack (no back-off, not forked below finalized):
-//!                  no chain, or its claim − below past our ceiling ─▶ anchor at claim − below
-//!                  (below = max(depth, CONTEXT): `HeaderChain::anchor_below`)
-//!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
-//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ snapshot → view + watch
-//! ```
+//! the view and onto a watch (`docs/architecture.md` §4, usage.md `HeaderSync`)
 //!
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
-//! - anchored below a trusted validator's claim, never synced from genesis (zebra validated
-//!   every block below it, bulk sync reads blocks by height, not this chain)
-//! - finalized = min(settled, best − depth) after every change (H6: `HeaderChain::finalizable`)
-//! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above finalized,
-//!   H9)
-//! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`)
-//! - chain forked below our finalized tip → not fetched again until its claim moves
-//! - peers ([`HeaderSync::with_peers`]): no trusted run due → peer set asked past our best
-//!   (locator) every `PEER_POLL`, at once again after progress
-//! - peer headers: every rule run per header (untrusted), never vouched
+//! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (H9)
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,8 +34,7 @@ pub(crate) const PEER_POLL: Duration = Duration::from_secs(5);
 
 /// Feeds + owns one header chain from every trusted validator (and the peer set, if any)
 ///
-/// - `published` = the chain's revision last sent
-/// - `own` = our indexes' chain by hash ([`with_own_chain`](Self::with_own_chain)), until anchored
+/// - `own` = [`with_own_chain`](Self::with_own_chain)'s, `None` once anchored on it
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,

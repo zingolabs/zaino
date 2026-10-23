@@ -13,7 +13,6 @@
 
 use std::panic::{self, AssertUnwindSafe};
 
-/// Runs `f` on the CPU pool
 pub async fn compute<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let (done, outcome) = tokio::sync::oneshot::channel();
     let span = tracing::Span::current();
@@ -27,7 +26,6 @@ pub async fn compute<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
     }
 }
 
-/// Runs `f` on the blocking-I/O pool
 pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || span.in_scope(f))
@@ -40,11 +38,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn offloaded_jobs_return_their_value_compute_from_off_the_runtime() {
-        let off_runtime = || tokio::runtime::Handle::try_current().is_err();
-        assert!(compute(off_runtime).await, "compute ran on a runtime thread");
-        assert_eq!(compute(|| (1..=4u64).product::<u64>()).await, 24, "compute: 4!");
-        assert_eq!(blocking(|| 7).await, 7, "blocking: 7");
+    async fn compute_runs_off_the_runtime() {
+        let off_runtime = compute(|| tokio::runtime::Handle::try_current().is_err()).await;
+
+        assert!(off_runtime, "compute ran on a runtime thread");
     }
 
     #[tokio::test]

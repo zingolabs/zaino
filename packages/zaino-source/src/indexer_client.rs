@@ -1,4 +1,4 @@
-//! [`ZebraIndexerGrpcClient`]: blocks over zebrad's indexer gRPC, every other question over its JSON-RPC
+//! [`ZebraIndexerGrpcClient`]: blocks over zebrad's indexer gRPC, the rest over its JSON-RPC
 //!
 //! - `GetBlockRange` / `GetBlock` = stored consensus bytes as protobuf `bytes` (no hex, no JSON),
 //!   decoded by the same [`decode::decode_block`] as JSON-RPC
@@ -47,7 +47,6 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One validator: blocks from its indexer, the rest from its JSON-RPC
 ///
-/// - Single attempt per call (retries, concurrency = the caller's balancer)
 /// - `read` = silence before a call fails (per message, never a total: a range takes as long as
 ///   it takes)
 pub struct ZebraIndexerGrpcClient {

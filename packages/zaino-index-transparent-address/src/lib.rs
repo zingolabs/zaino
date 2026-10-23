@@ -16,7 +16,6 @@ use zcash_protocol::consensus::NetworkType;
 use address::AddressKey;
 use layout::{RECEIVE_KEY, RECEIVE_VALUE, SPEND, SPENT_KEY};
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);

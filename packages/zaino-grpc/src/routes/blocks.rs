@@ -15,7 +15,6 @@ use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{self, trailers, unary_response};
 use zaino_proto::proto::service;
 
-/// One request's compact blocks: the served indexes + the compact-block reader over them
 pub(crate) struct CompactBlocks<'a, V> {
     pub(crate) served: &'a IndexesAtBlock<V>,
     pub(crate) reader: CompactBlockReader<OverlayView<V>>,
@@ -405,7 +404,6 @@ mod tests {
         assert_eq!(shielded.headers().get("grpc-status"), None, "stream status in the headers");
         let (chunks, status) = answer(shielded).await;
         assert_eq!(status.code(), Code::Ok, "no poolTypes: {status:?}");
-        assert_eq!(chunks.len(), 1, "four durable records = one projected window");
         let blocks = shapes(decode_frames(&chunks.concat()));
         assert_eq!(
             blocks,

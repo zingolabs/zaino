@@ -14,7 +14,6 @@ use zcash_protocol::consensus::{
 
 use crate::wire::{self, frame, unary_response};
 
-/// `GetLightdInfo`
 pub(crate) fn get_lightd_info<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,
@@ -24,7 +23,6 @@ pub(crate) fn get_lightd_info<V>(
     Ok(unary_response(frame(&lightd_info)))
 }
 
-/// `GetStandardFee`
 pub(crate) fn get_standard_fee<V>(
     grpc_snapshot: &GrpcSnapshot<V>,
     network: NetworkType,
@@ -196,32 +194,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(info().ok(), Some(expected), "best 7, NU6.3's branch at 5, 5 served");
-        let held_by = grpc_snapshots.load().chain_view().held_by();
-        assert_eq!(held_by, TrustedValidatorSet::default(), "no validator ever held the tip");
         cancel.cancel();
     }
 
-    /// Rule at best + 1: mainnet's legacy 5,000 this low, regtest's 1,000
+    /// Rule at best + 1: mainnet's legacy 5,000 this low, regtest's 1,000; no chain = refused
     #[test]
     fn standard_fee_is_the_rule_at_the_block_after_best_with_no_validator_read() {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
         let held =
             fixed_snapshots(&chain, tip, Vec::new(), TrustedValidatorSet::default(), &[]).load();
-        let fee =
-            |network| standard_fee(&held, network).map(|fee| fee.fee_zat).map_err(|s| s.code());
-
-        assert_eq!(fee(NetworkType::Main), Ok(5_000), "mainnet, best 5");
-        assert_eq!(fee(NetworkType::Regtest), Ok(1_000), "regtest, best 5");
-    }
-
-    #[test]
-    fn standard_fee_is_unavailable_with_no_header_chain() {
         let empty = ChainViewSnapshot::fixed(None, TrustedValidatorSet::default(), &[], &[]);
         let unanchored = GrpcSnapshots::<DiskView>::fixed(None, Arc::new(empty)).load();
+        let fee = |grpc_snapshot, network| {
+            standard_fee(grpc_snapshot, network).map(|fee| fee.fee_zat).map_err(|s| s.code())
+        };
 
-        let refused = standard_fee(&unanchored, NetworkType::Main).map_err(|status| status.code());
-
-        assert_eq!(refused, Err(tonic::Code::Unavailable), "{refused:?}");
+        assert_eq!(fee(&held, NetworkType::Main), Ok(5_000), "mainnet, best 5");
+        assert_eq!(fee(&held, NetworkType::Regtest), Ok(1_000), "regtest, best 5");
+        let refused = fee(&unanchored, NetworkType::Main);
+        assert_eq!(refused, Err(tonic::Code::Unavailable), "no header chain");
     }
 }

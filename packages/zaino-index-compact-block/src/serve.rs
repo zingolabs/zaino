@@ -17,10 +17,7 @@ use crate::{
 /// Ceiling on one range window's records (one chunk handed to the socket)
 const WINDOW_BYTES: usize = 1 << 20;
 
-/// Small (transport maps these onto gRPC codes)
-///
-/// - no transport named in this crate
-/// - `Malformed` = stored record that will not walk (corruption, not a bad request)
+/// `Malformed` = stored record that will not walk (corruption, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("block {height} is not in the index")]

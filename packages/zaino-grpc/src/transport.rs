@@ -114,7 +114,6 @@ impl<S: ChainDataSource, V: PinnedView> GrpcService<S, V> {
         self
     }
 
-    /// Admission pools, read by `report()`
     pub fn admission(&self) -> Arc<AdmissionState> {
         Arc::clone(&self.admission)
     }
@@ -609,7 +608,7 @@ mod tests {
         }
     }
 
-    /// EADDRINUSE never reaches a spawned serve loop
+    /// #1081: EADDRINUSE = `bind()`'s error, never a spawned serve loop's
     #[tokio::test]
     async fn binding_a_held_port_fails_before_anything_is_served() {
         let held = tokio::net::TcpListener::bind(ANY_PORT).await.expect("a free port");

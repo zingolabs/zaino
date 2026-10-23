@@ -243,7 +243,6 @@ impl Navigation {
         Ok(())
     }
 
-    /// Records pushed so far
     pub(crate) fn records(&self) -> u64 {
         self.records
     }

@@ -352,9 +352,7 @@ struct Faults {
 }
 
 impl Faults {
-    /// One call counted
-    ///
-    /// - from `fail_from` on: `EIO` naming `what` (given its index)
+    /// From `fail_from` on: `EIO` naming `what` (given its index)
     fn count(&mut self, what: impl FnOnce(u64) -> String) -> io::Result<()> {
         let at = self.calls;
         self.calls += 1;
@@ -383,7 +381,6 @@ impl Inner {
     }
 }
 
-/// In-memory [`Fs`] (module docs)
 #[derive(Debug, Default)]
 pub struct SimFs {
     inner: Arc<Mutex<Inner>>,

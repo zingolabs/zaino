@@ -24,7 +24,7 @@ pub use build::{p2pkh, BlockBuilder, TxBuilder};
 pub use chain::{Branch, MockChain, Schedule, Work};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mint::{commitment, nullifier};
-pub use raw_tx::{decoded, raw_transaction, raw_transparent, raw_v5};
+pub use raw_tx::{raw_transaction, raw_transparent, raw_v5};
 pub use upgrades::all_at;
 pub use validator::{Lie, MockValidator};
 
@@ -57,7 +57,7 @@ pub fn encode_header(header: &DecodedHeader) -> Vec<u8> {
 }
 
 /// What `header.hash` must be: SHA-256d of [`encode_header`]
-pub fn header_hash(header: &DecodedHeader) -> BlockHash {
+fn header_hash(header: &DecodedHeader) -> BlockHash {
     BlockHash(sha256d(&encode_header(header)))
 }
 

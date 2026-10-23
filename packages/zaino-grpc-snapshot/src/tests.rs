@@ -273,6 +273,7 @@ fn the_mempool_is_served_only_while_a_live_validator_holds_best_or_peers_are_quo
     let chain = Arc::new(HeaderChainSnapshot::of(&builder, a6));
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let not_held = Err(Unavailable::NotHeld { height: 6, configured: 2 });
+    let unanchored = Err(Unavailable::NoChain);
     let holding = |health: Health| {
         let view = ChainViewSnapshot::fixed(
             Some(Arc::clone(&chain)),
@@ -294,15 +295,15 @@ fn the_mempool_is_served_only_while_a_live_validator_holds_best_or_peers_are_quo
     let peers_in = |netgroups: usize| no_holder.clone().peers_listed(&peers[..netgroups]);
     #[rustfmt::skip]
     let cases = [
-        // (case,                                  view,                                     mempool())
-        ("Live holder",                            holding(Health::Live),                    Ok(())),
-        ("Live, ahead, its hash at best read",     holding(Health::Live).ahead(0, 1, true),  Ok(())),
-        ("Live, ahead, unread: not a holder",      holding(Health::Live).ahead(0, 1, false), not_held),
-        ("catching-up holder: its mempool off",    holding(Health::CatchingUp),              not_held),
-        ("no holder, peers in 6 netgroups",        peers_in(6),                              Ok(())),
-        ("no holder, peers in 5 netgroups",        peers_in(5),                              not_held),
-        ("no holder",                              no_holder,                                not_held),
-        ("no verified chain",                      no_chain,                                 Err(Unavailable::NoChain)),
+        // (case,                          view,                                     mempool())
+        ("Live holder",                    holding(Health::Live),                    Ok(())),
+        ("Live, ahead, hash at best read", holding(Health::Live).ahead(0, 1, true),  Ok(())),
+        ("Live, ahead, unread: no holder", holding(Health::Live).ahead(0, 1, false), not_held),
+        ("catching up: its mempool off",   holding(Health::CatchingUp),              not_held),
+        ("no holder, 6 peer netgroups",    peers_in(6),                              Ok(())),
+        ("no holder, 5 peer netgroups",    peers_in(5),                              not_held),
+        ("no holder",                      no_holder,                                not_held),
+        ("no verified chain",              no_chain,                                 unanchored),
     ];
     for (case, view, expected) in cases {
         let grpc_snapshot = GrpcSnapshots::<DiskView>::fixed(None, Arc::new(view)).load();

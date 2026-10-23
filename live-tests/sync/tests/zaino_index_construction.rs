@@ -1,4 +1,4 @@
-//! Mainnet light-wallet index: built from empty to the live tip, then held to zebra.
+//! Mainnet light-wallet index: built from empty to the live tip, then held to zebra
 //!
 //! - zebra = optimized fork (`elicbarbieri/zebra` `perf/indexer-block-range`: lazy point
 //!   decompression, stored-bytes `GetBlockRange`), restored at `IRONWOOD_MAINNET`, following mainnet

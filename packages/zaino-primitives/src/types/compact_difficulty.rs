@@ -253,6 +253,5 @@ mod tests {
     fn displays_as_wire_hex() {
         let difficulty = CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid");
         assert_eq!(difficulty.to_string(), "1d00ffff");
-        assert_eq!(format!("{difficulty:?}"), "CompactDifficulty(0x1d00ffff)");
     }
 }

@@ -1,10 +1,8 @@
-//! The published view: verified tip, sighted transactions, per-validator metadata
+//! Published view: verified tip, sighted transactions, per-validator metadata
 //!
-//! - `imbl` collections, so republishing on every merge clones in `O(1)` with structural sharing
-//! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a merge
-//!   landing mid-stream cannot splice two views into one response
-//! - raw bytes only, never a decoded transaction (parsing = the wire adapter's job, and
-//!   `zaino-proto` must not reach this crate)
+//! - `imbl` collections (republish per merge = `O(1)` clone, structural sharing)
+//! - reader: one `ArcSwap` load per request or stream (a mid-stream merge never splices two views)
+//! - raw bytes only, never decoded (parsing = the wire adapter's, `zaino-proto` never reaches here)
 
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};

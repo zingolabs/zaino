@@ -27,9 +27,6 @@ impl<T> PerIndex<T> {
         self.0.iter().map(|(kind, value)| (*kind, value))
     }
 
-    /// `(kind, value)` at `position` (insert order)
-    ///
-    /// - panics past [`len`](Self::len)
     pub(crate) fn at(&self, position: usize) -> (IndexKind, &T) {
         let (kind, value) = &self.0[position];
         (*kind, value)

@@ -162,7 +162,6 @@ impl FilterLayout {
         (at == len).then_some(Self { bits, len, shard_ranges })
     }
 
-    /// Whole section's length
     pub(crate) fn len(&self) -> usize {
         self.len
     }

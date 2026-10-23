@@ -9,7 +9,6 @@ use zaino_primitives::metric::Metric;
 const DURATION_SECONDS: &str = "zaino.peers.request_duration_seconds";
 const FAILURES_TOTAL: &str = "zaino.peers.request_failures_total";
 
-/// Every metric this crate emits
 pub const METRICS: &[Metric] = &[
     Metric::histogram(
         DURATION_SECONDS,

@@ -1,5 +1,3 @@
-//! Transaction-tree merkle root
-
 use zcash_protocol::TxId;
 
 use crate::sha256d;

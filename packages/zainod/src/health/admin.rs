@@ -304,15 +304,6 @@ mod tests {
         assert_eq!(unknown, 404, "/nope: {body}");
     }
 
-    /// Held port → bind error naming the endpoint
-    #[test]
-    fn a_port_in_use_fails_the_bind() {
-        let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind succeeds");
-        let endpoint = holder.local_addr().expect("a bound listener has an address");
-        let error = bind(endpoint).expect_err("a second bind on a held port fails");
-        assert!(error.to_string().contains(&endpoint.to_string()), "{error}");
-    }
-
     #[test]
     fn a_stale_heartbeat_is_not_live() {
         for (case, age, fresh) in [

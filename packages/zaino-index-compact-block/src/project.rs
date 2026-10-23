@@ -182,26 +182,27 @@ fn copy_field(bytes: &[u8], start: usize, end: usize, out: &mut Vec<u8>) -> Opti
     Some(())
 }
 
+const WIRE_VARINT: u64 = 0;
+const WIRE_I64: u64 = 1;
+const WIRE_LEN: u64 = 2;
+const WIRE_I32: u64 = 5;
+
 /// `(value bytes of the field keyed `key`, offset just past it)`
 ///
 /// - wire types 3, 4 (groups) = proto2-only, absent from this schema → unwalkable (walk total)
 fn field_value(bytes: &[u8], at: usize, key: u64) -> Option<(&[u8], usize)> {
     match key & 0b111 {
-        // varint
-        0 => {
+        WIRE_VARINT => {
             let (_, after) = varint(bytes, at)?;
             Some((&[], after))
         }
-        // 64-bit
-        1 => Some((&[], at.checked_add(8).filter(|end| *end <= bytes.len())?)),
-        // length-delimited
-        2 => {
+        WIRE_I64 => Some((&[], at.checked_add(8).filter(|end| *end <= bytes.len())?)),
+        WIRE_LEN => {
             let (len, start) = varint(bytes, at)?;
             let end = start.checked_add(usize::try_from(len).ok()?)?;
             Some((bytes.get(start..end)?, end))
         }
-        // 32-bit
-        5 => Some((&[], at.checked_add(4).filter(|end| *end <= bytes.len())?)),
+        WIRE_I32 => Some((&[], at.checked_add(4).filter(|end| *end <= bytes.len())?)),
         _ => None,
     }
 }
@@ -319,7 +320,8 @@ mod tests {
     }
 
     /// lightwalletd `FilterTxPool`: tx left with no component after projection dropped, every
-    /// pool selection (`ALL` included), from a block and one at a time from the mempool
+    /// pool selection (`ALL` included, none = block still sent with no tx), from a block and one
+    /// at a time from the mempool
     #[test]
     fn projection_drops_transactions_left_with_no_component() {
         let alice = p2pkh([0xaa; 20]);
@@ -346,6 +348,7 @@ mod tests {
             ("all",                Pools::ALL,                          &[0, 2, 3, 4]),
             ("transparent",        Pools { transparent: true, ..none }, &[0, 4]),
             ("orchard",            Pools { orchard: true, ..none },     &[3]),
+            ("none: block sent",   none,                                &[]),
         ];
         for (selection, pools, kept) in cases {
             let projected = project(slice::from_ref(&stored), pools).expect("walks");
@@ -370,23 +373,5 @@ mod tests {
             }
             assert_eq!(from_mempool, kept, "{selection}: slots kept one at a time (mempool)");
         }
-    }
-
-    /// Coinbase-only block projected to shielded: every tx gone, the block still sent
-    #[test]
-    fn a_block_left_with_no_transaction_is_still_projected() {
-        let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest();
-        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
-        let stored =
-            encode_compact_block(chain.block(one.hash), &chain.fees(one.hash), &TreeSizes::ZERO);
-
-        let shielded = project(slice::from_ref(&stored), Pools::default()).expect("walks");
-
-        let decoded =
-            compact_formats::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
-        let full = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-        let expected = compact_formats::CompactBlock { vtx: vec![], ..full };
-        assert_eq!(decoded, expected, "the stored block with no tx");
     }
 }

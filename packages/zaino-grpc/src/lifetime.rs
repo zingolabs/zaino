@@ -183,7 +183,7 @@ mod tests {
 
     /// Paused clock, delay 10 s, one connection open before the first hold:
     ///
-    /// - hold at 0 s, resume at 3 s, hold at 5 s: fires at 15 s (the second hold's deadline), not 10 s
+    /// - hold at 0 s, resume at 3 s, hold at 5 s: fires at 15 s (second hold's deadline), not 10 s
     /// - `state` Off → Draining → Drained, repeated `hold` keeps the first deadline
     /// - connection accepted past the deadline fires at once, after `resume` never
     #[tokio::test(start_paused = true)]

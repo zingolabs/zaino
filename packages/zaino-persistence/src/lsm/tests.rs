@@ -288,12 +288,17 @@ fn a_corrupt_filter_panics_at_open() {
 }
 
 /// Account 7's even seqs (every odd seq = a gap), 3 summary groups + 999 rows past them
+///
+/// - prefetch fences round: the key's whole summary group of fences
+/// - prefetch records round: the key's whole block of records (the last block short)
 #[test]
-fn seek_finds_every_key_s_slot_the_slot_after_each_gap_and_both_ends() {
+fn seek_finds_each_slot_and_prefetch_names_the_fence_group_then_the_record_block_it_reads() {
     let fs = SimFs::new();
     let dir = Path::new("/wide");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
+    let layout = (shape.stride, shape.key_len, shape.block_rows, shape.group_fences);
+    assert_eq!(layout, (20, 12, 204, 341), "(stride, key bytes, rows a block, fences a group)");
     let rows = 3 * 69_564 + 999;
     let written: Vec<_> = (0..rows).map(|slot| scanned_row(7, 2 * slot as u32)).collect();
     let meta = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape)
@@ -317,31 +322,8 @@ fn seek_finds_every_key_s_slot_the_slot_after_each_gap_and_both_ends() {
             seq + 1
         );
     }
-}
 
-/// Same segment as the seek test: 20-byte rows, 204 rows a block, 341 fences (12 bytes) a group
-///
-/// - fences round: the key's whole summary group of fences
-/// - records round: the key's whole block of records (the last block short)
-#[test]
-fn prefetch_names_the_fence_group_then_the_record_block_a_seek_reads() {
-    let fs = SimFs::new();
-    let dir = Path::new("/wide");
-    fs.create_dir_all(dir).expect("dir");
-    let shape = Shape::of(&scanned());
-    let layout = (shape.stride, shape.key_len, shape.block_rows, shape.group_fences);
-    assert_eq!(layout, (20, 12, 204, 341), "(stride, key bytes, rows a block, fences a group)");
-    let rows = 3 * 69_564 + 999;
-    let written: Vec<_> = (0..rows).map(|slot| scanned_row(7, 2 * slot as u32)).collect();
-    let meta = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape)
-        .write(0, borrowed(&written))
-        .expect("write")
-        .expect("rows");
-    let file = SegmentFile::open(&SegmentDir::new(fs.clone(), dir), &meta, shape, Access::Normal)
-        .expect("open");
-
-    /// Fences start right after the records
-    const FENCES: usize = (3 * 69_564 + 999) * 20;
+    let fences_at = rows * 20;
     struct Case {
         slot: usize,
         group_blocks: std::ops::Range<usize>,
@@ -357,7 +339,7 @@ fn prefetch_names_the_fence_group_then_the_record_block_a_seek_reads() {
     ];
     for Case { slot, group_blocks, block_rows } in cases {
         let key = scanned_row(7, 2 * slot as u32).0;
-        let fences = FENCES + group_blocks.start * 12..FENCES + group_blocks.end * 12;
+        let fences = fences_at + group_blocks.start * 12..fences_at + group_blocks.end * 12;
         let records = block_rows.start * 20..block_rows.end * 20;
         let what = format!("slot {slot}: fence blocks {group_blocks:?}");
         assert_eq!(file.prefetch_range(Prefetch::Fences, &key), fences, "{what}");

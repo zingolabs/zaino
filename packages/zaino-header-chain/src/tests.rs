@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::types::{BlockRef, FinalityDepth, HeaderError};
-use zaino_source::testing::{all_at, h, MockChain};
+use zaino_source::testing::{h, MockChain};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
@@ -137,8 +137,11 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
 
 /// Anchored mid-mainnet (no history below), 200 real headers as a trusted validator's (no rule
 /// run): each the new best, vouched as it lands, finalized 10 behind the best
+///
+/// - only the newest `max(2 · depth, CONTEXT)` = `CONTEXT` finalized headers answer by height
+/// - older ones = on the best chain by definition (finalized)
 #[test]
-fn a_chain_anchored_mid_mainnet_follows_trusted_headers_finalizing_10_behind() {
+fn a_chain_anchored_mid_mainnet_follows_trusted_headers_keeping_the_newest_context_finalized() {
     const FOLLOWED: usize = 200;
     const DEPTH: u32 = 10;
     let headers = headers(RECENT_RANGE);
@@ -167,29 +170,9 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_finalizing_10_behind() {
     assert_eq!(verified.locator(), locator, "tip, then consecutive down to the finalized tip");
     let above = recent(&headers, FOLLOWED + 1).height;
     assert_eq!(verified.hash_at(above), None, "nothing above the best");
-}
 
-/// Same 200 trusted headers, depth 10: only the newest `max(2 · depth, CONTEXT)` = `CONTEXT`
-/// finalized headers answer by height, older ones = on the best chain by definition (finalized)
-#[test]
-fn a_chain_anchored_mid_mainnet_keeps_only_the_newest_context_finalized_headers() {
-    const FOLLOWED: usize = 200;
-    const DEPTH: u32 = 10;
-    let headers = headers(RECENT_RANGE);
-    let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz")));
-    chain.anchor(&headers[0], recent(&headers, 0).height);
-    for header in &headers[1..=FOLLOWED] {
-        assert_eq!(chain.insert(header), Ok(Inserted::Best { reorg: false }), "{header:?}");
-        chain.witness(header.hash(), Witness::Trusted);
-        if let Some(boundary) = chain.finalizable() {
-            chain.finalize(boundary);
-        }
-    }
-
-    let finalized = FOLLOWED - DEPTH as usize;
     let oldest_kept = finalized + 1 - CONTEXT;
     assert_eq!(chain.finalized_headers_kept(), CONTEXT, "2 · depth 10 < CONTEXT: CONTEXT wins");
-    let verified = chain.snapshot().expect("anchored");
     for index in [oldest_kept, finalized, finalized + 1, FOLLOWED] {
         let at = recent(&headers, index);
         let held = verified.header_at(at.height).map(|record| record.hash);
@@ -339,6 +322,8 @@ fn a_real_mainnet_header_with_one_field_edited_is_refused_by_that_fields_rule() 
         ("solution's last byte flipped: hash moved", Alone, flipped,                              now,                Err((AboveTarget { bits }, sender))),
         ("version 3",                            Alone,     with_u32(real, VERSION_AT, 3),        now,                Err((Version { version: 3 }, sender))),
         ("version high bit set: int32 negative", Alone,     with_u32(real, VERSION_AT, 0x8000_0004), now,             Err((Version { version: negative }, sender))),
+        ("version 5: passed, hash moved",        Alone,     with_u32(real, VERSION_AT, 5),        now,                Err((AboveTarget { bits }, sender))),
+        ("version 0x20000000 (BIP 9-style): passed, hash moved", Alone, with_u32(real, VERSION_AT, 0x2000_0000), now, Err((AboveTarget { bits }, sender))),
         ("nBits not a compact target",           Alone,     with_u32(real, BITS_AT, 0x0180_0000), now,                Err((Bits { bits: 0x0180_0000 }, sender))),
         ("nBits + 1",                            InContext, with_u32(real, BITS_AT, bits + 1),    now,                Err((Difficulty { bits: bits + 1, expected: bits }, sender))),
         ("nBits − 1",                            InContext, with_u32(real, BITS_AT, bits - 1),    now,                Err((Difficulty { bits: bits - 1, expected: bits }, sender))),
@@ -357,18 +342,6 @@ fn a_real_mainnet_header_with_one_field_edited_is_refused_by_that_fields_rule() 
         };
         let outcome = outcome.map_err(|refused| (refused, refused.fault()));
         assert_eq!(outcome, expected, "{case} ({rule:?}): {header:?}");
-    }
-}
-
-/// nVersion has a floor of 4 and no ceiling (BIP 9-style 0x20000000 included)
-#[test]
-fn every_version_from_4_up_is_valid() {
-    let regtest = Params::regtest(all_at(h(1)));
-    let chain = MockChain::regtest();
-    let genesis = decode_header(&chain.header_bytes(chain.genesis().hash)).expect("decodes");
-    for version in [4, 5, 0x2000_0000] {
-        let outcome = alone(&regtest, &with_u32(&genesis, VERSION_AT, version));
-        assert_eq!(outcome, Ok(()), "version {version:#x}");
     }
 }
 

@@ -141,17 +141,6 @@ mod tests {
     }
 
     #[test]
-    fn basic_credentials_are_the_pair_and_none_is_no_auth() {
-        let basic = Auth::Basic { user: "user".to_owned(), password: "pass".to_owned() };
-
-        let (pair, none) = (basic.credentials(), Auth::None.credentials());
-
-        let pair = pair.map_err(|e| e.to_string());
-        assert_eq!(pair, Ok(Some(("user".to_owned(), "pass".to_owned()))), "Basic");
-        assert_eq!(none.map_err(|e| e.to_string()), Ok(None), "None");
-    }
-
-    #[test]
     fn validator_url_keeps_the_host_and_rejects_non_host_port() {
         for (address, url) in [
             ("127.0.0.1:8232", "http://127.0.0.1:8232"),

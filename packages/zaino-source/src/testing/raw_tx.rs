@@ -1,9 +1,13 @@
-//! Real consensus-encoded transaction builders (v4 / v5, transparent only) + their decode
+//! Real consensus-encoded transaction builders (v4 / v5, transparent only)
 
-use zaino_primitives::types::Transaction;
+use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
+use zcash_protocol::consensus::BranchId;
+use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::address::Script;
-use zcash_transparent::bundle::OutPoint;
+use zcash_transparent::bundle::{self as transparent, OutPoint, TxIn, TxOut};
+
+type TransparentBundle = transparent::Bundle<transparent::Authorized>;
 
 /// Real, empty v4 transaction (no inputs, outputs or bundles), distinct per `lock_time`
 pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TxId, Vec<u8>) {
@@ -15,46 +19,37 @@ pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TxId, Vec<u8>) {
 /// - empty script sigs (nothing here verifies a signature)
 /// - distinct per `spends`
 pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TxId, Vec<u8>) {
-    use zcash_transparent::bundle::{Authorized, Bundle, TxIn, TxOut};
     let vin =
         spends.iter().map(|prevout| TxIn::from_parts(prevout.clone(), Script::default(), u32::MAX));
     let vout = pays.iter().map(|(script, zats)| {
-        let value = zcash_protocol::value::Zatoshis::from_u64(*zats).expect("within the supply");
+        let value = Zatoshis::from_u64(*zats).expect("within the supply");
         TxOut::new(value, (*script).clone())
     });
-    let bundle = Bundle { vin: vin.collect(), vout: vout.collect(), authorization: Authorized };
+    let bundle = TransparentBundle {
+        vin: vin.collect(),
+        vout: vout.collect(),
+        authorization: transparent::Authorized,
+    };
     v4(0, 0, Some(bundle))
 }
 
 /// Real, empty v5 transaction signed for `branch` (embedded in its bytes), distinct per
 /// `lock_time`
-pub fn raw_v5(
-    branch: zcash_protocol::consensus::BranchId,
-    lock_time: u32,
-    expiry: u32,
-) -> (TxId, Vec<u8>) {
-    use zcash_primitives::transaction::TxVersion;
+pub fn raw_v5(branch: BranchId, lock_time: u32, expiry: u32) -> (TxId, Vec<u8>) {
     unshielded(TxVersion::V5, branch, lock_time, expiry, None)
 }
 
-fn v4(
-    lock_time: u32,
-    expiry: u32,
-    transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
-) -> (TxId, Vec<u8>) {
-    use zcash_primitives::transaction::TxVersion;
-    let canopy = zcash_protocol::consensus::BranchId::Canopy;
-    unshielded(TxVersion::V4, canopy, lock_time, expiry, transparent)
+fn v4(lock_time: u32, expiry: u32, transparent: Option<TransparentBundle>) -> (TxId, Vec<u8>) {
+    unshielded(TxVersion::V4, BranchId::Canopy, lock_time, expiry, transparent)
 }
 
 fn unshielded(
-    version: zcash_primitives::transaction::TxVersion,
-    branch: zcash_protocol::consensus::BranchId,
+    version: TxVersion,
+    branch: BranchId,
     lock_time: u32,
     expiry: u32,
-    transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
+    transparent: Option<TransparentBundle>,
 ) -> (TxId, Vec<u8>) {
-    use zcash_primitives::transaction::{Authorized, TransactionData};
     let tx = TransactionData::<Authorized>::from_parts(
         version,
         branch,
@@ -70,10 +65,4 @@ fn unshielded(
     let mut raw = Vec::new();
     tx.write(&mut raw).expect("writes to a Vec");
     (tx.txid(), raw)
-}
-
-/// `raw` decoded beside its bytes (`BlockBuilder::raw_tx(decoded(raw))`)
-pub fn decoded(raw: Vec<u8>) -> (Transaction, Vec<u8>) {
-    let tx = crate::decode_transaction(&raw).expect("decoded takes real transaction bytes");
-    (tx, raw)
 }

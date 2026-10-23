@@ -16,7 +16,6 @@ const DEPTH: u32 = 12;
 const NU6_3: u32 = 24;
 /// Old tip, `DEPTH − 2` past activation
 const CHAIN: u32 = NU6_3 + DEPTH - 2;
-/// `PoolType` wire enum: transparent, sapling, orchard, ironwood
 const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 
 #[rstest]

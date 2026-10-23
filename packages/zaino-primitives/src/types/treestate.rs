@@ -1,5 +1,3 @@
-//! Commitment trees as of a block
-
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 

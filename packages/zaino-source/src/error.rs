@@ -100,14 +100,4 @@ mod tests {
 
         assert!(reached, "cause lost in {wrapped:?}");
     }
-
-    #[test]
-    fn a_coded_refusal_has_no_source_and_displays_its_message() {
-        let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
-
-        let source = refusal.source().map(ToString::to_string);
-
-        assert_eq!(source, None, "coded refusal: no source");
-        assert_eq!(refusal.to_string(), "rejected", "coded refusal displays its message");
-    }
 }

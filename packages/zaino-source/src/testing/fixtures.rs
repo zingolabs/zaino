@@ -1,4 +1,4 @@
-//! Captured mainnet blocks (`tests/fixtures/block_<height>.hex`): real bytes the builder cannot mine
+//! Captured mainnet blocks (`tests/fixtures/block_<height>.hex`): bytes `MockChain` cannot mint
 
 /// Every captured height
 pub const HEIGHTS: [u32; 5] = [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000];

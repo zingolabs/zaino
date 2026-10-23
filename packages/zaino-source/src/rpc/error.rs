@@ -1,5 +1,4 @@
-/// JSON-RPC transport failure (`Rpc` = server's error object, `NullResult` = neither result
-/// nor error, `ResponseBodyTooLarge` = abandoned mid-read)
+/// JSON-RPC transport failure (`ResponseBodyTooLarge` = abandoned mid-read)
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
     #[error("http error: {0}")]

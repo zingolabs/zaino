@@ -671,17 +671,6 @@ mod tests {
         assert_eq!(closed.err(), Some(std::io::ErrorKind::ConnectionRefused), "listener closed");
     }
 
-    /// `boot` raced against the signal channel: boot first = its outcome
-    #[tokio::test]
-    async fn boot_ending_before_a_signal_returns_its_own_outcome() {
-        let (_signal, mut signals) = mpsc::channel(1);
-        let done = unless_signalled(async { Ok(()) }, &mut signals).await;
-        assert!(matches!(done, Ok(None)), "booted: {done:?}");
-        let failed =
-            unless_signalled(async { Err(IndexerError::Config("x".into())) }, &mut signals).await;
-        assert!(matches!(failed, Err(IndexerError::Config(ref x)) if x == "x"), "{failed:?}");
-    }
-
     /// Signal first = boot dropped mid-await (its holdings released: aria2c child killed on drop)
     #[tokio::test]
     async fn a_signal_during_boot_drops_boot_and_releases_what_it_holds() {

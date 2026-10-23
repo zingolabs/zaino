@@ -130,21 +130,6 @@ mod tests {
         (first.expect("streams"), shared)
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_mempool_stream_without_a_verified_tip_is_unavailable() {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(3);
-        let node = chain.validator(tip);
-        let live = LiveRoutes::over(&node, MAINNET, &[]);
-
-        let response =
-            live.router.clone().call(framed_request(Method::GetMempoolStream, Bytes::new())).await;
-
-        let (chunks, status) = answer(response.expect("infallible")).await;
-        assert_eq!(status.code(), Code::Unavailable, "nothing verified: {status:?}");
-        assert_eq!(chunks, Vec::<Bytes>::new(), "refused before any record");
-    }
-
     /// 1,000 subscribers on one thread (a block of wallets): each record encoded once, shared by
     /// refcount (a ready burst joined per stream), a late subscriber served the same log
     #[tokio::test(start_paused = true)]
@@ -202,7 +187,8 @@ mod tests {
         assert_eq!(records(&log), opening_then_log, "late: same opening + log, one frame");
     }
 
-    /// G5: a stream's end ⇒ the next load serves the new tip
+    /// - nothing verified = refused before any record
+    /// - G5: a stream's end ⇒ the next load serves the new tip
     #[tokio::test(start_paused = true)]
     async fn mempool_streams_end_when_the_served_tip_moves_not_when_only_the_best_does() {
         let mut chain = MockChain::regtest();
@@ -218,6 +204,9 @@ mod tests {
         let serve =
             |tip| live.nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
         let tips = || live.grpc_snapshots.load().tips();
+        let (chunks, status) = answer(router.call(stream()).await.expect("infallible")).await;
+        let refusal = (status.code(), chunks);
+        assert_eq!(refusal, (Code::Unavailable, Vec::new()), "nothing verified: {status:?}");
         node.hear(&chain, seeded[0]);
         verified(tip_10);
         within(

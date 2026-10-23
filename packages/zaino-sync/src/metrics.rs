@@ -26,7 +26,6 @@ mod names {
     pub(super) const INDEX_WRITE_SECONDS: &str = "zaino.index.write_seconds";
 }
 
-/// Every metric this crate emits
 pub const METRICS: &[Metric] = {
     use names::*;
 

@@ -1,5 +1,3 @@
-//! Equihash solution as a block header carries it
-
 /// Carried, never validated (the block hash commits to it: dropping it = a lossy block)
 ///
 /// - `Standard` = 200-9 (mainnet / testnet), `Regtest` = 48-5 (told apart by length)

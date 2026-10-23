@@ -50,7 +50,6 @@ const SETTLE: Duration = Duration::from_secs(600);
 const ROUND_RETRY: Duration = Duration::from_secs(1);
 /// Poll's 1 + lanes' 4
 const CONNECTIONS: u32 = 5;
-/// The peer set's in flight (no poll)
 const PEER_IN_FLIGHT: u32 = 4;
 const PEER_TIER: u16 = u8::MAX as u16 + 1;
 const ASKED: [Class; 6] =

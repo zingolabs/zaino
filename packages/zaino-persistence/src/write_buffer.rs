@@ -281,17 +281,18 @@ mod tests {
         buffer
     }
 
-    // `check` invariants: holds on what `push` builds, each broken by hand (check never firing =
-    // silent pass after every `disk::model_tests::history` step)
-
     #[test]
-    fn check_passes_every_buffer_push_builds() {
+    fn a_buffered_insert_removed_later_reaches_no_segment_a_lone_removal_a_tombstone() {
         let buffer = buffered();
-        let ids = table_slot(&buffer.maps, IDS.id);
-        assert_eq!(ids.kinds, [Row::Cancelled, Row::Value, Row::Tombstone], "rows buffered");
 
-        buffer.check("buffered");
+        let rows = buffer.map_rows(IDS);
+
+        let written: [(&[u8], Option<&[u8]>); 2] = [(&[1; 16], Some(&[1; 4])), (&[2; 16], None)];
+        assert_eq!(rows, written, "committed: id 1's value, id 2's tombstone (id 0 cancelled)");
     }
+
+    // `check` invariants, each broken by hand (check never firing = silent pass after every
+    // `disk::model_tests::history` step)
 
     #[test]
     #[should_panic(

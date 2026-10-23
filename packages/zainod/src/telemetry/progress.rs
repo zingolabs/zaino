@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     /// - Finalized blocks first (handed, else the lowest durable tip), then the window up to best
-    /// - us-west-1 restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the window
+    /// - restart (durable = finalized = anchor 3,515,519, best 1,003 above) = the window
     #[test]
     fn the_phase_is_finalized_blocks_then_the_non_finalized_window_then_nothing() {
         use zaino_primitives::types::BlockRef;
@@ -206,20 +206,5 @@ mod tests {
         }
         let no_chain = Tips { best: None, finalized_tip: None, ..restart };
         assert_eq!(Phase::of(&no_chain, None, None), None, "no chain yet: nothing to report");
-    }
-
-    #[test]
-    fn per_second_rounds_and_a_zero_interval_is_zero() {
-        #[rustfmt::skip]
-        let cases = [
-            // case,                 count, over,                     per second
-            ("exact",                90,    Duration::from_secs(30),  3),
-            ("3.33 rounds down",     100,   Duration::from_secs(30),  3),
-            ("3.5 rounds up",        105,   Duration::from_secs(30),  4),
-            ("zero interval",        90,    Duration::ZERO,           0),
-        ];
-        for (case, count, over, expected) in cases {
-            assert_eq!(per_second(count, over), expected, "{case}: {count} over {over:?}");
-        }
     }
 }

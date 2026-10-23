@@ -13,7 +13,6 @@ const IN_FLIGHT: &str = "zaino.validator_rpc.in_flight";
 const RECEIVED_BYTES: &str = "zaino.validator_rpc.received_bytes_total";
 const FAILURES_TOTAL: &str = "zaino.validator_rpc.failures_total";
 
-/// Every metric this crate emits
 pub const METRICS: &[Metric] = &[
     Metric::histogram(
         DURATION_SECONDS,

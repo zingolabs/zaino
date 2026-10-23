@@ -17,13 +17,11 @@ pub struct TxidLocationIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: MapRead>> TxidLocationIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }

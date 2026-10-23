@@ -1,24 +1,8 @@
-//! Header trees at random against a naive model
+//! Header trees at random against a naive model (usage.md's rules, recomputed from scratch)
 //!
-//! - any nBits (work varies per branch, most work != highest)
-//! - anchored at genesis (work counted from it)
-//! - trusted runs (no rule run) and untrusted ones (every rule, model predicts an edited time not
-//!   past the median, ancestors held always enough as `KEPT` ≥ `CONTEXT`)
-//! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
-//!   the finalized chain as a list (the chain keeps only its newest `KEPT`)
-//! - best = max-work leaf (first received on a tie), eviction = lowest-work side leaf (last
-//!   received on a tie), both recomputed from scratch
-//! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`, trusted run = its
-//!   last header vouched, then finality
-//! - witness oracle: a header's witnesses = those of it and every live descendant (an evicted one
-//!   passes its own to its parent)
-//! - settled = vouched, or peers in > 5 netgroups unless a non-finalized best-path header's work
-//!   (from its own nBits) is under half the highest vouched header's (the anchor's at first)
-//! - finalized target = min(highest settled on best, best − depth)
-//! - checked after every move: `check()`, best, finalized tip, boundary, tree size + its bound
-//!   (H9), every height of the published chain (kept finalized headers and above, older finalized
-//!   headers = on best by definition) and whether it is vouched, its locator, `holds` for every
-//!   header ever mined, and the chain published one move earlier still answering as it did (H5)
+//! - anchored at genesis, any nBits (most work != highest), trusted + untrusted runs
+//! - `HeaderSync`'s discipline: nothing offered above `ceiling(RUN)`, a trusted run's last vouched
+//! - untrusted: model predicts the rules a `MockChain` header breaks (short context, edited time)
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap, HashSet};

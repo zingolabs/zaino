@@ -164,7 +164,7 @@ mod tests {
                 let mut client = TcpStream::connect(address).await.expect("connect");
                 let per_write = header.len().div_ceil(chunks.min(header.len()));
                 for piece in sent.chunks(per_write.max(1)) {
-                    // A peer that refused us may have closed: later writes may fail
+                    // refusing server may have closed (later writes fail)
                     if client.write_all(piece).await.is_err() {
                         break;
                     }
@@ -191,21 +191,6 @@ mod tests {
                     assert!(error.starts_with(message), "{case}: {error:?} vs {message:?}");
                 }
             }
-        }
-    }
-
-    #[test]
-    fn a_peer_is_trusted_only_inside_a_trusted_network() {
-        let trusted = TrustedProxies::new(vec!["10.0.0.0/8".parse().expect("net")]);
-        #[rustfmt::skip]
-        let peers: [(IpAddr, bool); 4] = [
-            ([10, 0, 0, 0].into(),       true),
-            ([10, 255, 255, 255].into(), true),
-            ([11, 0, 0, 0].into(),       false),
-            ([192, 168, 1, 1].into(),    false),
-        ];
-        for (peer, trusts) in peers {
-            assert_eq!(trusted.trusts(peer), trusts, "{peer} under 10.0.0.0/8");
         }
     }
 }

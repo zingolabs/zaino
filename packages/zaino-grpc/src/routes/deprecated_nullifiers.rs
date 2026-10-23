@@ -1,7 +1,7 @@
 //! Deprecated `GetBlockRangeNullifiers`: a `GetBlockRange` walk cut to each block's nullifiers
 
 // =================================================================================================
-// !!! TODO: REMOVE THIS MODULE. DEPRECATED `GetBlockRangeNullifiers`.
+// !!! TODO: REMOVE THIS MODULE (deprecated `GetBlockRangeNullifiers`)
 // !!! - Served only for pepper-sync (still calls it)
 // !!! - not part of Zaino's supported surface
 // !!! - Delete with its `Method` variant + arms and its proto rpc once pepper-sync

@@ -2,7 +2,7 @@
 //!
 //! - librustzcash's lazy readers (`CompressedTransaction`): txid for every version, curve points
 //!   left compressed (nothing here needs them decompressed)
-//! - The wire boundary: every malformed input is a typed `DecodeError`, never a panic
+//! - wire boundary: malformed input → typed `DecodeError`, never a panic
 
 use std::io::{self, Cursor};
 

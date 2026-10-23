@@ -21,7 +21,6 @@ const POLL: Duration = Duration::from_secs(1);
 const SAMPLE_PERIOD: Duration = Duration::from_millis(200);
 const DEPTH: u32 = 10;
 const CHAIN: u32 = 3 * DEPTH;
-/// `PoolType` wire enum: transparent, sapling, orchard, ironwood
 const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 
 #[ztest::qos::integration]

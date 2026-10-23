@@ -10,9 +10,12 @@ use serde_json::json;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(60);
+/// `max_entries = 0` = no limit (lightwalletd protocol)
+const ALL_ENTRIES: u32 = 0;
 
 /// One chain through every read: info, tip, block by height / hash, ranges (pool filters,
-/// nullifiers, out-of-range drains), tree state; validator = oracle wherever it answers
+/// nullifiers, out-of-range drains), tree state, subtree roots; validator = oracle wherever it
+/// answers
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn read_surface_serves_the_validators_chain() -> Result<()> {
@@ -92,12 +95,41 @@ async fn read_surface_serves_the_validators_chain() -> Result<()> {
     assert!(blocks.is_empty(), "descending from past the tip serves nothing: {blocks:?}");
     assert!(errored, "descending drain from past the tip ends in an error");
 
+    let vrpc = validator.json_rpc().await?;
     let tree = indexer.get_tree_state(tip).await?;
-    let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
+    let best = vrpc.call_value("getbestblockhash", json!([])).await?;
     let best = best.as_str().with_context(|| format!("getbestblockhash: {best}"))?;
     let served = (tree.height, tree.hash.as_str());
     assert_eq!(served, (height, best), "tip tree state (height, hash): zaino vs zebrad");
     let latest = indexer.get_latest_tree_state().await?;
     assert_eq!(latest, tree, "GetLatestTreeState vs GetTreeState({height})");
+
+    // Subtree = 2^16 notes, never reached on regtest → zebrad's answer = `[]` (premise asserted)
+    #[rustfmt::skip]
+    let subtree_queries = [
+        ("sapling", ShieldedProtocol::Sapling, 0),
+        ("orchard", ShieldedProtocol::Orchard, 0),
+        ("orchard", ShieldedProtocol::Orchard, 10_000),
+    ];
+    for (pool, protocol, start) in subtree_queries {
+        let reply =
+            vrpc.call_value("z_getsubtreesbyindex", json!([pool, start, ALL_ENTRIES])).await?;
+        let zebrad = reply["subtrees"]
+            .as_array()
+            .with_context(|| format!("z_getsubtreesbyindex {pool} from {start}: {reply}"))?;
+        assert_eq!(zebrad.len(), 0, "premise: zebrad completes no {pool} subtree by {height}");
+        let zaino: Vec<(String, u64)> = indexer
+            .get_subtree_roots(start, protocol, ALL_ENTRIES)
+            .await
+            .with_context(|| format!("GetSubtreeRoots {pool} from {start}"))?
+            .iter()
+            .map(|root| (hex::encode(&root.root_hash), root.completing_block_height))
+            .collect();
+        assert_eq!(
+            zaino,
+            Vec::<(String, u64)>::new(),
+            "{pool} subtree (root, completing height) from {start}: zaino"
+        );
+    }
     Ok(())
 }

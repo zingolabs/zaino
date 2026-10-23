@@ -41,8 +41,6 @@ impl<V> Default for Memos<V> {
     }
 }
 
-/// One request's tree-state reads: the NFS publish, its tree-state reader (as of its served tip),
-/// the disk lanes and the per-publish memos
 pub(crate) struct TreeStateReads<V> {
     pub(crate) indexed: Arc<NfsPublication<V>>,
     pub(crate) reader: TreeStateReader<OverlayView<V>>,

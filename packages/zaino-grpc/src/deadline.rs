@@ -229,12 +229,10 @@ mod tests {
         frames
     }
 
-    /// What the handler under test answers
+    /// `Stream`: `count` records, one every `period`, then `OK` trailers (`silent` = pending)
     #[derive(Clone, Copy, Debug)]
     enum Handler {
-        /// Never returns a response
         Pending,
-        /// `count` records, one every `period`, then `OK` trailers (`silent` = nothing after them)
         Stream { count: u64, period: Duration, silent: bool },
     }
 

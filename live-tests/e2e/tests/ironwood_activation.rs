@@ -17,48 +17,6 @@ const SHIELD_FEE: u64 = 15_000;
 /// NU6.3 activation: `2..6` Orchard era, `6..` Ironwood era
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
-/// Below the boundary: coinbase note = Orchard, unified receipt = Orchard, Ironwood empty
-/// (era-mirror of `wallet_to_validator.rs::sends_to_every_pool_are_each_credited_once`)
-#[ztest::qos::wallet]
-#[tokio::test(flavor = "multi_thread")]
-async fn unified_receipt_lands_in_orchard_before_boundary() -> Result<()> {
-    let nu6_3_at_boundary = ActivationHeights::builder()
-        .set_overwinter(Some(1))
-        .set_sapling(Some(1))
-        .set_blossom(Some(1))
-        .set_heartwood(Some(1))
-        .set_canopy(Some(1))
-        .set_nu5(Some(2))
-        .set_nu6(Some(2))
-        .set_nu6_1(Some(2))
-        .set_nu6_2(Some(2))
-        .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
-        .build();
-    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(nu6_3_at_boundary);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    let wallet = env.add_wallet(Wallet::librustzcash());
-    env.build().await?;
-
-    // Funded at tip 2 (Orchard era)
-    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
-    let faucet_balance = faucet.balances().await?;
-    let notes = (faucet_balance.orchard > 0, faucet_balance.ironwood);
-    assert_eq!(notes, (true, 0), "pre-boundary coinbase = orchard: {faucet_balance:?}");
-
-    let recipient = wallet.recipient(&validator, &indexer).await?;
-    let ua = recipient.address(Pool::Orchard).await?;
-    faucet.send(&ua, SEND_AMOUNT).await.with_context(|| format!("send to {ua}"))?;
-    let tip = validator.generate_blocks(1).await?;
-    indexer.wait_for_block_num(tip, READY).await?;
-    recipient.sync().await?;
-
-    let balance = recipient.balances().await?;
-    let receipt = (balance.orchard, balance.ironwood);
-    assert_eq!(receipt, (SEND_AMOUNT, 0), "(orchard, ironwood) receipt at {tip:?}: {balance:?}");
-    Ok(())
-}
-
 /// ZIP 318 migration: pre-boundary Orchard note spent past it → Ironwood receipt, Orchard empty
 ///
 /// - Faucet's Orchard balance shrinks (cross-address restriction: a real Orchard spend)
@@ -188,6 +146,9 @@ async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
     env.build().await?;
 
     let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
+    let faucet_balance = faucet.balances().await?;
+    let notes = (faucet_balance.orchard > 0, faucet_balance.ironwood);
+    assert_eq!(notes, (true, 0), "pre-boundary coinbase = orchard: {faucet_balance:?}");
 
     // Tip → boundary − 2 (first send confirms in the last Orchard block)
     let cur = u32::from(validator.chain_height().await?);
@@ -207,7 +168,7 @@ async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
         .into_iter()
         .next()
         .context("send at boundary − 2 returned no txid")?;
-    let tip = validator.generate_blocks(1).await?; // boundary − 1
+    let tip = validator.generate_blocks(1).await?;
     indexer.wait_for_block_num(tip, READY).await?;
     recipient.sync().await?;
 
@@ -224,7 +185,7 @@ async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
         .into_iter()
         .next()
         .context("send at boundary − 1 returned no txid")?;
-    let tip = validator.generate_blocks(1).await?; // boundary
+    let tip = validator.generate_blocks(1).await?;
     indexer.wait_for_block_num(tip, READY).await?;
     recipient.sync().await?;
 
@@ -267,7 +228,6 @@ async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
 }
 
 /// Below the boundary: `shield` → Orchard net of `SHIELD_FEE`, Ironwood empty
-/// (era-mirror of `wallet_to_validator.rs::shielded_transparent_receipt_lands_in_ironwood_*`)
 #[ztest::qos::wallet]
 #[tokio::test(flavor = "multi_thread")]
 async fn shield_deposits_to_orchard_before_boundary() -> Result<()> {

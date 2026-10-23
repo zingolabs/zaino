@@ -80,10 +80,10 @@ impl Ledger {
         if tx.transparent.coinbase {
             return Err(Refused::Coinbase);
         }
-        match self.apply(tx, None)? {
-            Fee::Paid(fee) => Ok(fee),
-            Fee::Coinbase => Err(Refused::Coinbase),
-        }
+        let Fee::Paid(fee) = self.apply(tx, None)? else {
+            unreachable!("apply: a non-coinbase pays a fee")
+        };
+        Ok(fee)
     }
 
     /// Each admitted in order, refused ones dropped (a mempool after its tip moved)

@@ -176,7 +176,8 @@ fn getinfo(node: &mut Node, _: &[Value]) -> Reply {
 
 /// zebrad ≥ 6.3 (`EndOfService::Unknown` = an older one: no such method)
 fn getdeprecationinfo(node: &mut Node, _: &[Value]) -> Reply {
-    let release = node.telemetry.release.as_ref().ok_or_else(|| scripted_failure("getinfo"))?;
+    let release = node.telemetry.release.as_ref();
+    let release = release.ok_or_else(|| scripted_failure("getdeprecationinfo"))?;
     match release.end_of_service {
         EndOfService::Unknown => Err(method_not_found()),
         EndOfService::NotEnforced => Ok(json!({})),
@@ -239,8 +240,8 @@ impl Node {
         let params = call["params"].as_array().map(Vec::as_slice).unwrap_or_default();
         *self.calls.entry(method.to_owned()).or_default() += 1;
 
-        let lacked = self.lacks.contains(method);
-        let handler = METHODS.iter().find(|(name, _)| *name == method && !lacked);
+        let served = METHODS.iter().find(|(name, _)| *name == method);
+        let handler = served.filter(|_| !self.lacks.contains(method));
         let outcome = match handler {
             Some((_, handler)) => handler(self, params),
             None => Err(method_not_found()),
@@ -389,8 +390,7 @@ impl MockValidator {
         self.node().listing = answer;
     }
 
-    /// `sendrawtransaction` + `checkadmission` verdict (default `Ok`: the fee its bytes leave over
-    /// the best)
+    /// `sendrawtransaction` + `checkadmission` verdict (default `Ok`: judged on its tip + mempool)
     ///
     /// - only a send lists it
     pub fn relay(&self, verdict: Result<(), SendRawTransactionError>) {
@@ -593,6 +593,7 @@ fn coinbase_at(coinbase: &[u8], height: u32) -> Vec<u8> {
     let transparent = data.transparent_bundle().expect("a coinbase input");
     let input = &transparent.vin[0];
     let script = &input.script_sig().0 .0;
+    // `mint::bip34`: a 1..=4-byte push, else one opcode (`OP_0`, `OP_1`..`OP_16`)
     let push = usize::from(script[0]);
     let rest = if (1..=4).contains(&push) { &script[1 + push..] } else { &script[1..] };
     let script = [mint::bip34(height), rest.to_vec()].concat();

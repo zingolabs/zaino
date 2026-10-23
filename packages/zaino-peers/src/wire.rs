@@ -47,17 +47,14 @@ pub(crate) fn zebra_block_hash(hash: BlockHash) -> block::Hash {
     block::Hash(hash.0)
 }
 
-/// Consensus bytes of a header a peer sent
 pub(crate) fn header_bytes(header: &CountedHeader) -> Vec<u8> {
     to_vec(header.header.as_ref())
 }
 
-/// Consensus bytes of a block a peer sent
 pub(crate) fn block_bytes(block: &Block) -> Vec<u8> {
     to_vec(block)
 }
 
-/// Consensus bytes of a transaction a peer sent
 pub(crate) fn transaction_bytes(tx: &UnminedTx) -> Vec<u8> {
     to_vec(tx.transaction.as_ref())
 }

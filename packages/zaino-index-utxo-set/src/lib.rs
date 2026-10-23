@@ -14,7 +14,6 @@ use zcash_protocol::consensus::NetworkType;
 
 use layout::{OUTPOINT, VALUE};
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&[FEES], &[OUTPUTS]);

@@ -25,14 +25,12 @@ pub struct CompactBlockIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
         zaino_sync::assert_dense(&store.durable(), BLOCKS);
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }

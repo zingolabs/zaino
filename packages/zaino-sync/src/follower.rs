@@ -3,7 +3,7 @@
 //! - Target = the chain's finalized tip height
 //! - A height the verified chain holds a header for: by hash, from any member (peers included),
 //!   checked against that header
-//! - Below the headers held (bulk): by height from a trusted member, batched (trusted = trusted)
+//! - Below the headers held (bulk): by height from a trusted member, batched
 //! - Starts after the lowest durable tip (an index ahead skips what it holds)
 //! - Each block's parent = the block sent before it, and = the durable tip of each index it
 //!   extends (else `Unlinked` / `Diverged`: stop, never skip)

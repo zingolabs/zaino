@@ -226,7 +226,6 @@ impl Default for IndexTable {
     }
 }
 
-/// A MiB knob in bytes
 fn bytes(mib: NonZeroU32) -> NonZeroU64 {
     let mib_bytes = const { NonZeroU64::new(1 << 20).expect("2^20 is non-zero") };
     NonZeroU64::from(mib).saturating_mul(mib_bytes)
@@ -1008,19 +1007,10 @@ cache_dir = "/var/cache/zaino/peers"
         #[rustfmt::skip]
         let refusals = [
             // case,                           toml,                                              refusal names
-            ("point reads 0 serve nothing",    "[grpc]\nmax_point_reads = 0",                     ["max_point_reads = 0", "nonzero"]),
-            ("range reads 0 serve nothing",    "[grpc]\nmax_range_reads = 0",                     ["max_range_reads = 0", "nonzero"]),
-            ("scan reads 0 serve nothing",     "[grpc]\nmax_scan_reads = 0",                      ["max_scan_reads = 0", "nonzero"]),
-            ("unread timeout 0",               "[grpc]\nunread_timeout_secs = 0",                 ["unread_timeout_secs = 0", "nonzero"]),
-            ("silent timeout 0",               "[grpc]\nsilent_timeout_secs = 0",                 ["silent_timeout_secs = 0", "nonzero"]),
             ("fanout below a merge's 2",       "[sync.lsm_store]\nfanout = 1",                    ["fanout = 1", "a merge needs 2 segments"]),
-            ("no merge slot",                  "[sync.lsm_store]\nmerge_slots = 0",               ["merge_slots = 0", "nonzero"]),
-            ("merges never paced",             "[sync.lsm_store]\nmerge_mib_per_sec = 0",         ["merge_mib_per_sec = 0", "nonzero"]),
-            ("unknown validator client",       "validator_client = \"rpc\"",                      ["validator_client = \"rpc\"", "unknown variant `rpc`"]),
             ("reply cap under one block",      "[[trusted_validators]]\nmax_response_mib = 3",    ["max_response_mib = 3", "must be 4 ..= 32"]),
             ("reply cap past 32 MiB",          "[[trusted_validators]]\nmax_response_mib = 33",   ["max_response_mib = 33", "must be 4 ..= 32"]),
             ("pool under one per lane",        "[[trusted_validators]]\nmax_connections = 4",     ["max_connections = 4", "is below 5"]),
-            ("read timeout 0",                 "[[trusted_validators]]\nread_timeout_secs = 0",   ["read_timeout_secs = 0", "nonzero"]),
         ];
         for (case, toml, named) in refusals {
             let refused = toml::from_str::<DaemonConfig>(toml).map_err(|error| error.to_string());

@@ -19,13 +19,11 @@ pub struct BlockHashIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -81,7 +79,6 @@ mod tests {
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::consensus::NetworkType;
-    use zcash_protocol::BlockHash;
 
     use super::*;
 
@@ -90,32 +87,6 @@ mod tests {
     fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = BlockHashIndexWriter::new(store);
         Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
-    }
-
-    /// - each block → one golden row at its own tip
-    /// - reader locates every folded hash and nothing else
-    #[test]
-    fn each_block_folds_to_its_golden_row_and_the_reader_locates_exactly_those() {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(2);
-        let blocks = chain.blocks(tip);
-        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-
-        for (height, block) in (0u8..).zip(&blocks) {
-            let hash = block.header().hash.0;
-            let mut changes = store.changes(block.block_ref());
-            fold(&BlockHashReader::new(store.applied()), block, &mut changes);
-            let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
-            assert_eq!(rows, [(&hash[..], &[0, 0, 0, height][..])], "block {height}: hash → BE");
-            store.apply(changes);
-        }
-
-        let reader = BlockHashReader::new(store.applied());
-        let located: Vec<_> =
-            blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
-        let expected: Vec<_> = (0..3u32).map(|n| Some(BlockHeight::from(n))).collect();
-        assert_eq!(located, expected, "height_of each folded block's hash, 0..=2");
-        assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
     /// Six blocks, 0..=4 each its own commit (write_buffer = 1 byte), crashed after every

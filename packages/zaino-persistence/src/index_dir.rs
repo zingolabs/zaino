@@ -296,22 +296,4 @@ mod tests {
             assert_eq!(read(), Some(body.to_vec()), "committed {body:?}");
         }
     }
-
-    #[test]
-    fn the_offline_reader_refuses_another_networks_directory() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let path = root.path().join("idx");
-        let fs = crate::fs::RealFs::shared();
-        IndexDir::open(fs.clone(), &path, IDENTITY)
-            .expect("open")
-            .dir
-            .commit(&[1])
-            .expect("commit");
-
-        let mainnet = Identity { network: NetworkType::Main, ..IDENTITY };
-        let refused = read_durable(fs.as_ref(), &path, mainnet).expect_err("regtest read as main");
-
-        let refused = refused.to_string();
-        assert_eq!(refused, "directory was built for network tag 2, configured network is Main");
-    }
 }

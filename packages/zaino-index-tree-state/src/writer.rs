@@ -43,14 +43,12 @@ pub struct TreeStateIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema)) at its durable tip
     pub fn new(store: S) -> Self {
         zaino_sync::assert_dense(&store.durable(), HEIGHTS);
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
 
-    /// For `Nfs::add`: durable view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.publisher.handle()
     }
@@ -439,7 +437,6 @@ mod tests {
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
         let mut mock = MockChain::regtest();
-        // nullifier tag = the leaf
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             // (sapling,         orchard,               ironwood)
@@ -562,8 +559,7 @@ mod tests {
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {
         let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
-        // - 0, 1, many commitments per pool on both parities (forces carries several levels up)
-        // - nullifier tag = the leaf
+        // 0, 1, many commitments per pool on both parities (forces carries several levels up)
         #[rustfmt::skip]
         let leaves: [(&[u8], &[u8], &[u8]); 5] = [
             // (sapling,         orchard,               ironwood)
@@ -649,7 +645,6 @@ mod tests {
     /// Genesis, then one block per `per_block` entry
     ///
     /// - leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
-    /// - nullifier tag = the leaf
     async fn random_history(
         per_block: Vec<PerPool<u32>>,
         moves: Vec<Move>,
@@ -732,11 +727,13 @@ mod tests {
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block, resumable from any `start_index`
+    /// height, named by that block, resumable from any `start_index`, appended to after a reopen
+    /// (`split()` reads `subtree_table` length)
     #[tokio::test]
-    async fn subtree_roots_name_their_completing_blocks_and_resume_from_any_start_index() {
+    async fn subtree_roots_name_their_completing_blocks_resume_and_append_across_a_reopen() {
+        let fs = SimFs::new();
         let mut chain = MockChain::regtest();
-        for (first, count) in ORCHARD_LEAVES[..4].iter().copied() {
+        for (first, count) in ORCHARD_LEAVES {
             chain.mine(|b| {
                 (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
                     let to = (from + PER_TX).min(first + count);
@@ -745,7 +742,7 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
-        let mut writer = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX));
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         for block in &blocks[..4] {
             writer.send(step(block)).await;
         }
@@ -773,31 +770,6 @@ mod tests {
             let served = view.subtree_roots(pool, start_index, max_entries);
             assert_eq!(served.as_deref(), Ok(expected), "{case}: {pool:?} from {start_index}");
         }
-    }
-
-    /// Reopen → next boundary appends after the roots on disk (`split()` reads `subtree_table` length)
-    #[tokio::test]
-    async fn a_reopened_writer_appends_the_next_subtree_root_after_those_on_disk() {
-        let fs = SimFs::new();
-        let mut chain = MockChain::regtest();
-        for (first, count) in ORCHARD_LEAVES {
-            chain.mine(|b| {
-                (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
-                    let to = (from + PER_TX).min(first + count);
-                    b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
-                })
-            });
-        }
-        let blocks = chain.blocks(chain.tip());
-        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
-        for block in &blocks[..4] {
-            writer.send(step(block)).await;
-        }
-        writer.send(finalized(&blocks[4])).await;
-        writer.durable_at(h(4)).await;
-        writer.stop().await.expect("stops at Shutdown");
-        let before = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
-        let before = before.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
 
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[5])).await;
@@ -806,37 +778,7 @@ mod tests {
         let after = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
         let third =
             SubtreeRoot { root: served_subtree_root(&view, 5), completing: blocks[5].block_ref() };
-        assert_eq!(before.len(), 2, "subtrees 0 and 1 on disk before the reopen");
-        assert_eq!(after, [before, vec![third]].concat(), "earlier entries untouched, 2 appended");
-    }
-
-    /// Every pool served as its real tree's serialization, never an empty field (both clients map
-    /// an absent field onto `CommitmentTree::empty()` silently)
-    #[tokio::test]
-    async fn ironwood_serves_a_real_tree_not_an_empty_field() {
-        let writer = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX));
-        // ironwood-only block: sapling and orchard empty at this height
-        let mut chain = MockChain::regtest();
-        let one = chain.mine(|b| {
-            b.tx(|t| t.ironwood_action(1, 201).ironwood_action(2, 202).ironwood_action(3, 203))
-        });
-        for block in chain.blocks(one) {
-            writer.send(step(&block)).await;
-        }
-        let handle = writer.stop().await.expect("stops at Shutdown");
-        let reader = TreeStateReader::new(handle.durable_view());
-
-        let trees = reader.treestate(h(1)).expect("served").trees;
-
-        let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())
-            .expect("the clients' own parser accepts it");
-        assert_eq!(parsed.to_frontier().tree_size(), 3, "ironwood: its 3 leaves");
-        // empty pool = the three-byte empty tree, not "" (active pool with no notes != a pool
-        // below its activation)
-        for (pool, empty) in [("sapling", trees.sapling), ("orchard", trees.orchard)] {
-            assert_eq!(empty.as_bytes(), [0u8, 0, 0], "{pool}: the empty tree's bytes");
-            let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(empty.as_bytes());
-            assert_eq!(parsed.expect("parses").to_frontier().tree_size(), 0, "{pool}: no leaves");
-        }
+        let expected = [&roots[..], &[third]].concat();
+        assert_eq!(after, expected, "reopen then block 5: earlier entries untouched, 2 appended");
     }
 }

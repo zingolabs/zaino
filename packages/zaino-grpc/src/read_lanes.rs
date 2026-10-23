@@ -31,7 +31,7 @@ impl Lane {
     }
 }
 
-/// The three read lanes, process-wide (clone = share)
+/// Process-wide (clone = share)
 #[derive(Clone, Debug)]
 pub(crate) struct ReadLanes {
     point: Arc<Semaphore>,

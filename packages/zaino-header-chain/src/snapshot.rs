@@ -11,8 +11,6 @@ use zcash_protocol::BlockHash;
 use crate::chain::{BestTip, Node, Record};
 
 /// - `above[i]` = best branch at `finalized + 1 + i`
-/// - `finalized_headers` = newest finalized headers, oldest first, the finalized tip last
-/// - `nodes` = the header tree above the finalized tip, every branch
 #[derive(Debug, Clone)]
 pub struct HeaderChainSnapshot {
     best: BestTip,

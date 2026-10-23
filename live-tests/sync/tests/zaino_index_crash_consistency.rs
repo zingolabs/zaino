@@ -1,4 +1,4 @@
-//! Crash consistency: zaino SIGKILLed mid-build, three times, over a frozen mainnet chain.
+//! Crash consistency: zaino SIGKILLed mid-build, three times, over a frozen mainnet chain
 //!
 //! - Durable = fsynced before published → a kill may lose the non-finalized state, never a
 //!   durable height

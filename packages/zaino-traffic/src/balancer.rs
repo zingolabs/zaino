@@ -35,7 +35,6 @@ pub(crate) const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::fr
 
 const MISANSWERS_TOTAL: &str = "zaino.traffic.misanswers_total";
 
-/// Every metric this crate emits
 pub const METRICS: &[Metric] = &[Metric::counter(
     MISANSWERS_TOTAL,
     "Answers that failed the caller's check (sender benched), by endpoint (peers = the peer set) \
@@ -411,7 +410,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         let mut sends = FuturesUnordered::new();
         let (mut value, mut failed, mut domain, mut unsupported) = (None, None, None, false);
         let opened = Instant::now();
-        // rounds retry forever (no block skipped): a block no member serves = a silent stall unwarned
+        // rounds retry forever (no block skipped): unserved block = silent stall unless warned
         let mut stall_warn_at = class.retries_rounds().then(|| opened + STALL_WARN_EVERY);
         let mut latest_failure: Option<(MemberId, String)> = None;
         let mut warned = false;

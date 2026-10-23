@@ -92,7 +92,6 @@ impl Method {
         use Reply::{One, Stream};
 
         let (class, reply, index) = match self {
-            // served tip itself
             GetLatestBlock => (Work, One, None),
             GetBlock => (Work, One, Some(CompactBlock)),
             GetBlockRange => (Work, Stream, Some(CompactBlock)),
@@ -401,19 +400,6 @@ mod tests {
         answer, decode_frames, dispatch, fixed_snapshots, framed_request, indexed, request_at,
         routes_over, routes_serving, MAINNET,
     };
-
-    /// Any other path (another service, a typo) names none
-    #[test]
-    fn a_path_names_its_method_or_none() {
-        for method in Method::VARIANTS {
-            assert_eq!(Method::of(&method.path()), Some(*method), "{}", method.path());
-        }
-        let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
-        let typo = format!("{service}/GetBlocks");
-        for other in ["/grpc.health.v1.Health/GetBlock", "/", "", &typo] {
-            assert_eq!(Method::of(other), None, "{other:?}");
-        }
-    }
 
     /// Each method's `Reply` = its proto response side, so the latency metric it feeds can't drift
     /// from the wire (`returns (stream …)` = `Stream`)

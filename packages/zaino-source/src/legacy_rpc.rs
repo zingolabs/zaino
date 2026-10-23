@@ -1,6 +1,4 @@
 //! [`ZcashLegacyRpcClient`]: every question over the validator's JSON-RPC (zebrad or zcashd)
-//!
-//! - blocks = `getblock … 0` hex in JSON: one SIMD hex pass into an exact-size buffer
 
 use serde_json::Value;
 use zaino_primitives::types::Block;
@@ -19,7 +17,6 @@ use crate::{
 
 /// Validator's link
 ///
-/// - Single attempt per call (retries, concurrency = the caller's balancer)
 /// - `rpc` `pub(crate)`: [`ZebraIndexerGrpcClient`](crate::ZebraIndexerGrpcClient) asks the rest
 ///   through it + shares its metric label
 pub struct ZcashLegacyRpcClient {
@@ -431,52 +428,44 @@ mod tests {
         }
     }
 
-    /// - Both not-found codes = absent answer (missing block as a failure = sync stalls on a
-    ///   healthy validator)
+    /// - Not-found codes = absent answer (missing block as a failure = sync stalls on a healthy
+    ///   validator)
     /// - `getblockhash` above the tip likewise, zebrad's `-32602` too (validator behind ≠ failed
-    ///   poll)
+    ///   poll), elsewhere `-32602` = bad params
     /// - `-32601` = `Unsupported` under every method's verdicts (an older node, never a failure)
     /// - Every other code + every transport failure = failure (outage never reads as empty chain)
     #[test]
     fn only_not_found_codes_are_absent_answers_and_a_missing_method_is_unsupported() {
         let absent = GetAtHeightError::HeightNotFound(BlockHeight::from(42));
-        for (case, verdict, codes) in [
-            ("not found", not_found as fn(&RpcError) -> bool, [-5, -8]),
-            ("above the tip", above_tip, [-8, -32602]),
-        ] {
+        let other_codes = [-1, -3, -20, -22, -25, -28, -32_600];
+        #[rustfmt::skip]
+        let cases = [
+            ("not found",     not_found as fn(&RpcError) -> bool, &[-5, -8][..],     &[-32602][..]),
+            ("above the tip", above_tip,                          &[-8, -32602][..], &[][..]),
+        ];
+        for (case, verdict, absent_codes, failure_codes) in cases {
             let classified =
-                |error| classify(error, |error| verdict(error).then(|| absent.clone()));
-            for code in codes {
-                let classified = classified(rpc(code, case));
-                assert!(
-                    matches!(classified, QueryError::Domain(_)),
-                    "{case} {code}: {classified:?}"
-                );
+                |error| match classify(error, |error| verdict(error).then(|| absent.clone())) {
+                    QueryError::Domain(_) => "absent",
+                    QueryError::Unsupported => "unsupported",
+                    QueryError::NonDomain(_) => "failure",
+                };
+            for &code in absent_codes {
+                assert_eq!(classified(rpc(code, case)), "absent", "{case} {code}");
             }
-            for error in [-1, -3, -20, -22, -25, -28, -32_600]
-                .map(|code| rpc(code, "something else"))
-                .into_iter()
-                .chain([RpcError::Status(503)])
-            {
-                let classified = classified(error);
-                assert!(matches!(classified, QueryError::NonDomain(_)), "{case}: {classified:?}");
+            for &code in failure_codes.iter().chain(&other_codes) {
+                assert_eq!(classified(rpc(code, "something else")), "failure", "{case} {code}");
             }
+            assert_eq!(classified(RpcError::Status(503)), "failure", "{case} HTTP 503");
             let missing = classified(rpc(METHOD_NOT_FOUND, "Method not found"));
-            assert!(matches!(missing, QueryError::Unsupported), "{case} -32601: {missing:?}");
+            assert_eq!(missing, "unsupported", "{case} -32601");
         }
-    }
-
-    /// zebrad's `-32602` = "past the tip" for `getblockhash` alone (elsewhere: bad params)
-    #[test]
-    fn minus_32602_is_never_a_missing_block() {
-        let absent = not_found(&rpc(-32602, "past the tip"));
-
-        assert!(!absent, "not_found (getblock, getblockheader) read -32602 as an absent block");
     }
 
     /// - Rejections carry the validator's code + reason verbatim (wallets match the text)
     /// - zebrad's `-1` = verdict only when it names the transaction
-    /// - Node state / warming up = never considered (next validator)
+    /// - Node state / warming up / verifier timeout = never considered (next validator)
+    /// - `checkadmission` (zebra fork) = `sendrawtransaction`'s verdicts
     #[test]
     fn submission_rejections_carry_the_validators_code_and_reason() {
         use SendRawTransactionError::{Malformed, Rejected};
@@ -485,9 +474,12 @@ mod tests {
         let queued = "transaction dropped because it is already queued for download";
         let cached = "any transaction with the same effects will be rejected from the mempool \
                       until the next chain tip block: spent nullifier";
+        let admission = "failed to validate tx: bad-txns-inputs-missingorspent";
+        let non_standard = "transaction is non-standard";
         let cases = [
             (-22, "tx unparseable", Some(Malformed("tx unparseable".into()))),
             (-25, "bad-txns-inputs-spent", rejected(-25, "bad-txns-inputs-spent")),
+            (-25, admission, rejected(-25, admission)),
             (-26, "tx-overwinter-expired", rejected(-26, "tx-overwinter-expired")),
             (
                 -27,
@@ -497,8 +489,11 @@ mod tests {
             (-1, in_mempool, rejected(-1, in_mempool)),
             (-1, queued, rejected(-1, queued)),
             (-1, cached, rejected(-1, cached)),
+            (-1, non_standard, rejected(-1, non_standard)),
             (-1, "transaction dropped because the queue is full", None),
             (-1, "mempool is disabled since synchronization is behind the chain tip", None),
+            (-1, "mempool is not active: wait for Zebra to sync to the tip", None),
+            (-1, "timeout", None),
             (-28, "warming up", None),
         ];
         for (code, message, expected) in cases {
@@ -506,41 +501,25 @@ mod tests {
         }
     }
 
-    /// `checkadmission` (zebra fork): `sendrawtransaction`'s verdicts
-    ///
-    /// - `-25` / a `-1` mempool verdict = refused, verbatim
-    /// - Any other `-1` (inactive mempool, verifier timeout) = no verdict, a failure
-    #[test]
-    fn admission_checks_are_a_refusal_or_no_verdict() {
-        let bad = "failed to validate tx: bad-txns-inputs-missingorspent";
-        let refused = classify(rpc(-25, bad), submission_rejection);
-        let verbatim = SendRawTransactionError::Rejected { code: -25, message: bad.into() };
-        assert!(matches!(&refused, QueryError::Domain(r) if *r == verbatim), "{refused:?}");
-        let non_standard = classify(rpc(-1, "transaction is non-standard"), submission_rejection);
-        assert!(matches!(non_standard, QueryError::Domain(_)), "-1 non-standard: {non_standard:?}");
-        for message in ["mempool is not active: wait for Zebra to sync to the tip", "timeout"] {
-            let no_verdict = classify(rpc(-1, message), submission_rejection);
-            assert!(
-                matches!(no_verdict, QueryError::NonDomain(_)),
-                "-1 {message:?}: {no_verdict:?}"
-            );
-        }
-    }
-
     /// - zebrad's own `-1` below the network tip = inactive
     /// - no `getrawmempool` (`-32601`) = unavailable
-    /// - every other code (bare `-1` included) = failure worth re-polling
+    /// - every other code (bare `-1` included) = no verdict, failure worth re-polling
     #[test]
     fn an_inactive_mempool_is_zebrads_own_minus_one() {
         use GetMempoolListingError::{Inactive, Unavailable};
-        let listing = |error| batch_item::<(), _>(Err(error), listing_verdict);
-        let inactive = listing(rpc(-1, "mempool is not active: wait for Zebra to sync to the tip"));
-        assert!(matches!(inactive, Ok(Err(Inactive))), "-1 not active: {inactive:?}");
-        let missing = listing(rpc(METHOD_NOT_FOUND, "Method not found"));
-        assert!(matches!(missing, Ok(Err(Unavailable))), "-32601: {missing:?}");
-        for code in [-5, -8, -28, -1, -32603] {
-            let failed = listing(rpc(code, "something else"));
-            assert!(failed.is_err(), "{code} something else = failure: {failed:?}");
+        let not_active = "mempool is not active: wait for Zebra to sync to the tip";
+        #[rustfmt::skip]
+        let cases = [
+            (-1,               not_active,         Some(Inactive)),
+            (METHOD_NOT_FOUND, "Method not found", Some(Unavailable)),
+            (-1,               "something else",   None),
+            (-5,               "something else",   None),
+            (-8,               "something else",   None),
+            (-28,              "something else",   None),
+            (-32603,           "something else",   None),
+        ];
+        for (code, message, expected) in cases {
+            assert_eq!(listing_verdict(&rpc(code, message)), expected, "{code} {message:?}");
         }
     }
 }

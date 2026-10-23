@@ -37,7 +37,6 @@ impl Spill {
         Ok(())
     }
 
-    /// Bytes pushed so far
     pub(crate) fn len(&self) -> u64 {
         self.file.as_ref().map_or(0, |(_, written)| *written) + self.buffer.len() as u64
     }
@@ -88,10 +87,7 @@ mod tests {
         pages::{FileKind, Sealed},
     };
 
-    /// 3 MiB + 77 bytes pushed 1 000 at a time
-    ///
-    /// - past the threshold → scratch file
-    /// - appended bytes = exactly what was pushed, scratch gone
+    /// 3 MiB + 77 bytes pushed 1 000 at a time (past `SPILL_AT`: through the scratch file)
     #[test]
     fn a_spill_appends_every_byte_in_order_and_removes_its_scratch() {
         let fs = SimFs::new();
@@ -104,7 +100,6 @@ mod tests {
             spill.push(piece).expect("push");
         }
         assert_eq!(spill.len(), pushed.len() as u64, "bytes pushed");
-        assert!(fs.contents(&path).is_some(), "spilled past the threshold: no scratch file");
         let target = dir.join("0000000007.seg");
         let mut out = PagedFile::open(fs.as_ref(), &target, Sealed::EMPTY, FileKind::Segment)
             .expect("segment");

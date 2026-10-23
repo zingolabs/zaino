@@ -1,16 +1,8 @@
 //! Mempool model: trusted validators polled / failing / killed, peers' listings churning (some
-//! peers byzantine), blocks, our sends → real merge (`ChainViewCore`) + real checks
-//! (`peer_mempool::judge`) vs a naive oracle after every move (`docs/architecture.md` §5)
+//! byzantine), blocks, our sends → real merge (`ChainViewCore`) + real checks
+//! (`peer_mempool::judge`) vs a naive oracle of `docs/architecture.md` §5 after every move
 //!
-//! - held = exactly: listed by a trusted validator not `Down` | kept by the peer quorum | ours
-//!   (an unlisted `ours` gone at the next block), each at the first fee known
-//! - quorum admit iff > 2/3 of the fresh listings hold it, from > 5 netgroups, + passes the checks
-//!   (a child once its parent is held)
-//! - quorum retain while > 1/3 list it
-//! - gate: open iff a `Live` validator polled since the last block, or the peers quorate
-//! - negative fee / unknown prevout → never held
-//! - two conflicting spends: never both quorum-held among honest peers (only while a fresh peer
-//!   lists both)
+//! - each held at the first fee known; a child admitted once its parent is held
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;

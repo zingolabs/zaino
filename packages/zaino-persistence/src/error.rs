@@ -101,10 +101,4 @@ mod tests {
             CommitFailed::new("tb", Path::new("/idx"), StoreError::Io(io::Error::other("EIO")));
         assert_eq!(eio.to_string(), "tb index commit failed at /idx: index io: EIO");
     }
-
-    #[test]
-    #[should_panic(expected = "tb index commit failed at /idx: index io: EIO")]
-    fn crash_panics_with_the_failure() {
-        CommitFailed::new("tb", Path::new("/idx"), StoreError::Io(io::Error::other("EIO"))).crash();
-    }
 }

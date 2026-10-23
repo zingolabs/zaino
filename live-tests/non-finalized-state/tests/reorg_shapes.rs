@@ -19,7 +19,6 @@ const SCRAPE: Duration = Duration::from_secs(10);
 const DEPTH: u32 = 10;
 /// Durable band of `2 × DEPTH` below the window
 const CHAIN: u32 = 3 * DEPTH;
-/// `PoolType` wire enum: transparent, sapling, orchard, ironwood
 const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 
 #[rstest]

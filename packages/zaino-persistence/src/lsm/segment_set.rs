@@ -114,7 +114,6 @@ impl SegmentSet {
         Ok(set)
     }
 
-    /// Durable segments, mapped
     pub(crate) fn segments_view(&self) -> &Arc<SegmentsView> {
         &self.segments_view
     }

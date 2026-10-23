@@ -108,10 +108,7 @@ pub fn pool_activations(schedule: &LocalNetwork) -> PerPool<Option<BlockHeight>>
     PerPool::from_fn(|pool| schedule.activation_height(pool.activation_upgrade()))
 }
 
-/// Small (transport maps these onto gRPC codes)
-///
-/// - no transport named in this crate
-/// - `Inconsistent` = stored nodes rebuild no frontier (a fold bug, not a bad request)
+/// `Inconsistent` = stored nodes rebuild no frontier (a fold bug, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("no tree state at height {height}")]

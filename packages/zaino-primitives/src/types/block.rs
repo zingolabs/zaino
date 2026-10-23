@@ -1,5 +1,3 @@
-//! Block and block header
-
 use super::transaction::Transaction;
 use super::{BlockCommitments, BlockRef, CompactDifficulty, EquihashSolution, MerkleRoot};
 use zcash_protocol::consensus::{BlockHeight, H0};

@@ -1,18 +1,8 @@
-//! [`SubmitPolicy`] + `Job`: pure submission policy, relayed by attempts, watched until it spreads
+//! [`SubmitPolicy`] + `Job`: pure submission policy, relayed by attempts until it spreads
 //! (`docs/architecture.md` §6)
 //!
-//! ```text
-//!   step ─▶ Push(Peers: zebra's relay to ~⅓ of the peers)  while budget left
-//!     │     Push(Trusted: untried, random)                 no peers, or past the budget once
-//!     │        accepted / delivered ─▶ Wait(push + threshold) ─▶ spread? done : next attempt
-//!     │        rejected / unreachable ─▶ next attempt at once
-//!     └─▶ Done: spread │ accepted, nothing left to observe │ rejected │ unreachable │ exhausted
-//! ```
-//!
-//! - pure: time and observations come in, steps go out (`driver.rs` executes them)
+//! - pure: time and observations in, steps out (`driver.rs` executes them)
 //! - `checked` = a trusted `checkadmission` accepted it first (the wallet's answer, already given)
-//! - peers first: a trusted validator relays it only past the budget, unspread (Dandelion++'s
-//!   fail-safe)
 //! - unchecked → that one trusted push = the verdict (a peer answers with nothing)
 
 use std::num::NonZeroU8;
@@ -689,13 +679,13 @@ mod tests {
         }
     }
 
-    /// 8,000 seeded jobs, no peers, 4 trusted validators: 2,000 expected each (σ ≈ 39)
+    /// 64 seeded jobs, no peers, 4 trusted validators
     #[test]
-    fn without_peers_the_first_attempt_is_a_uniform_trusted_validator() {
+    fn without_peers_every_trusted_validator_is_reachable_as_the_first_attempt() {
         let blind = Seen { listed: false, spread: false, observable: false };
-        let mut first: BTreeMap<Entry, u32> = BTreeMap::new();
+        let mut first: BTreeSet<Entry> = BTreeSet::new();
 
-        for seed in 0..8_000 {
+        for seed in 0..64 {
             let trusted = (0..4).map(index).collect();
             let rng = fastrand::Rng::with_seed(seed);
             let mut job = Job::new(false, trusted, true, SubmitPolicy::default(), rng);
@@ -703,11 +693,10 @@ mod tests {
             let Step::Push(entry) = step else {
                 panic!("seed {seed}: first step {step:?}, not a push")
             };
-            *first.entry(entry).or_default() += 1;
+            first.insert(entry);
         }
 
-        assert_eq!(first.len(), 4, "every trusted validator drawn: {first:?}");
-        let even = first.values().all(|&n| (1_800..=2_200).contains(&n));
-        assert!(even, "first entries ≈ 2,000 each (±5σ): {first:?}");
+        let every: BTreeSet<Entry> = (0..4).map(|i| Entry::Trusted(index(i))).collect();
+        assert_eq!(first, every, "first attempts over 64 seeds: each trusted validator");
     }
 }

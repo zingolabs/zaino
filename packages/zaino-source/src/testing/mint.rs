@@ -1,7 +1,6 @@
 //! [`TxBuilder`] → consensus bytes, written by librustzcash
 //!
-//! - A test states values, spends and note tags
-//! - This file fills in the rest
+//! - values, spends, note tags = the test's ([`TxBuilder`]), every other field filled here
 //! - Each shielded description laid out field by field, then parsed by its crate's `from_bytes`
 //!   (the reader's canonical checks: no bytes the decoder would refuse)
 //! - Points, proofs, signatures = deterministic filler (the reader never decompresses them)

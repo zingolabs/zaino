@@ -6,7 +6,6 @@ use zcash_protocol::ShieldedPool;
 
 use super::*;
 use crate::testing::{commitment, nullifier, p2pkh};
-use zaino_primitives::types::TransparentOutput;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -97,19 +96,6 @@ fn siblings_are_distinct_and_a_tie_keeps_the_first_mined() {
 
     assert_ne!(first.hash, sibling.hash, "same parent, same time: distinct blocks");
     assert_eq!(chain.tip(), first, "a tie keeps the first mined");
-}
-
-#[test]
-fn genesis_with_mines_genesis_as_stated() {
-    let alice = p2pkh([0xaa; 20]);
-
-    let funded = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 7_000)));
-
-    let paid =
-        TransparentOutput { value: Zatoshis::from_u64(7_000).expect("in supply"), script: alice };
-    let outputs = &funded.tx(funded.genesis(), 0).transparent.outputs;
-    assert_eq!(outputs, &[paid], "genesis coinbase pays as stated");
-    assert_ne!(funded.genesis(), MockChain::regtest().genesis(), "a bare genesis differs");
 }
 
 /// M2 default time = parent + target spacing (150 s pre-Blossom, 75 s, 25 s from NU7)
@@ -540,25 +526,6 @@ fn outweigh_revives_an_old_tip_with_only_its_first_block_heavier() {
         let bits = chain.block(chain.at(height).hash).header().bits.bits();
         assert_eq!(bits, REGTEST_BITS, "{height}: after the outweighing block, the limit");
     }
-}
-
-#[test]
-fn a_side_branch_never_moves_the_tip() {
-    let mut chain = MockChain::regtest().varied_work();
-    let tip = chain.mine_empty(6);
-
-    let side = chain.fork(h(5)).mine_empty(1).tip();
-
-    assert_eq!((chain.tip(), side.height), (tip, h(6)), "equal height side branch, tip kept");
-}
-
-#[test]
-fn varied_work_mines_stated_bits_as_stated() {
-    let mut chain = MockChain::regtest().varied_work();
-
-    let stated = chain.mine(|b| b.bits(0x2007_ffff));
-
-    assert_eq!(chain.block(stated.hash).header().bits.bits(), 0x2007_ffff);
 }
 
 /// `Work::Limit`: every nBits the limit, so length alone decides

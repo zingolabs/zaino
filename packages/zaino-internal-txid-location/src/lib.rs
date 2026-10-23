@@ -13,7 +13,6 @@ pub use by_txid::Mined;
 pub use reader::TxidLocationReader;
 pub use writer::{fold, TxidLocationIndexWriter};
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&[], &[BY_TXID]);

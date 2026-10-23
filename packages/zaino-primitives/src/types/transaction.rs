@@ -1,5 +1,3 @@
-//! Transaction and per-pool data
-
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_protocol::{ShieldedPool, TxId};
 use zcash_transparent::address::Script;

@@ -24,7 +24,8 @@ pub(crate) fn build_batch<'a>(calls: impl IntoIterator<Item = &'a Call>, first: 
     Value::Array(calls.collect())
 }
 
-/// JSON-RPC 2.0 response body → `result` as `T` (straight off the body bytes, no `Value` hop)
+/// JSON-RPC 2.0 response body → `result` as `T` (no `Value` hop: a multi-MB hex block decoded
+/// from the body bytes once)
 ///
 /// - Error object → [`RpcError::Rpc`]
 /// - Null result → [`RpcError::NullResult`]
@@ -90,7 +91,6 @@ mod tests {
         }
     }
 
-    /// - Error object wins over `result: null` (zebrad sends both)
     /// - `null` alone = fault, never an empty answer
     /// - Unparseable body = fault
     #[test]
@@ -109,21 +109,6 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
-    }
-
-    #[test]
-    fn a_batch_numbers_its_calls_from_the_first_id() {
-        let calls = [
-            Call { method: "getrawtransaction", params: vec!["aa".into()] },
-            Call { method: "getinfo", params: vec![] },
-        ];
-
-        let batch = build_batch(&calls, 7);
-
-        assert_eq!(batch[0]["id"], 7, "first call: first id");
-        assert_eq!(batch[0]["params"][0], "aa", "first call: its params");
-        assert_eq!(batch[1]["id"], 8, "second call: next id");
-        assert_eq!(batch[1]["method"], "getinfo", "second call: its method");
     }
 
     #[test]

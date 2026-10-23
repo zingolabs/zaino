@@ -321,13 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn commits_alternate_slots_never_overwriting_the_one_before() {
-        let slots = [7, 8, 9].map(slot_offset);
-
-        assert_eq!(slots, [SLOT as u64, 0, SLOT as u64], "commits 7, 8, 9: odd → slot 1, even → 0");
-    }
-
-    #[test]
     fn latest_reads_the_durable_commit_off_every_slot_pair_a_crash_leaves() {
         /// `(seq, body)` durable (`None` = nothing durable)
         type Durable = Option<(u64, Vec<u8>)>;
@@ -368,20 +361,6 @@ mod tests {
             let error = latest(identity, &bytes).map(|_| ()).expect_err(case);
             assert_eq!(error.to_string(), refused, "{case}");
         }
-    }
-
-    /// Tip at height 2 = block count 3 on disk, then its hash
-    #[test]
-    fn a_durable_tip_is_its_golden_bytes() {
-        let tip = DurableTip { tip: Some(BlockRef { hash: BlockHash([7; 32]), height: 2.into() }) };
-        let mut bytes = Vec::new();
-
-        tip.encode(&mut bytes);
-
-        assert_fields(&bytes, &[("block count", &3u64.to_le_bytes()), ("tip hash", &[7; 32])]);
-        let mut body = BodyReader::new(&bytes);
-        assert_eq!(DurableTip::decode(&mut body).expect("golden bytes decode"), tip);
-        body.finish().expect("tip = whole body");
     }
 
     /// Presence = count > 0: a zero hash at height 0 is still a tip

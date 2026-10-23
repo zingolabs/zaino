@@ -66,7 +66,6 @@ fn note(alarm: Alarm, count: usize) -> String {
     }
 }
 
-/// Every gauge [`emit_gauges`] sets
 pub const METRICS: &[Metric] = {
     use names::*;
 

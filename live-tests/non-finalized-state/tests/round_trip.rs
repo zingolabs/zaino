@@ -21,7 +21,6 @@ const CHAIN: u32 = 3 * DEPTH;
 const ORPHANED: u32 = 4;
 const REPLACEMENT: u32 = 2;
 const ROUNDS: u64 = 3;
-/// `PoolType` wire enum: transparent, sapling, orchard, ironwood
 const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 
 #[ztest::qos::integration]

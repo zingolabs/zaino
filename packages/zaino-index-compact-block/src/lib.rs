@@ -15,7 +15,6 @@ pub use reader::CompactBlockReader;
 pub use serve::{RangeCursor, ServeError};
 pub use writer::{fold, CompactBlockIndexWriter};
 
-/// On-disk layout version
 const FORMAT: u16 = 1;
 
 const TABLES: Tables = Tables::new(&[BLOCKS], &[]);
