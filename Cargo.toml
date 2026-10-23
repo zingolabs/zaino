@@ -1,33 +1,7 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
-    "packages/zaino-status",
-    "packages/zaino-logging",
-    "packages/zaino-async",
-    "packages/zaino-component",
-    "packages/zaino-consensus",
-    "packages/zaino-encoding",
     "packages/zaino-primitives",
-    "packages/zaino-persistence",
-    "packages/zaino-address",
-    "packages/zaino-source-macros",
-    "packages/zaino-source",
-    "packages/zaino-rpc",
-    "packages/zaino-convert-zebra",
-    "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
-    "packages/zaino-source-zebra",
-    "packages/zaino-mempool",
-    "packages/zaino-mempool-service",
-    "packages/zaino-common",
-    "packages/zaino-chain-head",
-    "packages/zaino-chain-head-service",
-    "packages/zaino-chain-store",
-    "packages/zaino-chain-store-zainodb",
-    "packages/zaino-chain",
-    "packages/zainod",
-    "packages/zaino-serve",
-    "packages/zaino-state",
     "packages/zaino-proto",
     # NOTE: live-tests/ is its own standalone workspace (see
     # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
