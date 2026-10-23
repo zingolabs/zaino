@@ -4646,6 +4646,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-nfs"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "imbl",
+ "metrics",
+ "proptest",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-header-chain",
+ "zaino-index-compact-block",
+ "zaino-index-transparent-address",
+ "zaino-index-tree-state",
+ "zaino-index-utxo-set",
+ "zaino-internal-block-hash-to-height",
+ "zaino-internal-txid-location",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-sync",
+ "zaino-traffic",
+ "zcash_protocol",
+ "zcash_transparent",
+]
+
+[[package]]
 name = "zaino-peers"
 version = "0.11.0-alpha.4"
 dependencies = [

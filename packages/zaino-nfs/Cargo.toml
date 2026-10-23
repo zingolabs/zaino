@@ -1,0 +1,48 @@
+[package]
+name = "zaino-nfs"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zaino's non-finalized state: the tip overlay, one folded node per block above the durable views"
+
+[dependencies]
+imbl.workspace = true
+metrics.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zaino-header-chain.workspace = true
+zaino-index-compact-block.workspace = true
+zaino-index-transparent-address.workspace = true
+zaino-index-tree-state.workspace = true
+zaino-internal-block-hash-to-height.workspace = true
+zaino-index-utxo-set.workspace = true
+zaino-persistence.workspace = true
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+zaino-sync.workspace = true
+zaino-traffic.workspace = true
+zcash_protocol.workspace = true
+zaino-internal-txid-location.workspace = true
+
+[features]
+# `NfsPublication::fixed` (no driver) + `ChainParams::of(MockChain)`
+testing = ["zaino-source/testing"]
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+zaino-sync = { workspace = true, features = ["testing"] }
+zcash_transparent.workspace = true
