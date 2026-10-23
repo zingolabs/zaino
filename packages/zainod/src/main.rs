@@ -3,17 +3,24 @@
 #![forbid(unsafe_code)]
 
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
+use tracing::{error, info, Instrument as _};
 
 use crate::cli::{Cli, Command};
 use crate::command::{hold, overload, verify};
+use crate::config::load_config;
+use crate::error::IndexerError;
+use crate::health::{admin, notify, state_log, DaemonStatus};
 use crate::telemetry::logging;
 
 mod cli;
 mod command;
 mod config;
+mod daemon;
 mod error;
 mod health;
 mod telemetry;
@@ -41,15 +48,32 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    let config = cli.config.unwrap_or_else(config::paths::default_config);
-    match cli.command {
-        Command::GenerateConfig { output } => {
-            exit(config::generate_config(&output.unwrap_or(config)), 1)
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Error: tokio runtime: {error}");
+            return ExitCode::from(2);
         }
-        Command::Verify => verify::run(&config),
-        Command::Hold(action) => exit(hold::command(&config, action), 1),
-        Command::Overload { action } => exit(overload::command(&config, action), 1),
-    }
+    };
+
+    let config = cli.config.unwrap_or_else(config::paths::default_config);
+    let code = runtime.block_on(async {
+        match cli.command {
+            Command::Start => {
+                let run = start(config).instrument(logging::component("Zainod"));
+                exit(run.await.map(|()| ExitCode::SUCCESS), 1)
+            }
+            Command::GenerateConfig { output } => {
+                exit(config::generate_config(&output.unwrap_or(config)), 1)
+            }
+            Command::Verify => verify::run(&config),
+            Command::Hold(action) => exit(hold::command(&config, action), 1),
+            Command::Overload { action } => exit(overload::command(&config, action), 1),
+        }
+    });
+    // never waits on blocking work a failed start left behind (it may never finish)
+    runtime.shutdown_background();
+    code
 }
 
 /// `Err` → stderr + `failure`
@@ -58,4 +82,45 @@ fn exit(outcome: Result<ExitCode, impl Display>, failure: u8) -> ExitCode {
         eprintln!("Error: {error}");
         ExitCode::from(failure)
     })
+}
+
+/// Until a shutdown signal (`Ok`) or the first failure (`Err`)
+///
+/// - no in-process restart: failure ends the process, the service manager restarts it, next boot
+///   proves its state from disk (`zaino-persistence/usage.md` "The commit and crash contract")
+async fn start(config_path: PathBuf) -> Result<(), IndexerError> {
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting");
+    let config = load_config(&config_path)?;
+    // Before any startup work (a bad `[snapshot]` must fail before it downloads)
+    config.validate()?;
+    let enabled = zaino_persistence::IndexKind::ALL.iter().copied();
+    let enabled = enabled.filter(|kind| config.enabled(*kind).is_some());
+    let status = Arc::new(DaemonStatus::new(config.network, enabled));
+    // Before the index-snapshot bootstrap (a held node reads held from its first answer)
+    let (state_dir, goaway_delay) =
+        (config.serve.state_dir.clone(), config.serve.hold_goaway_delay);
+    hold::spawn(Arc::clone(&status), state_dir, goaway_delay);
+    config.warn_about_metrics_listener();
+    // Before the index-snapshot bootstrap (its progress extends systemd's start timeout)
+    notify::spawn(Arc::clone(&status));
+    state_log::spawn(Arc::clone(&status));
+
+    if let Some(endpoint) = config.metrics.listen_address {
+        let status = Arc::clone(&status);
+        logging::component("Admin").in_scope(|| admin::start(endpoint, status))?;
+    }
+    // After the admin listener (`/readyz` reports the index-snapshot install inside)
+    let running = daemon::start(config, status).await.inspect_err(|error| {
+        error!(%error, "Startup failed");
+    })?;
+    match running.await? {
+        Ok(()) => {
+            info!("Shutdown complete");
+            Ok(())
+        }
+        Err(error) => {
+            error!(%error, "Stopped with error");
+            Err(error)
+        }
+    }
 }
