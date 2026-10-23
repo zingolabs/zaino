@@ -6183,6 +6183,8 @@ dependencies = [
  "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-source",
+ "zcash_address",
+ "zcash_protocol",
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",

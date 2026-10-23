@@ -9,6 +9,12 @@
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
 
+/// Most rows an address query answers before it is rejected as too broad.
+///
+/// zebrad 7's cap on `getaddresstxids` / `getaddressutxos`; adapters that read
+/// the address index directly enforce the same bound.
+pub const MAX_ADDRESS_QUERY_RESULTS: usize = 100_000;
+
 mod error;
 mod get_address_balance;
 mod get_address_deltas;

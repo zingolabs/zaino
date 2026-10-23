@@ -458,18 +458,42 @@ fn parse_addresses<E>(
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
+    let invalid = |address: &str, reason: &dyn std::fmt::Display| {
+        QueryError::NonDomain(ReadStateError::off_contract(format!(
+            "invalid transparent address `{address}`: {reason}"
+        )))
+    };
     addresses
         .into_iter()
         .map(|address| {
-            address
-                .parse::<zebra_chain::transparent::Address>()
-                .map_err(|e| {
-                    QueryError::NonDomain(ReadStateError::off_contract(format!(
-                        "invalid transparent address `{address}`: {e}"
-                    )))
-                })
+            match address.parse::<zebra_chain::transparent::Address>() {
+                // Parses, but the index never keys on it: zebrad 7 rejects it
+                // rather than answering empty.
+                Ok(zebra_chain::transparent::Address::Tex { .. }) => Err(invalid(
+                    &address,
+                    &"TEX addresses are not supported by the address index",
+                )),
+                Ok(parsed) => Ok(parsed),
+                Err(e) => Err(invalid(&address, &e)),
+            }
         })
         .collect()
+}
+
+/// The `max_entries` that detects an answer over [`MAX_ADDRESS_QUERY_RESULTS`]:
+/// one more than the cap, as zebrad 7 asks.
+///
+/// [`MAX_ADDRESS_QUERY_RESULTS`]: zaino_source::MAX_ADDRESS_QUERY_RESULTS
+const ADDRESS_QUERY_PROBE: Option<usize> =
+    Some(zaino_source::MAX_ADDRESS_QUERY_RESULTS.saturating_add(1));
+
+/// Reject an answer with more rows than [`zaino_source::MAX_ADDRESS_QUERY_RESULTS`].
+fn within_result_cap<E>(rows: usize, too_many: impl FnOnce(usize) -> E) -> Result<(), E> {
+    if rows > zaino_source::MAX_ADDRESS_QUERY_RESULTS {
+        Err(too_many(zaino_source::MAX_ADDRESS_QUERY_RESULTS))
+    } else {
+        Ok(())
+    }
 }
 
 /// Convert a zebra height, failing rather than substituting a placeholder.
@@ -494,7 +518,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             ReadRequest::UtxosByAddresses {
                 addresses: valid,
                 height_range: zebra_chain::block::Height(0)..=zebra_chain::block::Height::MAX,
-                max_entries: None,
+                max_entries: ADDRESS_QUERY_PROBE,
             },
         )
         .await?;
@@ -502,6 +526,9 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             ReadResponse::AddressUtxos(utxos) => utxos,
             _ => return Err(unexpected_response("UtxosByAddresses").into()),
         };
+        within_result_cap(utxos.utxos().count(), |limit| {
+            QueryError::Domain(zaino_source::GetAddressUtxosError::TooManyResults { limit })
+        })?;
 
         // Zebra documents this index as ordered by output location, and Zaino
         // relies on that rather than sorting. Verify it, but as a check that
@@ -578,13 +605,16 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
             addresses: parse_addresses(addresses)?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
-            max_entries: None,
+            max_entries: ADDRESS_QUERY_PROBE,
         };
 
         let hashes = match read(&self.state, request).await? {
             ReadResponse::AddressesTransactionIds(hashes) => hashes,
             _ => return Err(unexpected_response("TransactionIdsByAddresses").into()),
         };
+        within_result_cap(hashes.len(), |limit| {
+            QueryError::Domain(zaino_source::GetAddressTxidsError::TooManyResults { limit })
+        })?;
 
         // Chain order again checked rather than asserted.
         let mut previous =
@@ -645,13 +675,16 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
             addresses: parse_addresses(addresses.clone())?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
-            max_entries: None,
+            max_entries: ADDRESS_QUERY_PROBE,
         };
 
         let located = match read(&self.state, request).await? {
             ReadResponse::AddressesTransactionIds(located) => located,
             _ => return Err(unexpected_response("TransactionIdsByAddresses").into()),
         };
+        within_result_cap(located.len(), |limit| {
+            QueryError::Domain(zaino_source::GetAddressDeltasError::TooManyResults { limit })
+        })?;
 
         // The index gives each transaction's location, so the height and the
         // position within the block come from it rather than from a second
@@ -1514,6 +1547,40 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
         })
+    }
+}
+
+#[cfg(test)]
+mod address_query_tests {
+    use super::{parse_addresses, within_result_cap, ADDRESS_QUERY_PROBE};
+    use zaino_source::{QueryError, MAX_ADDRESS_QUERY_RESULTS};
+    use zcash_address::{ToAddress as _, ZcashAddress};
+    use zcash_protocol::consensus::NetworkType;
+
+    /// TEX addresses on every network parse as zebra addresses but are refused,
+    /// as zebrad 7 refuses them, rather than answering empty.
+    #[test]
+    fn tex_addresses_are_refused() {
+        for network in [NetworkType::Main, NetworkType::Test, NetworkType::Regtest] {
+            let tex = ZcashAddress::from_tex(network, [7; 20]).encode();
+            let refused = parse_addresses::<String>(vec![tex.clone()])
+                .expect_err("a TEX address must be refused");
+            assert!(
+                matches!(&refused, QueryError::NonDomain(e) if e.to_string().contains("TEX")),
+                "{tex}: {refused:?}"
+            );
+        }
+    }
+
+    /// The probe asks for one row past the cap, so an oversize answer is seen.
+    #[test]
+    fn the_probe_detects_one_row_past_the_cap() {
+        assert_eq!(ADDRESS_QUERY_PROBE, Some(MAX_ADDRESS_QUERY_RESULTS + 1));
+        assert_eq!(within_result_cap(MAX_ADDRESS_QUERY_RESULTS, |l| l), Ok(()));
+        assert_eq!(
+            within_result_cap(MAX_ADDRESS_QUERY_RESULTS + 1, |l| l),
+            Err(MAX_ADDRESS_QUERY_RESULTS)
+        );
     }
 }
 

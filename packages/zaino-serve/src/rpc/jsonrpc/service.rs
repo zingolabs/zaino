@@ -613,7 +613,9 @@ where
     })
 }
 
-fn sendrawtransaction_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+/// The legacy code an indexer error carries (validator or Zaino rejection),
+/// else a generic internal error.
+fn legacy_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
 where
     Error: std::error::Error + 'static,
 {
@@ -726,7 +728,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         ZcashIndexer::get_standard_fee(self.service_subscriber.inner_ref())
             .await
             .map(GetStandardFee::from_domain)
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned> {
@@ -780,7 +782,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
             .and_then(|balance| {
                 crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain(balance)
                     .map_err(invalid_params_error_object)
@@ -796,7 +798,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .send_raw_transaction(raw_transaction_hex)
             .await
             .map(crate::rpc::jsonrpc::wire::hashes::sent_transaction_hash_from_domain)
-            .map_err(sendrawtransaction_error_object_from_indexer_error)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn z_get_block(
@@ -925,7 +927,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_address_tx_ids(request)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn z_get_address_utxos(
@@ -936,7 +938,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_utxos(address_strings)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
             .and_then(|utxos| {
                 crate::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(utxos)
                     .map_err(invalid_params_error_object)
@@ -953,7 +955,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .get_address_deltas(request)
             .await
             .map(GetAddressDeltasResponse::from_domain)
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn get_network_sol_ps(

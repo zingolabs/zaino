@@ -1541,7 +1541,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
 
 /// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
-/// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
+/// the typed `RpcError` (`legacy_error_object_from_indexer_error`),
 /// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a
 /// generic `-32603` internal error.
 ///

@@ -12,6 +12,13 @@ pub enum GetAddressUtxosError {
     /// One or more addresses are invalid.
     #[error("invalid address: {0}")]
     InvalidAddress(String),
+
+    /// More outputs match than the validator answers in one query.
+    #[error("more than {limit} unspent outputs match; page with startHeight and maxEntries")]
+    TooManyResults {
+        /// The cap that was exceeded.
+        limit: usize,
+    },
 }
 
 /// Fetch unspent transparent outputs for one or more addresses.

@@ -226,6 +226,13 @@ impl<
         &self,
         params: AddressDeltasRequest,
     ) -> Result<AddressDeltas, Self::Error> {
+        let addresses = match &params {
+            AddressDeltasRequest::Address(address) => vec![String::from(address.clone())],
+            AddressDeltasRequest::Filtered { addresses, .. } => {
+                addresses.iter().cloned().map(String::from).collect()
+            }
+        };
+        types::checked_addresses(&zebra_rpc::client::GetAddressBalanceRequest::new(addresses))?;
         validator(self.source().get_address_deltas(params).await)
     }
 

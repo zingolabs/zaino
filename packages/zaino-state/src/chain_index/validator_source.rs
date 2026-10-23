@@ -184,6 +184,26 @@ where
     }
 }
 
+/// [`err`], for a port whose every domain error is the request being invalid:
+/// the rejection is marked [`InvalidRequest`](crate::error::InvalidRequest), so
+/// gRPC serves it as `InvalidArgument`.
+fn request_err<E, N>(error: QueryError<E, N>) -> BlockchainSourceError
+where
+    E: std::fmt::Debug + std::fmt::Display,
+    N: std::error::Error + Send + Sync + 'static,
+{
+    match error {
+        QueryError::Domain(e) => BlockchainSourceError::unrecoverable_context(
+            "validator rejected the query",
+            crate::error::InvalidRequest(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                e.to_string(),
+            )),
+        ),
+        fetch @ QueryError::NonDomain(_) => err(fetch),
+    }
+}
+
 /// Flatten a `getspentinfo` port error, preserving the legacy full node's own error code.
 ///
 /// The generic [`err`] reports every domain rejection as `InvalidParameter`
@@ -573,7 +593,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         self.validator
             .get_address_balance(address_strings_to_vec(&address_strings)?)
             .await
-            .map_err(err)
+            .map_err(request_err)
     }
 
     async fn get_address_txids(
@@ -586,7 +606,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .validator
             .get_address_txids(addresses, domain_height(start)?, domain_height(end)?)
             .await
-            .map_err(err)?;
+            .map_err(request_err)?;
 
         Ok(txids
             .into_iter()
@@ -601,7 +621,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         self.validator
             .get_address_utxos(address_strings_to_vec(&address_strings)?)
             .await
-            .map_err(err)
+            .map_err(request_err)
     }
 
     async fn get_address_deltas(
@@ -634,7 +654,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .validator
             .get_address_deltas(addresses, start, end)
             .await
-            .map_err(err)?;
+            .map_err(request_err)?;
 
         if !chain_info {
             return Ok(AddressDeltas::Simple(deltas));
@@ -1649,7 +1669,7 @@ mod error_source_chain {
     /// `zaino-serve` recovers legacy-compatible RPC error codes by
     /// downcast-walking [`std::error::Error::source`] chains (see
     /// `getblock_error_object_from_indexer_error` and
-    /// `sendrawtransaction_error_object_from_indexer_error` in
+    /// `legacy_error_object_from_indexer_error` in
     /// `zaino-serve/src/rpc/jsonrpc/service.rs`). This boundary must therefore
     /// preserve the typed cause instead of flattening it to a string, or
     /// failures surface as generic internal errors rather than the legacy codes

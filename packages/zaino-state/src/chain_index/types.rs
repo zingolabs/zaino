@@ -14,7 +14,6 @@ use std::num::NonZeroU128;
 use zaino_chain::{ChainBlock, ChainTxPosition, SpendStatus, TransactionLocations};
 use zaino_primitives::types as domain;
 
-use crate::chain_index::source::BlockchainSourceError;
 use crate::error::ChainIndexError;
 
 pub use zaino_chain_store_zainodb::types::*;
@@ -129,38 +128,25 @@ pub(crate) fn branch_id(
     .map(u32::from)
 }
 
-/// The addresses of a balance or UTXO request, rejected as the legacy source
-/// rejected them.
-pub(crate) fn balance_request_addresses(
-    request: &zebra_rpc::client::GetAddressBalanceRequest,
+/// The addresses of an address-index request, checked as zebrad 7 checks them
+/// whichever backend answers: at most 10,000, and no TEX or malformed address.
+///
+/// A rejection keeps zebrad's code and message (`-5` for an address, `-8` for
+/// the count) and is served as an invalid argument.
+pub(crate) fn checked_addresses(
+    request: &impl zebra_rpc::methods::ValidateAddresses,
 ) -> Result<Vec<domain::TransparentAddress>, ChainIndexError> {
-    use zebra_rpc::methods::ValidateAddresses as _;
-
-    let invalid = |error: &dyn std::fmt::Display| {
-        ChainIndexError::backing_validator(BlockchainSourceError::Unrecoverable(format!(
-            "invalid address: {error}"
-        )))
-    };
     request
         .valid_addresses()
-        .map_err(|error| invalid(&error))?
+        .map_err(|error| {
+            ChainIndexError::invalid_request(crate::error::LegacyRpcError {
+                code: i64::from(error.code()),
+                message: error.message().to_string(),
+            })
+        })?
         .into_iter()
         .map(|address| {
             domain::TransparentAddress::try_new(address.to_string())
-                .map_err(|error| invalid(&error))
-        })
-        .collect()
-}
-
-/// Encoded addresses the validator is asked about directly, rejected as it
-/// rejects them.
-pub(crate) fn encoded_addresses(
-    addresses: impl IntoIterator<Item = String>,
-) -> Result<Vec<domain::TransparentAddress>, ChainIndexError> {
-    addresses
-        .into_iter()
-        .map(|address| {
-            domain::TransparentAddress::try_new(address)
                 .map_err(ChainIndexError::validator_rejected)
         })
         .collect()
@@ -258,11 +244,47 @@ mod tests {
         );
     }
 
+    /// The legacy code a rejection carries, as the JSON-RPC layer recovers it.
+    fn legacy_code(error: &ChainIndexError) -> Option<i64> {
+        std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+            error.source()
+        })
+        .find_map(|error| error.downcast_ref::<crate::error::LegacyRpcError>())
+        .map(|rejection| rejection.code)
+    }
+
+    fn checked(addresses: Vec<String>) -> ChainIndexError {
+        checked_addresses(&zebra_rpc::client::GetAddressBalanceRequest::new(addresses))
+            .expect_err("the request must be refused")
+    }
+
+    /// A malformed address and a TEX address are both zebrad's `-5`, served as
+    /// an invalid argument.
     #[test]
-    fn an_unparseable_address_is_rejected() {
-        let error = encoded_addresses(["not an address".to_string()])
-            .expect_err("an unparseable address is invalid");
-        assert!(error.to_string().contains("validator rejected the query"));
+    fn malformed_and_tex_addresses_are_refused_with_minus_five() {
+        for address in [
+            "not an address",
+            "textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy",
+        ] {
+            let error = checked(vec![address.to_string()]);
+            assert_eq!(legacy_code(&error), Some(-5), "{address}");
+            assert_eq!(
+                error.kind(),
+                crate::error::ChainIndexErrorKind::InvalidArgument
+            );
+        }
+    }
+
+    /// More than 10,000 addresses is zebrad's `-8`, before any is parsed.
+    #[test]
+    fn too_many_addresses_are_refused_with_minus_eight() {
+        let error = checked(vec!["not an address".to_string(); 10_001]);
+        assert_eq!(legacy_code(&error), Some(-8));
+        assert!(error.to_string().contains("too many addresses"), "{error}");
+        assert_eq!(
+            error.kind(),
+            crate::error::ChainIndexErrorKind::InvalidArgument
+        );
     }
 
     /// A vector's `u64` tree size, as the domain carries it.

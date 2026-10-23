@@ -177,23 +177,40 @@ where
     }
 }
 
+/// The cap zebrad 7 reports when an address query matches too much.
+///
+/// zebrad answers `-8` with `more than {cap} … match; …`. `-8` is overloaded
+/// (a malformed envelope too), so only that message shape is read as the cap.
+fn result_cap_exceeded(error: &NonDomainError) -> Option<usize> {
+    if !matches!(error.mode, FailureMode::RpcError(-8)) {
+        return None;
+    }
+    let rest = error.message.strip_prefix("more than ")?;
+    let (cap, rest) = rest.split_once(' ')?;
+    rest.contains(" match").then(|| cap.parse().ok()).flatten()
+}
+
 /// Classifies a transport failure on an address-keyed method.
 ///
 /// Separate from [`absent_or_fetch`] because these methods reject the caller's
 /// *address*, not a missing object, and only `-5` says so — see
-/// [`INVALID_ADDRESS_CODE`].
+/// [`INVALID_ADDRESS_CODE`]. `too_many` maps zebrad's result cap, for the
+/// methods that have one.
 fn invalid_address_or_fetch<E>(
     error: zaino_rpc::RpcError,
     invalid: impl FnOnce(String) -> E,
+    too_many: impl FnOnce(usize) -> Option<E>,
 ) -> QueryError<E>
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
     let error: NonDomainError = error.into();
     if is_invalid_address(&error) {
-        QueryError::Domain(invalid(error.message))
-    } else {
-        QueryError::NonDomain(error)
+        return QueryError::Domain(invalid(error.message));
+    }
+    match result_cap_exceeded(&error).and_then(too_many) {
+        Some(rejection) => QueryError::Domain(rejection),
+        None => QueryError::NonDomain(error),
     }
 }
 
@@ -385,12 +402,13 @@ impl ZebraRpcAdapter {
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         invalid: impl FnOnce(String) -> E,
+        too_many: impl FnOnce(usize) -> Option<E>,
     ) -> Result<T, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
         self.call_parsed_classified(method, params, None, parse, |error| {
-            invalid_address_or_fetch(error, invalid)
+            invalid_address_or_fetch(error, invalid, too_many)
         })
         .await
     }
@@ -684,6 +702,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
             vec![addresses_param(addresses)],
             parse::parse_address_balance,
             zaino_source::GetAddressBalanceError::InvalidAddress,
+            |_| None,
         )
         .await
     }
@@ -709,6 +728,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
             params,
             parse::parse_address_deltas,
             zaino_source::GetAddressDeltasError::InvalidAddress,
+            |_| None,
         )
         .await
     }
@@ -731,6 +751,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
             params,
             parse::parse_txids,
             zaino_source::GetAddressTxidsError::InvalidAddress,
+            |limit| Some(zaino_source::GetAddressTxidsError::TooManyResults { limit }),
         )
         .await
     }
@@ -747,6 +768,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
             vec![addresses_param(addresses)],
             parse::parse_address_utxos,
             zaino_source::GetAddressUtxosError::InvalidAddress,
+            |limit| Some(zaino_source::GetAddressUtxosError::TooManyResults { limit }),
         )
         .await
     }
@@ -1147,6 +1169,7 @@ mod classification_tests {
         let rejected: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
             rpc(-5, "invalid address"),
             GetAddressBalanceError::InvalidAddress,
+            |_| None,
         );
         assert!(matches!(
             rejected,
@@ -1156,11 +1179,41 @@ mod classification_tests {
         let malformed: QueryError<GetAddressBalanceError> = invalid_address_or_fetch(
             rpc(-8, "start must be less than end"),
             GetAddressBalanceError::InvalidAddress,
+            |_| None,
         );
         assert!(
             matches!(malformed, QueryError::NonDomain(_)),
             "a malformed request is Zaino's bug and must not read as a bad address"
         );
+    }
+
+    /// zebrad 7's result cap (`-8 more than {cap} … match`) is the port's
+    /// `TooManyResults`; any other `-8` stays a failure.
+    #[test]
+    fn zebrads_result_cap_is_too_many_results() {
+        use zaino_source::GetAddressTxidsError;
+
+        let classify = |error| {
+            invalid_address_or_fetch(error, GetAddressTxidsError::InvalidAddress, |limit| {
+                Some(GetAddressTxidsError::TooManyResults { limit })
+            })
+        };
+
+        assert!(matches!(
+            classify(rpc(
+                -8,
+                "more than 100000 transactions match; narrow the height range"
+            )),
+            QueryError::Domain(GetAddressTxidsError::TooManyResults { limit: 100_000 })
+        ));
+        assert!(matches!(
+            classify(rpc(-8, "start must be less than end")),
+            QueryError::NonDomain(_)
+        ));
+        assert!(matches!(
+            classify(rpc(-1, "more than 100000 transactions match")),
+            QueryError::NonDomain(_)
+        ));
     }
 
     /// A rejected submission is an answer about the transaction. Reporting it
