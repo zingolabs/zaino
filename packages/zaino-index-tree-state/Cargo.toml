@@ -1,0 +1,30 @@
+[package]
+name = "zaino-index-tree-state"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Retained-node commitment tree index: tree states and subtree roots"
+
+[dependencies]
+incrementalmerkletree = { workspace = true, features = ["legacy-api"] }
+orchard.workspace = true
+rayon.workspace = true
+sapling-crypto.workspace = true
+thiserror.workspace = true
+zaino-persistence.workspace = true
+zaino-primitives.workspace = true
+zaino-sync.workspace = true
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+
+[dev-dependencies]
+zaino-source = { workspace = true, features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
+zaino-sync = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unreachable_pub = "warn"
