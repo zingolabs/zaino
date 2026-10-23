@@ -2,7 +2,7 @@
 //!
 //! - clone = refcounts (`imbl`): a holder's answers never change
 //! - at or below the finalized tip = finalized by definition (a trusted validator held it)
-//! - only the newest `2 · depth` finalized headers answer by height
+//! - only the newest `max(2 · depth, CONTEXT)` finalized headers answer by height
 
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
@@ -90,7 +90,7 @@ impl HeaderChainSnapshot {
         }
     }
 
-    /// zcashd's `getheaders` locator: the best tip, ten consecutive ancestors, then doubling
+    /// zcashd's `getheaders` locator: the best tip, eleven consecutive ancestors, then doubling
     /// steps, ending at the finalized tip
     pub fn locator(&self) -> Vec<BlockHash> {
         let floor = u32::from(self.finalized_tip().height);

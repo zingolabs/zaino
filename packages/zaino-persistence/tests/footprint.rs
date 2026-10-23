@@ -81,7 +81,7 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
     let what = format!("dropped map cached {opened:?} of {segment} B: summary + filters only");
     assert!(opened.is_some_and(|bytes| bytes < segment / 10), "{what}");
     // - fixed: 20 000 × 32 B
-    // - variable: records of 100 + n % 200 B (100 × 1 990 000 B) + an 8-byte end each
+    // - variable: 100 + n % 200 B records (20 000 × 100 + 100 × 19 900 = 3 990 000 B) + 8 B ends
     #[rustfmt::skip]
     let real = [
         TableFootprint { table: "fixed",    bytes: 640_000,   cached: Some(640_000) },

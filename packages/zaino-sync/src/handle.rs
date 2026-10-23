@@ -6,7 +6,7 @@ use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
-/// From its writer (`XIndexWriter::handle`), cheap clone
+/// From its writer ([`IndexPublisher::handle`](crate::IndexPublisher::handle)), cheap clone
 #[derive(Clone)]
 pub struct IndexHandle<V> {
     durable: watch::Receiver<V>,

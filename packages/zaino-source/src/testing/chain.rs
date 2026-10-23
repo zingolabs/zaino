@@ -1,16 +1,7 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! Every block handed out = `decode_block` of bytes minted here, and passes M1–M7 (else
-//! `try_mine` → `Refused` / `mine` panic naming the rule, `usage.md` § Invariants)
-//!
-//! - M1: hash = SHA-256d(`encode_header`)
-//! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
-//! - M3: merkle root = the minted txids', txids distinct per branch (`Ledger::apply`)
-//! - M4: one coinbase, slot 0, spends nothing, states no fee (`mint`, `Ledger::apply`)
-//! - M5: nBits = regtest limit, or `outweigh()` = least work that becomes best (`bits()`)
-//! - M6: spends unspent on own branch, nullifiers fresh, pools >= 0 (ZIP 209), fee = derived
-//! - M7: pool data only once its upgrade active (Sapling, NU5 = Orchard, NU6.3 = Ironwood)
-//! - Mempool: each entry admitted (M6, M7) on the best after the ones before it (`repool()`)
+//! Every block handed out = `decode_block` of bytes minted here, and passes M1–M7 (`usage.md`
+//! § Invariants; else `try_mine` → `Refused` / `mine` panic naming the rule)
 
 use std::collections::HashMap;
 use std::sync::Arc;

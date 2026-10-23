@@ -775,7 +775,7 @@ mod tests {
         }
     }
 
-    /// Reopen rebuilds the subtree cursor from the files → the next boundary follows those on disk
+    /// Reopen → next boundary appends after the roots on disk (`split()` reads `subtree_table` length)
     #[tokio::test]
     async fn a_reopened_writer_appends_the_next_subtree_root_after_those_on_disk() {
         let fs = SimFs::new();

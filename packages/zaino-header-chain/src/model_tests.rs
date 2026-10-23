@@ -19,7 +19,6 @@
 //!   (H9), every height of the published chain (kept finalized headers and above, older finalized
 //!   headers = on best by definition) and whether it is vouched, its locator, `holds` for every
 //!   header ever mined, and the chain published one move earlier still answering as it did (H5)
-//! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -453,8 +452,8 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
     /// After every move: chain answers = model (every insert's outcome, best tip and work,
-    /// finalized tip, boundary, live tree, every height and header of the published chain, its
-    /// locator, forks, branches and `holds`)
+    /// finalized tip, boundary, ceiling, live tree size, every height and header of the published
+    /// chain, its locator, vouched per height and `holds`)
     ///
     /// - `check()` holds
     /// - old published chains never change

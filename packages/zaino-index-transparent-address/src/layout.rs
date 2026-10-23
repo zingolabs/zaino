@@ -1,7 +1,8 @@
 //! Disk layouts of the two maps (`receives`, `spent`) + the records they hold
 //!
-//! - big-endian throughout (keys compare as bytes: byte order = key order)
-//! - derived `Ord` = that encoding (pinned by a test below)
+//! - locators (height, vout) big-endian (keys compare as bytes: byte order = key order)
+//! - receive value = little-endian quantity
+//! - derived `Ord` = key byte order (pinned by a test below)
 
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;

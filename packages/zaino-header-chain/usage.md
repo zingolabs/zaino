@@ -112,9 +112,9 @@ child counts, leaf set), naming the invariant in its panic; `finalize` asserts H
   3,508,500–3,508,800; testnet 299,000–299,400 and 583,800–584,200. Every header passes
   `validate`, every nBits reproduced; each mutation of a real header refused by its own rule; a
   chain anchored mid-mainnet follows 200 trusted headers with no history below.
-- Model (`random_header_trees_answer_like_the_naive_model`): random trusted trees with any nBits
-  (orphans, side sprays past the bounds, trusted and per-netgroup peer witnesses, trusted runs,
-  finalizations) against a naive tree; `check()` after every insert.
+- Model (`random_header_trees_answer_like_the_naive_model`): random trees of trusted and untrusted
+  inserts with any nBits (orphans, side sprays past the bounds, trusted and per-netgroup peer
+  witnesses, trusted runs, finalizations) against a naive tree; `check()` after every insert.
 - Fire drills: each check in `check()` and each precondition, seen firing on a planted bug.
 - Builder agreement (`testing`): random `MockChain` shapes, `MockChain::tip()` =
   `HeaderChain::best()` after each.

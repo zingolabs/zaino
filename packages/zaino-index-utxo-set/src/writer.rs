@@ -560,8 +560,8 @@ mod tests {
     /// - 4: spends 3's and enters ironwood
     ///
     /// - Boot 1: 0..=4 (4 `FinalizedTip`), one fee step each
-    /// - Boot 2, compact-block durable at 0: 1..=4 resent, all held → re-folded, fees out again,
-    ///   identical
+    /// - Boot 2, compact-block durable at 0: 1..=4 resent, all held → fees read back from `fees`
+    ///   + published again, identical
     /// - Both queue sizes: 1 byte = one block per run, 1 MiB = one run
     #[tokio::test]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_held_heights_republish_them() {

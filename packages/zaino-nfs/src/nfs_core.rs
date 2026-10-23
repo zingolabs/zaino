@@ -285,7 +285,7 @@ impl<F> NfsCore<F> {
         }
     }
 
-    /// N1–N4 and the fetch bookkeeping (panics naming the invariant broken)
+    /// N1, N2, N4, N5, N8 + fetch bookkeeping (panics naming the invariant broken)
     #[cfg(test)]
     pub(crate) fn check(&self) {
         let held = || {

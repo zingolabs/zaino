@@ -51,7 +51,7 @@ impl AddressKey {
     }
 
     /// - P2PKH `76 a9 14 ‖ h ‖ 88 ac`, P2SH `a9 14 ‖ h ‖ 87`, matched on exact length *and* exact
-    ///   prefix/suffix (what makes `AddressKey::script()` byte-exact)
+    ///   prefix/suffix (what makes the rebuilt `TransparentAddress::script()` byte-exact)
     /// - everything else → [`AddressKey::opaque`], still written to `receives` so nothing is lost
     pub(crate) fn of_script(script: &[u8]) -> Self {
         if script.len() == 25

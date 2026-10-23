@@ -47,7 +47,7 @@ pub(crate) fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
     }
 }
 
-/// Duplicate id or empty segment refused (neither ever committed)
+/// Empty segment, tombstones > records, duplicate id refused (none ever committed)
 pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
     let count = body.u32()?;
     let mut segments = Vec::new();

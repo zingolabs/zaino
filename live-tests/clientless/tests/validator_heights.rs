@@ -1,7 +1,7 @@
 //! Activation heights = the validator's `getblockchaininfo.upgrades` (zaino#1076)
 //!
 //! - zainod config = network kind only (regtest placeholder = `ActivationHeights::regtest_default`)
-//! - Upgrades map → schedule: unit-tested at `parse_blockchain_info` (zaino-source `parse.rs`)
+//! - Upgrades map → schedule: unit-tested at `parse_blockchain_info` (zaino-source `json.rs`)
 
 use std::time::Duration;
 

@@ -289,7 +289,7 @@ mod tests {
     /// frame (lightwalletd #593)
     #[tokio::test]
     async fn get_address_utxos_lists_an_addresss_unspent_outputs_in_height_order_in_both_shapes() {
-        // 1: coinbase funds the miner 870; 2: alice 500 + change 300; 3: the change to alice
+        // 1: coinbase funds the miner 870; 2: alice 500 + change 370; 3: the change to alice
         let (alice, miner) = (p2pkh([0x00; 20]), p2pkh([0x33; 20]));
         let mut chain = MockChain::regtest().network(MAINNET);
         let funded = chain.mine(|b| b.coinbase(|c| c.pay(&miner, 870)));

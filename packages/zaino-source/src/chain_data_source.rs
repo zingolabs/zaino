@@ -16,8 +16,10 @@ use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError};
 
 /// Trusted validator's RPC, as every Zaino consumer asks it
 ///
-/// - production = `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` (`zainod`'s `validator_client`)
-/// - tests = `ZcashLegacyRpcClient` against `testing::MockValidator`
+/// - production = `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` (`zainod`'s
+///   `validator_client`)
+/// - tests = `ZcashLegacyRpcClient` against `testing::MockValidator`, `ZebraIndexerGrpcClient`
+///   against a fake indexer (`tests/block_parity.rs`)
 pub trait ChainDataSource: Send + Sync + 'static {
     /// `getblock <hash> 0`: best-chain block `hash`, decoded from consensus bytes
     fn get_block_by_hash(

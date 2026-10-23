@@ -1,7 +1,7 @@
 //! Trusted validators' header tree above the finalized boundary + its most-work tip
 //!
 //! ```text
-//!   anchor ─ finalized (last 2·depth in memory)   tree (every branch, bounded)
+//!   anchor ─ finalized (last max(2·depth, CONTEXT) in memory)   tree (every branch, bounded)
 //!   ●──●──●──●──●  finalized tip ──┬──●──●──●──●   A   work 1000.7   ◀── best (best_path)
 //!                                  └──●──●         B   work 1000.2   (kept: may still win)
 //! ```

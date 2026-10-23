@@ -8,7 +8,8 @@
 //!   validators ──▶ getblock <hash> (checked) ─────────┤                                          ├─▶ compact_block ◀──────┘
 //!                                                     │                                          ├─▶ block_hash
 //!                                                     │                                          ├─▶ tree_state
-//!                                                     │                                          └─▶ transparent_address
+//!                                                     │                                          ├─▶ transparent_address
+//!                                                     │                                          └─▶ txid_location
 //!                                                     └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──────────┘
 //!                                                          ▼
 //!                            NfsPublication ─┐

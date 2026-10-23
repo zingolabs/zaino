@@ -159,7 +159,7 @@ impl fmt::Debug for Step {
 fn steps() -> impl Strategy<Value = Vec<Step>> {
     let on = prop::array::uniform8(prop::bool::ANY);
     on.prop_flat_map(|[settle, reopen, power_loss, pin, scan, large, reorg, removing]| {
-        // - small blocks, with `large` sometimes past a 4 KiB block (205 scanned / 204 probed)
+        // - small blocks, with `large` sometimes past a 4 KiB block (196 scanned / 205 probed rows)
         // - `issued` ≈ seqs a case issues (removals + scan bounds drawn up to it)
         let small = prop::collection::vec(0u8..4, 0..8);
         let (owners, ids, issued) = match large {

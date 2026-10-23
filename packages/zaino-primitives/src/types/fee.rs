@@ -80,8 +80,8 @@ mod tests {
     use zcash_protocol::TxId;
     use zcash_transparent::address::Script;
 
-    /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
-    /// one zatoshi apiece, so a dropped or flipped term shows)
+    /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood =
+    /// 1, 10, 100, 1 000: a dropped or flipped term shows in its own digit)
     ///
     /// - coinbase pays none
     /// - below 0 = `Negative`, past the supply = `Overflow`

@@ -1,7 +1,7 @@
 //! compact_block writer: the finalized stream → one [`fold`] per block → its store
 //!
 //! - fees: one [`BlockFees`] off utxo-set's sink per step, held heights included
-//!   (utxo-set re-folds them: both streams stay in step with either index ahead)
+//!   (utxo-set republishes them from its `fees` record: streams in step with either index ahead)
 
 use std::{
     sync::Arc,

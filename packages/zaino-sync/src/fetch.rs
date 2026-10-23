@@ -43,7 +43,7 @@ pub(crate) enum Misanswer {
 
 /// `block` = the one asked for at `at` (its hash = a header we hold, or one our indexes folded)
 ///
-/// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
+/// - Mismatch = that member misanswered, never an invalid header (ZIP 244: a v5 hash does not
 ///   commit to authorizing data)
 pub(crate) fn check_block(block: Block, at: BlockRef) -> Result<Checked, Misanswer> {
     let header = block.header();
