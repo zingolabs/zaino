@@ -2947,7 +2947,9 @@ checksum = "04e9018c9d814e5f30cc16a0f03271aeab3571e609612d9fe78c1aa8d11c2f62"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -4487,6 +4489,22 @@ dependencies = [
  "quote",
  "syn 2.0.118",
  "synstructure",
+]
+
+[[package]]
+name = "zaino-header-chain"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "const-hex",
+ "equihash",
+ "imbl",
+ "proptest",
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "zaino-primitives",
+ "zaino-source",
+ "zcash_protocol",
 ]
 
 [[package]]
