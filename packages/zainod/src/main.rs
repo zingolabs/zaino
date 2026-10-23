@@ -8,9 +8,11 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::{Cli, Command};
+use crate::command::{hold, overload, verify};
 use crate::telemetry::logging;
 
 mod cli;
+mod command;
 mod config;
 mod error;
 mod health;
@@ -31,15 +33,22 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
-    if let Err(error) = logging::init() {
-        eprintln!("Error: RUST_LOG: {error}");
-        return ExitCode::from(2);
+    // logging → stdout by default (reserved for `verify`'s JSON, `hold`/`resume`'s and
+    // `overload`'s state)
+    if !matches!(cli.command, Command::Verify | Command::Hold(_) | Command::Overload { .. }) {
+        if let Err(error) = logging::init() {
+            eprintln!("Error: RUST_LOG: {error}");
+            return ExitCode::from(2);
+        }
     }
     let config = cli.config.unwrap_or_else(config::paths::default_config);
     match cli.command {
         Command::GenerateConfig { output } => {
             exit(config::generate_config(&output.unwrap_or(config)), 1)
         }
+        Command::Verify => verify::run(&config),
+        Command::Hold(action) => exit(hold::command(&config, action), 1),
+        Command::Overload { action } => exit(overload::command(&config, action), 1),
     }
 }
 
