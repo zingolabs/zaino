@@ -3761,6 +3761,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -4656,6 +4657,26 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
+]
+
+[[package]]
+name = "zaino-sync"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "futures",
+ "metrics",
+ "proptest",
+ "rayon",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-header-chain",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-traffic",
+ "zcash_protocol",
 ]
 
 [[package]]
