@@ -146,12 +146,13 @@ impl Tails {
         let mut restored = 0usize;
         for (name, tail) in tails {
             let path: PathBuf = dir.join(&name);
-            // a file missing, or cut short of its tail page, lost more than a tail: its own
-            // checks report it
+            // a file missing, or shorter than its seal (the tail's end), lost committed bytes:
+            // its own checks refuse it
             let Some(file) = fs.open_existing(&path)? else {
                 continue;
             };
-            if file.len()? < tail.offset {
+            let sealed = tail.offset.saturating_add(tail.bytes.len() as u64);
+            if file.len()? < sealed {
                 continue;
             }
             let mut held = vec![0; tail.bytes.len()];

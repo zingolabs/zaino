@@ -16,7 +16,7 @@ registers the `zaino.store.*` and `zaino.lsm.*` metrics, every one labelled \
 A `TAILS` doublewrite file keeps each sequence file's committed tail page, \
 restored at open if a crash tore it. A failed background merge is classed: \
 retryable I/O is `MergeFailed` within `LsmConfig::max_merge_failures` \
-(default 3) failures in a row, then `OutOfSpace` or `WriteFailed`; a corrupt \
+(default 3) failures in a row on one tier, then `OutOfSpace` or `WriteFailed`; a corrupt \
 input is `Corrupted`; a failed sync, read-back or bug is `WriteFailed`. \
 `LsmConfig::spill_bytes` sets merge memory against scratch I/O, and an open \
 with any `LsmConfig` value out of range is refused. Each backend runs its \

@@ -152,8 +152,9 @@ files are removed. What follows depends on why it failed:
 - a failed `fsync` of its output, a failed read-back of what it wrote, or a
   bug: `CommitError::WriteFailed`, writes refused.
 
-After `max_merge_failures` retryable failures in a row in one map (a merge
-that lands there resets the count), the next one refuses writes as
+After `max_merge_failures` retryable failures in a row on one tier of a map
+(a merge that lands on that tier resets its count; other tiers' merges never
+do), the next one refuses writes as
 `CommitError::OutOfSpace` if the disk or quota is full, else as
 `CommitError::WriteFailed`.
 

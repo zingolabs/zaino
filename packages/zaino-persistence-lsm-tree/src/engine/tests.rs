@@ -444,10 +444,9 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
             .expect("refused");
         chain(&error)
     };
-    // cut inside its tail page, TAILS would restore it: lost only with TAILS gone too
+    // cut inside its tail page: lost, never refilled from TAILS
     let short = refused(&|fs| {
         fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10));
-        fs.corrupt(&path("TAILS"), |bytes| bytes.fill(0));
     });
     assert!(
         short.ends_with("/idx/pool/nodes.dat is 10 bytes, the committed state needs 32"),

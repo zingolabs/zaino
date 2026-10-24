@@ -234,8 +234,9 @@ and the public entry points catch a panic from a dependency or a caller's scan f
   - any other I/O error (a create, write or read, a full disk, a thread that failed to start):
     `CommitError::MergeFailed`, writes stay open and the merge runs again later.
 
-  Retries are budgeted: `LsmConfig::max_merge_failures` (3) transient failures in a row in one
-  map, reset by any merge that lands there. The next one refuses writes as
+  Retries are budgeted: `LsmConfig::max_merge_failures` (3) transient failures in a row on one
+  tier of one map, reset by a merge that lands on that tier (another tier's merges never reset
+  it). The next one refuses writes as
   `CommitError::OutOfSpace` when the disk or quota is full, else `WriteFailed`.
 - **Corruption found while checking a commit's keys** fails that commit as
   `CommitError::Corrupted` and refuses later writes.

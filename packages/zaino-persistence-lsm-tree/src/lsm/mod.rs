@@ -73,8 +73,8 @@ pub struct LsmConfig {
     /// before spilling them to a scratch file: memory per write or merge vs scratch I/O (at most
     /// [`MAX_SPILL_BYTES`](Self::MAX_SPILL_BYTES))
     pub spill_bytes: NonZeroUsize,
-    /// Merges of one map that may fail in a row from I/O (retried at later writes) before the
-    /// next failure stops writes (>= 1)
+    /// Merges on one tier of a map that may fail in a row from I/O (retried at later writes)
+    /// before the next failure stops writes (>= 1)
     pub max_merge_failures: u32,
 }
 

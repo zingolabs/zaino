@@ -5,6 +5,7 @@
 //! - inputs unlinked only once that manifest is durable (open removes anything unlisted)
 
 use std::{
+    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
     sync::{
@@ -61,8 +62,9 @@ pub(crate) struct SegmentLog {
     merges: Vec<Merge>,
     ready: Vec<Ready>,
     launch_failed: Option<SegmentError>,
-    /// Transient merge failures in a row (reset by a merge that succeeds)
-    failures: u32,
+    /// Transient merge failures in a row per tier (reset by a merge that lands on that tier: one
+    /// tier's successes never hide another's failures)
+    failures: HashMap<u32, u32>,
     max_merge_failures: u32,
     shape_tiers: usize,
 }
@@ -160,13 +162,13 @@ impl SegmentLog {
             merges: Vec::new(),
             ready: Vec::new(),
             launch_failed: None,
-            failures: 0,
+            failures: HashMap::new(),
             max_merge_failures: lsm.max_merge_failures,
             shape_tiers: 0,
         };
         emit::stall_at(&log.labels, stall_at(fanout));
         if log.stale().is_empty() {
-            log.launch_merges()?;
+            log.launch_merges().map_err(|(_, error)| error)?;
         }
         Ok(log)
     }
@@ -242,7 +244,7 @@ impl SegmentLog {
     ///   write); the most severe failure when several merges failed
     pub(crate) fn prepare(&mut self, upcoming: &[u64]) -> Result<()> {
         if let Some(error) = self.launch_failed.take() {
-            return Err(self.merge_failed(error));
+            return Err(error);
         }
         let mut failure = None;
         self.join(|merge, _| merge.thread.is_finished(), &mut failure);
@@ -261,18 +263,20 @@ impl SegmentLog {
             report::stalled(&self.name, &stalled, waited.elapsed());
         }
         match failure {
-            Some(error) => Err(self.merge_failed(error)),
+            Some(error) => Err(error),
             None => Ok(()),
         }
     }
 
-    /// `error` as the write's `MergeFailed`: a transient failure past `max_merge_failures` in a
-    /// row is fatal (retrying no longer helps; segments would pile up)
-    fn merge_failed(&mut self, error: SegmentError) -> SegmentError {
+    /// `error` of a merge on `tier` as the write's `MergeFailed`: a transient failure past
+    /// `max_merge_failures` in a row on its tier is fatal (retrying no longer helps; the tier
+    /// would pile up)
+    fn merge_failed(&mut self, tier: u32, error: SegmentError) -> SegmentError {
         let mut fault = MergeFault::of(&error);
         if fault == MergeFault::Transient {
-            self.failures = self.failures.saturating_add(1);
-            if self.failures > self.max_merge_failures {
+            let failures = self.failures.entry(tier).or_insert(0);
+            *failures = failures.saturating_add(1);
+            if *failures > self.max_merge_failures {
                 fault = MergeFault::Fatal;
             }
         }
@@ -410,10 +414,10 @@ impl SegmentLog {
             emit::merged(&self.labels, landed.tier, &landed.merged, landed.took);
         }
         self.clean(removed);
-        if let Err(error) = self.launch_merges() {
+        if let Err((tier, error)) = self.launch_merges() {
             emit::launch_failed(&self.labels);
             report::launch_failed(&self.name, &error);
-            self.launch_failed = Some(error);
+            self.launch_failed = Some(self.merge_failed(tier, error));
         }
     }
 
@@ -505,8 +509,9 @@ impl SegmentLog {
         self.clean(partial);
     }
 
-    /// Merge on every idle tier listing `fanout` segments, then the tier shape published
-    fn launch_merges(&mut self) -> Result<()> {
+    /// Merge on every idle tier listing `fanout` segments, then the tier shape published; a
+    /// launch failure with its tier
+    fn launch_merges(&mut self) -> std::result::Result<(), (u32, SegmentError)> {
         loop {
             let busy: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
             let Some((tier, inputs)) = merge_candidates(&self.segments, self.fanout, &busy) else {
@@ -517,7 +522,7 @@ impl SegmentLog {
                 Ok(merge) => self.merges.push(merge),
                 Err(error) => {
                     self.publish_shape();
-                    return Err(error);
+                    return Err((tier, error));
                 }
             }
         }
@@ -597,7 +602,7 @@ impl SegmentLog {
                 });
             match joined {
                 Ok((merged, took)) => {
-                    self.failures = 0;
+                    self.failures.remove(&merge.tier);
                     self.ready.push(Ready {
                         inputs: merge.inputs,
                         landed: Landed {
@@ -609,6 +614,7 @@ impl SegmentLog {
                 }
                 Err(error) => {
                     self.remove_partial(id);
+                    let error = self.merge_failed(merge.tier, error);
                     let worse = failure
                         .as_ref()
                         .is_none_or(|kept| severity(&error) > severity(kept));
