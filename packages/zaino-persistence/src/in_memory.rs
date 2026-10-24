@@ -15,7 +15,7 @@ use crate::backend::{
     RawValue, ScanDirection, ScanRange, WriteOp,
 };
 use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError, VerifyError};
-use crate::rules::{check_commit, check_key, check_specs, CommitState, KeyState};
+use crate::rules::{check_commit, check_key, check_specs, is_empty_range, CommitState, KeyState};
 use crate::verify::{NamespaceFootprint, Verification};
 
 /// The current state; a commit swaps in a new one, readers keep the one they took.
@@ -233,7 +233,7 @@ where
                 return Some(Err(err));
             }
         };
-        if is_empty_range(&self.range.lower, &self.range.upper) {
+        if is_empty_range(bytes(&self.range.lower), bytes(&self.range.upper)) {
             self.done = true;
             return None;
         }
@@ -269,6 +269,11 @@ struct Fill<'a, T> {
     exhausted: bool,
 }
 
+/// `bound` over borrowed key bytes
+fn bytes(bound: &Bound<RawKey>) -> Bound<&[u8]> {
+    bound.as_ref().map(Vec::as_slice)
+}
+
 /// Map `entries` through `filter` until the next entry would take the bytes
 /// visited past `budget`, or the entries run out (at least one entry visited)
 fn fill_chunk<'a, T>(
@@ -295,17 +300,6 @@ fn fill_chunk<'a, T>(
         }
     }
     fill
-}
-
-/// Whether no key can satisfy both bounds.
-fn is_empty_range(lower: &Bound<RawKey>, upper: &Bound<RawKey>) -> bool {
-    match (lower, upper) {
-        (Bound::Unbounded, _) | (_, Bound::Unbounded) => false,
-        (Bound::Included(lo), Bound::Included(hi)) => lo > hi,
-        (Bound::Included(lo) | Bound::Excluded(lo), Bound::Included(hi) | Bound::Excluded(hi)) => {
-            lo >= hi
-        }
-    }
 }
 
 /// Write handle for the in-memory backend.

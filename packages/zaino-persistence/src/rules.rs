@@ -1,6 +1,7 @@
 //! The commit rules every backend enforces, checked once here.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Bound;
 
 use zaino_primitives::types::BlockRef;
 
@@ -207,6 +208,17 @@ fn check_width(
     }
 }
 
+/// Whether no key satisfies both bounds (an empty or inverted `scan_range`).
+pub fn is_empty_range(lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+    match (lower, upper) {
+        (Bound::Unbounded, _) | (_, Bound::Unbounded) => false,
+        (Bound::Included(lo), Bound::Included(hi)) => lo > hi,
+        (Bound::Included(lo) | Bound::Excluded(lo), Bound::Included(hi) | Bound::Excluded(hi)) => {
+            lo >= hi
+        }
+    }
+}
+
 /// Every namespace in `specs` declared once.
 pub fn check_specs(specs: &[NamespaceSpec]) -> Result<(), crate::OpenError> {
     let mut seen = HashSet::new();
@@ -215,5 +227,30 @@ pub fn check_specs(specs: &[NamespaceSpec]) -> Result<(), crate::OpenError> {
             spec.namespace.to_string(),
         )),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Empty exactly when no key lies in both bounds: equal keys only when both include them
+    #[test]
+    fn a_range_is_empty_only_when_no_key_satisfies_both_bounds() {
+        let (a, b): (&[u8], &[u8]) = (b"a", b"b");
+        let cases = [
+            (Bound::Unbounded, Bound::Unbounded, false),
+            (Bound::Included(b), Bound::Unbounded, false),
+            (Bound::Unbounded, Bound::Excluded(a), false),
+            (Bound::Included(a), Bound::Included(a), false),
+            (Bound::Included(a), Bound::Excluded(a), true),
+            (Bound::Excluded(a), Bound::Included(a), true),
+            (Bound::Excluded(a), Bound::Excluded(b), false),
+            (Bound::Included(b), Bound::Included(a), true),
+            (Bound::Excluded(b), Bound::Excluded(a), true),
+        ];
+        for (lower, upper, empty) in cases {
+            assert_eq!(is_empty_range(lower, upper), empty, "{lower:?}..{upper:?}");
+        }
     }
 }

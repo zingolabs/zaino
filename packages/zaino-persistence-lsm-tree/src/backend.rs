@@ -19,10 +19,11 @@ use std::{
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use zaino_persistence::{
-    check_key, check_keys, check_shape, check_specs, raw_entry, sequence_position, Backend,
-    BackendReader, BackendWriter, CommitError, CommitState, FlushError, FootprintError, KeyState,
-    MaintenanceReader, Namespace, NamespaceFootprint, NamespaceKind, NamespaceSpec, OpenError,
-    RawKey, RawValue, ReadError, ScanDirection, ScanRange, Verification, VerifyError, WriteOp,
+    check_key, check_keys, check_shape, check_specs, is_empty_range, raw_entry, sequence_position,
+    Backend, BackendReader, BackendWriter, CommitError, CommitState, FlushError, FootprintError,
+    KeyState, MaintenanceReader, Namespace, NamespaceFootprint, NamespaceKind, NamespaceSpec,
+    OpenError, RawKey, RawValue, ReadError, ScanDirection, ScanRange, Verification, VerifyError,
+    WriteOp,
 };
 use zaino_primitives::types::BlockRef;
 
@@ -943,17 +944,6 @@ fn ceil(key: &[u8]) -> (u128, bool) {
         std::cmp::Ordering::Less => (at, false),
         std::cmp::Ordering::Equal => (at, true),
         std::cmp::Ordering::Greater => (at.saturating_add(1), false),
-    }
-}
-
-/// No key satisfies both bounds
-fn is_empty_range(lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
-    match (lower, upper) {
-        (Bound::Unbounded, _) | (_, Bound::Unbounded) => false,
-        (Bound::Included(lo), Bound::Included(hi)) => lo > hi,
-        (Bound::Included(lo) | Bound::Excluded(lo), Bound::Included(hi) | Bound::Excluded(hi)) => {
-            lo >= hi
-        }
     }
 }
 

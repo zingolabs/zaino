@@ -79,7 +79,8 @@ A backend implements [`CommitState`] (its tip, each sequence's length, each map
 key's [`KeyState`]) and calls [`check_commit`]; [`check_specs`] refuses a
 namespace declared twice. A backend whose key states cost reads can run the two
 halves itself: [`check_shape`] (every rule needing no key state) first, then
-look the keys up, then [`check_keys`].
+look the keys up, then [`check_keys`]. [`is_empty_range`] says when a
+`scan_range`'s bounds admit no key, so every backend ends such a scan alike.
 
 ## Visibility and durability
 

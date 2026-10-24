@@ -505,31 +505,33 @@ struct Inner {
     fail_writes: bool,
 }
 
+/// Counts one call in `count`; `EIO` named by `what(at)` from call `from` on
+fn injected(
+    count: &mut u64,
+    from: Option<u64>,
+    what: impl FnOnce(u64) -> String,
+) -> io::Result<()> {
+    let at = *count;
+    *count += 1;
+    match from.is_some_and(|from| at >= from) {
+        true => Err(io::Error::other(what(at))),
+        false => Ok(()),
+    }
+}
+
 impl Inner {
     /// Counts one positional read; `EIO` from `SimFs::fail_reads_from`'s read on
     fn read(&mut self, path: &Path) -> io::Result<()> {
-        let at = self.reads;
-        self.reads += 1;
-        match self.fail_reads_from.is_some_and(|from| at >= from) {
-            true => Err(io::Error::other(format!(
-                "sim: injected read EIO at read {at}: {}",
-                path.display()
-            ))),
-            false => Ok(()),
-        }
+        injected(&mut self.reads, self.fail_reads_from, |at| {
+            format!("sim: injected read EIO at read {at}: {}", path.display())
+        })
     }
 
     /// Counts one mutating call; `EIO` from [`SimFs::fail_from`]'s op on (disk gone, not flaky)
     fn mutate(&mut self, op: impl FnOnce() -> String) -> io::Result<()> {
-        let at = self.mutations;
-        self.mutations += 1;
-        match self.fail_from.is_some_and(|from| at >= from) {
-            true => Err(io::Error::other(format!(
-                "sim: injected EIO at op {at}: {}",
-                op()
-            ))),
-            false => Ok(()),
-        }
+        injected(&mut self.mutations, self.fail_from, |at| {
+            format!("sim: injected EIO at op {at}: {}", op())
+        })
     }
 
     fn record(&mut self, op: impl FnOnce() -> String) {

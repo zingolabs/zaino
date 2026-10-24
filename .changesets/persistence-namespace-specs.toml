@@ -72,7 +72,8 @@ description = """
 `check_commit` is split into `check_shape`, every rule that needs no key \
 lookup, and `check_keys`, map keys against their state, both exported, so a \
 backend can run the cheap rules before reading any key. `check_commit` runs \
-both.
+both. `is_empty_range` tells every backend's `scan_range` alike when no key \
+satisfies both bounds.
 """
 
 [[changes]]

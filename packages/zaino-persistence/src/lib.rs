@@ -28,7 +28,8 @@ pub use backend::{
 };
 pub use error::{CommitError, FlushError, FootprintError, OpenError, Part, ReadError, VerifyError};
 pub use rules::{
-    check_commit, check_key, check_keys, check_shape, check_specs, CommitState, KeyState,
+    check_commit, check_key, check_keys, check_shape, check_specs, is_empty_range, CommitState,
+    KeyState,
 };
 pub use verify::{NamespaceFootprint, Problem, Unit, Verification};
 
