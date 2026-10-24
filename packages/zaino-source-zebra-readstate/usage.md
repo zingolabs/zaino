@@ -71,8 +71,8 @@ this path disagreed on the same upgrade.
 ## Zebra database version
 
 This adapter opens the state database format its `zebra-state` crate was
-built for — format **29** (`state/v29/<network>`) with zebra-state 15, the
-zebrad 7.0.0-rc.0 crates. It is a read-only secondary: it never creates or
+built for — format **29** (`state/v29/<network>`) with zebra-state 16, the
+zebrad 7.0.0 crates. It is a read-only secondary: it never creates or
 migrates a database, it only follows the primary zebrad owns. So zebrad must
 be at least the matching release **and must already have run once** to
 migrate its state (zebrad 7 moves a compatible v28 state into `state/v29`
@@ -80,6 +80,16 @@ automatically). Pointed at a directory holding only an older format, the
 adapter fails at open rather than serving stale data. Keep a copy of the
 previous format directory if a zebrad rollback may be needed; a newer format
 cannot be read by an older zebrad.
+
+## Address queries match zebrad 7's limits
+
+zebrad 7 caps `getaddresstxids` / `getaddressutxos` at
+`zaino_source::MAX_ADDRESS_QUERY_RESULTS` (100,000) rows. This adapter reads
+the same index directly, so it enforces the same cap — it asks for one row past
+it and answers `TooManyResults { limit }` — on address txids, utxos and deltas.
+TEX addresses are refused rather than answered empty (the index never keys on
+them). The 10,000-address and TEX checks run above the adapters, in
+`zaino-state`, so both transports see them identically.
 
 ## Related
 

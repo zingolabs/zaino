@@ -31,14 +31,15 @@ so the decision is made once per class rather than once per method:
 | helper | for | maps |
 |---|---|---|
 | `absent_or_fetch` | height/hash-keyed reads | `-5`, `-8` → the port's "not found" |
-| `invalid_address_or_fetch` | address-keyed reads | `-5` only → "invalid address" |
+| `invalid_address_or_fetch` | address-keyed reads | `-5` → "invalid address"; on txids/utxos, zebrad 7's `-8 more than {cap} … match` → `TooManyResults` |
 | `call_parsed_optional` | `gettxout` | not-found → `Ok(None)` |
 | `submission_rejection` | `sendrawtransaction` | `-22`, `-25..=-27` → the rejection reason |
 | `spent_info_rejection` | `getspentinfo` | `-5` → `NotSpent`, `-32601` → `Unsupported` |
+| `method_missing_or_fetch` | `getrawmempool`, `getstandardfee` | `-32601` → the port's "unavailable"/`Unsupported` |
 
-Eleven methods deliberately use plain `call_parsed`: whole-node-state queries
-(`getblockchaininfo`, `getmininginfo`, `getstandardfee`, …) where the only domain error is
-"validator not ready", which is not something the node reports with a code.
+The remaining whole-node-state queries (`getblockchaininfo`, `getmininginfo`, …)
+deliberately use plain `call_parsed`: their only domain error is "validator not
+ready", which is not something the node reports with a code.
 
 ### Why reading `-8` as "absent" is safe — and where it is not
 
@@ -51,7 +52,8 @@ malformed parameter cannot arise.
 
 The address-keyed methods are the exception, and take `-5` only. There, `-8`
 means the *request envelope* was wrong — a bad range, a missing field — which is
-a Zaino bug and must stay a failure.
+a Zaino bug and must stay a failure. The one `-8` read as an answer is zebrad
+7's result cap, recognised by its message shape (`more than {cap} … match`).
 
 **If you add a method, state which class it is in and why.** This classification
 was missing entirely at one point, and the result was that "no block at that

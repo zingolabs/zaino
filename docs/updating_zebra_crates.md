@@ -29,7 +29,7 @@ Find out which dependencies use `zebra-*` crates by running
 ## Always specify `all-features` when building
 
 Make sure you build and run the project with `all-features` in
-order to catch any posible compile errors early. Also build once with default
+order to catch any possible compile errors early. Also build once with default
 features: some tests are compiled only when a feature is off.
 
 ## Bump every zebra pin

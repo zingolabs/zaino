@@ -86,7 +86,13 @@ A port's error enum enumerates what that question can be answered with:
 GetBlockError::HeightNotFound(Height)
 SendRawTransactionError::Rejected(String)
 GetSpentInfoError::{ NotSpent, Unsupported }
+GetStandardFeeError::Unsupported             // validator lacks getstandardfee
+GetAddressTxidsError::TooManyResults { limit } // over MAX_ADDRESS_QUERY_RESULTS
 ```
+
+`MAX_ADDRESS_QUERY_RESULTS` (100,000) is zebrad 7's address-query row cap; an
+adapter reading the index directly enforces it, and the RPC adapter maps
+zebrad's own refusal to the same `TooManyResults`.
 
 Write the variant that says what happened. A generic `NotFound` on every port
 throws away the thing the caller needs to act on — and, at the serving
