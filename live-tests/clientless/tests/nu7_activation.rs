@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use zaino_proto::proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty};
 use zaino_testutils::{assert_rpc_parity, ZEBRAD_VERSION};
 use ztest::prelude::*;
 
@@ -168,7 +169,8 @@ async fn consensus_branch_flips_at_the_nu7_boundary_on_both_backends() -> Result
 /// Across the boundary the served chain is one contiguous chain whose per-block
 /// tree-size deltas match its served actions and whose final tree sizes match the
 /// validator's; the boundary treestate agrees between both backends and the
-/// validator; and `getstandardfee` passes the validator's answer through.
+/// validator; and the standard fee passes the validator's answer through, over
+/// JSON-RPC and gRPC (lightwallet-protocol v0.6.0).
 #[ztest::qos::integration(footprint = "3c/6Gi")]
 #[tokio::test(flavor = "multi_thread")]
 async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
@@ -302,6 +304,12 @@ async fn served_chain_is_continuous_across_the_nu7_boundary() -> Result<()> {
         assert_rpc_parity("getstandardfee", "", &vrpc, &irpc, &[]).await?;
         let fee = irpc.call_value("getstandardfee", json!([])).await?;
         assert_eq!(fee, json!({ "standard_fee": 1000, "version": 0 }));
+
+        let mut grpc = CompactTxStreamerClient::new(indexer.grpc_channel().await?);
+        let fee = grpc.get_standard_fee(Empty {}).await?.into_inner();
+        assert_eq!((fee.fee_zat, fee.estimator_version), (1000, 0));
+        let lightd_info = grpc.get_lightd_info(Empty {}).await?.into_inner();
+        assert_eq!(lightd_info.lightwallet_protocol_version, "v0.6.0");
     }
     Ok(())
 }
