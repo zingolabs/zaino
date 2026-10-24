@@ -14,6 +14,10 @@
 use super::db::legacy::*;
 use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty, SingleBlockWork};
 
+/// An Orchard-shaped action as zebra's transaction accessors yield it.
+type AuthorizedAction =
+    orchard::Action<<orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth>;
+
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///
 /// [`ChainIndex::get_outpoint_spenders`]: the chain index
@@ -226,7 +230,7 @@ impl<'a> BlockWithMetadata<'a> {
 
     /// Returns the first 52 bytes of a 580-byte encrypted note ciphertext: the prefix a
     /// compact block carries, sufficient for trial decryption.
-    fn compact_ciphertext_prefix(enc_ciphertext: [u8; 580]) -> [u8; 52] {
+    fn compact_ciphertext_prefix(enc_ciphertext: &[u8; 580]) -> [u8; 52] {
         std::array::from_fn(|i| enc_ciphertext[i])
     }
 
@@ -234,17 +238,18 @@ impl<'a> BlockWithMetadata<'a> {
     /// pools from a value balance and the pool's actions.
     fn extract_orchard_shaped_data<'t>(
         value_balance: i64,
-        actions: impl Iterator<Item = &'t zebra_chain::orchard::Action>,
+        actions: impl Iterator<Item = &'t AuthorizedAction>,
     ) -> OrchardCompactTx {
         OrchardCompactTx::new(
             (value_balance != 0).then_some(value_balance),
             actions
                 .map(|action| {
+                    let note = action.encrypted_note();
                     CompactOrchardAction::new(
-                        <[u8; 32]>::from(action.nullifier),
-                        <[u8; 32]>::from(action.cm_x),
-                        <[u8; 32]>::from(action.ephemeral_key),
-                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(action.enc_ciphertext)),
+                        action.nullifier().to_bytes(),
+                        action.cmx().to_bytes(),
+                        note.epk_bytes,
+                        Self::compact_ciphertext_prefix(&note.enc_ciphertext.0),
                     )
                 })
                 .collect(),
@@ -264,14 +269,14 @@ impl<'a> BlockWithMetadata<'a> {
         SaplingCompactTx::new(
             sapling_value,
             txn.sapling_nullifiers()
-                .map(|nf| CompactSaplingSpend::new(*nf.0))
+                .map(|nf| CompactSaplingSpend::new(<[u8; 32]>::from(nf)))
                 .collect(),
             txn.sapling_outputs()
                 .map(|output| {
                     CompactSaplingOutput::new(
-                        output.cm_u.to_bytes(),
-                        <[u8; 32]>::from(output.ephemeral_key),
-                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(output.enc_ciphertext)),
+                        output.cmu().to_bytes(),
+                        output.ephemeral_key().0,
+                        Self::compact_ciphertext_prefix(output.enc_ciphertext()),
                     )
                 })
                 .collect::<Vec<_>>(),

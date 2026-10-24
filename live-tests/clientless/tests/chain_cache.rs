@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rstest::rstest;
 use serde_json::{json, Value};
+use zaino_testutils::ZEBRAD_VERSION;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
@@ -13,7 +14,7 @@ mod chain_query_interface {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -61,7 +62,7 @@ mod chain_query_interface {
         const CACHE_FLOOR: u32 = 160 - 110;
 
         let mut env = TestEnv::builder().ready_timeout(Duration::from_secs(180));
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+        let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
         let indexer = env.add_indexer(
             dev!(
                 Indexer::Zainod,
@@ -176,7 +177,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_subtree_roots<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -236,7 +237,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream_fresh_snapshot_repeated<B: ValidatorConfig>(
@@ -277,7 +278,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn zallet_like_steady_state_loop<B: ValidatorConfig>(

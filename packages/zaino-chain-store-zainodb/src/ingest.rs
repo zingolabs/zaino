@@ -150,7 +150,7 @@ mod tests {
                 txs.len() as u64,
                 expect(|tx| tx.inputs().len()),
                 expect(|tx| tx.outputs().len()),
-                expect(|tx| tx.sapling_spends_per_anchor().count()),
+                expect(|tx| tx.sapling_spends_count()),
                 expect(|tx| tx.sapling_outputs().count()),
                 expect(|tx| tx.orchard_actions().count()),
                 expect(|tx| tx.ironwood_actions().count()),

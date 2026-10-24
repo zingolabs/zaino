@@ -9,6 +9,12 @@
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
 
+/// Most rows an address query answers before it is rejected as too broad.
+///
+/// zebrad 7's cap on `getaddresstxids` / `getaddressutxos`; adapters that read
+/// the address index directly enforce the same bound.
+pub const MAX_ADDRESS_QUERY_RESULTS: usize = 100_000;
+
 mod error;
 mod get_address_balance;
 mod get_address_deltas;
@@ -39,6 +45,7 @@ mod get_raw_block;
 mod get_raw_block_header;
 mod get_raw_mempool_transaction;
 mod get_spent_info;
+mod get_standard_fee;
 mod get_subtree_roots;
 mod get_transaction;
 mod get_treestate;
@@ -88,6 +95,7 @@ pub use get_raw_mempool_transaction::{
     GetRawMempoolTransactionError, OneShotGetRawMempoolTransaction,
 };
 pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
+pub use get_standard_fee::{GetStandardFeeError, OneShotGetStandardFee};
 pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
 pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
 pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
@@ -130,6 +138,7 @@ pub use get_raw_block::{GetRawBlock, GetRawBlockByHash};
 pub use get_raw_block_header::GetRawBlockHeader;
 pub use get_raw_mempool_transaction::GetRawMempoolTransaction;
 pub use get_spent_info::GetSpentInfo;
+pub use get_standard_fee::GetStandardFee;
 pub use get_subtree_roots::GetSubtreeRoots;
 pub use get_transaction::GetTransaction;
 pub use get_treestate_by_hash::GetTreestateByHash;

@@ -157,6 +157,12 @@ impl<
         })
     }
 
+    /// The finalised store's watermark, for tests that watch the seam advance.
+    #[cfg(test)]
+    pub(crate) fn finalised_watermark(&self) -> zaino_chain_store::StoreWatermark {
+        zaino_chain_store::ChainStoreReader::watermark(&self.finalized_db.reader())
+    }
+
     /// Creates a [`NodeBackedChainIndexSubscriber`] from self,
     /// a clone-safe, drop-safe, read-only view onto the running indexer.
     pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {

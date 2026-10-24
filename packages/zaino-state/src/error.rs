@@ -31,6 +31,10 @@ pub struct LegacyRpcError {
 }
 
 impl LegacyRpcError {
+    /// The JSON-RPC envelope's "method not found": the backing validator does
+    /// not implement a method Zaino forwards to it.
+    pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+
     /// Construct a rejection from zebra's `LegacyCode` enum.
     pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
         Self {
@@ -39,6 +43,14 @@ impl LegacyRpcError {
         }
     }
 }
+
+/// A request rejected as invalid, carrying the legacy code clients key on.
+///
+/// The marker [`ChainIndexError::backing_validator`] reads as `InvalidArgument`;
+/// its `source` is the [`LegacyRpcError`] the JSON-RPC layer recovers.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct InvalidRequest(#[source] pub(crate) LegacyRpcError);
 
 /// Errors returned by the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService)
 /// subscriber's `ZcashIndexer` / `LightWalletIndexer` methods.
@@ -381,29 +393,53 @@ impl ChainIndexError {
     /// The validator's own message is carried into `message`, not just `source`:
     /// only `message` crosses the gRPC boundary, so dropping it leaves a caller
     /// unable to tell a rejected transaction from an unreachable node.
+    ///
+    /// A validator that lacks the method is `Unimplemented`, and a rejected
+    /// request ([`InvalidRequest`]) is `InvalidArgument`; neither is broken.
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         let message =
             format!("InternalServerError: error receiving data from backing node: {value}");
+        let kind = std::iter::successors(
+            Some(&value as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .find_map(|error| {
+            if error.downcast_ref::<InvalidRequest>().is_some() {
+                Some(ChainIndexErrorKind::InvalidArgument)
+            } else {
+                error
+                    .downcast_ref::<LegacyRpcError>()
+                    .filter(|error| error.code == LegacyRpcError::METHOD_NOT_FOUND)
+                    .map(|_| ChainIndexErrorKind::Unimplemented)
+            }
+        })
+        .unwrap_or(ChainIndexErrorKind::InternalServerError);
         Self {
-            kind: ChainIndexErrorKind::InternalServerError,
+            kind,
             message,
             source: Some(Box::new(value)),
         }
+    }
+
+    /// A request rejected as invalid, served as `InvalidArgument` over gRPC and
+    /// as `rejection`'s legacy code over JSON-RPC.
+    pub(crate) fn invalid_request(rejection: LegacyRpcError) -> Self {
+        Self::backing_validator(
+            crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
+                "validator rejected the query",
+                InvalidRequest(rejection),
+            ),
+        )
     }
 
     /// A request the validator rejected as invalid, in the shape the legacy
     /// source reported it: carrying the legacy `InvalidParameter` code the
     /// serving layer recovers from the error chain.
     pub(crate) fn validator_rejected(message: impl Display) -> Self {
-        Self::backing_validator(
-            crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
-                "validator rejected the query",
-                LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    message.to_string(),
-                ),
-            ),
-        )
+        Self::invalid_request(LegacyRpcError::new(
+            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+            message.to_string(),
+        ))
     }
 
     pub(crate) fn database_hole(
