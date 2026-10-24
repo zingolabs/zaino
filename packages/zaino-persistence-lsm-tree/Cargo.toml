@@ -1,0 +1,46 @@
+[package]
+name = "zaino-persistence-lsm-tree"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "On-disk zaino-persistence backend: positional files for sequences, an LSM tree for maps, one manifest commit."
+
+[features]
+# `fs::SimFs` (crash-state enumeration) + the port's conformance suite
+testing = ["zaino-persistence/testing"]
+
+[dependencies]
+arc-swap.workspace = true
+bytes.workspace = true
+crc32fast.workspace = true
+imbl.workspace = true
+memmap2.workspace = true
+metrics.workspace = true
+rayon.workspace = true
+rustix = { version = "1.1", features = ["fs"] }
+thiserror.workspace = true
+tracing.workspace = true
+xorf.workspace = true
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-primitives = { version = "0.3.0", path = "../zaino-primitives" }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+metrics-util = "0.20"
+proptest.workspace = true
+tempfile.workspace = true
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

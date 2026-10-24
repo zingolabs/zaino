@@ -15,10 +15,20 @@ description = "Driven port traits for index persistence (read/write)."
 [dependencies]
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror.workspace = true
+proptest = { workspace = true, optional = true }
+imbl = { workspace = true, optional = true }
 
 [features]
-testing = []
+# `in_memory` backend + `conformance` (the suite every backend runs)
+testing = ["dep:proptest", "dep:imbl"]
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[[test]]
+name = "conformance"
+required-features = ["testing"]
