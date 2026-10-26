@@ -70,8 +70,3 @@ zaino-internal-txid-location.workspace = true
 
 [lints.rust]
 unreachable_pub = "warn"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-netlink-packet-core = "0.9"
-netlink-packet-sock-diag = "0.5"
-netlink-sys = "0.9"

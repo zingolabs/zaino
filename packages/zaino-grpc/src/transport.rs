@@ -26,7 +26,6 @@ use crate::connections::{ConnectionCaps, Reserved};
 use crate::guard::Guard;
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
-use crate::network;
 use crate::overload::Signals;
 use crate::pressure::Pressure;
 use crate::proxy_protocol::{self, TrustedProxies};
@@ -210,10 +209,6 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         let Self { server, listener } = self;
         if let Some(tls) = &server.tls {
             tokio::spawn(tls.reload(cancel.clone()).instrument(Span::current()));
-        }
-        if let Ok(bound) = listener.local_addr() {
-            let sampling = network::run(bound.port(), cancel.clone());
-            tokio::spawn(sampling.instrument(Span::current()));
         }
         let (mut cpu, mut io) = (Pressure::new("cpu"), Pressure::new("io"));
         let shared = Arc::new(Shared {
