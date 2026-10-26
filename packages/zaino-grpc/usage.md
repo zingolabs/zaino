@@ -185,9 +185,19 @@ thresholds live.
 
 | Cause | Signal, per one-minute window | Enter / exit |
 | ----- | ----------------------------- | ------------ |
-| `network saturated` | 20th percentile of `zaino_grpc_queue_delay_seconds` (RTT over the client network's base RTT: min over 10 min of every socket, as LEDBAT; RTT of sockets sending ≥ 100 segments per 10 s only, a sparse socket's = the peer's delayed ACKs) or of `zaino_grpc_retransmit_ratio` (`network_retransmit_percent`); one per client /24 or /48 every 10 s (this listener's sockets, sock_diag), over samples with ≥ `network_min_networks` networks | 2 / 3 min |
 | `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI) | 2 / 3 min |
 | `refusing work` | admission refused ≥ 10% of work at ≥ 1/s (exit: < 2%) | 5 / 5 min |
+
+No network cause. `zaino_grpc_queue_delay_seconds` (sockets' RTT over their client network's
+10 min base, LEDBAT-style, sockets sending ≥ 100 segments per 10 s only) and
+`zaino_grpc_retransmit_ratio` (per client /24 or /48 every 10 s, sock_diag) are observation only:
+
+- CPU saturates first: a cloud node serves ~2 Gbit/s at 70% CPU against a 7.5–10 Gbit/s uplink
+  (Hetzner cpx32 / ccx23 measured).
+- A cloud host's queue is invisible to the guest: at the uplink's limit the guest qdisc stays
+  empty and every path gains only a few ms, no loss.
+- A client's own congested path reads the same as this node's, and sparse sockets (LB probes,
+  idle wallets) read tens of ms from delayed ACKs alone: any cut-off is a per-host guess.
 
 ### Serving log
 

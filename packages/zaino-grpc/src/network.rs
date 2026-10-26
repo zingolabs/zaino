@@ -1,6 +1,7 @@
-//! Network saturation on this listener's own sockets (`tcp_info` via sock_diag, as `ss -ti`) →
-//! `zaino_grpc_queue_delay_seconds`, `zaino_grpc_retransmit_ratio` + the overload latch's verdict
+//! This listener's own sockets (`tcp_info` via sock_diag, as `ss -ti`) →
+//! `zaino_grpc_queue_delay_seconds`, `zaino_grpc_retransmit_ratio`
 //!
+//! - observation only, never an overload cause (usage.md "Overload")
 //! - one observation per client network (/24, /48) per SAMPLE (a heavy client counts once): low
 //!   quantiles rise only when this node delays / drops for every network
 //! - queueing = smoothed RTT − the network's base RTT: min RTT over BASE_MINUTES, every socket
@@ -11,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -29,13 +29,13 @@ const MIN_SEGMENTS: u64 = 100;
 
 /// One established socket's `tcp_info` (`min_rtt_us` `None` = no RTT sample yet)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TcpSocket {
-    pub(crate) cookie: u64,
-    pub(crate) network: IpAddr,
-    pub(crate) rtt_us: u32,
-    pub(crate) min_rtt_us: Option<u32>,
-    pub(crate) retransmitted: u32,
-    pub(crate) data_segments: u32,
+struct TcpSocket {
+    cookie: u64,
+    network: IpAddr,
+    rtt_us: u32,
+    min_rtt_us: Option<u32>,
+    retransmitted: u32,
+    data_segments: u32,
 }
 
 /// Client network: IPv4 /24 (v4-mapped included), IPv6 /48
@@ -59,7 +59,7 @@ mod tcp_info {
 
 /// `tcp_info` (host order, append-only kernel ABI) of socket `cookie` to `peer` → `None` if it
 /// predates `data_segs_out` (kernel < 4.10)
-pub(crate) fn decode_tcp_info(cookie: u64, peer: IpAddr, bytes: &[u8]) -> Option<TcpSocket> {
+fn decode_tcp_info(cookie: u64, peer: IpAddr, bytes: &[u8]) -> Option<TcpSocket> {
     let u32_at = |at: usize| Some(u32::from_ne_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
     let min_rtt_us = u32_at(tcp_info::MIN_RTT)?;
     Some(TcpSocket {
@@ -76,15 +76,15 @@ pub(crate) fn decode_tcp_info(cookie: u64, peer: IpAddr, bytes: &[u8]) -> Option
 /// One SAMPLE: each network's median queueing over its bulk sockets + its loss (both
 /// >= MIN_SEGMENTS)
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Sample {
-    pub(crate) delays: Vec<Duration>,
-    pub(crate) losses: Vec<f64>,
+struct Sample {
+    delays: Vec<Duration>,
+    losses: Vec<f64>,
 }
 
 /// Memory across samples (`bases` minute `u32::MAX` = unobserved, `counters` = per cookie
 /// (retransmitted, data segments) at the last sample)
 #[derive(Debug, Default)]
-pub(crate) struct History {
+struct History {
     bases: HashMap<IpAddr, [u32; BASE_MINUTES]>,
     minute: usize,
     minute_samples: u32,
@@ -94,7 +94,7 @@ pub(crate) struct History {
 impl History {
     /// `sockets` now → this sample (a socket counts from its second sample: before it = SYN-ACK
     /// retries, or before zainod)
-    pub(crate) fn sample(&mut self, sockets: &[TcpSocket]) -> Sample {
+    fn sample(&mut self, sockets: &[TcpSocket]) -> Sample {
         if self.minute_samples == MINUTE_SAMPLES {
             let minute = (self.minute + 1) % BASE_MINUTES;
             self.bases.retain(|_, minutes| {
@@ -145,42 +145,9 @@ impl History {
     }
 }
 
-/// One overload window's network signals (`None` = no sample with breadth)
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Verdict {
-    pub(crate) delay: Option<Duration>,
-    pub(crate) loss: Option<f64>,
-}
-
-/// Each SAMPLE since the last overload window
-#[derive(Debug, Default)]
-pub(crate) struct Window(Mutex<Vec<Sample>>);
-
-impl Window {
-    /// 20th percentiles over the samples with >= `min_networks` networks (per signal), the next
-    /// window started empty
-    pub(crate) fn verdict(&self, min_networks: usize) -> Verdict {
-        let samples = std::mem::take(&mut *self.0.lock().expect("network window poisoned"));
-        let mut delays: Vec<Duration> = (samples.iter())
-            .filter(|sample| sample.delays.len() >= min_networks)
-            .flat_map(|sample| sample.delays.iter().copied())
-            .collect();
-        let mut losses: Vec<f64> = (samples.iter())
-            .filter(|sample| sample.losses.len() >= min_networks)
-            .flat_map(|sample| sample.losses.iter().copied())
-            .collect();
-        delays.sort_unstable();
-        losses.sort_unstable_by(f64::total_cmp);
-        Verdict {
-            delay: delays.get(delays.len() / 5).copied(),
-            loss: losses.get(losses.len() / 5).copied(),
-        }
-    }
-}
-
-/// Samples `port` every SAMPLE into the histograms + `window` until `cancel` (sock_diag
-/// unavailable = WARN once, then stops)
-pub(crate) async fn run(port: u16, window: Arc<Window>, cancel: CancellationToken) {
+/// Samples `port` every SAMPLE into the histograms until `cancel` (sock_diag unavailable = WARN
+/// once, then stops)
+pub(crate) async fn run(port: u16, cancel: CancellationToken) {
     let mut ticks = tokio::time::interval(SAMPLE);
     let mut history = History::default();
     loop {
@@ -191,13 +158,12 @@ pub(crate) async fn run(port: u16, window: Arc<Window>, cancel: CancellationToke
         let sample = match tokio::task::spawn_blocking(move || sockets(port)).await {
             Ok(Ok(sockets)) => history.sample(&sockets),
             failed => {
-                warn!(?failed, "Network saturation unmeasured (sock_diag)");
+                warn!(?failed, "Network queueing unmeasured (sock_diag)");
                 return;
             }
         };
         sample.delays.iter().copied().for_each(metrics::queue_delay);
         sample.losses.iter().copied().for_each(metrics::retransmit_ratio);
-        window.0.lock().expect("network window poisoned").push(sample);
     }
 }
 
@@ -432,22 +398,6 @@ mod tests {
         let mut cookies: Vec<_> = history.counters.keys().copied().collect();
         cookies.sort_unstable();
         assert_eq!(cookies, [2, 3, 4], "closed sockets 1 + 9 dropped");
-    }
-
-    /// A window's verdict per signal: the low end over samples with breadth (a narrow sample
-    /// ignored), next window empty
-    #[test]
-    fn a_window_is_the_low_end_of_its_broad_samples() {
-        let ms = |ms: &[u64]| ms.iter().copied().map(Duration::from_millis).collect();
-        let window = Window::default();
-        window.0.lock().expect("window").extend([
-            Sample { delays: ms(&[1, 2, 3, 4, 900]), losses: vec![0.0, 0.0, 0.2, 0.3, 0.4] },
-            Sample { delays: ms(&[6, 7, 8, 9, 10]), losses: vec![0.5] },
-            Sample { delays: ms(&[500]), losses: vec![0.1; 5] },
-        ]);
-        let verdict = Verdict { delay: Some(Duration::from_millis(3)), loss: Some(0.1) };
-        assert_eq!(window.verdict(5), verdict, "p20 of the ten broad values per signal");
-        assert_eq!(window.verdict(5), Verdict::default(), "next window starts empty");
     }
 
     /// The real kernel: a loopback pair after 256 KiB → only the accepted side (by port), measured
