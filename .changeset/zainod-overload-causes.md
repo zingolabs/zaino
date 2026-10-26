@@ -7,7 +7,7 @@ default: minor
 - `/readyz` `Overloaded: <cause>`: `network saturated`, `CPU pressure`, `IO pressure` or
   `refusing work`, thresholds in `[grpc.overload]` (network off by default).
 - `zaino_grpc_queue_delay_seconds`: send queueing per client network every 10 s, against the
-  network's 10 min base RTT (native histogram).
+  network's 10 min base RTT, from sockets sending ≥ 100 segments in it (native histogram).
 - `zaino_grpc_retransmit_ratio`: retransmitted share per client network every 10 s (native
   histogram); `network_retransmit_percent` latches `network saturated` on it.
 - `zaino_state_reason{reason}`: `/readyz`'s detail, one-hot (`overloaded`, `runtime_stalled`,

@@ -123,7 +123,7 @@ pub const METRICS: &[Metric] = &[
     Metric::histogram(
         QUEUE_DELAY_SECONDS,
         "Send queueing (RTT over the client network's 10 min base RTT), one per client network \
-         every 10 s (its sockets' median)",
+         every 10 s (median of its sockets sending >= 100 segments in it)",
     )
     .unit(Unit::Seconds),
     Metric::gauge(
