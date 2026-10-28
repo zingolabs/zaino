@@ -1,43 +1,105 @@
-# Container Usage
+# Container image
 
-This document covers running Zaino using the official container image.
+The repo-root `Dockerfile` builds `zainod` as a static musl binary (jemalloc allocator) on Alpine.
+It runs as `zaino` (UID and GID 1000), listens for gRPC on `0.0.0.0:8137`, and has a built-in
+health check. Entrypoint `zainod`, default command `start`.
 
-## Overview
+```sh
+docker build -t zainod .
+docker build -t zainod --build-arg CARGO_PROFILE=profiling .   # line tables and frame pointers
+```
 
-The container image runs `zainod` - the Zaino indexer daemon. The image:
+Both base images are pinned by digest and the Alpine packages on them are not, so a rebuild of
+the same commit installs the same packages and a digest bump picks up security fixes. The image
+ships `aria2c` (the `[snapshot]` bootstrap's downloader), CA certificates and busybox.
 
-- Uses `zainod` as the entrypoint with `start` as the default subcommand
-- Runs as non-root user (`container_user`, UID 1000)
-- Refuses to start if run as root
+## Run
 
-For CLI usage details, see the CLI documentation or run `docker run --rm zaino --help`.
+```sh
+docker run --rm zainod generate-config -o /dev/stdout > zainod.toml   # every key at its default
+# edit zainod.toml: network, [[trusted_validators]]
+docker run -d --name zainod -p 8137:8137 \
+  -v ./zainod.toml:/etc/zaino/zainod.toml:ro \
+  -v zainod-data:/var/lib/zaino \
+  zainod
+```
 
-## Configuration Options
+Every other subcommand reads the same config and data: `docker exec zainod zainod hold` beside
+the running node, or `zainod verify` in a one-off container with the same two mounts.
 
-The container can be configured via:
+## Paths
 
-1. **Environment variables only** - Suitable for simple deployments, but sensitive fields (passwords, secrets, tokens, cookies, private keys) cannot be set via env vars for security reasons
-2. **Config file + env vars** - Mount a config file for sensitive fields, override others with env vars
-3. **Config file only** - Mount a complete config file
+| Path                      | Holds                                                        | Mount                     |
+| ------------------------- | ------------------------------------------------------------ | ------------------------- |
+| `/etc/zaino/zainod.toml`  | the config (zainod's default path)                           | a file, read-only         |
+| `/etc/zaino/tls/`         | the `[serve.tls]` and `indexer_tls` PEM files, by convention | a directory, read-only    |
+| `/var/lib/zaino/`         | `indexes/`, `state/` (the `zainod hold` marker), `peers/`    | a volume, writable by 1000 |
 
-For data persistence, volume mounts are recommended for the database/cache directory.
+The image sets `XDG_CONFIG_HOME=/etc` and `XDG_CACHE_HOME=XDG_DATA_HOME=/var/lib`, so a config
+that names no path keeps everything zainod writes under `/var/lib/zaino`. A named volume takes the
+image's ownership on first use. A bind mount must be writable by UID 1000:
+`mkdir -p ./data && chown 1000:1000 ./data`. Under rootless Podman, `--userns=keep-id` maps UID
+1000 to your host user.
 
-## Deployment with Docker Compose
+## Configure
 
-The recommended way to run Zaino is with Docker Compose, typically alongside Zebra:
+The image reads the same `zainod.toml` as any other install, layered under `ZAINO_CONFIG_*`
+environment variables ([running.md: Configuration](./running.md#configuration)). The file is
+required: `[[trusted_validators]]` is an array of tables, which environment variables cannot
+express. Everything else can come from either place:
+
+```sh
+docker run ... -e ZAINO_CONFIG_SYNC__CONCURRENCY=64 -e RUST_LOG=info,zaino_grpc=debug zainod
+```
+
+The image's one default that differs from a host install is
+`ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS=0.0.0.0:8137` (zainod's own default, `127.0.0.1`, is
+unreachable through a published port). To scrape `/metrics`, set
+`ZAINO_CONFIG_METRICS__LISTEN_ADDRESS=0.0.0.0:9999`: zainod warns at boot that it binds a
+non-private address, so publish that port only to the scraper
+([running.md: Network exposure](./running.md#network-exposure)).
+
+## TLS
+
+Mount the certificate directory, not the files. zainod re-reads the pair every 60 s, and a
+single-file bind mount keeps the old inode when a renewal replaces the file, so the new
+certificate would never arrive.
+
+```sh
+docker run ... \
+  -v /etc/letsencrypt/live/zaino.example.com:/etc/zaino/tls:ro \
+  -e ZAINO_CONFIG_SERVE__TLS__CERT_PATH=/etc/zaino/tls/fullchain.pem \
+  -e ZAINO_CONFIG_SERVE__TLS__KEY_PATH=/etc/zaino/tls/privkey.pem \
+  zainod
+```
+
+The key must be readable by UID 1000. The same directory holds the client certificates for a
+validator's `[trusted_validators.indexer_tls]`, named in `zainod.toml`.
+
+## Health check
+
+The built-in check GETs the public `/readyz` on `127.0.0.1:8137`, over plaintext or, with
+`[serve.tls]`, over HTTPS. It passes while zainod is `serving` or `degraded`, so a fresh node
+reports unhealthy until its indexes reach the tip
+([states](../packages/zainod/usage.md#the-admin-listener)). With the gRPC listener on another
+port, override it:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9137/readyz"]
+```
+
+## Compose
 
 ```yaml
 services:
-  zaino:
-    image: zaino:latest
+  zainod:
+    image: zingodevops/zainod:latest
     ports:
-      - "8137:8137"   # gRPC
-      - "8237:8237"   # JSON-RPC (if enabled)
+      - "8137:8137"
     volumes:
-      - ./config:/app/config:ro
-      - zaino-data:/app/data
-    environment:
-      - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
+      - ./zainod.toml:/etc/zaino/zainod.toml:ro   # [[trusted_validators]] jsonrpc_address = "zebra:8232"
+      - zainod-data:/var/lib/zaino
     depends_on:
       - zebra
 
@@ -45,90 +107,12 @@ services:
     image: zfnd/zebra:latest
     volumes:
       - zebra-data:/home/zebra/.cache/zebra
-    # ... zebra configuration
+    # [rpc] listen_addr must be reachable from zainod
 
 volumes:
-  zaino-data:
+  zainod-data:
   zebra-data:
 ```
 
-If Zebra runs on a different host/network, adjust `VALIDATOR_JSONRPC_LISTEN_ADDRESS` accordingly.
-
-## Initial Setup: Generating Configuration
-
-To generate a config file on your host for customization:
-
-```bash
-mkdir -p ./config
-
-docker run --rm -v ./config:/app/config zaino generate-config
-
-# Config is now at ./config/zainod.toml - edit as needed
-```
-
-## Container Paths
-
-The container provides simple mount points:
-
-| Purpose | Mount Point |
-|---------|-------------|
-| Config | `/app/config` |
-| Database | `/app/data` |
-
-These are symlinked internally to the XDG paths that Zaino expects.
-
-## Volume Permissions
-
-The container runs as `container_user` (UID 1000, GID 1000) and never
-starts as root. Mounted volumes must be writable by this user.
-
-For named volumes (e.g. `zaino-data:/app/data`), the container runtime
-handles ownership automatically.
-
-For bind mounts to host directories, ensure the host directory is owned
-by UID 1000 before starting the container:
-
-```bash
-mkdir -p ./data
-chown 1000:1000 ./data
-```
-
-### Read-Only Config Mounts
-
-Config files can (and should) be mounted read-only:
-
-```yaml
-volumes:
-  - ./config:/app/config:ro
-```
-
-## Configuration via Environment Variables
-
-Config values can be set via environment variables prefixed with `ZAINO_`, using `__` for nesting:
-
-```yaml
-environment:
-  - ZAINO_NETWORK=Mainnet
-  - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
-  - ZAINO_GRPC_SETTINGS__LISTEN_ADDRESS=0.0.0.0:8137
-```
-
-### Sensitive Fields
-
-For security, the following fields **cannot** be set via environment variables and must use a config file:
-
-- `*_password` (e.g., `validator_password`)
-- `*_secret`
-- `*_token`
-- `*_cookie`
-- `*_private_key`
-
-If you attempt to set these via env vars, Zaino will error on startup.
-
-## Health Check
-
-The image includes a health check:
-
-```bash
-docker inspect --format='{{.State.Health.Status}}' <container>
-```
+`jsonrpc_address` accepts a hostname, resolved on each connection, so a Compose service name
+works.
