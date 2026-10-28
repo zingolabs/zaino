@@ -3,7 +3,10 @@
 mod backend;
 mod error;
 
-pub use backend::{Backend, BackendReader, BackendWriter, Namespace, RawKey, RawValue, WriteOp};
+pub use backend::{
+    raw_entry, Backend, BackendReader, BackendWriter, Namespace, RawKey, RawValue, ScanDirection,
+    ScanRange, WriteOp,
+};
 pub use error::{CommitError, FlushError, OpenError, ReadError};
 
 #[cfg(feature = "testing")]
