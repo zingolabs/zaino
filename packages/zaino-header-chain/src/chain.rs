@@ -48,12 +48,12 @@ pub struct BestTip {
 ///
 /// - `Known` = held already (tree or finalized)
 /// - `Side` = no more work than the best (maybe evicted at once: H4)
-/// - `Best { reorg }` = new tip, `reorg` = not a child of the previous best
+/// - `Best` = new tip
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inserted {
     Known,
     Side,
-    Best { reorg: bool },
+    Best,
 }
 
 /// - `received` = arrival order (H1 tie → first received wins, eviction tie → last received goes)
@@ -101,7 +101,9 @@ impl HeaderChain {
     /// `header` at `height`, from a trusted validator, = the finalized tip
     ///
     /// - everything held before dropped (a start, or a jump to a validator far ahead)
-    pub fn anchor(&mut self, header: &Header, height: BlockHeight) {
+    /// - `Err(Bits)` = nothing changed (rules read an anchor's nBits as an ancestor's)
+    pub fn anchor(&mut self, header: &Header, height: BlockHeight) -> Result<(), Rejected> {
+        let work = header_work(header.bits())?;
         let record = Record {
             hash: header.hash(),
             time: header.time(),
@@ -112,8 +114,9 @@ impl HeaderChain {
         self.nodes = imbl::HashMap::new();
         self.leaves = imbl::HashSet::new();
         self.best_path = imbl::Vector::new();
-        self.last_vouched = header_work(header.bits()).ok().map(|work| (height, work));
+        self.last_vouched = Some((height, work));
         self.revision += 1;
+        Ok(())
     }
 
     /// `None` = no anchor yet
@@ -159,13 +162,14 @@ impl HeaderChain {
     /// Finalized headers kept: what the NFS reads below the best (`2 · depth`), at least what the
     /// rules read below an untrusted header ([`CONTEXT`])
     pub(crate) fn finalized_headers_kept(&self) -> usize {
-        (FINALIZED_PER_DEPTH * self.depth.get() as usize).max(CONTEXT)
+        let depth = usize::try_from(self.depth.get()).expect("u32 fits usize (no 16-bit targets)");
+        (FINALIZED_PER_DEPTH * depth).max(CONTEXT)
     }
 
     /// How far below a trusted claim a fresh anchor sits: the finalized depth, at least `CONTEXT`
     /// (the claim's run then holds every ancestor the rules read)
     pub fn anchor_below(&self) -> u32 {
-        self.depth.get().max(CONTEXT as u32)
+        self.depth.get().max(u32::try_from(CONTEXT).expect("CONTEXT = 113 blocks"))
     }
 
     /// Height `header` takes on its parent (`None` = parent not held at or above the finalized tip)
@@ -221,9 +225,8 @@ impl HeaderChain {
         let inserted = match best.is_some_and(|best| cumulative_work <= best.cumulative_work) {
             true => Inserted::Side,
             false => {
-                let reorg = best.is_some_and(|best| best.block.hash != prev);
                 self.adopt(hash, height);
-                Inserted::Best { reorg }
+                Inserted::Best
             }
         };
         self.evict();
@@ -237,7 +240,8 @@ impl HeaderChain {
         let Some(node) = self.nodes.get(&hash) else { return };
         let higher = self.last_vouched.is_none_or(|(height, _)| node.height > height);
         if by == Witness::Trusted && higher {
-            self.last_vouched = header_work(node.record.bits).ok().map(|work| (node.height, work));
+            let work = header_work(node.record.bits).expect("nBits checked on insert");
+            self.last_vouched = Some((node.height, work));
         }
         let mut at = hash;
         while let Some(node) = self.nodes.get_mut(&at) {
@@ -366,7 +370,7 @@ impl HeaderChain {
         let mut parent = finalized_tip.map_or(BlockHash([0; 32]), |tip| tip.hash);
         for (at, record) in self.best_path.iter().enumerate() {
             let node = self.nodes.get(&record.hash);
-            let height = base + at as u32;
+            let height = base + u32::try_from(at).expect("heights fit u32");
             let path = node.is_some_and(|n| n.parent == parent && n.height == height);
             assert!(path, "H5: best_path at {height:?} = a held chain from the finalized tip");
             assert_eq!(node.map(|n| n.record), Some(*record), "H5: best_path record = its node");
@@ -395,7 +399,7 @@ impl HeaderChain {
     /// `best_path` index of `height` (`None` = at or below the finalized tip)
     fn offset(&self, height: BlockHeight) -> Option<usize> {
         let above = u32::from(height).checked_sub(u32::from(self.base()))?;
-        Some(above as usize)
+        Some(usize::try_from(above).expect("u32 fits usize (no 16-bit targets)"))
     }
 
     fn on_best(&self, block: BlockRef) -> bool {
@@ -435,7 +439,8 @@ impl HeaderChain {
     }
 
     fn max_side_nodes(&self) -> usize {
-        SIDE_NODES_PER_DEPTH * self.depth.get() as usize
+        SIDE_NODES_PER_DEPTH
+            * usize::try_from(self.depth.get()).expect("u32 fits usize (no 16-bit targets)")
     }
 
     /// `tip` (just inserted, most work) becomes best: `best_path` re-pointed at its branch

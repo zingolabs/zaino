@@ -2,17 +2,18 @@
 //! (stored records, sent as the body, at heights `<=` [`IndexesAtBlock::answers_through`])
 
 use bytes::Bytes;
+use futures::StreamExt as _;
 use http::Response;
-use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::IndexesAtBlock;
-use zaino_persistence::{IndexKind, OverlayView, PinnedView};
+use zaino_persistence::{OverlayView, PinnedView};
+use zaino_sync::IndexKind;
 use zcash_protocol::consensus::BlockHeight;
 
 use super::args;
 use crate::read_lanes::{Lane, ReadLanes};
-use crate::wire::{self, trailers, unary_response};
+use crate::wire::{self, unary_response};
 use zaino_proto::proto::service;
 
 pub(crate) struct CompactBlocks<'a, V> {
@@ -56,7 +57,7 @@ pub(crate) fn get_block_range<V: PinnedView>(
 ) -> Result<Response<Body>, Status> {
     let pools = args::pools(&range.pool_types)?;
     let blocks = compact_blocks.open_range(&range, pools)?;
-    Ok(blocks.into_response(reads, Ok))
+    Ok(blocks.into_response(reads, std::convert::identity))
 }
 
 impl<V: PinnedView> CompactBlocks<'_, V> {
@@ -72,15 +73,18 @@ impl<V: PinnedView> CompactBlocks<'_, V> {
 
     /// NFS layer (pepper-sync's reorg check at the tip) = RAM, answered inline; else the point lane
     async fn read_by_height(self, height: BlockHeight, reads: &ReadLanes) -> Result<Bytes, Status> {
-        let missing = move || serve_error_status(ServeError::NotFound { height });
         if height > self.served_through() {
-            return Err(missing());
+            return Err(serve_error_status(ServeError::NotFound { height }));
         }
         if let Some(block) = self.reader.resident_block(height) {
             return Ok(block);
         }
         let reader = self.reader;
-        reads.read(Lane::Point, move || reader.block(height).ok_or_else(missing)).await?
+        let read = move || {
+            let held = reader.block(height);
+            held.unwrap_or_else(|| panic!("compact-block view holds {height} <= answers_through"))
+        };
+        reads.read(Lane::Point, read).await
     }
 
     /// Only where this index holds that same block (a located height can lag a reorg)
@@ -91,7 +95,9 @@ impl<V: PinnedView> CompactBlocks<'_, V> {
         reads: &ReadLanes,
     ) -> Result<Bytes, Status> {
         let reader = self.reader;
-        let read = move || reader.block_at(height, &hash).map_err(serve_error_status);
+        let read = move || {
+            reader.block_at(height, &zcash_protocol::BlockHash(hash)).map_err(serve_error_status)
+        };
         reads.read(Lane::Point, read).await?
     }
 
@@ -119,55 +125,41 @@ impl<V: PinnedView> CompactBlocks<'_, V> {
         if start > through {
             return Err(above_tip(start));
         }
-        let final_status = if end > through { above_tip(through + 1) } else { Status::ok("") };
+        let past_tip = (end > through).then(|| above_tip(through + 1));
         let cursor = RangeCursor::new(self.reader, start, end, through, pools)
-            .map_err(serve_error_status)?;
+            .expect("compact-block view's tip >= answers_through >= start");
 
-        Ok(BlockStream { cursor, final_status })
+        Ok(BlockStream { cursor, past_tip })
     }
 }
 
 /// One range's cursor + the status its stream ends in once the cursor is spent
 ///
-/// - `final_status` = `OUT_OF_RANGE` when the range reaches past the compact-block tip
+/// - `past_tip` = `OUT_OF_RANGE` when the range reaches past the compact-block tip
 ///   (lightwalletd: lazily to the tip, then the error)
 /// - early `OK` end hangs the iOS downloader for good
 pub(super) struct BlockStream<V> {
     cursor: RangeCursor<V>,
-    final_status: Status,
+    past_tip: Option<Status>,
 }
 
 impl<V: PinnedView> BlockStream<V> {
     /// Server-streaming response, cursor chunk by chunk
     ///
-    /// - `grpc-status` in trailers only (headers precede the walk, a status there = response done)
-    /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
+    /// - `reproject` = per-chunk rewrite (`identity` for `GetBlockRange`: records stay slices)
     pub(super) fn into_response(
         self,
         reads: ReadLanes,
-        reproject: fn(Bytes) -> Result<Bytes, Status>,
+        reproject: fn(Bytes) -> Bytes,
     ) -> Response<Body> {
-        let BlockStream { cursor, final_status } = self;
-        let state = Some((cursor, reads, final_status));
-        let frames = futures::stream::unfold(state, move |state| async move {
-            let (cursor, reads, final_status) = state?;
+        let BlockStream { cursor, past_tip } = self;
+        let chunks =
+            futures::stream::try_unfold((cursor, reads), move |(cursor, reads)| async move {
+                let (cursor, chunk) = next_chunk(cursor, &reads).await?;
+                Ok(chunk.map(|chunk| (reproject(chunk), (cursor, reads))))
+            });
 
-            let (cursor, chunk) = match next_chunk(cursor, &reads).await {
-                Ok(stepped) => stepped,
-                Err(status) => return Some((Ok(Frame::trailers(trailers(&status))), None)),
-            };
-            let end = match chunk.map(|read| read.map_err(serve_error_status).and_then(reproject)) {
-                Some(Ok(chunk)) => {
-                    return Some((Ok(Frame::data(chunk)), Some((cursor, reads, final_status))))
-                }
-                Some(Err(status)) => status,
-                None => final_status,
-            };
-            Some((Ok::<_, Status>(Frame::trailers(trailers(&end))), None))
-        });
-
-        // layer steps = one record each, ready back to back: joined per DATA frame
-        wire::streaming(frames)
+        wire::streaming(chunks.chain(futures::stream::iter(past_tip.map(Err))))
     }
 }
 
@@ -179,7 +171,7 @@ impl<V: PinnedView> BlockStream<V> {
 async fn next_chunk<V: PinnedView>(
     mut cursor: RangeCursor<V>,
     reads: &ReadLanes,
-) -> Result<(RangeCursor<V>, Option<Result<Bytes, ServeError>>), Status> {
+) -> Result<(RangeCursor<V>, Option<Bytes>), Status> {
     if !cursor.next_touches_disk() {
         let chunk = cursor.next_chunk();
         return Ok((cursor, chunk));
@@ -192,13 +184,11 @@ async fn next_chunk<V: PinnedView>(
         .await
 }
 
-/// Kinds kept distinct (miss != bad request != corruption)
 fn serve_error_status(error: ServeError) -> Status {
     match &error {
         ServeError::NotFound { .. } | ServeError::HashNotFound => {
             Status::not_found(error.to_string())
         }
-        ServeError::Malformed { .. } => Status::internal(error.to_string()),
     }
 }
 
@@ -206,8 +196,8 @@ fn serve_error_status(error: ServeError) -> Status {
 mod tests {
     use tonic::Code;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_source::testing::{h, MockChain};
+    use zaino_sync::IndexKind;
 
     use crate::service::Method;
     use crate::testing::{
@@ -411,7 +401,8 @@ mod tests {
             "coinbase pruned"
         );
 
-        let (chunks, status) = answer(range(2, 2, vec![PoolType::Transparent as i32]).await).await;
+        let (chunks, status) =
+            answer(range(2, 2, vec![i32::from(PoolType::Transparent)]).await).await;
         assert_eq!(status.code(), Code::Ok, "[TRANSPARENT]: {status:?}");
         let blocks = shapes(decode_frames(&chunks.concat()));
         assert_eq!(blocks, [(2, 2, 1, 0)], "[TRANSPARENT]: coinbase kept, orchard dropped");

@@ -16,12 +16,11 @@ let routes = RouteDeps {
     max_address_rows,                    // receives one t-address request may walk
     indexes,                             // Vec<IndexKind>: the configured ones
 };
-let bound = GrpcService::new(grpc_listen_address, limits)  // limits.trusted_proxies included
-    .with_routes(routes)
+let server = GrpcService::new(grpc_listen_address, limits)  // limits.trusted_proxies included
     .with_retire(retire)                 // the owner's operator hold (zaino_grpc::Retire)
-    .with_tls(tls)
-    .bind()
-    .await?;
+    .with_tls(tls);
+server.routing().route(routes);
+let bound = server.bind().await?;
 tokio::spawn(bound.run(cancel.child_token()));
 ```
 
@@ -54,8 +53,8 @@ routing.route(routes);
 - `S` = the validators' `ChainDataSource`; `V` = the indexes' `zaino_persistence::PinnedView`
   (zainod: `DiskView`).
 - `limits: GrpcLimits` is zainod's `[grpc]` table as parsed (unknown keys refused).
-- `bind().await` takes the socket (a failure = `GrpcServeError::Bind`, so a boot failure);
-  `local_addr()` names it (bind port `0` to let the kernel pick). Once `cancel` fires, `run`
+- `bind().await` takes the socket (a failure = `GrpcServeError::Bind`, so a boot failure).
+  Once `cancel` fires, `run`
   closes the listener, sends every connection a GOAWAY, and returns when they have all closed or
   `drain_timeout` has passed. `run` has no failure of its own: accept errors back off and retry.
 - `chainName`, the tree state's `network` and the t-address mismatch message spell the network
@@ -127,8 +126,8 @@ stream ending or its client disconnecting). What each `[grpc]` cap bounds:
   window (≥ 500 ms, ≥ 10 samples) sets `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`,
   smoothed at 0.2, between 32 and `max_work_streams`; a window that peaked below half the limit
   changes nothing.
-- **Load report.** `GrpcService::admission()` → `AdmissionState::report()` gives
-  `{limit, in_flight, refused_per_s, overload}`, moved once a minute.
+- **Overload report.** `GrpcService::admission()` → `AdmissionState::overload()` gives the
+  first latched [overload](#overload) cause, moved once a minute.
 - **Trusted proxies.** A peer inside `trusted_proxies` must open with a PROXY header (v1 or v2,
   read under 5 s, ≤ 4 KiB), and the per-client cap counts the address it names; `LOCAL` /
   `UNKNOWN` count the proxy itself.
@@ -178,20 +177,15 @@ single-flight; every later ask is answered inline.
 
 ### Overload
 
-`report().overload` names the first cause latched (`/readyz`: `Overloaded: <cause>`). A cause
+`AdmissionState::overload()` names the first cause latched (`/readyz`: `Overloaded: <cause>`). A cause
 latches once over its `[grpc.overload]` threshold (`OverloadLimits`, 0 = off) for its enter time
 and clears once under half of it for its exit time; `AdmissionState::set_overload` changes the
 thresholds live.
 
 | Cause | Signal, per one-minute window | Enter / exit |
 | ----- | ----------------------------- | ------------ |
-| `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI) | 2 / 3 min |
+| `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI; no cgroup PSI file = unmeasured) | 2 / 3 min |
 | `refusing work` | admission refused ≥ 10% of work at ≥ 1/s (exit: < 2%) | 5 / 5 min |
-
-No network cause, and no per-client network measure: CPU saturates first (a cloud node serves
-~2 Gbit/s at 70% CPU against a 7.5–10 Gbit/s uplink, Hetzner cpx32 / ccx23 measured), a cloud
-host's queue is invisible to the guest, and a client's own congested path reads the same as this
-node's.
 
 ### Serving log
 

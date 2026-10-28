@@ -48,7 +48,7 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
         (table.name.to_owned(), records.iter().map(|record| record.to_vec()).collect())
     });
     let maps = schema.maps().iter().enumerate().map(|(at, &table)| {
-        let past = vec![0xff; table.key.get() as usize + 1];
+        let past = vec![0xff; table.key.get() + 1];
         let rows = view.map(table).range(&[], &past, usize::MAX).expect("under the limit");
         let rows = rows.iter().map(|(key, value)| [&key[..], &value[..]].concat());
         (format!("map #{at}"), rows.collect())
@@ -129,10 +129,10 @@ fn verify(
         let message = "lowest served view (left) = the served tip (right) (N4)";
         assert_eq!(lowest, tip.height, "{context}: {message}");
     }
-    let above_root = indexed.root().map_or(0, |root| u32::from(root.height) as usize + 1);
+    let root = indexed.root().map(|root| root.height);
     let path = blocks.blocks(tip);
-    let expected: Vec<BlockHash> =
-        path[above_root..].iter().rev().map(|b| b.header().hash).collect();
+    let above = path.iter().filter(|b| Some(b.header().height) > root);
+    let expected: Vec<BlockHash> = above.rev().map(|b| b.header().hash).collect();
     let above_root: Vec<BlockHash> =
         indexed.served_above_durable().map(|b| b.header().hash).collect();
     let message = "served_above_durable (left) = served's own path above the root, tip first";

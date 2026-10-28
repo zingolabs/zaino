@@ -24,12 +24,14 @@ pub(crate) enum Lane {
 }
 
 pub(crate) const LANES: usize = 3;
+/// Permits reserved across every lane (`as`: const items have no `From`)
+pub(crate) const LANE_RESERVES: u32 = LANES as u32 * RESERVE;
 
 /// Per member, one counter per lane
 pub(crate) type PerLane<T> = [T; LANES];
 
 /// The poll's + one reserved per lane + one shared
-pub(crate) const MIN_CONNECTIONS: u32 = 1 + LANES as u32 + 1;
+pub(crate) const MIN_CONNECTIONS: u32 = 1 + LANE_RESERVES + 1;
 
 impl Class {
     pub(crate) fn lane(self) -> Lane {
@@ -81,31 +83,37 @@ impl Class {
 
 impl Lane {
     pub(crate) fn index(self) -> usize {
-        self as usize
+        match self {
+            Self::Control => 0,
+            Self::Interactive => 1,
+            Self::Bulk => 2,
+        }
     }
 }
 
-/// One member's lane connections: `reserve` per lane no other lane takes, the rest shared
+/// Permits per lane no other lane takes
+const RESERVE: u32 = 1;
+
+/// One member's lane connections: `RESERVE` per lane, the rest shared
 #[derive(Debug, Clone)]
 pub(crate) struct Permits {
     max: u32,
-    reserve: u32,
 }
 
 impl Permits {
     /// `max_connections` − the poll's own (`>= MIN_CONNECTIONS`: `Limits::new`)
     pub(crate) fn trusted(max_connections: u32) -> Self {
-        Self { max: max_connections - 1, reserve: 1 }
+        Self { max: max_connections - 1 }
     }
 
     /// The peer set's requests at once: one reserved per lane, the rest shared (no poll)
     pub(crate) fn peers(in_flight: u32) -> Self {
-        assert!(in_flight >= LANES as u32, "the peer set's in flight covers every lane reserve");
-        Self { max: in_flight, reserve: 1 }
+        assert!(in_flight >= LANE_RESERVES, "the peer set's in flight covers every lane reserve");
+        Self { max: in_flight }
     }
 
     pub(crate) fn admits(&self, in_flight: &PerLane<u32>, lane: Lane) -> bool {
-        in_flight[lane.index()] < self.reserve || self.claimed(in_flight) < self.max
+        in_flight[lane.index()] < RESERVE || self.claimed(in_flight) < self.max
     }
 
     /// T1: Σ in flight ≤ max, reserves never borrowed
@@ -116,7 +124,7 @@ impl Permits {
 
     /// Each lane's in flight, or its reserve if larger
     fn claimed(&self, in_flight: &PerLane<u32>) -> u32 {
-        in_flight.iter().map(|n| (*n).max(self.reserve)).sum()
+        in_flight.iter().map(|n| (*n).max(RESERVE)).sum()
     }
 }
 

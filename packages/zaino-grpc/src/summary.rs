@@ -144,7 +144,9 @@ pub(crate) fn summarise(elapsed: Duration, connections: usize, at_capacity: u64)
     if counts.requests == 0 && connections == 0 && problems == 0 {
         return;
     }
-    let per_s = counts.requests as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
+    // requests × 1 s / window = per second
+    let window = elapsed.max(Duration::from_nanos(1));
+    let per_s = Duration::from_secs(counts.requests).div_duration_f64(window);
     let rps = (per_s * 100.0).round() / 100.0;
     let nonzero = |count: u64| (count > 0).then_some(count);
 

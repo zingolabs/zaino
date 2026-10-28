@@ -8,10 +8,13 @@ use crate::{heights, subtrees};
 
 /// Every table `cache_writes`: the fold reads the tip's sizes + frontier nodes off them
 pub(crate) const HEIGHTS: SequenceTable =
-    SequenceTable::new(0, "heights", Width::fixed(heights::RECORD as u32)).cache_writes();
+    SequenceTable::new(0, "heights", Width::fixed(heights::RECORD)).cache_writes();
+
+// `MERKLE_DEPTH: u8` = incrementalmerkletree's const generic (no const `usize::from(u8)`)
+const LEVELS: usize = MERKLE_DEPTH as usize;
 
 /// Level sequences + subtrees, per pool
-const POOL_TABLES: usize = MERKLE_DEPTH as usize + 1;
+const POOL_TABLES: usize = LEVELS + 1;
 
 /// `heights`, then each pool's tables ([`ShieldedPool::ALL`] order)
 pub(crate) const SEQUENCES: [SequenceTable; 1 + 3 * POOL_TABLES] = {
@@ -40,25 +43,24 @@ macro_rules! level_names {
 const SAPLING: [SequenceTable; POOL_TABLES] =
     pool_tables(1, level_names!("sapling"), "sapling/subtrees");
 const ORCHARD: [SequenceTable; POOL_TABLES] =
-    pool_tables(1 + POOL_TABLES as u16, level_names!("orchard"), "orchard/subtrees");
+    pool_tables(1 + POOL_TABLES, level_names!("orchard"), "orchard/subtrees");
 const IRONWOOD: [SequenceTable; POOL_TABLES] =
-    pool_tables(1 + 2 * POOL_TABLES as u16, level_names!("ironwood"), "ironwood/subtrees");
+    pool_tables(1 + 2 * POOL_TABLES, level_names!("ironwood"), "ironwood/subtrees");
 
 /// One pool's tables from id `first`: level ℓ's retained nodes (slot = [`crate::nodes::slot`]), then
 /// its completed subtrees (slot = subtree index)
 const fn pool_tables(
-    first: u16,
-    levels: [&'static str; MERKLE_DEPTH as usize],
+    first: usize,
+    levels: [&'static str; LEVELS],
     subtrees: &'static str,
 ) -> [SequenceTable; POOL_TABLES] {
-    let entry = Width::fixed(subtrees::ENTRY as u32);
-    let subtrees = SequenceTable::new(first + MERKLE_DEPTH as u16, subtrees, entry).cache_writes();
+    let entry = Width::fixed(subtrees::ENTRY);
+    let subtrees = SequenceTable::new(first + LEVELS, subtrees, entry).cache_writes();
     let mut tables = [subtrees; POOL_TABLES];
     let mut level = 0;
     while level < levels.len() {
-        let node = Width::fixed(NODE as u32);
-        tables[level] =
-            SequenceTable::new(first + level as u16, levels[level], node).cache_writes();
+        let node = Width::fixed(NODE);
+        tables[level] = SequenceTable::new(first + level, levels[level], node).cache_writes();
         level += 1;
     }
     tables

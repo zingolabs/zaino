@@ -74,12 +74,21 @@ pub(crate) async fn broadcast<S: ChainDataSource>(
         raw: Bytes::from(raw),
         txid,
     };
-    // cancelled = answer dropped: the caller reads "submission ended"
-    tokio::spawn(shutdown.clone().run_until_cancelled_owned(job.run(policy, admitted, answer)));
-    answered.await.unwrap_or_else(|_| {
-        let gone = NonDomainError::new(FailureMode::Connection, "submission ended");
-        Err(SubmitError::Unreachable { attempted: 0, cause: gone })
-    })
+    let task =
+        tokio::spawn(shutdown.clone().run_until_cancelled_owned(job.run(policy, admitted, answer)));
+    match answered.await {
+        Ok(answer) => answer,
+        // answer dropped unsent = task over: a panic re-raised, a cancel = "submission ended"
+        Err(_) => {
+            if let Err(ended) = task.await {
+                if ended.is_panic() {
+                    std::panic::resume_unwind(ended.into_panic());
+                }
+            }
+            let gone = NonDomainError::new(FailureMode::Connection, "submission ended");
+            Err(SubmitError::Unreachable { attempted: 0, cause: gone })
+        }
+    }
 }
 
 /// `checkadmission` on a random trusted validator holding the verified best, the next on no

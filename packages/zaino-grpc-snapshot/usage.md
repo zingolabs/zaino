@@ -31,16 +31,12 @@ let at = grpc_snapshot.served()?;                      // Err(Unavailable): UNAV
 let blocks = at.views().compact_block();
 let mempool = grpc_snapshot.mempool()?;                // gate: a Live holder of best, or a peer quorum
 let lightd = grpc_snapshot.lightd()?;                  // GetLightdInfo: one load, no validator
-grpc_snapshots.changed().await?;                       // next publish
 ```
 
 | Method                  | Answer                                                                        |
 | ----------------------- | ----------------------------------------------------------------------------- |
-| `seq()`                 | +1 per publish                                                                |
 | `tips()`                | `Tips { best, finalized_tip, served, synced }`                                |
-| `chain()`               | the chain view's `HeaderChainSnapshot`                                        |
 | `served()`              | the NFS's served `IndexesAtBlock` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
-| `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
 | `mempool()`             | the servable mempool behind [the gate](../../docs/architecture.md#5-the-mempool-view); else `NoChain` / `NotHeld` |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `IndexesAtBlock`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
@@ -55,7 +51,7 @@ grpc_snapshots.changed().await?;                       // next publish
 - `GrpcSnapshots` = chainview's `UnspentOutputs` (the peer mempool's prevouts): the served
   utxo-set, one load per ask; `None` before the first publish or with utxo-set off.
 - Feature `testing`: `GrpcSnapshots::fixed(indexed, view)` = one snapshot for good, no publisher
-  (`changed()` errs, a tail ends after its opening): route tests over `NfsPublication::fixed` +
+  (a tail ends after its opening): route tests over `NfsPublication::fixed` +
   `ChainViewSnapshot::fixed`.
 
 - `synced` ([when it opens and closes](../../docs/architecture.md#8-serving-one-grpcsnapshot))

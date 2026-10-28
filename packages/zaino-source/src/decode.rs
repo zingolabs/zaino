@@ -4,7 +4,8 @@
 //!   left compressed (nothing here needs them decompressed)
 //! - wire boundary: malformed input → typed `DecodeError`, never a panic
 
-use std::io::{self, Cursor};
+use std::io;
+use std::ops::Range;
 
 use zaino_primitives::types::{
     Block, BlockRef, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
@@ -51,12 +52,27 @@ const MAX_EXPIRY_HEIGHT: u32 = 499_999_999;
 
 /// `getblock <h> 0` / p2p block bytes → [`Block`] (only block parse, every index projects from it)
 pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
-    let (header, body) = HeaderBytes::split(raw)?;
-    let mut cursor = Cursor::new(body);
-    let count = CompactSize::read(&mut cursor)?;
-    let transactions =
-        (0..count).map(|_| read_transaction(&mut cursor)).collect::<Result<Vec<_>, _>>()?;
-    reject_trailing(&cursor)?;
+    decode_block_with_spans(raw).map(|(block, _)| block)
+}
+
+/// [`decode_block`] + each transaction's byte span inside `raw`
+pub(crate) fn decode_block_with_spans(
+    raw: &[u8],
+) -> Result<(Block, Vec<Range<usize>>), DecodeError> {
+    let (header, mut rest) = HeaderBytes::split(raw)?;
+    let count = CompactSize::read(&mut rest)?;
+    // `rest` = a suffix of `raw`: its start = how far into `raw` the reads are
+    let offset = |rest: &[u8]| raw.len() - rest.len();
+    let (transactions, spans): (Vec<_>, Vec<_>) = (0..count)
+        .map(|_| {
+            let start = offset(rest);
+            let tx = read_transaction(&mut rest)?;
+            Ok((tx, start..offset(rest)))
+        })
+        .collect::<Result<Vec<_>, io::Error>>()?
+        .into_iter()
+        .unzip();
+    reject_trailing(rest)?;
 
     let coinbase = transactions.first().ok_or(DecodeError::NoTransactions)?;
     if !coinbase.transparent_bundle().is_some_and(|bundle| bundle.is_coinbase()) {
@@ -64,7 +80,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
     }
     let header = block_header(&header, coinbase)?;
     let transactions = transactions.iter().map(transaction).collect::<Result<Vec<_>, _>>()?;
-    Ok(Block::new(header, transactions))
+    Ok((Block::new(header, transactions), spans))
 }
 
 /// What submission checks before any push, from the bytes alone (a peer answers a push with
@@ -80,7 +96,16 @@ pub struct Prepared {
 }
 
 pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
+    prepared(&read_whole(raw)?)
+}
+
+/// [`prepare_transaction`] + [`decode_transaction`] off one parse
+pub fn decode_prepared(raw: &[u8]) -> Result<(Prepared, Transaction), DecodeError> {
     let tx = read_whole(raw)?;
+    Ok((prepared(&tx)?, transaction(&tx)?))
+}
+
+fn prepared(tx: &CompressedTransaction) -> Result<Prepared, DecodeError> {
     let embeds_branch =
         !matches!(tx.version(), TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4);
     let expiry = u32::from(tx.expiry_height());
@@ -109,20 +134,20 @@ where
 
 /// - Branch id = read from the tx itself for v5+
 /// - v1–v4 only store it (txid = hash of the bytes)
-fn read_transaction(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedTransaction> {
-    CompressedTransaction::read(cursor, BranchId::Sprout)
+fn read_transaction(rest: &mut &[u8]) -> io::Result<CompressedTransaction> {
+    CompressedTransaction::read(rest, BranchId::Sprout)
 }
 
 /// `raw` = exactly one transaction
-fn read_whole(raw: &[u8]) -> Result<CompressedTransaction, DecodeError> {
-    let mut cursor = Cursor::new(raw);
-    let tx = read_transaction(&mut cursor)?;
-    reject_trailing(&cursor)?;
+fn read_whole(mut raw: &[u8]) -> Result<CompressedTransaction, DecodeError> {
+    let tx = read_transaction(&mut raw)?;
+    reject_trailing(raw)?;
     Ok(tx)
 }
 
-fn reject_trailing(cursor: &Cursor<&[u8]>) -> Result<(), DecodeError> {
-    match cursor.get_ref().len() - cursor.position() as usize {
+/// `rest` = what the reads left unread
+fn reject_trailing(rest: &[u8]) -> Result<(), DecodeError> {
+    match rest.len() {
         0 => Ok(()),
         trailing => Err(DecodeError::Trailing(trailing)),
     }
@@ -182,17 +207,17 @@ fn bip34_height(script: &[u8]) -> Option<u32> {
 fn transaction(tx: &CompressedTransaction) -> Result<Transaction, DecodeError> {
     Ok(Transaction {
         txid: tx.txid(),
-        transparent: transparent(tx)?,
+        transparent: transparent(tx),
         sprout: sprout(tx)?,
-        sapling: sapling(tx)?,
-        orchard: orchard_shaped(tx.orchard_bundle())?,
-        ironwood: orchard_shaped(tx.ironwood_bundle())?,
+        sapling: sapling(tx),
+        orchard: orchard_shaped(tx.orchard_bundle()),
+        ironwood: orchard_shaped(tx.ironwood_bundle()),
     })
 }
 
-fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeError> {
+fn transparent(tx: &CompressedTransaction) -> TransparentData {
     let Some(bundle) = tx.transparent_bundle() else {
-        return Ok(TransparentData::default());
+        return TransparentData::default();
     };
     let coinbase = bundle.is_coinbase();
     // coinbase input: null prevout, no value (protocol.pdf#coinbasetransactions §3.11)
@@ -208,7 +233,7 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
             script: output.script_pubkey().clone(),
         })
         .collect();
-    Ok(TransparentData { coinbase, inputs, outputs })
+    TransparentData { coinbase, inputs, outputs }
 }
 
 fn sprout(tx: &CompressedTransaction) -> Result<SproutData, DecodeError> {
@@ -220,11 +245,11 @@ fn sprout(tx: &CompressedTransaction) -> Result<SproutData, DecodeError> {
     Ok(SproutData { value_balance: balance })
 }
 
-fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
+fn sapling(tx: &CompressedTransaction) -> SaplingData {
     let Some(bundle) = tx.sapling_bundle() else {
-        return Ok(SaplingData::default());
+        return SaplingData::default();
     };
-    Ok(SaplingData {
+    SaplingData {
         spends: bundle
             .shielded_spends()
             .iter()
@@ -233,55 +258,38 @@ fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
         outputs: bundle
             .shielded_outputs()
             .iter()
-            .map(|output| {
-                Ok(SaplingOutput {
-                    cmu: NoteCommitment(output.cmu().to_bytes()),
-                    ephemeral_key: EphemeralKey(output.ephemeral_key().0),
-                    enc_ciphertext: CompactCiphertext::prefix_of(output.enc_ciphertext()),
-                })
+            .map(|output| SaplingOutput {
+                cmu: NoteCommitment(output.cmu().to_bytes()),
+                ephemeral_key: EphemeralKey(output.ephemeral_key().0),
+                enc_ciphertext: CompactCiphertext::prefix_of(output.enc_ciphertext()),
             })
-            .collect::<Result<Vec<_>, DecodeError>>()?,
+            .collect(),
         // v4 without spends or outputs → 0 (protocol.pdf#txnconsensus, zip-0225)
         value_balance: *bundle.value_balance(),
-    })
+    }
 }
 
 /// Orchard + Ironwood: one bundle shape (`BundleBytes`), so one projection
-fn orchard_shaped(bundle: Option<&OrchardBytes>) -> Result<OrchardData, DecodeError> {
+fn orchard_shaped(bundle: Option<&OrchardBytes>) -> OrchardData {
     let Some(bundle) = bundle else {
-        return Ok(OrchardData::default());
+        return OrchardData::default();
     };
-    Ok(OrchardData {
+    OrchardData {
         actions: bundle
             .actions()
             .iter()
             .map(|action| {
                 let note = action.encrypted_note();
-                Ok(OrchardAction {
+                OrchardAction {
                     nullifier: Nullifier(action.nullifier().to_bytes()),
                     cmx: NoteCommitment(action.cmx().to_bytes()),
                     ephemeral_key: EphemeralKey(note.epk_bytes),
                     enc_ciphertext: CompactCiphertext::prefix_of(&note.enc_ciphertext.0),
-                })
+                }
             })
-            .collect::<Result<Vec<_>, DecodeError>>()?,
+            .collect(),
         value_balance: *bundle.value_balance(),
-    })
-}
-
-/// Byte span of each tx inside a block (header + count skipped by the same readers)
-pub(crate) fn tx_spans(raw: &[u8]) -> Result<Vec<std::ops::Range<usize>>, DecodeError> {
-    let (header, body) = HeaderBytes::split(raw)?;
-    let at = header.as_bytes().len();
-    let mut cursor = Cursor::new(body);
-    let count = CompactSize::read(&mut cursor)?;
-    (0..count)
-        .map(|_| {
-            let start = at + cursor.position() as usize;
-            read_transaction(&mut cursor)?;
-            Ok(start..at + cursor.position() as usize)
-        })
-        .collect()
+    }
 }
 
 /// Transaction `index`'s own bytes inside block `raw`, iff that block is `at` (hash, coinbase
@@ -291,19 +299,17 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Result<Vec<std::ops::Range<usize>>, Decode
 /// - v5 authorizing data (proofs, signatures) unchecked: committed only through
 ///   `hashBlockCommitments`, never the merkle root
 pub fn mined_transaction(raw: &[u8], at: BlockRef, index: u32, txid: TxId) -> Option<Vec<u8>> {
-    let block = decode_block(raw).ok()?;
+    let (block, spans) = decode_block_with_spans(raw).ok()?;
     let header = block.header();
     let ours = header.hash == at.hash && header.height == at.height && block.check_body().is_ok();
     let index = usize::try_from(index).ok()?;
     let mined = block.transactions().get(index).is_some_and(|tx| tx.txid == txid);
-    let span = tx_spans(raw).ok()?.into_iter().nth(index)?;
+    let span = spans.into_iter().nth(index)?;
     (ours && mined).then(|| raw[span].to_vec())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
-
     use proptest::{prop_assert, prop_assert_eq};
     use zcash_primitives::block::BlockHeader;
     use zcash_primitives::transaction::Transaction as Librustzcash;
@@ -317,9 +323,8 @@ mod tests {
     fn each_tx_of_a_mainnet_block_decodes_alone_identically() {
         let raw = fixtures::block(2_000_000);
 
-        let block = decode_block(&raw).expect("block decodes");
+        let (block, spans) = decode_block_with_spans(&raw).expect("block decodes");
 
-        let spans = tx_spans(&raw).expect("spans");
         assert_eq!(spans.len(), block.transactions().len(), "one span per transaction");
         for (index, (span, in_block)) in spans.into_iter().zip(block.transactions()).enumerate() {
             let alone = decode_transaction(&raw[span]).expect("standalone decodes");
@@ -331,7 +336,7 @@ mod tests {
     #[test]
     fn garbage_and_trailing_bytes_are_refused() {
         let raw = fixtures::block(2_000_000);
-        let first = tx_spans(&raw).expect("spans")[0].clone();
+        let first = decode_block_with_spans(&raw).expect("block decodes").1[0].clone();
 
         let garbage = decode_transaction(&[0u8; 8]);
         let padded_tx = decode_transaction(&[&raw[first], &[0]].concat());
@@ -348,7 +353,7 @@ mod tests {
     }
 
     /// Mainnet 2,000,000: each cut = the bytes librustzcash's own reader consumes for that tx
-    /// (oracle independent of `tx_spans`)
+    /// (oracle independent of `decode_block_with_spans`)
     #[test]
     fn a_mined_transaction_comes_out_of_its_block_by_position() {
         let raw = fixtures::block(2_000_000);
@@ -358,15 +363,16 @@ mod tests {
             &zcash_protocol::consensus::MainNetwork,
             BlockHeight::from(2_000_000),
         );
-        let mut reader = Cursor::new(raw.as_slice());
+        let mut reader = raw.as_slice();
         BlockHeader::read(&mut reader).expect("header");
         let count = CompactSize::read(&mut reader).expect("tx count");
-        assert_eq!(count, block.transactions().len() as u64, "tx count = decoded txs");
+        let decoded = u64::try_from(block.transactions().len()).expect("usize <= u64");
+        assert_eq!(count, decoded, "tx count = decoded txs");
 
         for (index, tx) in (0u32..).zip(block.transactions()) {
-            let start = reader.position() as usize;
+            let start = raw.len() - reader.len();
             let reference = Librustzcash::read(&mut reader, branch).expect("librustzcash reads");
-            let own = &raw[start..reader.position() as usize];
+            let own = &raw[start..raw.len() - reader.len()];
 
             let cut = mined_transaction(&raw, at, index, tx.txid);
 
@@ -381,10 +387,10 @@ mod tests {
     fn a_mined_transaction_is_absent_unless_block_txid_body_and_position_match() {
         const INSIDE_TX_ONE: usize = 40;
         let raw = fixtures::block(2_000_000);
-        let block = decode_block(&raw).expect("block decodes");
+        let (block, spans) = decode_block_with_spans(&raw).expect("block decodes");
         let (at, txs) = (block.block_ref(), block.transactions());
         let mut tampered = raw.clone();
-        tampered[tx_spans(&raw).expect("spans")[1].start + INSIDE_TX_ONE] ^= 1;
+        tampered[spans[1].start + INSIDE_TX_ONE] ^= 1;
         let elsewhere = BlockRef { height: at.height + 1, ..at };
         let past_last = u32::try_from(txs.len()).expect("a small block");
 
@@ -402,9 +408,9 @@ mod tests {
     fn each_fixture_header_hashes_links_reencodes_and_roots_its_txids() {
         for height in HEIGHTS {
             let raw = fixtures::block(height);
-            let mut cursor = Cursor::new(raw.as_slice());
-            BlockHeader::read(&mut cursor).expect("header");
-            let header_bytes = &raw[..cursor.position() as usize];
+            let mut rest = raw.as_slice();
+            BlockHeader::read(&mut rest).expect("header");
+            let header_bytes = &raw[..raw.len() - rest.len()];
 
             let decoded = decode_block(&raw).expect("block decodes");
 

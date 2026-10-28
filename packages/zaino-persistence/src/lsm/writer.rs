@@ -5,6 +5,7 @@
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
+    io,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -13,10 +14,9 @@ use rayon::slice::ParallelSliceMut as _;
 use super::{
     dir::SegmentDir,
     file::SegmentFile,
-    filter::FilterError,
     layout::{encode_row, Navigation, Row, Shape},
     slots::Slot,
-    Result, SegmentError, SegmentMeta,
+    Result, SegmentMeta,
 };
 use crate::{
     fs::{Access, Durability},
@@ -63,10 +63,9 @@ struct SegmentOut {
 }
 
 impl SegmentOut {
-    fn push(&mut self, row: &[u8], tombstone: bool) -> Result<()> {
-        let id = self.id;
+    fn push(&mut self, row: &[u8], tombstone: bool) -> io::Result<()> {
         self.tombstones += u64::from(tombstone);
-        self.navigation.push(row).map_err(|error| navigation_error(id, error))?;
+        self.navigation.push(row)?;
         self.digest.update(row);
         self.chunk.extend_from_slice(row);
         if self.chunk.len() >= CHUNK {
@@ -78,10 +77,11 @@ impl SegmentOut {
 
     /// Records, then navigation, sealed (fsynced) → meta a manifest would list + rows' digest +
     /// the file
-    fn finish(mut self) -> Result<(SegmentMeta, u32, PagedFile)> {
+    fn finish(mut self) -> io::Result<(SegmentMeta, u32, PagedFile)> {
         self.file.append(&self.chunk)?;
-        let (id, records) = (self.id, self.navigation.records());
-        self.navigation.finish(&mut self.file).map_err(|error| navigation_error(id, error))?;
+        let id = self.id;
+        let records = u64::try_from(self.navigation.records()).expect("usize fits u64");
+        self.navigation.finish(&mut self.file)?;
         // a new file: its blocks + length = metadata no other file's flush commits
         let tombstones = self.tombstones;
         let sealed = self.file.seal(Durability::PerFile)?;
@@ -90,7 +90,7 @@ impl SegmentOut {
     }
 }
 
-/// `Contract` reason for `key`: each input's row of it, in input order
+/// Merge panic reason for `key`: each input's row of it, in input order
 ///
 /// - input order = merge heap's order for equal keys
 /// - each input holds a key at most once
@@ -106,13 +106,6 @@ fn held_reason(sources: &[SegmentFile], key: &[u8]) -> String {
         })
         .collect();
     format!("key held {} times: {}", held.len(), held.join(", "))
-}
-
-fn navigation_error(segment: u32, error: FilterError) -> SegmentError {
-    match error {
-        FilterError::Build(reason) => SegmentError::Filter { segment, reason },
-        FilterError::Io(error) => SegmentError::Io(error),
-    }
 }
 
 impl SegmentWriter {
@@ -144,7 +137,7 @@ impl SegmentWriter {
         }
         rows.par_sort_unstable_by_key(|(key, _)| *key);
 
-        let mut out = self.create(id, rows.len() as u64)?;
+        let mut out = self.create(id, rows.len())?;
         let mut row = Vec::with_capacity(self.shape.stride);
         for (key, value) in rows {
             row.clear();
@@ -170,7 +163,7 @@ impl SegmentWriter {
             .iter()
             .map(|meta| SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential))
             .collect::<Result<Vec<_>>>()?;
-        let total: u64 = inputs.iter().map(|meta| meta.records).sum();
+        let total: usize = sources.iter().map(SegmentFile::records).sum();
 
         let head = |source: usize, slot: usize| -> Option<Head<'_>> {
             let file = &sources[source];
@@ -214,10 +207,10 @@ impl SegmentWriter {
                     uncharged += first.len();
                 }
                 (1, 1) => cancelled += 1,
-                _ => {
-                    let reason = held_reason(&sources, key);
-                    return Err(SegmentError::Contract { segment: id, reason });
-                }
+                _ => panic!(
+                    "merge into segment {id}: {} (insert-once / remove-once broken)",
+                    held_reason(&sources, key)
+                ),
             }
             if uncharged >= CHUNK {
                 slot.charge(std::mem::take(&mut uncharged));
@@ -226,7 +219,7 @@ impl SegmentWriter {
         slot.charge(uncharged);
         let output = out.map(|out| self.sealed(out)).transpose()?;
         let written = output.map_or(0, |output| output.records);
-        let inputs: u64 = sources.iter().map(|file| file.records() as u64).sum();
+        let inputs = u64::try_from(total).expect("usize fits u64");
         assert_eq!(written + 2 * cancelled, inputs, "merge accounts for every input row");
         Ok(Some(Merged { output, cancelled }))
     }
@@ -250,7 +243,12 @@ impl SegmentWriter {
     /// writing + reading)
     fn verify(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
         let file = SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential)?;
-        assert_eq!(file.records() as u64, meta.records, "segment {}: record count", meta.id);
+        assert_eq!(
+            u64::try_from(file.records()).ok(),
+            Some(meta.records),
+            "segment {}: record count",
+            meta.id
+        );
         file.warm_filter();
         let (mut digest, mut tombstones) = (crc32fast::Hasher::new(), 0);
         for slot in 0..file.records() {
@@ -268,7 +266,7 @@ impl SegmentWriter {
         Ok(())
     }
 
-    fn create(&self, id: u32, records: u64) -> Result<SegmentOut> {
+    fn create(&self, id: u32, records: usize) -> Result<SegmentOut> {
         let path = self.dir.segment(id);
         let file = PagedFile::open(self.dir.fs(), &path, Sealed::EMPTY, FileKind::Segment)?;
         Ok(SegmentOut {

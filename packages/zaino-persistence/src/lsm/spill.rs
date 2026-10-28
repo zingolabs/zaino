@@ -38,7 +38,8 @@ impl Spill {
     }
 
     pub(crate) fn len(&self) -> u64 {
-        self.file.as_ref().map_or(0, |(_, written)| *written) + self.buffer.len() as u64
+        self.file.as_ref().map_or(0, |(_, written)| *written)
+            + u64::try_from(self.buffer.len()).expect("usize fits u64")
     }
 
     /// Every pushed byte appended to `out`, in order, scratch file removed
@@ -55,7 +56,7 @@ impl Spill {
             let take = usize::try_from(total - at).map_or(SPILL_AT, |left| left.min(SPILL_AT));
             file.read_exact_at(&mut chunk[..take], at)?;
             out.append(&chunk[..take])?;
-            at += take as u64;
+            at += u64::try_from(take).expect("take <= SPILL_AT");
         }
         drop(file);
         self.file = None;
@@ -64,14 +65,12 @@ impl Spill {
 
     fn write_out(&mut self) -> io::Result<()> {
         if self.file.is_none() {
-            let file = self.fs.open(&self.path)?.file;
-            // scratch name reusable after a crash (belt and braces: open removes it too)
-            file.set_len(0)?;
-            self.file = Some((file, 0));
+            // no truncate: stale bytes past `written` never read
+            self.file = Some((self.fs.open(&self.path)?.file, 0));
         }
         let (file, written) = self.file.as_mut().expect("opened above");
         file.write_all_at(&self.buffer, *written)?;
-        *written += self.buffer.len() as u64;
+        *written += u64::try_from(self.buffer.len()).expect("usize fits u64");
         self.buffer.clear();
         Ok(())
     }
@@ -93,13 +92,18 @@ mod tests {
         let fs = SimFs::new();
         let dir = Path::new("/set");
         fs.create_dir_all(dir).expect("dir");
-        let pushed: Vec<u8> = (0..3 * SPILL_AT + 77).map(|n| (n % 251) as u8).collect();
+        let pushed: Vec<u8> =
+            (0..3 * SPILL_AT + 77).map(|n| u8::try_from(n % 251).expect("< 251")).collect();
         let path = dir.join("0000000007.fences.scratch");
         let mut spill = Spill::new(fs.clone(), path.clone());
         for piece in pushed.chunks(1000) {
             spill.push(piece).expect("push");
         }
-        assert_eq!(spill.len(), pushed.len() as u64, "bytes pushed");
+        assert_eq!(
+            spill.len(),
+            u64::try_from(pushed.len()).expect("usize fits u64"),
+            "bytes pushed"
+        );
         let target = dir.join("0000000007.seg");
         let mut out = PagedFile::open(fs.as_ref(), &target, Sealed::EMPTY, FileKind::Segment)
             .expect("segment");

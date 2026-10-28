@@ -17,7 +17,7 @@ use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::alarm_thresholds::FINALITY_STALL;
+use crate::alarm_thresholds::FINALITY_PAUSE;
 use crate::listings::Listings;
 use crate::telemetry::Alarms;
 use crate::trusted_validators::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
@@ -110,9 +110,16 @@ pub(crate) struct Sighting {
 }
 
 impl Sighting {
-    pub(crate) fn new(raw: Bytes, fee: Option<Zatoshis>, ours: bool) -> Self {
+    /// Listed (trusted or quorum) with its fee
+    pub(crate) fn priced(raw: Bytes, fee: Zatoshis) -> Self {
         let (trusted, projection) = (TrustedValidatorSet::default(), Projection::default());
-        Self { trusted, quorum: false, ours, raw, fee, projection }
+        Self { trusted, quorum: false, ours: false, raw, fee: Some(fee), projection }
+    }
+
+    /// Relayed by us, before any listing prices it
+    pub(crate) fn relayed(raw: Bytes) -> Self {
+        let (trusted, projection) = (TrustedValidatorSet::default(), Projection::default());
+        Self { trusted, quorum: false, ours: true, raw, fee: None, projection }
     }
 
     pub(crate) fn raw(&self) -> &Bytes {
@@ -222,9 +229,9 @@ impl ChainViewSnapshot {
         self.chain = chain;
     }
 
-    /// A block `depth` deep owed finality ≥ [`FINALITY_STALL`] (unvouched, peers short of it, H6)
-    pub(crate) fn finality_stalled(&self, now: Instant) -> bool {
-        self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_STALL)
+    /// A block `depth` deep owed finality ≥ [`FINALITY_PAUSE`] (unvouched, peers short of it, H6)
+    pub(crate) fn finality_paused(&self, now: Instant) -> bool {
+        self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_PAUSE)
     }
 
     /// An answering validator claims past best, not shown off our chain (best ≠ the network's
@@ -305,7 +312,7 @@ impl ChainViewSnapshot {
     /// Served mempool
     ///
     /// - `None` while neither a `Live` trusted validator (its mempool listing) holds the best block
-    ///   nor [`peers_quorate`](Self::peers_quorate) (fail closed: no empty stand-in)
+    ///   nor `peers_quorate()` (fail closed: no empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
         let live =
             |at: usize| self.trusted_validators.get(at).is_some_and(|m| m.health == Health::Live);
@@ -314,7 +321,7 @@ impl ChainViewSnapshot {
     }
 
     /// Fresh peer mempool listings span enough netgroups for a quorum (`listings.rs`)
-    pub fn peers_quorate(&self) -> bool {
+    pub(crate) fn peers_quorate(&self) -> bool {
         self.listings.quorate()
     }
 }
@@ -328,6 +335,10 @@ impl MempoolView<'_> {
     /// quorum, or ours), in txid order
     pub fn entries(&self) -> impl Iterator<Item = MempoolEntry> + '_ {
         self.0.mempool.iter().map(|(txid, sighting)| sighting.entry(*txid))
+    }
+
+    pub fn get(&self, txid: &TxId) -> Option<MempoolEntry> {
+        self.0.mempool.get(txid).map(|sighting| sighting.entry(*txid))
     }
 
     /// `GetMempoolTx`'s filter (`service.proto:293-305`): all but the entries a suffix identifies
@@ -361,7 +372,7 @@ mod tests {
     #[test]
     fn a_sightings_render_is_shared_by_every_snapshot_until_its_first_listed_fee() {
         let txid = TxId::from_bytes([1; 32]);
-        let mut sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
+        let mut sighting = Sighting::relayed(Bytes::from_static(b"tx"));
         let published = sighting.clone();
         let render = |sighting: &Sighting, text: &'static str| {
             sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>(Bytes::from(text)))

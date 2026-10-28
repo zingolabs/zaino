@@ -2,6 +2,8 @@
 //!
 //! - Table whose keys a runtime crate's own type spells = that type (`[grpc]` = [`GrpcLimits`],
 //!   `[submission]` = [`SubmitPolicy`], `[sync.lsm_store]` = [`LsmConfig`])
+//! - [`DaemonConfigFile`] + its `*Table`s = what the file holds, [`DaemonConfigFile::resolve`] →
+//!   [`DaemonConfig`] (paths set, enabled indexes, endpoints: the only shape a run reads)
 //! - Rest translated at boot ([`crate::daemon::start`])
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
@@ -13,15 +15,17 @@ use std::time::Duration;
 
 use zaino_chainview::SubmitPolicy;
 use zaino_grpc::{GrpcLimits, TlsFiles};
+use zaino_peers::PeerConfig;
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
-use zaino_persistence::{manifest_fits, IndexKind, LsmConfig};
+use zaino_persistence::{manifest_fits, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zaino_primitives::serde_secs;
 use zaino_source::{Auth, Endpoint, LinkLimits, ResponseSizeCap, Timeouts, ZebraIndexerTls};
+use zaino_sync::IndexKind;
 use zaino_traffic::{Limits, TrustedValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
@@ -69,35 +73,35 @@ pub(crate) const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 # For documentation see https://github.com/zingolabs/zaino
 "#;
 
-/// Zebra JSON-RPC endpoint Zaino trusts: headers for the verified chain, mempool admission (with
-/// fees), mined-transaction lookups
+/// `[[trusted_validators]]` entry: Zebra JSON-RPC endpoint Zaino trusts (headers for the verified
+/// chain, mempool admission with fees, mined-transaction lookups)
 ///
 /// - No vote (`priority` = who is asked first)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct TrustedValidatorConfig {
+pub(crate) struct TrustedValidatorTable {
     pub(crate) jsonrpc_address: String,
-    pub(crate) cookie_path: Option<PathBuf>,
-    pub(crate) user: Option<String>,
-    pub(crate) password: Option<String>,
+    cookie_path: Option<PathBuf>,
+    user: Option<String>,
+    password: Option<String>,
     #[serde(rename = "connect_timeout_secs", with = "serde_secs::nonzero")]
-    pub(crate) connect_timeout: Duration,
+    connect_timeout: Duration,
     /// Silence, not total duration (a multi-MB block over a slow link takes as long as it takes)
     #[serde(rename = "read_timeout_secs", with = "serde_secs::nonzero")]
-    pub(crate) read_timeout: Duration,
+    read_timeout: Duration,
     /// The balancer's budget = the transport's pool (>= 5: poll + one per lane + one shared)
-    pub(crate) max_connections: Limits,
+    max_connections: Limits,
     /// Largest JSON-RPC reply read: 4 (one full block) ..= 32 (batches split to fit)
-    pub(crate) max_response_mib: ResponseMib,
+    max_response_mib: ResponseMib,
     /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
     pub(crate) indexer_address: Option<String>,
     /// Unset = plaintext (zakurad requires it off loopback)
-    pub(crate) indexer_tls: Option<ZebraIndexerTls>,
+    indexer_tls: Option<ZebraIndexerTls>,
     /// Every 0 asked before any 1 (higher tier = overflow + hedges only)
-    pub(crate) priority: u8,
+    priority: u8,
 }
 
-impl Default for TrustedValidatorConfig {
+impl Default for TrustedValidatorTable {
     fn default() -> Self {
         let timeouts = Timeouts::default();
         Self {
@@ -116,10 +120,60 @@ impl Default for TrustedValidatorConfig {
     }
 }
 
+impl TrustedValidatorTable {
+    /// `Err` = credentials other than `cookie_path`, `user` + `password` together, or neither; or
+    /// `indexer_tls` with no `indexer_address`
+    fn resolve(self) -> Result<TrustedValidatorConfig, IndexerError> {
+        let Self {
+            jsonrpc_address: address,
+            cookie_path,
+            user,
+            password,
+            connect_timeout,
+            read_timeout,
+            max_connections,
+            max_response_mib,
+            indexer_address,
+            indexer_tls,
+            priority,
+        } = self;
+        let auth = match (cookie_path, user, password) {
+            (None, None, None) => Auth::None,
+            (Some(path), None, None) => Auth::Cookie(path),
+            (None, Some(user), Some(password)) => Auth::Basic { user, password },
+            (Some(_), _, _) => {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] {address} sets cookie_path and user/password: pick one"
+                )))
+            }
+            _ => {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] {address}: user and password go together"
+                )))
+            }
+        };
+        let indexer = match (indexer_address, indexer_tls) {
+            (None, Some(_)) => {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
+                )))
+            }
+            (indexer, tls) => indexer.map(|address| ZebraIndexerConfig { address, tls }),
+        };
+        let timeouts = Timeouts { connect: connect_timeout, read: read_timeout };
+        let limits = LinkLimits {
+            max_connections: max_connections.max_connections(),
+            response_size_cap: max_response_mib.0,
+        };
+        let endpoint = Endpoint { address, auth, timeouts, limits };
+        Ok(TrustedValidatorConfig { endpoint, max_connections, indexer, priority })
+    }
+}
+
 /// `max_response_mib`: refused at parse outside one full block's reply ..= 32 MiB
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "u32", into = "u32")]
-pub(crate) struct ResponseMib(ResponseSizeCap);
+struct ResponseMib(ResponseSizeCap);
 
 impl TryFrom<u32> for ResponseMib {
     type Error = String;
@@ -133,45 +187,25 @@ impl TryFrom<u32> for ResponseMib {
 
 impl From<ResponseMib> for u32 {
     fn from(mib: ResponseMib) -> Self {
-        (mib.0.bytes() >> 20) as u32
+        u32::try_from(mib.0.bytes() >> 20).expect("ResponseSizeCap <= 32 MiB")
     }
 }
 
-impl TrustedValidatorConfig {
-    /// The transport's: connection pool + reply cap
-    pub(crate) fn link(&self) -> LinkLimits {
-        LinkLimits {
-            max_connections: self.max_connections.max_connections(),
-            response_size_cap: self.max_response_mib.0,
-        }
-    }
+/// Trusted validator, resolved: its JSON-RPC endpoint (address, auth, timeouts, link) + the
+/// balancer's view of it
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedValidatorConfig {
+    pub(crate) endpoint: Endpoint,
+    pub(crate) max_connections: Limits,
+    pub(crate) indexer: Option<ZebraIndexerConfig>,
+    pub(crate) priority: u8,
+}
 
-    pub(crate) fn timeouts(&self) -> Timeouts {
-        Timeouts { connect: self.connect_timeout, read: self.read_timeout }
-    }
-
-    /// `cookie_path`, or `user` + `password` together, or neither (`Err` = any other mix)
-    pub(crate) fn auth(&self) -> Result<Auth, IndexerError> {
-        let address = &self.jsonrpc_address;
-        match (&self.cookie_path, &self.user, &self.password) {
-            (None, None, None) => Ok(Auth::None),
-            (Some(path), None, None) => Ok(Auth::Cookie(path.clone())),
-            (None, Some(user), Some(password)) => {
-                Ok(Auth::Basic { user: user.clone(), password: password.clone() })
-            }
-            (Some(_), _, _) => Err(IndexerError::Config(format!(
-                "[[trusted_validators]] {address} sets cookie_path and user/password: pick one"
-            ))),
-            _ => Err(IndexerError::Config(format!(
-                "[[trusted_validators]] {address}: user and password go together"
-            ))),
-        }
-    }
-
-    pub(crate) fn endpoint(&self) -> Result<Endpoint, IndexerError> {
-        let (address, auth) = (self.jsonrpc_address.clone(), self.auth()?);
-        Ok(Endpoint { address, auth, timeouts: self.timeouts(), limits: self.link() })
-    }
+/// zebrad's indexer gRPC
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZebraIndexerConfig {
+    pub(crate) address: String,
+    pub(crate) tls: Option<ZebraIndexerTls>,
 }
 
 /// Enabled index, resolved: its directory + the shared `[sync]` queue budget (boot's input)
@@ -179,18 +213,31 @@ impl TrustedValidatorConfig {
 /// - Write buffer = the index crate's `WRITE_BUFFER`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexConfig {
+    pub(crate) kind: IndexKind,
     pub(crate) path: PathBuf,
     pub(crate) queue_bytes: NonZeroUsize,
 }
 
+/// Every enabled index, [`IndexKind::ALL`] order (>= 1, utxo_set beside compact_block, on with it)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnabledIndexes(Vec<IndexConfig>);
+
+impl EnabledIndexes {
+    pub(crate) fn get(&self, kind: IndexKind) -> Option<&IndexConfig> {
+        self.0.iter().find(|index| index.kind == kind)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &IndexConfig> {
+        self.0.iter()
+    }
+}
+
 /// `[index.*]`: which indexes this daemon builds and serves, one directory each
 ///
-/// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and utxo_set)
 /// - defaults name every path (`generate-config` prints them)
-/// - table without one = `None`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct Indexes {
+struct IndexTables {
     compact_block: IndexTable,
     block_hash: IndexTable,
     tree_state: IndexTable,
@@ -198,9 +245,9 @@ pub(crate) struct Indexes {
     txid_location: IndexTable,
 }
 
-impl Default for Indexes {
+impl Default for IndexTables {
     fn default() -> Self {
-        let table = |kind| IndexTable { path: Some(paths::default_index(kind)), enabled: true };
+        let table = |kind| IndexTable { path: paths::default_index(kind), enabled: true };
         Self {
             compact_block: table(IndexKind::CompactBlock),
             block_hash: table(IndexKind::BlockHash),
@@ -208,6 +255,59 @@ impl Default for Indexes {
             transparent_address: table(IndexKind::TransparentAddress),
             txid_location: table(IndexKind::TxidLocation),
         }
+    }
+}
+
+impl IndexTables {
+    /// `Err` = an enabled table's unset path with no home dir, compact_block's path with no final
+    /// name, or none enabled
+    fn resolve(self, queue_mib: NonZeroU32) -> Result<EnabledIndexes, IndexerError> {
+        let path = |table: IndexTable, kind: IndexKind| match table.enabled {
+            false => Ok(None),
+            true => {
+                let key = format!("index.{}.path", kind.name());
+                resolved_path(table.path, &key, || paths::default_index(kind)).map(Some)
+            }
+        };
+        let compact_block = path(self.compact_block, IndexKind::CompactBlock)?;
+        let block_hash = path(self.block_hash, IndexKind::BlockHash)?;
+        let tree_state = path(self.tree_state, IndexKind::TreeState)?;
+        let transparent_address = path(self.transparent_address, IndexKind::TransparentAddress)?;
+        let txid_location = path(self.txid_location, IndexKind::TxidLocation)?;
+        let utxo_set = match &compact_block {
+            Some(beside) if beside.file_name().is_none() => {
+                return Err(IndexerError::Config(format!(
+                    "index.compact_block.path = {}: no final directory name (utxo_set sits \
+                     beside it)",
+                    beside.display()
+                )))
+            }
+            beside => {
+                beside.as_ref().map(|beside| beside.with_file_name(IndexKind::UtxoSet.name()))
+            }
+        };
+        // past `usize` = no limit anyway
+        let queue_bytes = NonZeroUsize::try_from(bytes(queue_mib)).unwrap_or(NonZeroUsize::MAX);
+        let enabled: Vec<IndexConfig> = IndexKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let path = match kind {
+                    IndexKind::CompactBlock => &compact_block,
+                    IndexKind::UtxoSet => &utxo_set,
+                    IndexKind::BlockHash => &block_hash,
+                    IndexKind::TreeState => &tree_state,
+                    IndexKind::TransparentAddress => &transparent_address,
+                    IndexKind::TxidLocation => &txid_location,
+                };
+                path.clone().map(|path| IndexConfig { kind, path, queue_bytes })
+            })
+            .collect();
+        if enabled.is_empty() {
+            return Err(IndexerError::Config(
+                "every [index.*] disabled: nothing to build or serve".to_string(),
+            ));
+        }
+        Ok(EnabledIndexes(enabled))
     }
 }
 
@@ -231,24 +331,24 @@ fn bytes(mib: NonZeroU32) -> NonZeroU64 {
     NonZeroU64::from(mib).saturating_mul(mib_bytes)
 }
 
-/// Wallet-facing gRPC server
+/// `[serve]`: wallet-facing gRPC server
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct ServeConfig {
+pub(crate) struct ServeTable {
     pub(crate) grpc_listen_address: SocketAddr,
     /// Across one request's addresses, whole history (over = `RESOURCE_EXHAUSTED`, never partial)
-    pub(crate) max_address_rows: NonZeroUsize,
+    max_address_rows: NonZeroUsize,
     /// Absent = plaintext HTTP/2 (for a TLS-terminating proxy)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tls: Option<TlsFiles>,
+    tls: Option<TlsFiles>,
     /// Kept across restarts (`zainod hold` writes its marker here)
-    pub(crate) state_dir: PathBuf,
+    pub(crate) state_dir: Option<PathBuf>,
     /// >= load balancer's mark-down time + DNS TTL
     #[serde(rename = "hold_goaway_delay_secs", with = "serde_secs::any")]
-    pub(crate) hold_goaway_delay: Duration,
+    hold_goaway_delay: Duration,
 }
 
-impl Default for ServeConfig {
+impl Default for ServeTable {
     fn default() -> Self {
         Self {
             grpc_listen_address: SocketAddr::from(([127, 0, 0, 1], 8137)),
@@ -258,6 +358,26 @@ impl Default for ServeConfig {
             hold_goaway_delay: Duration::ZERO,
         }
     }
+}
+
+impl ServeTable {
+    /// `Err` = unset `state_dir` with no home dir
+    fn resolve(self) -> Result<ServeConfig, IndexerError> {
+        let Self { grpc_listen_address, max_address_rows, tls, state_dir, hold_goaway_delay } =
+            self;
+        let state_dir = resolved_path(state_dir, "serve.state_dir", paths::default_state)?;
+        Ok(ServeConfig { grpc_listen_address, max_address_rows, tls, state_dir, hold_goaway_delay })
+    }
+}
+
+/// [`ServeTable`], resolved
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServeConfig {
+    pub(crate) grpc_listen_address: SocketAddr,
+    pub(crate) max_address_rows: NonZeroUsize,
+    pub(crate) tls: Option<TlsFiles>,
+    pub(crate) state_dir: PathBuf,
+    pub(crate) hold_goaway_delay: Duration,
 }
 
 /// `[sync]`: the one block-fetch pipeline + the budgets every index shares
@@ -289,25 +409,52 @@ impl Default for SyncConfig {
     }
 }
 
-/// Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their word
-/// (> 5 netgroups, no difficulty collapse), the mempool quorum (each peer's listing polled),
+impl SyncConfig {
+    /// `Err` = a fanout some enabled index's manifest can't hold, or finality inside the reorg
+    /// bound off regtest
+    fn check(&self, indexes: &EnabledIndexes, network: NetworkType) -> Result<(), IndexerError> {
+        let fanout = self.lsm_store.fanout;
+        for kind in indexes.iter().map(|index| index.kind) {
+            if !manifest_fits(&zaino_nfs::schema(kind, network), fanout) {
+                return Err(IndexerError::Config(format!(
+                    "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
+                     manifest (lower it)",
+                    fanout.get(),
+                    kind.name()
+                )));
+            }
+        }
+        let depth = self.finalised_depth.get();
+        if network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
+            return Err(IndexerError::Config(format!(
+                "sync.finalised_depth = {depth} is below the validator's reorg bound \
+                 {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach durable blocks \
+                 (only regtest may set less)"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// `[p2p]`: Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their
+/// word (> 5 netgroups, no difficulty collapse), the mempool quorum (each peer's listing polled),
 /// submission relays
 ///
 /// - Serves no peer (listener on loopback, no services advertised)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct P2pConfig {
+struct P2pTable {
     /// Off = every submission attempt → a trusted validator
-    pub(crate) enabled: bool,
+    enabled: bool,
     /// Mainnet peers allow one connection per IP (keep it modest)
-    pub(crate) peer_target: NonZeroUsize,
+    peer_target: NonZeroUsize,
     /// Empty = the network's DNS seeders (regtest has none)
-    pub(crate) initial_peers: Vec<String>,
+    initial_peers: Vec<String>,
     /// zebra-network peer address cache (restart dials known peers, not only seeders)
-    pub(crate) cache_dir: PathBuf,
+    cache_dir: Option<PathBuf>,
 }
 
-impl Default for P2pConfig {
+impl Default for P2pTable {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -318,14 +465,35 @@ impl Default for P2pConfig {
     }
 }
 
-impl P2pConfig {
-    pub(crate) fn peers(&self, network: NetworkType) -> zaino_peers::PeerConfig {
-        zaino_peers::PeerConfig {
-            peer_target: self.peer_target,
-            initial_peers: self.initial_peers.clone(),
-            cache_dir: Some(self.cache_dir.clone()),
-            ..zaino_peers::PeerConfig::new(network)
+impl P2pTable {
+    /// `None` = off (`Err` = on with no `cache_dir` home dir default, too few peers, or nobody to
+    /// dial)
+    fn resolve(self, network: NetworkType) -> Result<Option<PeerConfig>, IndexerError> {
+        let Self { enabled, peer_target, initial_peers, cache_dir } = self;
+        if !enabled {
+            return Ok(None);
         }
+        let cache_dir = resolved_path(cache_dir, "p2p.cache_dir", paths::default_peer_cache)?;
+        let min = usize::try_from(zaino_traffic::Peers::MIN_IN_FLIGHT).expect("lane count");
+        if peer_target.get() < min {
+            return Err(IndexerError::Config(format!(
+                "p2p.peer_target = {peer_target} is below {}: the peer set carries one request \
+                 per lane at once (headers, tip blocks, bulk blocks)",
+                zaino_traffic::Peers::MIN_IN_FLIGHT
+            )));
+        }
+        if network == NetworkType::Regtest && initial_peers.is_empty() {
+            return Err(IndexerError::Config(
+                "p2p.enabled on regtest with no p2p.initial_peers: regtest has no DNS seeders"
+                    .to_string(),
+            ));
+        }
+        Ok(Some(PeerConfig {
+            peer_target,
+            initial_peers,
+            cache_dir: Some(cache_dir),
+            ..PeerConfig::new(network)
+        }))
     }
 }
 
@@ -355,6 +523,16 @@ impl IndexSnapshotConfig {
     fn connections_default() -> NonZeroU32 {
         const { NonZeroU32::new(8).expect("8 is non-zero") }
     }
+
+    fn check(&self) -> Result<(), IndexerError> {
+        if self.connections.get() > 16 {
+            return Err(IndexerError::Config(format!(
+                "snapshot.connections = {}: aria2c allows at most 16 per server",
+                self.connections
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient`, one for every validator
@@ -365,28 +543,29 @@ pub(crate) enum ValidatorClient {
     Grpc,
 }
 
+/// What the TOML file (+ env) holds, before [`DaemonConfigFile::resolve`]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct DaemonConfig {
+pub(crate) struct DaemonConfigFile {
     /// Declared, never derived (regtest Zebra reports `"test"` over `getblockchaininfo`)
     #[serde(with = "network_serde")]
     pub(crate) network: NetworkType,
     /// `grpc` = blocks over each validator's `indexer_address` (zcashd has none: `legacy_rpc`)
-    pub(crate) validator_client: ValidatorClient,
-    pub(crate) metrics: MetricsConfig,
+    validator_client: ValidatorClient,
+    metrics: MetricsConfig,
     /// >= 1 (two = first set surviving a failure)
-    pub(crate) trusted_validators: Vec<TrustedValidatorConfig>,
-    pub(crate) serve: ServeConfig,
+    pub(crate) trusted_validators: Vec<TrustedValidatorTable>,
+    pub(crate) serve: ServeTable,
     pub(crate) grpc: GrpcLimits,
-    pub(crate) submission: SubmitPolicy,
-    pub(crate) p2p: P2pConfig,
+    submission: SubmitPolicy,
+    p2p: P2pTable,
     pub(crate) sync: SyncConfig,
-    pub(crate) index: Indexes,
+    index: IndexTables,
     /// Absent = synced from the validator
-    pub(crate) snapshot: Option<IndexSnapshotConfig>,
+    snapshot: Option<IndexSnapshotConfig>,
 }
 
-impl Default for DaemonConfig {
+impl Default for DaemonConfigFile {
     fn default() -> Self {
         Self {
             // Mainnet = the deployment target (testnet/regtest operators declare theirs)
@@ -394,159 +573,104 @@ impl Default for DaemonConfig {
             // every validator speaks it (zcashd has no indexer gRPC)
             validator_client: ValidatorClient::LegacyRpc,
             metrics: MetricsConfig::default(),
-            trusted_validators: vec![TrustedValidatorConfig::default()],
-            serve: ServeConfig::default(),
+            trusted_validators: vec![TrustedValidatorTable::default()],
+            serve: ServeTable::default(),
             grpc: GrpcLimits::default(),
             submission: SubmitPolicy::default(),
-            p2p: P2pConfig::default(),
+            p2p: P2pTable::default(),
             sync: SyncConfig::default(),
-            index: Indexes::default(),
+            index: IndexTables::default(),
             snapshot: None,
         }
     }
 }
 
+impl DaemonConfigFile {
+    /// `Err` = a path with no home dir default (names its key), or a config no pipeline composes
+    /// from
+    pub(crate) fn resolve(self) -> Result<DaemonConfig, IndexerError> {
+        let Self {
+            network,
+            validator_client,
+            metrics,
+            trusted_validators,
+            serve,
+            grpc,
+            submission,
+            p2p,
+            sync,
+            index,
+            snapshot,
+        } = self;
+        let serve = serve.resolve()?;
+        let indexes = index.resolve(sync.queue_mib)?;
+        sync.check(&indexes, network)?;
+        let trusted_validators = resolve_validators(trusted_validators)?;
+        let p2p = p2p.resolve(network)?;
+        snapshot.as_ref().map_or(Ok(()), IndexSnapshotConfig::check)?;
+        Ok(DaemonConfig {
+            network,
+            validator_client,
+            metrics,
+            trusted_validators,
+            serve,
+            grpc,
+            submission,
+            p2p,
+            sync,
+            indexes,
+            snapshot,
+        })
+    }
+}
+
+/// `Err` = none, more than the balancer's ids, one address twice, or an entry
+/// [`TrustedValidatorTable::resolve`] refuses
+fn resolve_validators(
+    tables: Vec<TrustedValidatorTable>,
+) -> Result<Vec<TrustedValidatorConfig>, IndexerError> {
+    let count = tables.len();
+    if count == 0 {
+        return Err(IndexerError::Config(
+            "no [[trusted_validators]]: at least one validator is needed".to_string(),
+        ));
+    }
+    if count > TrustedValidatorId::MAX {
+        return Err(IndexerError::Config(format!(
+            "{count} [[trusted_validators]]: at most {} are supported",
+            TrustedValidatorId::MAX
+        )));
+    }
+    let mut addresses = std::collections::HashSet::new();
+    let resolve = |table: TrustedValidatorTable| {
+        if !addresses.insert(table.jsonrpc_address.clone()) {
+            return Err(IndexerError::Config(format!(
+                "[[trusted_validators]] lists {} twice: one validator counted as two",
+                table.jsonrpc_address
+            )));
+        }
+        table.resolve()
+    };
+    tables.into_iter().map(resolve).collect()
+}
+
+/// [`DaemonConfigFile`], resolved: what the daemon, `verify`, `hold` and `overload` run on
+#[derive(Debug)]
+pub(crate) struct DaemonConfig {
+    pub(crate) network: NetworkType,
+    pub(crate) validator_client: ValidatorClient,
+    pub(crate) metrics: MetricsConfig,
+    pub(crate) trusted_validators: Vec<TrustedValidatorConfig>,
+    pub(crate) serve: ServeConfig,
+    pub(crate) grpc: GrpcLimits,
+    pub(crate) submission: SubmitPolicy,
+    pub(crate) p2p: Option<PeerConfig>,
+    pub(crate) sync: SyncConfig,
+    pub(crate) indexes: EnabledIndexes,
+    pub(crate) snapshot: Option<IndexSnapshotConfig>,
+}
+
 impl DaemonConfig {
-    /// `kind`'s directory + the `[sync]` budgets (`None` = disabled)
-    ///
-    /// - utxo_set = compact_block's fee index: on with it, `utxo_set` beside its `path`
-    pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
-        let index = &self.index;
-        let table = |table: &IndexTable, of: IndexKind| {
-            let path = table.path.clone().unwrap_or_else(|| paths::default_index(of));
-            (table.enabled, path)
-        };
-        let (enabled, path) = match kind {
-            IndexKind::CompactBlock => table(&index.compact_block, kind),
-            IndexKind::UtxoSet => {
-                let (enabled, beside) = table(&index.compact_block, IndexKind::CompactBlock);
-                (enabled, beside.with_file_name(kind.name()))
-            }
-            IndexKind::BlockHash => table(&index.block_hash, kind),
-            IndexKind::TreeState => table(&index.tree_state, kind),
-            IndexKind::TransparentAddress => table(&index.transparent_address, kind),
-            IndexKind::TxidLocation => table(&index.txid_location, kind),
-        };
-        // past `usize` = no limit anyway
-        let queue_bytes = NonZeroUsize::try_from(bytes(self.sync.queue_mib));
-        let queue_bytes = queue_bytes.unwrap_or(NonZeroUsize::MAX);
-        enabled.then_some(IndexConfig { path, queue_bytes })
-    }
-
-    /// `(compact_block, utxo_set)` when compact_block is enabled (its fees need the other)
-    pub(crate) fn compact_block(&self) -> Result<Option<(IndexConfig, IndexConfig)>, IndexerError> {
-        let Some(compact_block) = self.enabled(IndexKind::CompactBlock) else { return Ok(None) };
-        if compact_block.path.file_name().is_none() {
-            return Err(IndexerError::Config(format!(
-                "index.compact_block.path = {}: no final directory name (utxo_set sits \
-                 beside it)",
-                compact_block.path.display()
-            )));
-        }
-        let utxo_set = self.enabled(IndexKind::UtxoSet).expect("on with compact_block");
-        Ok(Some((compact_block, utxo_set)))
-    }
-
-    /// `Err` = no pipeline composes from it
-    pub(crate) fn validate(&self) -> Result<(), IndexerError> {
-        self.validate_indexes()?;
-        self.validate_validators()?;
-        self.validate_p2p()?;
-        self.validate_snapshot()
-    }
-
-    fn validate_indexes(&self) -> Result<(), IndexerError> {
-        self.compact_block()?;
-        if IndexKind::ALL.iter().all(|kind| self.enabled(*kind).is_none()) {
-            return Err(IndexerError::Config(
-                "every [index.*] disabled: nothing to build or serve".to_string(),
-            ));
-        }
-        let fanout = self.sync.lsm_store.fanout;
-        for kind in IndexKind::ALL.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
-            if !manifest_fits(&zaino_nfs::schema(kind, self.network), fanout) {
-                return Err(IndexerError::Config(format!(
-                    "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
-                     manifest (lower it)",
-                    fanout.get(),
-                    kind.name()
-                )));
-            }
-        }
-        let depth = self.sync.finalised_depth.get();
-        if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
-            return Err(IndexerError::Config(format!(
-                "sync.finalised_depth = {depth} is below the validator's reorg bound \
-                 {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach durable blocks \
-                 (only regtest may set less)"
-            )));
-        }
-        Ok(())
-    }
-
-    fn validate_validators(&self) -> Result<(), IndexerError> {
-        let count = self.trusted_validators.len();
-        if count == 0 {
-            return Err(IndexerError::Config(
-                "no [[trusted_validators]]: at least one validator is needed".to_string(),
-            ));
-        }
-        if count > TrustedValidatorId::MAX {
-            return Err(IndexerError::Config(format!(
-                "{count} [[trusted_validators]]: at most {} are supported",
-                TrustedValidatorId::MAX
-            )));
-        }
-        let mut addresses = std::collections::HashSet::new();
-        for validator in &self.trusted_validators {
-            let address = &validator.jsonrpc_address;
-            if !addresses.insert(address) {
-                return Err(IndexerError::Config(format!(
-                    "[[trusted_validators]] lists {address} twice: one validator counted as two"
-                )));
-            }
-            validator.auth()?;
-            if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
-                return Err(IndexerError::Config(format!(
-                    "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_p2p(&self) -> Result<(), IndexerError> {
-        if !self.p2p.enabled {
-            return Ok(());
-        }
-        let peer_target = self.p2p.peer_target.get();
-        if peer_target < zaino_traffic::Peers::MIN_IN_FLIGHT as usize {
-            return Err(IndexerError::Config(format!(
-                "p2p.peer_target = {peer_target} is below {}: the peer set carries one request \
-                 per lane at once (headers, tip blocks, bulk blocks)",
-                zaino_traffic::Peers::MIN_IN_FLIGHT
-            )));
-        }
-        if self.network == NetworkType::Regtest && self.p2p.initial_peers.is_empty() {
-            return Err(IndexerError::Config(
-                "p2p.enabled on regtest with no p2p.initial_peers: regtest has no DNS seeders"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_snapshot(&self) -> Result<(), IndexerError> {
-        let Some(snapshot) = &self.snapshot else { return Ok(()) };
-        if snapshot.connections.get() > 16 {
-            return Err(IndexerError::Config(format!(
-                "snapshot.connections = {}: aria2c allows at most 16 per server",
-                snapshot.connections
-            )));
-        }
-        Ok(())
-    }
-
     pub(crate) fn warn_about_metrics_listener(&self) {
         let Some(endpoint) = self.metrics.listen_address else {
             return;
@@ -564,6 +688,17 @@ impl DaemonConfig {
     }
 }
 
+/// `path`, else its home-dir `default` (`Err` = neither: names `key`)
+fn resolved_path(
+    path: Option<PathBuf>,
+    key: &str,
+    default: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, IndexerError> {
+    let missing =
+        || IndexerError::Config(format!("{key}: no home directory to default it, set it"));
+    path.or_else(default).ok_or_else(missing)
+}
+
 fn is_private_listen_addr(addr: &SocketAddr) -> bool {
     match addr.ip() {
         std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
@@ -571,10 +706,13 @@ fn is_private_listen_addr(addr: &SocketAddr) -> bool {
     }
 }
 
-/// Defaults as TOML, behind [`GENERATED_CONFIG_HEADER`]
+/// Defaults as TOML, behind [`GENERATED_CONFIG_HEADER`] (`Err` = defaults that don't resolve: a
+/// path with no home dir default)
 fn generate_default_config() -> Result<String, IndexerError> {
-    let toml = toml::to_string_pretty(&DaemonConfig::default())
-        .map_err(|e| IndexerError::Config(format!("serialising default config: {e}")))?;
+    let defaults = DaemonConfigFile::default();
+    defaults.clone().resolve()?;
+    let toml =
+        toml::to_string_pretty(&defaults).expect("default DaemonConfigFile serializes to TOML");
     Ok(format!("{GENERATED_CONFIG_HEADER}{toml}"))
 }
 
@@ -590,7 +728,7 @@ pub(super) fn generate_config(path: &Path) -> Result<ExitCode, IndexerError> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Defaults → `file_path` (TOML) → env (`ZAINO_CONFIG_`, `__` nesting)
+/// Defaults → `file_path` (TOML) → env (`ZAINO_CONFIG_`, `__` nesting), then resolved
 pub(crate) fn load_config(file_path: &Path) -> Result<DaemonConfig, IndexerError> {
     let settings = config::Config::builder()
         .add_source(config::File::from(file_path).format(config::FileFormat::Toml).required(true))
@@ -603,12 +741,13 @@ pub(crate) fn load_config(file_path: &Path) -> Result<DaemonConfig, IndexerError
         .build()
         .map_err(|e| IndexerError::Config(format!("loading configuration: {e}")))?;
 
-    let parsed: DaemonConfig = settings
+    let parsed: DaemonConfigFile = settings
         .try_deserialize()
         .map_err(|e| IndexerError::Config(format!("parsing configuration: {e}")))?;
+    let resolved = parsed.resolve()?;
 
     info!(path = %file_path.display(), "Config loaded");
-    Ok(parsed)
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -624,7 +763,7 @@ mod tests {
     }
 
     /// Per index: file over defaults, env over file, `[sync]` budgets in each, utxo_set
-    /// beside compact_block
+    /// beside compact_block, every one in fold order
     #[test]
     fn layers_resolve_every_index_through_defaults_file_and_env() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -659,54 +798,57 @@ enabled = false
         let sync =
             SyncConfig { finalised_depth: n(100), queue_mib: n(128), ..SyncConfig::default() };
         assert_eq!(config.sync, sync, "[sync]: file's depth, env's queue_mib");
-        let at = |path: PathBuf| {
-            Some(IndexConfig { path, queue_bytes: NonZeroUsize::new(128 << 20).expect("non-zero") })
+        let at = |kind, path: PathBuf| {
+            let queue_bytes = NonZeroUsize::new(128 << 20).expect("non-zero");
+            IndexConfig { kind, path, queue_bytes }
         };
-        let indexes = [
-            (
-                "compact_block: file's path",
-                IndexKind::CompactBlock,
-                at("/srv/zaino/compact_block".into()),
-            ),
-            (
-                "utxo_set: beside compact_block",
-                IndexKind::UtxoSet,
-                at("/srv/zaino/utxo_set".into()),
-            ),
-            (
-                "block_hash: default path",
-                IndexKind::BlockHash,
-                at(paths::default_index(IndexKind::BlockHash)),
-            ),
-            ("tree_state: env disabled over the file's path", IndexKind::TreeState, None),
-            ("transparent_address: file disabled", IndexKind::TransparentAddress, None),
-        ];
-        for (case, kind, expected) in indexes {
-            assert_eq!(config.enabled(kind), expected, "{case}");
-        }
-        let pair = config.compact_block().expect("a valid path");
-        let expected = at("/srv/zaino/compact_block".into()).zip(at("/srv/zaino/utxo_set".into()));
-        assert_eq!(pair, expected, "compact_block() = (compact_block, utxo_set)");
+        let block_hash = paths::default_index(IndexKind::BlockHash).expect("a home dir");
+        let txid_location = paths::default_index(IndexKind::TxidLocation).expect("a home dir");
+        let expected = EnabledIndexes(vec![
+            at(IndexKind::UtxoSet, "/srv/zaino/utxo_set".into()),
+            at(IndexKind::CompactBlock, "/srv/zaino/compact_block".into()),
+            at(IndexKind::BlockHash, block_hash),
+            at(IndexKind::TxidLocation, txid_location),
+        ]);
+        assert_eq!(
+            config.indexes, expected,
+            "utxo_set beside the file's compact_block, defaults for the unset, tree_state off by \
+             env over its file path, transparent_address off by file"
+        );
+    }
+
+    /// No home dir: an unset path = error naming its key, a set one kept
+    #[test]
+    fn a_path_with_no_home_dir_default_must_be_set() {
+        let refused = resolved_path(None, "serve.state_dir", || None).map_err(|e| e.to_string());
+        assert!(
+            refused.as_ref().is_err_and(|refused| refused.contains("serve.state_dir")),
+            "unset: refused naming the key, got {refused:?}"
+        );
+
+        let set = resolved_path(Some("/srv/zaino/state".into()), "serve.state_dir", || None);
+        let set = set.map_err(|e| e.to_string());
+        assert_eq!(set, Ok(PathBuf::from("/srv/zaino/state")), "set path kept");
     }
 
     #[test]
     fn utxo_set_is_off_with_compact_block() {
-        let config: DaemonConfig =
+        let file: DaemonConfigFile =
             toml::from_str("[index.compact_block]\nenabled = false\n").expect("parses");
-        let pair = config.compact_block().expect("nothing to check");
-        assert_eq!(pair, None, "compact_block() with compact_block off");
-        assert_eq!(config.enabled(IndexKind::UtxoSet), None, "utxo_set off with it");
+        let indexes = file.resolve().expect("resolves").indexes;
+        assert_eq!(indexes.get(IndexKind::CompactBlock), None, "compact_block off");
+        assert_eq!(indexes.get(IndexKind::UtxoSet), None, "utxo_set off with it");
     }
 
     /// Each row = one rule over an otherwise valid default config (`None` = accepted)
     #[test]
-    fn validate_refuses_every_config_no_pipeline_composes_from() {
-        type Edit = fn(&mut DaemonConfig);
-        fn validators(count: u16) -> Vec<TrustedValidatorConfig> {
+    fn resolve_refuses_every_config_no_pipeline_composes_from() {
+        type Edit = fn(&mut DaemonConfigFile);
+        fn validators(count: u16) -> Vec<TrustedValidatorTable> {
             let at = |port| format!("10.0.0.1:{port}");
-            let validator = |port| TrustedValidatorConfig {
+            let validator = |port| TrustedValidatorTable {
                 jsonrpc_address: at(port),
-                ..TrustedValidatorConfig::default()
+                ..TrustedValidatorTable::default()
             };
             (0..count).map(validator).collect()
         }
@@ -763,7 +905,7 @@ enabled = false
             ("no validator", |c| c.trusted_validators.clear(), Some("no [[trusted_validators]]")),
             (
                 "one validator twice",
-                |c| c.trusted_validators.push(TrustedValidatorConfig::default()),
+                |c| c.trusted_validators.push(TrustedValidatorTable::default()),
                 Some("lists 127.0.0.1:8232 twice"),
             ),
             (
@@ -821,9 +963,9 @@ enabled = false
             ),
         ];
         for (case, edit, refusal) in cases {
-            let mut config = DaemonConfig::default();
-            edit(&mut config);
-            let refused = config.validate().err().map(|error| error.to_string());
+            let mut file = DaemonConfigFile::default();
+            edit(&mut file);
+            let refused = file.resolve().err().map(|error| error.to_string());
             match (refusal, &refused) {
                 (Some(expected), Some(refused)) => {
                     assert!(refused.contains(expected), "{case}: {refused}")
@@ -860,21 +1002,21 @@ enabled = false
             ("[index.block_hash]", "[index.block_hash]\nbogus = 1\n".to_owned()),
             ("[snapshot]", "[snapshot]\nmanifest = \"https://m\"\nbogus = 1\n".to_owned()),
         ] {
-            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err(table).to_string();
+            let refused = toml::from_str::<DaemonConfigFile>(&toml).expect_err(table).to_string();
             assert!(refused.contains("unknown field `bogus`"), "{table}: {refused}");
         }
     }
 
     /// - `generate-config` = every key at its default, parsing back to the defaults (indexes
     ///   under `<cache dir>/zaino/indexes/<name>`), written under a directory it creates
-    /// - Shipped example parses, its values = the defaults (beside its network, validator, paths)
+    /// - Shipped example resolves, its values = the defaults (beside its network, validator, paths)
     #[test]
     fn generated_config_prints_every_key_at_its_default_and_the_example_shows_them() {
-        let generated = generate_default_config().expect("generate");
+        let generated = generate_default_config().expect("a home dir");
         let body = generated.strip_prefix(GENERATED_CONFIG_HEADER).expect("header first");
-        let defaults = DaemonConfig::default();
-        let parsed = toml::from_str::<DaemonConfig>(body).expect("parses back");
-        assert_eq!(parsed, defaults, "generated config parsed back = DaemonConfig::default()");
+        let defaults = DaemonConfigFile::default();
+        let parsed = toml::from_str::<DaemonConfigFile>(body).expect("parses back");
+        assert_eq!(parsed, defaults, "generated config parsed back = DaemonConfigFile::default()");
         let printed = |table: &str, keys: &[&str]| {
             let start = body.find(&format!("\n[{table}]\n")).expect(table);
             let section = body[start + 1..].split("\n\n").next().unwrap_or_default();
@@ -890,9 +1032,10 @@ enabled = false
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
         assert!(!body.contains("utxo_set"), "internal: no table of its own");
+        let resolved = defaults.clone().resolve().expect("defaults resolve");
         for kind in [IndexKind::CompactBlock, IndexKind::UtxoSet, IndexKind::TreeState] {
-            let path = defaults.enabled(kind).map(|index| index.path);
-            assert_eq!(path, Some(paths::default_index(kind)), "{kind:?}");
+            let path = resolved.indexes.get(kind).map(|index| index.path.clone());
+            assert_eq!(path, paths::default_index(kind), "{kind:?}");
         }
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -902,16 +1045,16 @@ enabled = false
         assert_eq!(written, generated, "{} = the generated config", path.display());
 
         let example = include_str!("../../../../docs/example_configs/zainod.toml");
-        let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
-        let validated = example.validate().map_err(|error| error.to_string());
-        assert_eq!(validated, Ok(()), "shipped example validates");
-        let shown = DaemonConfig {
+        let example = toml::from_str::<DaemonConfigFile>(example).expect("example parses");
+        let resolved = example.clone().resolve().map(drop).map_err(|error| error.to_string());
+        assert_eq!(resolved, Ok(()), "shipped example resolves");
+        let shown = DaemonConfigFile {
             network: defaults.network,
             trusted_validators: defaults.trusted_validators.clone(),
             index: defaults.index.clone(),
             ..example
         };
-        assert_eq!(shown, defaults, "example's values drifted from DaemonConfig::default()");
+        assert_eq!(shown, defaults, "example's values drifted from DaemonConfigFile::default()");
     }
 
     /// Every table but the indexes and validators (their own tests) → the struct its consumer
@@ -920,7 +1063,7 @@ enabled = false
     /// - a named key keeps the consumer's own default for every other (`..Default::default()`)
     #[test]
     fn one_toml_reaches_every_consumer_as_written() {
-        let config: DaemonConfig = toml::from_str(
+        let file: DaemonConfigFile = toml::from_str(
             r#"
 network = "testnet"
 validator_client = "grpc"
@@ -960,6 +1103,7 @@ cache_dir = "/var/cache/zaino/peers"
 "#,
         )
         .expect("parses");
+        let config = file.resolve().expect("resolves");
         let secs = Duration::from_secs;
 
         let grpc = GrpcLimits {
@@ -992,13 +1136,13 @@ cache_dir = "/var/cache/zaino/peers"
             max_attempts: std::num::NonZeroU8::new(6).expect("non-zero"),
         };
         assert_eq!(config.submission, submission, "[submission]");
-        let peers = zaino_peers::PeerConfig {
+        let peers = PeerConfig {
             peer_target: NonZeroUsize::new(12).expect("non-zero"),
             initial_peers: vec!["203.0.113.7:18233".to_owned()],
             cache_dir: Some(PathBuf::from("/var/cache/zaino/peers")),
-            ..zaino_peers::PeerConfig::new(NetworkType::Test)
+            ..PeerConfig::new(NetworkType::Test)
         };
-        assert_eq!(config.p2p.peers(config.network), peers, "[p2p] on the declared network");
+        assert_eq!(config.p2p, Some(peers), "[p2p] on the declared network");
     }
 
     /// A value no consumer can run is refused at parse, the message naming key and rule
@@ -1013,7 +1157,8 @@ cache_dir = "/var/cache/zaino/peers"
             ("pool under one per lane",        "[[trusted_validators]]\nmax_connections = 4",     ["max_connections = 4", "is below 5"]),
         ];
         for (case, toml, named) in refusals {
-            let refused = toml::from_str::<DaemonConfig>(toml).map_err(|error| error.to_string());
+            let refused =
+                toml::from_str::<DaemonConfigFile>(toml).map_err(|error| error.to_string());
             for name in named {
                 assert!(
                     refused.as_ref().is_err_and(|refused| refused.contains(name)),
@@ -1023,11 +1168,11 @@ cache_dir = "/var/cache/zaino/peers"
         }
     }
 
-    /// Entries parsed as written (auth + limits + indexer mutual TLS optional), each → the
-    /// balancer's limits, the transport's link, its auth
+    /// Entries parsed as written (auth + limits + indexer mutual TLS optional), each resolved →
+    /// the transport's endpoint (auth, timeouts, link), the balancer's limits, its indexer
     #[test]
-    fn trusted_validators_parse_and_convert_into_limits_link_and_auth() {
-        let config: DaemonConfig = toml::from_str(
+    fn trusted_validators_parse_and_resolve_into_endpoint_limits_and_indexer() {
+        let file: DaemonConfigFile = toml::from_str(
             r#"
 [[trusted_validators]]
 jsonrpc_address = "127.0.0.1:18232"
@@ -1049,54 +1194,67 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         )
         .expect("parses");
         let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
-        let local = TrustedValidatorConfig {
+        let local = TrustedValidatorTable {
             jsonrpc_address: "127.0.0.1:18232".to_owned(),
-            ..TrustedValidatorConfig::default()
+            ..TrustedValidatorTable::default()
         };
-        let eu = TrustedValidatorConfig {
+        let indexer_tls = ZebraIndexerTls {
+            ca_path: "/etc/zaino/indexer-ca.pem".into(),
+            cert_path: "/etc/zaino/indexer-client.pem".into(),
+            key_path: "/etc/zaino/indexer-client-key.pem".into(),
+            server_name: None,
+        };
+        let eu = TrustedValidatorTable {
             jsonrpc_address: "zebra-eu:8232".to_owned(),
             user: Some("zaino".to_owned()),
             password: Some("secret".to_owned()),
             max_connections: Limits::new(8).expect("8 ≥ MIN_CONNECTIONS"),
             max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
-            indexer_tls: Some(ZebraIndexerTls {
-                ca_path: "/etc/zaino/indexer-ca.pem".into(),
-                cert_path: "/etc/zaino/indexer-client.pem".into(),
-                key_path: "/etc/zaino/indexer-client-key.pem".into(),
-                server_name: None,
-            }),
+            indexer_tls: Some(indexer_tls.clone()),
             priority: 1,
-            ..TrustedValidatorConfig::default()
+            ..TrustedValidatorTable::default()
         };
-        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()], "both entries");
+        assert_eq!(file.trusted_validators, [local.clone(), eu.clone()], "both entries");
 
+        let resolved = eu.clone().resolve().expect("a user + password pair");
+        let endpoint = &resolved.endpoint;
+        let basic = Auth::Basic { user: "zaino".to_owned(), password: "secret".to_owned() };
+        let timeouts = Timeouts { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
         let link = LinkLimits {
             max_connections: n(8),
             response_size_cap: ResponseSizeCap::new(8 << 20).expect("in bounds"),
         };
-        assert_eq!(eu.link(), link, "the transport's");
-        let timeouts = Timeouts { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
-        assert_eq!(eu.timeouts(), timeouts, "defaults");
+        assert_eq!(
+            (endpoint.address.as_str(), &endpoint.auth, endpoint.timeouts, endpoint.limits),
+            ("zebra-eu:8232", &basic, timeouts, link),
+            "eu's endpoint: user + password, default timeouts, its link"
+        );
+        let indexer =
+            ZebraIndexerConfig { address: "zebra-eu:8230".to_owned(), tls: Some(indexer_tls) };
+        assert_eq!(
+            (resolved.max_connections, resolved.indexer, resolved.priority),
+            (Limits::new(8).expect("8 ≥ MIN_CONNECTIONS"), Some(indexer), 1),
+            "eu's balancer limits, indexer, tier"
+        );
+        let local = local.resolve().expect("no credentials");
+        assert_eq!((local.endpoint.auth, local.indexer), (Auth::None, None), "local: neither");
 
-        let basic = Auth::Basic { user: "zaino".to_owned(), password: "secret".to_owned() };
-        assert_eq!(eu.auth().expect("a pair"), basic, "user + password");
-        assert_eq!(local.auth().expect("neither"), Auth::None, "no credentials");
-        let cookie = |user: Option<&str>, password: Option<&str>| TrustedValidatorConfig {
+        let cookie = |user: Option<&str>, password: Option<&str>| TrustedValidatorTable {
             cookie_path: Some("/zebra/.cookie".into()),
             user: user.map(str::to_owned),
             password: password.map(str::to_owned),
-            ..TrustedValidatorConfig::default()
+            ..TrustedValidatorTable::default()
         };
-        let cookie_auth = cookie(None, None).auth().expect("a cookie");
+        let cookie_auth = cookie(None, None).resolve().expect("a cookie").endpoint.auth;
         assert_eq!(cookie_auth, Auth::Cookie("/zebra/.cookie".into()), "cookie_path alone");
-        let half = TrustedValidatorConfig { password: None, ..eu.clone() };
+        let half = TrustedValidatorTable { password: None, ..eu };
         let mixes = [
             ("cookie + pair", cookie(Some("u"), Some("p")), "sets cookie_path and user/password"),
             ("half pair", half, "zebra-eu:8232: user and password go together"),
         ];
-        for (case, config, named) in mixes {
-            let refused = config.auth().map_err(|error| error.to_string());
+        for (case, table, named) in mixes {
+            let refused = table.resolve().map(drop).map_err(|error| error.to_string());
             assert!(
                 refused.as_ref().is_err_and(|refused| refused.contains(named)),
                 "{case}: refused naming {named:?}, got {refused:?}"

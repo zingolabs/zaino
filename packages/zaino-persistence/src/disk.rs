@@ -14,7 +14,7 @@
 
 use std::{
     io,
-    num::NonZeroUsize,
+    num::{NonZeroU64, NonZeroUsize},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -54,6 +54,7 @@ pub struct DiskEngine {
 impl DiskEngine {
     pub fn new(fs: Arc<dyn Fs>, lsm: LsmConfig) -> Self {
         let bytes_per_sec = u64::from(lsm.merge_mib_per_sec.get()) << 20;
+        let bytes_per_sec = NonZeroU64::new(bytes_per_sec).expect("non-zero MiB << 20 != 0");
         let slots = Arc::new(Slots::new(lsm.merge_slots.get(), bytes_per_sec));
         Self { fs, fanout: lsm.fanout, slots }
     }
@@ -100,11 +101,12 @@ struct Body {
 /// `schema`'s store under `fanout` never outgrows its manifest slot: every map at the stall bound
 /// (+ the segment landing) in every tier a `u64` record count reaches
 pub fn manifest_fits(schema: &Schema, fanout: Fanout) -> bool {
-    let tiers = u64::MAX.ilog(fanout.get() as u64) as usize + 1;
+    let fanout_width = u64::try_from(fanout.get()).expect("usize fits u64");
+    let tiers = usize::try_from(u64::MAX.ilog(fanout_width)).expect("< 64 tiers") + 1;
     let segment = SegmentMeta { id: 0, records: 1, tombstones: 0, sealed: Sealed::EMPTY };
     let mut worst = Body::empty(schema);
     worst.maps.fill(vec![segment; tiers * (lsm::stall_at(fanout) + 1)]);
-    manifest::fits(worst.encode().len())
+    manifest::fits(identity(schema), worst.encode().len())
 }
 
 impl Body {
@@ -129,18 +131,15 @@ impl Body {
         out
     }
 
-    fn decode(bytes: &[u8], schema: &Schema) -> Result<Self, ManifestError> {
+    /// `bytes` = a body [`manifest::latest`] returned (CRC + identity passed: misfit panics)
+    fn decode(bytes: &[u8], schema: &Schema) -> Self {
         let mut body = BodyReader::new(bytes);
-        let durable = DurableTip::decode(&mut body)?;
-        let sequences = schema
-            .sequences()
-            .iter()
-            .map(|table| Seals::decode(table.record, &mut body))
-            .collect::<Result<_, _>>()?;
-        let maps =
-            schema.maps().iter().map(|_| decode_list(&mut body)).collect::<Result<_, _>>()?;
-        body.finish()?;
-        Ok(Self { durable, sequences, maps })
+        let durable = DurableTip::decode(&mut body);
+        let sequences =
+            schema.sequences().iter().map(|table| Seals::decode(table.record, &mut body)).collect();
+        let maps = schema.maps().iter().map(|_| decode_list(&mut body)).collect();
+        body.finish();
+        Self { durable, sequences, maps }
     }
 
     /// Every file this body seals, by path under the index directory
@@ -157,7 +156,7 @@ impl Body {
 }
 
 fn identity(schema: &Schema) -> Identity {
-    Identity { kind: schema.kind, format: schema.format, network: schema.network }
+    Identity { name: schema.name(), format: schema.format, scope: schema.scope() }
 }
 
 /// Directory a table's files sit in (`a/b` → `a`), `None` = the index directory itself
@@ -177,7 +176,7 @@ impl PersistenceEngine for DiskEngine {
         let opened = IndexDir::open(Arc::clone(&self.fs), path, identity(schema))?;
         let mut dir = opened.dir;
         let body = match &opened.body {
-            Some(bytes) => Body::decode(bytes, schema)?,
+            Some(bytes) => Body::decode(bytes, schema),
             None => {
                 for table in schema.sequences() {
                     for name in sequence::names(table) {
@@ -208,8 +207,8 @@ impl PersistenceEngine for DiskEngine {
             .flat_map(sequence::names)
             .map(|name| dir.path().join(name))
             .collect();
-        let durability = self.fs.durability(&written_back)?;
-        tracing::info!(index = schema.kind.name(), path = %path.display(), ?durability, "Commits");
+        let durability = self.fs.durability(&written_back);
+        tracing::info!(store = schema.name(), path = %path.display(), ?durability, "Commits");
         let map_dirs: Vec<PathBuf> =
             schema.maps().iter().map(|table| dir.subdir(table.name)).collect::<io::Result<_>>()?;
         if opened.body.is_none() {
@@ -220,7 +219,8 @@ impl PersistenceEngine for DiskEngine {
         for ((table, list), map_dir) in schema.maps().iter().zip(&body.maps).zip(&map_dirs) {
             let fs = Arc::clone(&self.fs);
             let slots = Arc::clone(&self.slots);
-            let set = SegmentSet::open(fs, map_dir, schema.kind, table, list, self.fanout, slots)?;
+            let set =
+                SegmentSet::open(fs, map_dir, schema.name(), table, list, self.fanout, slots)?;
             maps.push(set);
         }
         let state = State {
@@ -264,7 +264,7 @@ fn verify_durable(
         let Some(bytes) = &manifest else {
             return Ok(Verification { heights: 0, units: Vec::new() });
         };
-        let body = Body::decode(bytes, schema)?;
+        let body = Body::decode(bytes, schema);
         let units = body
             .files(schema)
             .into_iter()
@@ -385,9 +385,9 @@ impl Store for DiskStore {
         let (bytes, started) = (self.buffer.item_bytes(), Instant::now());
         if let Err(cause) = self.write(tip) {
             self.failed = true;
-            return Err(CommitFailed::new(self.schema.kind.name(), self.dir.path(), cause));
+            return Err(CommitFailed::new(self.schema.name(), self.dir.path(), cause));
         }
-        crate::metrics::committed(self.schema.kind.name(), bytes, started.elapsed());
+        crate::metrics::committed(self.schema.name(), bytes, started.elapsed());
         self.buffer = WriteBuffer::empty(&self.schema);
         Ok(())
     }

@@ -285,7 +285,8 @@ impl Sim {
                     return;
                 }
                 let heavy = self.builder.branch(old).outweigh().mine_empty(1).tip();
-                let mined = &self.builder.blocks(heavy)[u32::from(fork.height) as usize + 1..];
+                let path = self.builder.blocks(heavy);
+                let mined = &path[path.partition_point(|b| b.header().height <= fork.height)..];
                 // a long side branch re-entering past the header chain's side bound: evicted (H4)
                 if let Err(Rejected::Orphan) = insert(&mut self.headers, mined) {
                     return;
@@ -299,7 +300,8 @@ impl Sim {
                 return;
             }
         };
-        let mined = &self.builder.blocks(tip)[u32::from(fork) as usize + 1..];
+        let path = self.builder.blocks(tip);
+        let mined = &path[path.partition_point(|b| b.header().height <= fork)..];
         insert(&mut self.headers, mined).expect("valid headers");
         let now = self.headers.best().expect("verified").block;
         assert_eq!(now, tip, "sim: the heavier branch is best");
@@ -524,7 +526,8 @@ impl Sim {
             if due.is_empty() {
                 return;
             }
-            let pick = due[self.random(due.len() as u64) as usize];
+            let below = u64::try_from(due.len()).expect("usize = u64 (64-bit targets only)");
+            let pick = due[usize::try_from(self.random(below)).expect("< due.len()")];
             let input = match self.pending.swap_remove(pick).1 {
                 Due::Body(body) => {
                     let at = body.block_ref();
@@ -563,11 +566,12 @@ impl Sim {
             // re-anchored like HeaderSync: one header `DEPTH` below best, nothing beneath (may
             // sit above every durable tip: the finalized path closes that gap by height)
             let path = self.builder.blocks(self.headers.best().expect("anchored").block);
-            let anchor = path.len().saturating_sub(1 + DEPTH.get() as usize);
+            let depth = usize::try_from(DEPTH.get()).expect("u32 fits usize (64-bit targets only)");
+            let anchor = path.len().saturating_sub(1 + depth);
             let header = path[anchor].header();
             let decoded = decode_header(&encode_header(header)).expect("MockChain headers decode");
             self.headers = HeaderChain::new(DEPTH);
-            self.headers.anchor(&decoded, header.height);
+            self.headers.anchor(&decoded, header.height).expect("MockChain nBits valid");
             insert(&mut self.headers, &path[anchor + 1..]).expect("the best path verifies");
         }
         if let Some(wipe) = wipe {

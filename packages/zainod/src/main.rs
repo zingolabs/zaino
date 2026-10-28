@@ -56,7 +56,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let config = cli.config.unwrap_or_else(config::paths::default_config);
+    let Some(config) = cli.config.or_else(config::paths::default_config) else {
+        eprintln!("Error: no home directory to find the config file in: pass --config");
+        return ExitCode::FAILURE;
+    };
     let code = runtime.block_on(async {
         match cli.command {
             Command::Start => {
@@ -91,10 +94,7 @@ fn exit(outcome: Result<ExitCode, impl Display>, failure: u8) -> ExitCode {
 async fn start(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
-    // Before any startup work (a bad `[snapshot]` must fail before it downloads)
-    config.validate()?;
-    let enabled = zaino_persistence::IndexKind::ALL.iter().copied();
-    let enabled = enabled.filter(|kind| config.enabled(*kind).is_some());
+    let enabled = config.indexes.iter().map(|index| index.kind);
     let status = Arc::new(DaemonStatus::new(config.network, enabled));
     // Before the index-snapshot bootstrap (a held node reads held from its first answer)
     let (state_dir, goaway_delay) =
@@ -113,7 +113,7 @@ async fn start(config_path: PathBuf) -> Result<(), IndexerError> {
     let running = daemon::start(config, status).await.inspect_err(|error| {
         error!(%error, "Startup failed");
     })?;
-    match running.await? {
+    match running.await.unwrap_or_else(|join| daemon::rejoin(join)) {
         Ok(()) => {
             info!("Shutdown complete");
             Ok(())

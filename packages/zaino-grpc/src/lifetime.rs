@@ -12,15 +12,37 @@ use std::time::Duration;
 use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
 
-/// Share of `max_connection_age` one connection's age may differ by, either way
-pub(crate) const JITTER: f64 = 0.1;
+/// Why a connection got its GOAWAY (`Hold` = an operator hold, [`Retire`])
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetireReason {
+    Age,
+    Idle,
+    Hold,
+}
 
-/// One connection's age: uniform in `age` ± [`JITTER`]
+impl RetireReason {
+    /// `zaino_grpc_retired_connections_total{reason}`
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Age => "age",
+            Self::Idle => "idle",
+            Self::Hold => "retired",
+        }
+    }
+}
+
+/// One connection's age may differ from `max_connection_age` by `age / JITTER_DIVISOR`, either way
+pub(crate) const JITTER_DIVISOR: u32 = 10;
+
+/// One connection's age: uniform in `age` ± `age / JITTER_DIVISOR` (ns resolution)
 pub(crate) fn jittered(age: Duration) -> Duration {
     // a fresh `RandomState` = fresh random keys: a random u64 without an RNG dependency
     let random = std::collections::hash_map::RandomState::new().hash_one(0u8);
-    let unit = random as f64 / u64::MAX as f64;
-    age.mul_f64(1.0 - JITTER + 2.0 * JITTER * unit)
+    let jitter = age / JITTER_DIVISOR;
+    let offset_ns = u128::from(random) % (2 * jitter.as_nanos() + 1);
+    let offset_ns = u64::try_from(offset_ns).expect("remainder <= random, a u64");
+    let earliest = age.checked_sub(jitter).expect("age / JITTER_DIVISOR <= age");
+    earliest.saturating_add(Duration::from_nanos(offset_ns))
 }
 
 /// Operator hold (taking the node out of rotation): while held, every connection, open or accepted
@@ -174,11 +196,11 @@ mod tests {
     fn each_connection_ages_within_ten_percent_either_way() {
         let age = Duration::from_secs(30 * 60);
         let ages: Vec<_> = (0..1_000).map(|_| jittered(age)).collect();
-        let band = age.mul_f64(1.0 - JITTER)..=age.mul_f64(1.0 + JITTER);
+        let band = age - age / 10..=age + age / 10;
         let outside: Vec<_> = ages.iter().filter(|at| !band.contains(*at)).collect();
         assert_eq!(outside, Vec::<&Duration>::new(), "ages outside {band:?}");
         let spread = *ages.iter().max().expect("1,000") - *ages.iter().min().expect("1,000");
-        assert!(spread > age.mul_f64(0.15), "spread across the band: {spread:?}");
+        assert!(spread > age * 3 / 20, "spread across the band: {spread:?}");
     }
 
     /// Paused clock, delay 10 s, one connection open before the first hold:

@@ -11,11 +11,9 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_internal_txid_location::{TxidLocationIndexWriter, TxidLocationReader};
-use zaino_persistence::{
-    BlockChanges, IndexKind, MapRead, OverlayView, Schema, SequenceRead, Store,
-};
+use zaino_persistence::{BlockChanges, MapRead, OverlayView, Schema, SequenceRead, Store};
 use zaino_primitives::types::{Block, BlockFees};
-use zaino_sync::{FeeSink, IndexHandle, Subscription};
+use zaino_sync::{FeeSink, IndexHandle, IndexKind, Subscription};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::publish::Views;

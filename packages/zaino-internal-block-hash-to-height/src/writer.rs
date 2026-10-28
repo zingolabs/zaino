@@ -129,10 +129,10 @@ mod tests {
             assert_eq!(located(store.durable()), expected(count), "{label}: held hashes only");
 
             let mut writer = start(store);
-            for block in &blocks[..count as usize] {
+            for block in blocks.iter().take_while(|block| block.header().height < h(count)) {
                 writer.send(step(block)).await;
             }
-            writer.send(finalized(&blocks[count as usize])).await;
+            writer.send(finalized(chain.block(chain.at(h(count)).hash))).await;
             writer.durable_at(h(count)).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             assert_eq!(located(handle.durable_view()), expected(count + 1), "{label}: next held");

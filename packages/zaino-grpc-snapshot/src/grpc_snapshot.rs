@@ -5,12 +5,10 @@ use std::sync::Arc;
 use zaino_chainview::{ChainViewSnapshot, MempoolView, STALE_TIP_BLOCKS};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
-use zaino_persistence::View;
 use zaino_primitives::types::BlockRef;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::{target_spacing, BlockHeight};
 use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::BlockHash;
 
 use crate::mempool_feed::{Feed, MempoolTail};
 
@@ -68,16 +66,12 @@ pub struct GrpcSnapshot<V> {
 }
 
 impl<V> GrpcSnapshot<V> {
-    pub fn seq(&self) -> u64 {
-        self.seq
-    }
-
     pub fn tips(&self) -> Tips {
         self.tips
     }
 
     /// The chain view's: `tips` judged under it
-    pub fn chain(&self) -> Option<&Arc<HeaderChainSnapshot>> {
+    fn chain(&self) -> Option<&Arc<HeaderChainSnapshot>> {
         self.view.chain()
     }
 
@@ -143,8 +137,9 @@ impl<V> GrpcSnapshot<V> {
         let vouched = self.chain().is_none_or(|chain| {
             chain.vouched(chain.best().height.saturating_sub(UNVOUCHED_BLOCKS))
         });
-        if !vouched || (all_down && !self.fresh(now_unix)) {
-            return match self.tips.synced && self.fresh(now_unix) {
+        let fresh = self.fresh(now_unix);
+        if !vouched || (all_down && !fresh) {
+            return match self.tips.synced && fresh {
                 true => ServingStatus::Degraded,
                 false => ServingStatus::Down,
             };
@@ -175,12 +170,5 @@ impl<V> GrpcSnapshot<V> {
         let estimates =
             catching_up.filter_map(|meta| Some(meta.tip()?.height + meta.stale_blocks()?));
         best.into_iter().chain(estimates).max()
-    }
-}
-
-impl<V: View> GrpcSnapshot<V> {
-    /// Index state as of any folded block or the NFS root ([`NfsPublication::at`])
-    pub fn at(&self, hash: &BlockHash) -> Option<IndexesAtBlock<V>> {
-        self.indexed.as_ref()?.at(hash)
     }
 }

@@ -1,16 +1,14 @@
 //! What every Zaino index stores through: persistence port (`port.rs`) + its engine,
 //! [`DiskEngine`] (guide: `usage.md`)
 
-// only `unsafe`: `fs::real` (mmap, sync_file_range, mincore), `fs::probe` (FIEMAP ioctl),
-// `thread` (ioprio_set, setpriority)
+// only `unsafe` (no safe rustix API): `fs::real` (mmap, sync_file_range, mincore), `fs::probe`
+// (FIEMAP ioctl), `thread` (ioprio_set)
 #![deny(unsafe_code)]
 
 mod changes;
 mod disk;
 mod error;
 pub mod fs;
-#[cfg(test)]
-mod golden;
 mod index_dir;
 mod lsm;
 mod manifest;
@@ -35,5 +33,5 @@ pub use port::{
     Checked, MapRead, MapView, PersistenceEngine, PinnedView, SequenceRead, SequenceView, Store,
     Verification, View,
 };
-pub use schema::{IndexKind, MapId, MapTable, Schema, SequenceId, SequenceTable, Tables, Width};
+pub use schema::{MapId, MapTable, Schema, SequenceId, SequenceTable, Tables, Width};
 pub use write_buffer::{AppliedView, WriteBuffer};

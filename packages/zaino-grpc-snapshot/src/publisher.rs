@@ -36,23 +36,17 @@ pub enum GrpcSnapshotError {
 /// Reader's end: one load per request or stream, never `None` (seq 0 stored at `new`)
 pub struct GrpcSnapshots<V> {
     current: Arc<ArcSwap<GrpcSnapshot<V>>>,
-    changed: watch::Receiver<()>,
 }
 
 impl<V> Clone for GrpcSnapshots<V> {
     fn clone(&self) -> Self {
-        Self { current: Arc::clone(&self.current), changed: self.changed.clone() }
+        Self { current: Arc::clone(&self.current) }
     }
 }
 
 impl<V> GrpcSnapshots<V> {
     pub fn load(&self) -> Arc<GrpcSnapshot<V>> {
         self.current.load_full()
-    }
-
-    /// Next publish (`Err` = the publisher stopped)
-    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
-        self.changed.changed().await
     }
 }
 
@@ -68,7 +62,7 @@ impl<V: SequenceRead + MapRead + Send + Sync + 'static> UnspentOutputs for GrpcS
 impl<V> GrpcSnapshots<V> {
     /// One snapshot for good, no publisher (consumers' tests)
     ///
-    /// - never republished: `changed()` errs, a tail ends after its opening
+    /// - never republished: a tail ends after its opening
     pub fn fixed(indexed: Option<Arc<NfsPublication<V>>>, view: Arc<ChainViewSnapshot>) -> Self {
         Core::new(indexed, view, FinalityDepth::CONSENSUS).handle()
     }
@@ -78,7 +72,6 @@ impl<V> GrpcSnapshots<V> {
 pub(crate) struct Core<V> {
     depth: FinalityDepth,
     current: Arc<ArcSwap<GrpcSnapshot<V>>>,
-    changed: watch::Sender<()>,
     wake: watch::Sender<()>,
 }
 
@@ -95,14 +88,14 @@ impl<V> Core<V> {
         let feed = Feed::open(view.arrivals(None), mined, wake.subscribe());
         let first = GrpcSnapshot { seq: 0, tips, indexed, view, feed };
         let current = Arc::new(ArcSwap::from_pointee(first));
-        Self { depth, current, changed: watch::Sender::new(()), wake }
+        Self { depth, current, wake }
     }
 
     pub(crate) fn handle(&self) -> GrpcSnapshots<V> {
-        GrpcSnapshots { current: Arc::clone(&self.current), changed: self.changed.subscribe() }
+        GrpcSnapshots { current: Arc::clone(&self.current) }
     }
 
-    /// One publish: open → store → seal (G5), then wake readers and tails
+    /// One publish: open → store → seal (G5), then wake tails
     pub(crate) fn publish(
         &self,
         indexed: Option<Arc<NfsPublication<V>>>,
@@ -128,7 +121,6 @@ impl<V> Core<V> {
         if moved {
             prev.feed.seal();
         }
-        self.changed.send_replace(());
         self.wake.send_replace(());
         transitions(&prev, &next);
     }

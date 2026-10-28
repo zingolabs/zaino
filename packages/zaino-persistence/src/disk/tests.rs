@@ -2,19 +2,16 @@
 //! state, every failed I/O call, open's trimming + refusals, golden manifest bytes, offline
 //! verify, each guard's panic
 
-use std::{num::NonZeroU32, path::Path, sync::Arc};
-
-use zcash_protocol::consensus::NetworkType;
+use std::{path::Path, sync::Arc};
 
 use super::model::{
-    assert_tiers, block_at, block_record, open, probed_key, scanned_key, sim_fs, with_flush, Model,
-    Writes, BLOCKS, HEIGHTS, PROBED, ROOT, SCANNED, SCHEMA, TABLES,
+    assert_tiers, block_at, block_record, open, sim_fs, Model, ProbedId, ScannedKey, Writes,
+    BLOCKS, HEIGHTS, PROBED, ROOT, SCANNED, SCHEMA, TABLES,
 };
 use super::*;
 use crate::{
     fs::{RealFs, SimFs},
-    golden::assert_fields,
-    schema::{IndexKind, MapTable, SequenceTable, Tables, Width},
+    schema::{MapTable, SequenceTable, Tables, Width},
     sequence::Records,
 };
 
@@ -47,7 +44,9 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
 
 fn crash_states_reopen_to_a_commit(flush_device: bool) {
     let (fs, recording) = SimFs::recording();
-    let fs = with_flush(fs, flush_device);
+    if flush_device {
+        fs.flush_device();
+    }
     // scanned seqs: commit 1 issues 1-3, commit 2 issues 4-5
     let commits = [
         Writes { records: 2, owners: vec![1, 2, 1], ids: 2, removed: vec![] },
@@ -90,14 +89,17 @@ fn crash_states_reopen_to_a_commit(flush_device: bool) {
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("{label}: open: {error}"));
-        let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store
+            .durable()
+            .tip()
+            .map_or(0, |tip| usize::try_from(u32::from(tip.height)).expect("u32 fits usize") + 1);
         assert!(
             [acked, acked + 1].contains(&recovered),
             "{label}: recovered {recovered} commits, want {acked} or the attempted {}",
             acked + 1
         );
         models[recovered].assert_view(&store.durable(), label);
-        assert_tiers(&store, &state.fs, 2, true, label);
+        assert_tiers(&store, &state.fs, true, label);
 
         let mut model = models[recovered].clone();
         store.apply(model.advance(&Writes {
@@ -161,7 +163,10 @@ fn failed_io_surfaces_and_recovers(flush_device: bool) {
         let mut store = DiskEngine::with_fanout(fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("{label}: reopen, {acked} acknowledged: {error}"));
-        let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store
+            .durable()
+            .tip()
+            .map_or(0, |tip| usize::try_from(u32::from(tip.height)).expect("u32 fits usize") + 1);
         assert!(
             [acked, acked + 1].contains(&recovered),
             "{label}: recovered {recovered} commits, want {acked} or the attempted {}",
@@ -251,21 +256,21 @@ fn a_map_key_off_its_width_panics() {
 }
 
 #[test]
-#[should_panic(expected = "compact_block: sequence stray not in its schema")]
+#[should_panic(expected = "blocks: sequence stray not in its schema")]
 fn a_write_to_a_sequence_outside_the_schema_panics() {
     let stray = SequenceTable::new(3, "stray", Width::Variable);
     BlockChanges::new(block_at(0), SCHEMA).sequence(stray).append(&[]);
 }
 
 #[test]
-#[should_panic(expected = "compact_block: map probed not in its schema")]
+#[should_panic(expected = "blocks: map probed not in its schema")]
 fn a_write_to_a_map_outside_the_schema_panics() {
     let stray = MapTable::point(1, "probed", 16, 8);
     BlockChanges::new(block_at(0), SCHEMA).map(stray).insert(&[0; 16], &[0; 8]);
 }
 
 #[test]
-#[should_panic(expected = "compact_block: map probed not in its schema")]
+#[should_panic(expected = "blocks: map probed not in its schema")]
 fn a_read_of_a_map_outside_the_schema_panics() {
     let stray = MapTable::point(1, "probed", 16, 8);
     open(&DiskEngine::with_fanout(SimFs::new(), 2)).durable().map(stray).value(&[0; 16]);
@@ -281,7 +286,7 @@ fn tables_with_a_sequence_id_off_its_position_panic() {
 #[test]
 #[should_panic(expected = "changes built for another schema")]
 fn changes_for_another_schema_panic() {
-    let other = Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, TABLES);
+    let other = Schema::new("hashes", 1, "regtest", TABLES);
     open(&DiskEngine::with_fanout(SimFs::new(), 2)).apply(BlockChanges::new(block_at(0), other));
 }
 
@@ -299,8 +304,8 @@ fn apply_at_a_height_not_above_the_last_panics() {
 fn a_key_inserted_twice_by_one_block_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     let mut changes = store.changes(block_at(0));
-    changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
-    changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
+    changes.map(SCANNED).insert(ScannedKey::new(1, 0).as_ref(), &[0; 8]);
+    changes.map(SCANNED).insert(ScannedKey::new(1, 0).as_ref(), &[0; 8]);
     store.apply(changes);
 }
 
@@ -309,8 +314,8 @@ fn a_key_inserted_twice_by_one_block_panics() {
 fn a_key_removed_twice_by_one_block_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     let mut changes = store.changes(block_at(0));
-    changes.map(SCANNED).remove(&scanned_key(1, 0));
-    changes.map(SCANNED).remove(&scanned_key(1, 0));
+    changes.map(SCANNED).remove(ScannedKey::new(1, 0).as_ref());
+    changes.map(SCANNED).remove(ScannedKey::new(1, 0).as_ref());
     store.apply(changes);
 }
 
@@ -319,8 +324,8 @@ fn a_key_removed_twice_by_one_block_panics() {
 fn a_key_inserted_and_removed_by_one_block_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     let mut changes = store.changes(block_at(0));
-    changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
-    changes.map(SCANNED).remove(&scanned_key(1, 0));
+    changes.map(SCANNED).insert(ScannedKey::new(1, 0).as_ref(), &[0; 8]);
+    changes.map(SCANNED).remove(ScannedKey::new(1, 0).as_ref());
     store.apply(changes);
 }
 
@@ -329,10 +334,10 @@ fn a_key_inserted_and_removed_by_one_block_panics() {
 fn a_key_the_buffer_holds_inserted_again_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     let mut first = store.changes(block_at(0));
-    first.map(PROBED).insert(&probed_key(0), &[0; 4]);
+    first.map(PROBED).insert(ProbedId::new(0).as_ref(), &[0; 4]);
     store.apply(first);
     let mut again = store.changes(block_at(1));
-    again.map(PROBED).insert(&probed_key(0), &[1; 4]);
+    again.map(PROBED).insert(ProbedId::new(0).as_ref(), &[1; 4]);
     store.apply(again);
 }
 
@@ -341,17 +346,17 @@ fn a_key_the_buffer_holds_inserted_again_panics() {
 fn a_key_the_buffer_removed_removed_again_panics() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     let mut first = store.changes(block_at(0));
-    first.map(SCANNED).remove(&scanned_key(1, 0));
+    first.map(SCANNED).remove(ScannedKey::new(1, 0).as_ref());
     store.apply(first);
     let mut again = store.changes(block_at(1));
-    again.map(SCANNED).remove(&scanned_key(1, 0));
+    again.map(SCANNED).remove(ScannedKey::new(1, 0).as_ref());
     store.apply(again);
 }
 
 #[test]
 #[should_panic(expected = "probed: remove on a table without `deletes()`")]
 fn a_removal_from_a_table_without_deletes_panics() {
-    BlockChanges::new(block_at(0), SCHEMA).map(PROBED).remove(&probed_key(0));
+    BlockChanges::new(block_at(0), SCHEMA).map(PROBED).remove(ProbedId::new(0).as_ref());
 }
 
 // same key inserted by two commits: neither layer above durable can see the first
@@ -362,7 +367,7 @@ fn an_insert_only_key_in_two_durable_segments_panics_on_read() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     for height in [0, 1] {
         let mut changes = store.changes(block_at(height));
-        changes.map(PROBED).insert(&probed_key(0), &[0; 4]);
+        changes.map(PROBED).insert(ProbedId::new(0).as_ref(), &[0; 4]);
         store.apply(changes);
         store.commit().expect("commit");
     }
@@ -375,7 +380,7 @@ fn a_deletes_key_held_in_two_durable_segments_panics_on_read() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     for height in [0, 1] {
         let mut changes = store.changes(block_at(height));
-        changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
+        changes.map(SCANNED).insert(ScannedKey::new(1, 0).as_ref(), &[0; 8]);
         store.apply(changes);
         store.commit().expect("commit");
     }
@@ -383,30 +388,21 @@ fn a_deletes_key_held_in_two_durable_segments_panics_on_read() {
 }
 
 /// - two 1-row segments at fanout 2 = a merge
-/// - its duplicate = the merge's `Contract` error, surfaced at the next commit (either table kind)
+/// - merge thread's panic re-raised on the commit landing it
 #[test]
-fn a_merge_of_a_key_held_twice_fails_the_next_commit() {
-    #[rustfmt::skip]
-    let tables = [
-        (PROBED,  probed_key(0),     vec![0; 4]),
-        (SCANNED, scanned_key(1, 0), vec![0; 8]),
-    ];
-    for (table, key, value) in tables {
-        let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
-        for height in [0, 1] {
-            let mut changes = store.changes(block_at(height));
-            changes.map(table).insert(&key, &value);
-            store.apply(changes);
-            store.commit().expect("commit");
-        }
-        store.settle();
-        store.apply(store.changes(block_at(2)));
-
-        let refused = store.commit().expect_err("a merge of two values of one key").to_string();
-
-        let name = table.name;
-        assert!(refused.contains("key held 2 times: value, value"), "{name}: refused {refused:?}");
+#[should_panic(expected = "key held 2 times: value, value (insert-once / remove-once broken)")]
+fn a_merge_of_a_key_held_twice_panics_the_next_commit() {
+    let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
+    for height in [0, 1] {
+        let mut changes = store.changes(block_at(height));
+        changes.map(PROBED).insert(ProbedId::new(0).as_ref(), &[0; 4]);
+        store.apply(changes);
+        store.commit().expect("commit");
     }
+    store.settle();
+    store.apply(store.changes(block_at(2)));
+
+    let _ = store.commit();
 }
 
 #[test]
@@ -450,7 +446,11 @@ fn open_drops_bytes_past_the_manifest() {
     let len = fs.contents(&blocks).expect("blocks.dat").len();
     assert_eq!(len, 6, "blocks.dat truncated to records 0..4 (0 + 1 + 2 + 3 bytes)");
     let records = store.durable().sequence(BLOCKS).records(0..4);
-    assert_eq!(records, (0..4).map(block_record).collect::<Vec<_>>(), "durable records intact");
+    assert_eq!(
+        records,
+        (0..4).map(|at| block_record(at, 0)).collect::<Vec<_>>(),
+        "durable records intact"
+    );
 }
 
 /// Store of one commit (4 `blocks` records = 8 `pool/nodes` records), one file damaged
@@ -510,69 +510,63 @@ fn a_manifest_body_is_its_golden_bytes() {
     const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
     const MAP: MapTable = MapTable::point(0, "map", 8, 1);
     const TABLES: Tables = Tables::new(&[FIXED, VARIABLE], &[MAP]);
-    let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
+    let schema = Schema::new("blocks", 1, "regtest", TABLES);
     let seal = |n: u32| Sealed { len: u64::from(n), tail: n << 8, sums: n << 16 };
     let body = Body {
         durable: DurableTip { tip: Some(block_at(2)) },
         sequences: vec![
-            Seals { data: seal(4), records: Records::Fixed(NonZeroU32::new(4).expect("4")) },
+            Seals { data: seal(4), records: Records::Fixed(NonZeroUsize::new(4).expect("4")) },
             Seals { data: seal(5), records: Records::Variable(seal(8)) },
         ],
         maps: vec![vec![SegmentMeta { id: 7, records: 2, tombstones: 1, sealed: seal(9) }]],
     };
-    #[rustfmt::skip]
-    let golden: [(&str, &[u8]); 15] = [
-        ("durable block count",       &3u64.to_le_bytes()),
-        ("durable tip hash",          &[2; 32]),
-        ("fixed: data len",           &4u64.to_le_bytes()),
-        ("fixed: data tail",          &0x400u32.to_le_bytes()),
-        ("fixed: data sums",          &0x4_0000u32.to_le_bytes()),
-        ("variable: data len",        &5u64.to_le_bytes()),
-        ("variable: data tail",       &0x500u32.to_le_bytes()),
-        ("variable: data sums",       &0x5_0000u32.to_le_bytes()),
-        ("variable: ends len",        &8u64.to_le_bytes()),
-        ("variable: ends tail",       &0x800u32.to_le_bytes()),
-        ("variable: ends sums",       &0x8_0000u32.to_le_bytes()),
-        ("map: segment count",        &1u32.to_le_bytes()),
-        ("map: segment 0 id",         &7u32.to_le_bytes()),
-        ("map: segment 0 records",    &2u64.to_le_bytes()),
-        ("map: segment 0 tombstones", &1u64.to_le_bytes()),
-    ];
-    #[rustfmt::skip]
-    let segment_seal: [(&str, &[u8]); 3] = [
-        ("map: segment 0 len",        &9u64.to_le_bytes()),
-        ("map: segment 0 tail",       &0x900u32.to_le_bytes()),
-        ("map: segment 0 sums",       &0x9_0000u32.to_le_bytes()),
-    ];
-    let fields = [&golden[..], &segment_seal].concat();
 
-    assert_fields(&body.encode(), &fields);
+    let encoded = body.encode();
 
-    let bytes: Vec<u8> = fields.iter().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
-    assert_eq!(Body::decode(&bytes, &schema).expect("golden bytes decode"), body);
+    #[rustfmt::skip]
+    let fields: [(&str, std::ops::Range<usize>, &[u8]); 18] = [
+        ("durable block count",       0..8,     &3u64.to_le_bytes()),
+        ("durable tip hash",          8..40,    &[2; 32]),
+        ("fixed: data len",           40..48,   &4u64.to_le_bytes()),
+        ("fixed: data tail",          48..52,   &0x400u32.to_le_bytes()),
+        ("fixed: data sums",          52..56,   &0x4_0000u32.to_le_bytes()),
+        ("variable: data len",        56..64,   &5u64.to_le_bytes()),
+        ("variable: data tail",       64..68,   &0x500u32.to_le_bytes()),
+        ("variable: data sums",       68..72,   &0x5_0000u32.to_le_bytes()),
+        ("variable: ends len",        72..80,   &8u64.to_le_bytes()),
+        ("variable: ends tail",       80..84,   &0x800u32.to_le_bytes()),
+        ("variable: ends sums",       84..88,   &0x8_0000u32.to_le_bytes()),
+        ("map: segment count",        88..92,   &1u32.to_le_bytes()),
+        ("map: segment 0 id",         92..96,   &7u32.to_le_bytes()),
+        ("map: segment 0 records",    96..104,  &2u64.to_le_bytes()),
+        ("map: segment 0 tombstones", 104..112, &1u64.to_le_bytes()),
+        ("map: segment 0 len",        112..120, &9u64.to_le_bytes()),
+        ("map: segment 0 tail",       120..124, &0x900u32.to_le_bytes()),
+        ("map: segment 0 sums",       124..128, &0x9_0000u32.to_le_bytes()),
+    ];
+    for (field, bytes, golden) in fields {
+        assert_eq!(encoded.get(bytes.clone()), Some(golden), "{field}, bytes {bytes:?}");
+    }
+    assert_eq!(encoded.len(), 128, "body = tip + 3 seals + 1-segment list, nothing after");
+    assert_eq!(Body::decode(&encoded, &schema), body, "golden bytes decode back to the body");
 }
 
 /// Fixed-width sequence sealed at 6 bytes: not whole 4-byte records
 #[test]
-fn a_manifest_body_sealing_part_of_a_fixed_record_is_refused() {
+#[should_panic(expected = "manifest body passed CRC yet seals a sequence at part of a record")]
+fn a_manifest_body_sealing_part_of_a_fixed_record_panics() {
     const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(4));
-    let schema =
-        Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[FIXED], &[]));
+    let schema = Schema::new("blocks", 1, "regtest", Tables::new(&[FIXED], &[]));
     let body = Body {
         durable: DurableTip { tip: Some(block_at(0)) },
         sequences: vec![Seals {
             data: Sealed { len: 6, tail: 0, sums: 0 },
-            records: Records::Fixed(NonZeroU32::new(4).expect("4")),
+            records: Records::Fixed(NonZeroUsize::new(4).expect("4")),
         }],
         maps: vec![],
     };
 
-    let refused = Body::decode(&body.encode(), &schema).expect_err("6 bytes of 4-byte records");
-
-    assert_eq!(
-        refused.to_string(),
-        "malformed manifest body: a sequence's length is not whole records"
-    );
+    Body::decode(&body.encode(), &schema);
 }
 
 /// 3 commits, settled before each: commits 1 + 2's segments merged at commit 3 (inputs unlinked)
@@ -689,7 +683,7 @@ fn verify_of_a_directory_never_created_finds_nothing() {
 }
 
 #[test]
-fn verify_refuses_another_networks_directory() {
+fn verify_refuses_another_scopes_directory() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("idx");
     let engine = DiskEngine::with_fanout(RealFs::shared(), 2);
@@ -697,12 +691,9 @@ fn verify_refuses_another_networks_directory() {
     store.apply(store.changes(block_at(0)));
     store.commit().expect("commit");
 
-    let mainnet = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Main, TABLES);
+    let main = Schema::new("blocks", 1, "main", TABLES);
     let refused =
-        engine.verify(&path, &mainnet).expect_err("a regtest directory, verified as mainnet");
+        engine.verify(&path, &main).expect_err("a `regtest` directory, verified as `main`");
 
-    assert_eq!(
-        refused.to_string(),
-        "directory was built for network tag 2, configured network is Main"
-    );
+    assert_eq!(refused.to_string(), "directory was built for `regtest`, opened for `main`");
 }

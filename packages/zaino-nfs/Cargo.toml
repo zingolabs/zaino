@@ -13,7 +13,6 @@ description = "Zaino's non-finalized state: the tip overlay, one folded node per
 imbl.workspace = true
 metrics.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tokio-util.workspace = true
 tracing.workspace = true
 zaino-header-chain.workspace = true
@@ -29,6 +28,7 @@ zaino-sync.workspace = true
 zaino-traffic.workspace = true
 zcash_protocol.workspace = true
 zaino-internal-txid-location.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 
 [features]
 # `Indexed::fixed` (no driver) + `ChainParams::of(MockChain)`
@@ -40,9 +40,8 @@ unreachable_pub = "warn"
 
 [dev-dependencies]
 proptest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["test-util"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }
-zcash_transparent.workspace = true

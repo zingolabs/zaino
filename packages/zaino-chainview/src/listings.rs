@@ -146,13 +146,13 @@ mod tests {
         /// same listers, same admitted ids, same retention, quorate iff > 5 netgroups fresh
         #[test]
         fn listings_answer_like_a_naive_map_of_each_peers_last_answer(
-            peers in 1usize..10,
+            peers in 1u8..10,
             own_netgroups in any::<bool>(),
             witnessed in any::<bool>(),
             rounds in rounds(9),
         ) {
             let addrs: Vec<SocketAddr> =
-                (0..peers).map(|n| peer(n as u8 + 1, own_netgroups || n % 2 == 0)).collect();
+                (0..peers).map(|n| peer(n + 1, own_netgroups || n % 2 == 0)).collect();
             let ids: Vec<PeerTxId> = (0..IDS).map(|n| id(n, witnessed.then_some(n))).collect();
             let start = Instant::now();
             let mut now = start;

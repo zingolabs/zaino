@@ -48,5 +48,5 @@ pub use transaction::{
 };
 pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
-pub use tree_size::{TreeSize, TreeSizeOutOfRange, TreeSizes};
+pub use tree_size::{TreeSize, TreeSizes};
 pub use treestate::{CommitmentTreeBytes, Treestate};

@@ -10,17 +10,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
+use zaino_persistence::{BlockChanges, MapRead, SequenceRead, Store};
 use zaino_primitives::types::{Block, BlockFees, FeeError};
+use zaino_sync::IndexKind;
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
+use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::layout::{encode_fees, encode_outpoint, encode_value};
-use crate::{FoldError, UtxoSetReader, FEES, OUTPUTS};
+use crate::{UtxoSetReader, FEES, OUTPUTS};
 
 const NAME: &str = IndexKind::UtxoSet.name();
 
@@ -32,6 +35,7 @@ pub struct UtxoSetIndexWriter<S: Store> {
 
 impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
     pub fn new(store: S) -> Self {
+        zaino_sync::assert_dense(&store.durable(), FEES);
         let publisher = IndexPublisher::new(&store);
         Self { store, publisher }
     }
@@ -55,13 +59,12 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
                 let mut write = Duration::ZERO;
                 let (resent, fresh): (Vec<&Block>, Vec<&Block>) =
                     run.blocks.iter().map(|block| &**block).partition(|block| held(&store, block));
-                let held = UtxoSetReader::new(store.applied());
-                let stored = resent.iter().map(|block| held.block_fees(block));
-                let stored = stored.collect::<Result<Vec<_>, _>>();
-                let mut paid = stored.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
+                let parent = UtxoSetReader::new(store.applied());
+                let mut paid: Vec<BlockFees> =
+                    resent.iter().map(|block| parent.block_fees(block)).collect();
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.block_ref())).collect();
-                let folded = fold_run(&UtxoSetReader::new(store.applied()), &fresh, &mut out);
+                let folded = fold_run(&parent, &fresh, &mut out);
                 paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
                 for changes in out {
                     write += apply(&mut store, changes);
@@ -86,6 +89,20 @@ impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
         publisher.publish(&store);
         sink.shutdown();
     }
+}
+
+/// `MissingPrevout` = prevout never recorded or spent already (indexed from genesis: a bug or a
+/// foreign directory, never a gap to tolerate)
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FoldError {
+    #[error(
+        "block {height} tx {txid}: spends {spent}:{vout}, not an unspent output of this index"
+    )]
+    MissingPrevout { height: BlockHeight, txid: TxId, spent: TxId, vout: u32 },
+    #[error("block {height} tx {txid}: value sums past the money supply")]
+    ValueOverflow { height: BlockHeight, txid: TxId },
+    #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
+    NegativeFee { height: BlockHeight, txid: TxId },
 }
 
 /// `block` onto `parent`: its rows (outputs it leaves unspent in, prevouts it spends out), its
@@ -186,7 +203,7 @@ mod tests {
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::ZatBalance;
-    use zcash_protocol::{ShieldedPool, TxId};
+    use zcash_protocol::ShieldedPool;
 
     use super::*;
 
@@ -429,10 +446,25 @@ mod tests {
         }
     }
 
-    /// - fees read back for a held block = as folded
-    /// - height with no record, or a record != one fee per the block's transactions = named error
     #[test]
-    fn stored_fees_read_back_and_a_missing_or_mismatched_record_is_a_named_error() {
+    #[should_panic(expected = "utxo_set: fees record at held 1")]
+    fn block_fees_past_the_tip_panics() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100)));
+        let one = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 50)));
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let genesis = chain.block(chain.genesis().hash);
+        let mut changes = store.changes(genesis.block_ref());
+        fold(&UtxoSetReader::new(store.applied()), genesis, &mut changes).expect("folds");
+        store.apply(changes);
+
+        UtxoSetReader::new(store.applied()).block_fees(chain.block(one.hash));
+    }
+
+    /// Held block 1 resent with a third tx: its record holds two fees
+    #[test]
+    #[should_panic(expected = "utxo_set: fees record at 1 = the held block's (one per tx)")]
+    fn block_fees_of_another_block_at_a_held_height_panics() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain =
             MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 100_000)));
@@ -441,7 +473,6 @@ mod tests {
             b.coinbase(|c| c.pay(&alice, 50_000))
                 .tx(|t| t.spend(genesis_paid).pay(&alice, 99_000).fee(1_000))
         });
-        let two = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 50_000)));
         let blocks = chain.blocks(one);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
@@ -453,14 +484,7 @@ mod tests {
         txs.push(txs[1].clone());
         let longer = Block::new(blocks[1].header().clone(), txs);
 
-        let held = UtxoSetReader::new(store.applied());
-        assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "held 1: as folded");
-        let missing = held.block_fees(chain.block(two.hash));
-        let expected = Err(FoldError::StoredFeesMissing { height: h(2) });
-        assert_eq!(missing, expected, "2 never folded: no record");
-        let mismatched = held.block_fees(&longer);
-        let expected = Err(FoldError::StoredFeesUnreadable { height: h(1) });
-        assert_eq!(mismatched, expected, "1 with a third tx: record holds two fees");
+        UtxoSetReader::new(store.applied()).block_fees(&longer);
     }
 
     /// Writer over `store` (`queue` bytes = one run's) + the fee stream it publishes
@@ -537,13 +561,15 @@ mod tests {
             assert!(acked.contains(&u64::from(count)), "{label}: acknowledged {acked:?}");
 
             let (writer, mut consumer) = start(store, QUEUE);
-            writer.send(step(&blocks[count as usize])).await;
+            let next = chain.block(chain.at(h(count)).hash);
+            writer.send(step(next)).await;
             let handle = writer
                 .stop()
                 .await
                 .unwrap_or_else(|error| panic!("{label}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
-            assert_eq!(resolved, [expected[count as usize].clone()], "{label}: next block's fees");
+            let next_fees = chain.fees(next.header().hash);
+            assert_eq!(resolved, [next_fees], "{label}: next block's fees");
             assert_eq!(tip_of(&handle.durable_view()), Some(count), "{label}: next durable");
         }
     }

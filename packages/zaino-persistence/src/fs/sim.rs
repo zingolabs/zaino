@@ -134,7 +134,7 @@ impl Content {
                 variants.push(torn("all but the last sector", bytes[..last].to_vec()));
                 let mut data = self.with(prior);
                 for (sector, chunk) in bytes.chunks(SECTOR).enumerate().step_by(2) {
-                    let at = offset + (sector * SECTOR) as u64;
+                    let at = offset + u64::try_from(sector * SECTOR).expect("usize fits u64");
                     Op::Write { at, bytes: chunk.to_vec() }.apply(&mut data);
                 }
                 variants.push((format!("op {at} every other sector"), data));
@@ -575,7 +575,8 @@ impl Fs for SimFs {
     fn size(&self, path: &Path) -> io::Result<Option<u64>> {
         let inner = self.lock_inner();
         let id = inner.image.file(path)?;
-        Ok(id.map(|id| inner.image.files[id].current.len() as u64))
+        let len = |id: usize| u64::try_from(inner.image.files[id].current.len());
+        Ok(id.map(|id| len(id).expect("usize fits u64")))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -629,11 +630,11 @@ impl Fs for SimFs {
         Ok(())
     }
 
-    fn durability(&self, _: &[PathBuf]) -> io::Result<Durability> {
-        Ok(match self.lock_inner().flush_device {
+    fn durability(&self, _: &[PathBuf]) -> Durability {
+        match self.lock_inner().flush_device {
             true => Durability::Barrier,
             false => Durability::PerFile,
-        })
+        }
     }
 
     fn lock(&self, path: &Path) -> io::Result<LockGuard> {
@@ -696,7 +697,8 @@ impl SimFile {
 
 impl ReadHandle for SimFile {
     fn size(&self) -> io::Result<u64> {
-        Ok(self.lock_inner().image.files[self.id].current.len() as u64)
+        let len = self.lock_inner().image.files[self.id].current.len();
+        Ok(u64::try_from(len).expect("usize fits u64"))
     }
 
     fn read_exact_at(&self, buf: &mut [u8], at: u64) -> io::Result<()> {
@@ -859,7 +861,7 @@ mod tests {
                 (Some(b"aa".to_vec()), Some(b_kept)),
                 "flush_device {flush_device}"
             );
-            let mode = fs.durability(&[dir.join("a")]).expect("durability");
+            let mode = fs.durability(&[dir.join("a")]);
             let expected = if flush_device { Durability::Barrier } else { Durability::PerFile };
             assert_eq!(mode, expected, "the filesystem reports how commits may flush");
         }

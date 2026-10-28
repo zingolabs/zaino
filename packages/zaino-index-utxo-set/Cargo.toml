@@ -11,7 +11,6 @@ description = "UTXO-set index: every transparent output's value, resolving each 
 
 [dependencies]
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
@@ -19,7 +18,7 @@ zcash_protocol.workspace = true
 zcash_transparent.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }

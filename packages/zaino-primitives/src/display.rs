@@ -8,17 +8,26 @@ pub struct ByteSize(pub u64);
 impl fmt::Display for ByteSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-        let (mut value, mut unit) = (self.0 as f64, 0);
+        let bytes = u128::from(self.0);
+        let (mut scale, mut unit) = (1_u128, 0);
         // 999.5 → next unit (else 3 figures round up to a 4-digit `1000MB`)
-        while value >= 999.5 && unit + 1 < UNITS.len() {
-            value /= 1000.0;
+        while bytes * 2 >= 1999 * scale && unit + 1 < UNITS.len() {
+            scale *= 1000;
             unit += 1;
         }
-        match value {
-            _ if unit == 0 => write!(f, "{}B", self.0),
-            value if value < 9.995 => write!(f, "{value:.2}{}", UNITS[unit]),
-            value if value < 99.95 => write!(f, "{value:.1}{}", UNITS[unit]),
-            value => write!(f, "{value:.0}{}", UNITS[unit]),
+        // bytes / scale in `per_unit`ths, rounded half up
+        let rounded = |per_unit: u128| (bytes * per_unit * 2 + scale) / (2 * scale);
+        match UNITS[unit] {
+            _ if unit == 0 => write!(f, "{bytes}B"),
+            unit if bytes * 1000 < 9995 * scale => {
+                let hundredths = rounded(100);
+                write!(f, "{}.{:02}{unit}", hundredths / 100, hundredths % 100)
+            }
+            unit if bytes * 100 < 9995 * scale => {
+                let tenths = rounded(10);
+                write!(f, "{}.{}{unit}", tenths / 10, tenths % 10)
+            }
+            unit => write!(f, "{}{unit}", rounded(1)),
         }
     }
 }

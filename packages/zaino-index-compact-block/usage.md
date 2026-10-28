@@ -84,7 +84,8 @@ over any `V: SequenceRead`: a store's durable view, or an `NfsPublication`'s
 - `block(h)` = one framed record, every pool. `GetBlock` is never filtered.
 - `block_at(h, hash)` = `GetBlock` by hash, with `h` found by the block-hash
   index. It returns the record only if its `hash` field matches, else
-  `ServeError::HashNotFound` (`Malformed` if the record will not walk).
+  `ServeError::HashNotFound`. A stored record that will not walk panics (our own
+  write, past its checksum), here and in `RangeCursor::next_chunk`.
 - `resident_block(h)` returns the record when `h` sits in the NFS
   in-memory layer, so a transport can answer inline. `None` = ask `block`.
 - `RangeCursor::new(reader, start, end, tip, pools)` = `GetBlockRange` from

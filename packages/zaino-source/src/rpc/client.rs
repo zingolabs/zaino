@@ -5,7 +5,6 @@
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Instant;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -92,7 +91,7 @@ pub(crate) type Served = std::sync::Arc<
 >;
 
 impl RpcClient {
-    pub(crate) fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
+    pub(crate) fn new(config: RpcClientConfig) -> Self {
         let limits = config.limits;
         let client = reqwest::Client::builder()
             .connect_timeout(config.timeouts.connect)
@@ -100,10 +99,13 @@ impl RpcClient {
             .read_timeout(config.timeouts.read)
             .redirect(reqwest::redirect::Policy::none())
             // idle connections kept = the most ever open at once
-            .pool_max_idle_per_host(limits.max_connections.get() as usize)
-            .build()?;
+            .pool_max_idle_per_host(
+                usize::try_from(limits.max_connections.get()).expect("u32 fits usize"),
+            )
+            .build()
+            .expect("reqwest without TLS features + no fallible builder option = infallible build");
         let wire = Wire::Http { client, url: config.url, auth: config.auth };
-        Ok(Self::over(config.name, wire, limits))
+        Self::over(config.name, wire, limits)
     }
 
     /// Every request answered by `serve` in-process (`MockValidator`)
@@ -135,15 +137,10 @@ impl RpcClient {
         method: &str,
         params: Vec<Value>,
     ) -> Result<T, RpcError> {
-        let _in_flight = metrics::InFlight::start(&self.name);
-        let started = Instant::now();
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let body = envelope::build_request(method, &params, id);
-        let settled =
-            self.send_http(&body).await.and_then(|reply| envelope::parse_response(&reply));
-        let failure = settled.as_ref().err().map(RpcError::failure_mode);
-        metrics::call_settled(&self.name, method, started.elapsed(), failure);
-        settled
+        let call = async { envelope::parse_response(&self.send_http(&body).await?) };
+        metrics::observed(&self.name, method, call, rpc_failure).await
     }
 
     /// `calls` in one HTTP request, one outcome per item (call order)
@@ -155,15 +152,12 @@ impl RpcClient {
         label: &'static str,
         calls: Vec<Call>,
     ) -> Result<Vec<Result<T, RpcError>>, RpcError> {
-        let _in_flight = metrics::InFlight::start(&self.name);
-        let started = Instant::now();
-        let first = self.id_counter.fetch_add(calls.len() as i64, Ordering::Relaxed);
+        let calls_in_batch = i64::try_from(calls.len()).expect("a batch holds far under i64::MAX");
+        let first = self.id_counter.fetch_add(calls_in_batch, Ordering::Relaxed);
         let body = envelope::build_batch(calls.iter(), first);
-        let settled = self.send_http(&body).await;
-        let settled = settled.and_then(|reply| envelope::parse_batch(&reply, first, calls.len()));
-        let failure = settled.as_ref().err().map(RpcError::failure_mode);
-        metrics::call_settled(&self.name, label, started.elapsed(), failure);
-        settled
+        let call =
+            async { envelope::parse_batch(&self.send_http(&body).await?, first, calls.len()) };
+        metrics::observed(&self.name, label, call, rpc_failure).await
     }
 
     async fn send_http(&self, body: &Value) -> Result<Vec<u8>, RpcError> {
@@ -171,13 +165,11 @@ impl RpcClient {
             Wire::Http { client, url, auth } => (client, url, auth),
             #[cfg(any(test, feature = "testing"))]
             Wire::Served(serve) => {
-                return self.read_served(serve(serde_json::to_vec(body)?).await?)
+                return self.read_served(serve(body.to_string().into_bytes()).await?)
             }
         };
-        let mut request = client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_string(body)?);
+        let mut request =
+            client.post(url).header("Content-Type", "application/json").body(body.to_string());
         if let Some((user, pass)) = auth {
             request = request.basic_auth(user, Some(pass));
         }
@@ -205,13 +197,15 @@ impl RpcClient {
     async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<Vec<u8>, RpcError> {
         let max = self.response_size_cap.bytes();
         let too_large = RpcError::ResponseBodyTooLarge { max };
-        let announced = response.content_length();
-        if announced.is_some_and(|len| len > max as u64) {
+        // past usize = past any cap
+        let announced =
+            response.content_length().map(|len| usize::try_from(len).unwrap_or(usize::MAX));
+        if announced.is_some_and(|len| len > max) {
             return Err(too_large);
         }
 
         // sized once from `Content-Length` (≤ max): no regrowth copies of a multi-MB body
-        let mut body = Vec::with_capacity(announced.map_or(0, |len| len as usize));
+        let mut body = Vec::with_capacity(announced.unwrap_or(0));
         while let Some(chunk) = response.chunk().await? {
             if body.len() + chunk.len() > max {
                 return Err(too_large);
@@ -221,6 +215,10 @@ impl RpcClient {
         }
         Ok(body)
     }
+}
+
+fn rpc_failure<T>(settled: &Result<T, RpcError>) -> Option<crate::FailureMode> {
+    settled.as_ref().err().map(RpcError::failure_mode)
 }
 
 #[cfg(test)]
@@ -284,7 +282,7 @@ mod tests {
             timeouts: Timeouts::default(),
             limits,
         };
-        RpcClient::new(config).expect("client")
+        RpcClient::new(config)
     }
 
     /// Batch replies reversed by the validator: outcomes still in call order, `-1` busy = that

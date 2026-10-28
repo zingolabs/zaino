@@ -33,7 +33,7 @@ use crate::ports::{PeerSource, UnspentOutputs};
 pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
 
 /// A transaction one of our checks refused stays refused this long
-pub(crate) const REFUSED_TTL: Duration = Duration::from_secs(600);
+const REFUSED_TTL: Duration = Duration::from_secs(600);
 
 /// Polls the peers' mempools into the view until cancelled (spawn [`run`](Self::run))
 pub struct PeerMempool {
@@ -137,7 +137,7 @@ pub(crate) fn judge(
         inputs.iter().zip(served).map(value).collect()
     };
     let judged = |(id, raw): (PeerTxId, Bytes)| {
-        let fee = admissible(&raw, next, prevouts).map(|(_, fee)| fee);
+        let fee = admissible(&raw, next, prevouts);
         (id, raw, fee)
     };
     fetched.into_iter().map(judged).collect()
@@ -147,6 +147,6 @@ pub(crate) fn judge(
 fn held(view: &ChainViewSnapshot, at: &OutPoint) -> Option<Zatoshis> {
     let parent = view.mempool.get(at.txid())?;
     let tx = decode_transaction(parent.raw()).ok()?;
-    let index = usize::try_from(at.n()).ok()?;
+    let index = usize::try_from(at.n()).expect("u32 fits usize");
     tx.transparent.outputs.get(index).map(|output| output.value)
 }

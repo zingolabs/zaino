@@ -113,14 +113,14 @@ pub(crate) enum Synced {
 pub(crate) const DOWN_AFTER: u32 = 10;
 const BENCH: Duration = Duration::from_secs(60);
 const BENCH_MAX: Duration = Duration::from_secs(3600);
-const PEER_TIER: u16 = u8::MAX as u16 + 1;
+/// Below every trusted validator's `u8` priority
+const PEER_TIER: u16 = 256;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Member {
     pub(crate) tier: u16,
     pub(crate) synced: Option<Synced>,
     pub(crate) failures: u32,
-    pub(crate) down: bool,
     pub(crate) bench: Option<Bench>,
     pub(crate) in_flight: PerLane<u32>,
     pub(crate) permits: Permits,
@@ -153,7 +153,6 @@ impl Member {
             tier,
             synced: None,
             failures: 0,
-            down: false,
             bench: None,
             in_flight: [0; LANES],
             permits,
@@ -163,7 +162,8 @@ impl Member {
 
     pub(crate) fn health(&self) -> Health {
         match (self.failures, self.synced) {
-            _ if self.down => Health::Down,
+            // `Down` only with a poller (its probe = the way back up, the peer set has none)
+            (failures, _) if failures >= DOWN_AFTER && self.poller.is_some() => Health::Down,
             (failures, _) if failures > 0 => Health::Degraded,
             (_, None) => Health::Pending,
             (_, Some(Synced::Live)) => Health::Live,
@@ -183,18 +183,11 @@ impl Member {
     }
 
     /// Passive (any reply) or active (poll) check
-    ///
-    /// - `Down` only with a poller (its probe = the way back up, the peer set has none)
     pub(crate) fn outcome(&mut self, answered: bool) {
-        match answered {
-            true => (self.failures, self.down) = (0, false),
-            false => {
-                self.failures += 1;
-                if self.failures == DOWN_AFTER && self.poller.is_some() {
-                    self.down = true;
-                }
-            }
-        }
+        self.failures = match answered {
+            true => 0,
+            false => self.failures.saturating_add(1),
+        };
     }
 
     pub(crate) fn room(&self, lane: Lane) -> bool {

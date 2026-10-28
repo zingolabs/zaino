@@ -34,17 +34,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use crate::config::network_name;
-use zaino_chainview::ChainView;
+use zaino_chainview::{ChainView, OwnChain};
 use zaino_grpc::{AdmissionState, GrpcService, RouteDeps, Routing, Tls};
 use zaino_grpc_snapshot::Publisher;
 use zaino_header_chain::{HeaderChainSnapshot, Params, CONTEXT};
 use zaino_index_tree_state::TreeStateReader;
 use zaino_nfs::{write_buffer, writer, ChainParams, FeeWiring, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, View};
+use zaino_persistence::{DiskEngine, DiskView, PersistenceEngine, View};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::{BlockchainInfo, ChainDataSource};
+use zaino_sync::IndexKind;
 use zaino_sync::{FinalizedFollower, IndexHandle};
 use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
@@ -233,7 +234,7 @@ async fn boot_over<S: ChainDataSource>(
     };
     let own = pipeline(config, inputs, serving, status, cancel, tasks)?;
 
-    let header_sync = match config.p2p.enabled {
+    let header_sync = match config.p2p.is_some() {
         true => viewed.header_sync.with_peers(Params::for_network(config.network, &schedule)),
         false => viewed.header_sync,
     };
@@ -261,7 +262,7 @@ async fn boot_over<S: ChainDataSource>(
         spawn_infallible(tasks, "push-stream", chainview_span.clone(), run);
     }
     let heartbeat = admin::beat(Arc::clone(status), cancel.child_token());
-    spawn(tasks, "heartbeat", component("Admin"), heartbeat);
+    spawn_infallible(tasks, "heartbeat", component("Admin"), heartbeat);
     Ok(())
 }
 
@@ -283,26 +284,28 @@ fn pipeline<S: ChainDataSource>(
     status: &DaemonStatus,
     cancel: &CancellationToken,
     tasks: &mut JoinSet<TaskExit>,
-) -> Result<Option<Vec<BlockRef>>, IndexerError> {
+) -> Result<Option<OwnChain>, IndexerError> {
     let indexes = open_indexes(config, &inputs)?;
     let own = own_chain(&indexes.opened);
     run_pipeline(config, indexes, inputs, serving, status, cancel, tasks);
     Ok(own)
 }
 
-/// The indexes' chain at their lowest durable tip, by hash: `CONTEXT` + 2 blocks from
-/// tree-state's records (`None` = tree-state off, or fewer blocks held)
-fn own_chain(opened: &[OpenedIndex]) -> Option<Vec<BlockRef>> {
+/// The indexes' chain at their lowest durable tip, by hash: locator, anchor, `CONTEXT` blocks above
+/// it, from tree-state's records (`None` = tree-state off, or fewer blocks held)
+fn own_chain(opened: &[OpenedIndex]) -> Option<OwnChain> {
     let tips = opened.iter().map(|index| index.handle.durable_view().tip());
     let tip = tips.min_by_key(|tip| tip.map(|tip| tip.height))??;
     let tree_state = opened.iter().find(|index| index.kind == IndexKind::TreeState)?;
     let reader = TreeStateReader::new(tree_state.handle.durable_view());
-    let from = u32::from(tip.height).checked_sub(CONTEXT as u32 + 1)?;
-    let at = |height: u32| {
-        let height = BlockHeight::from(height);
-        reader.treestate(height).ok().map(|state| BlockRef { hash: state.block_hash, height })
+    let context = u32::try_from(CONTEXT).expect("CONTEXT = 113 blocks");
+    let locator = u32::from(tip.height).checked_sub(context + 1)?;
+    let hash_at = |height: u32| {
+        reader.treestate(BlockHeight::from(height)).ok().map(|state| state.block_hash)
     };
-    (from..=u32::from(tip.height)).map(at).collect()
+    let anchor = BlockRef { hash: hash_at(locator + 1)?, height: BlockHeight::from(locator + 1) };
+    let above = (locator + 2..=u32::from(tip.height)).map(hash_at).collect::<Option<_>>()?;
+    Some(OwnChain { locator: hash_at(locator)?, anchor, above })
 }
 
 /// Every enabled index opened, subscribed to the finalized stream, added to the NFS
@@ -322,12 +325,10 @@ fn open_indexes<S: ChainDataSource>(
         opened: Vec::new(),
         writers: Vec::new(),
     };
-    let compact_block = config.compact_block()?;
-    let mut fees = FeeWiring::new(compact_block.map(|(cb, _)| cb.queue_bytes));
-    for kind in IndexKind::ALL {
-        if let Some(index) = config.enabled(kind) {
-            indexes.open(kind, &index, &mut fees)?;
-        }
+    let compact_block = config.indexes.get(IndexKind::CompactBlock);
+    let mut fees = FeeWiring::new(compact_block.map(|compact_block| compact_block.queue_bytes));
+    for index in config.indexes.iter() {
+        indexes.open(index, &mut fees)?;
     }
     Ok(indexes)
 }
@@ -367,7 +368,7 @@ fn run_pipeline<S: ChainDataSource>(
         indexes: opened.iter().map(|index| index.kind).collect(),
     });
     if let Some(polling) = inputs.view.peer_mempool(Arc::new(grpc_snapshots.clone())) {
-        if config.enabled(IndexKind::CompactBlock).is_none() {
+        if config.indexes.get(IndexKind::CompactBlock).is_none() {
             warn!(
                 "p2p.enabled without index.compact_block: no UTXO set, peers admit no transaction"
             );
@@ -376,12 +377,8 @@ fn run_pipeline<S: ChainDataSource>(
         spawn_infallible(tasks, "peer-mempool", component("ChainView"), run);
     }
     let (sizes, walked) = watch::channel(disk::Sizes::new());
-    spawn(
-        tasks,
-        "disk",
-        component("Admin"),
-        disk::run(opened.clone(), sizes, cancel.child_token()),
-    );
+    let sampling = disk::run(opened.clone(), sizes, cancel.child_token());
+    spawn_infallible(tasks, "disk", component("Admin"), sampling);
     let (rate, block_rate) = watch::channel(None);
     let reporting = progress::run(
         grpc_snapshots.clone(),
@@ -391,10 +388,10 @@ fn run_pipeline<S: ChainDataSource>(
         rate,
         cancel.child_token(),
     );
-    spawn(tasks, "progress", component("ZainoNFS"), reporting);
+    spawn_infallible(tasks, "progress", component("ZainoNFS"), reporting);
     let (egress, egress_windows) = watch::channel(None);
     let measuring = egress::run(egress, cancel.child_token());
-    spawn(tasks, "egress", component("Grpc"), measuring);
+    spawn_infallible(tasks, "egress", component("Grpc"), measuring);
     status.publish(Sources {
         grpc_snapshots,
         progress,
@@ -425,14 +422,10 @@ pub(crate) struct OpenedIndex {
 }
 
 impl<S: ChainDataSource> Indexes<S> {
-    /// `config.path` opened as `kind`'s store under its component span → its writer's handle to
-    /// the follower + NFS, its `run` over the finalized stream queued
-    fn open(
-        &mut self,
-        kind: IndexKind,
-        config: &IndexConfig,
-        fees: &mut FeeWiring,
-    ) -> Result<(), IndexerError> {
+    /// `config.path` opened as `config.kind`'s store under its component span → its writer's
+    /// handle to the follower + NFS, its `run` over the finalized stream queued
+    fn open(&mut self, config: &IndexConfig, fees: &mut FeeWiring) -> Result<(), IndexerError> {
+        let kind = config.kind;
         let (schema, write_buffer) = (zaino_nfs::schema(kind, self.network), write_buffer(kind));
         let span = logging::index_component(kind);
         let store = span.in_scope(|| {
@@ -466,19 +459,15 @@ async fn supervise(
             None
         }
         () = cancel.cancelled() => None,
-        Some(exit) = tasks.join_next() => Some(first_failure(exit)),
+        Some(exit) = tasks.join_next() => Some(first_failure(exit.unwrap_or_else(|join| rejoin(join)))),
     };
     cancel.cancel();
     while let Some(exit) = tasks.join_next().await {
-        match exit {
-            Ok((task, Ok(()))) => debug!(task, "Task stopped"),
-            Ok((task, Err(error))) => {
+        match exit.unwrap_or_else(|join| rejoin(join)) {
+            (task, Ok(())) => debug!(task, "Task stopped"),
+            (task, Err(error)) => {
                 error!(task, %error, "Task failed");
                 failure.get_or_insert(error);
-            }
-            Err(error) => {
-                error!(%error, "Task panicked");
-                failure.get_or_insert(IndexerError::Join(error));
             }
         }
     }
@@ -486,14 +475,24 @@ async fn supervise(
 }
 
 /// A task ended before shutdown: always a fault
-fn first_failure(exit: Result<TaskExit, tokio::task::JoinError>) -> IndexerError {
-    match exit {
-        Ok((task, Ok(()))) => IndexerError::TaskEnded { task },
-        Ok((task, Err(error))) => {
+///
+/// - `Ok` stays an error, not a panic (a writer ends `Ok` on the follower's `Shutdown`, and may
+///   join before the follower's own external `Err`)
+fn first_failure((task, outcome): TaskExit) -> IndexerError {
+    match outcome {
+        Ok(()) => IndexerError::TaskEnded { task },
+        Err(error) => {
             error!(task, %error, "Task failed");
             error
         }
-        Err(error) => IndexerError::Join(error),
+    }
+}
+
+/// Join of a task nothing aborts: its panic resumed on the joiner (`Cancelled` = a bug)
+pub(crate) fn rejoin(join: tokio::task::JoinError) -> ! {
+    match join.try_into_panic() {
+        Ok(payload) => std::panic::resume_unwind(payload),
+        Err(join) => panic!("daemon tasks never aborted: {join}"),
     }
 }
 
@@ -525,29 +524,19 @@ fn spawn_infallible(
 ///
 /// - Handlers registered here, before boot returns (from then on SIGTERM never kills outright)
 fn shutdown_signals() -> mpsc::Receiver<&'static str> {
+    use tokio::signal::unix::{signal, SignalKind};
+
     let (sender, receiver) = mpsc::channel(1);
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        // Fails only on a broken runtime/OS (unrecoverable process-level invariant)
-        let mut terminate = signal(SignalKind::terminate()).expect("register SIGTERM handler");
-        let mut interrupt = signal(SignalKind::interrupt()).expect("register SIGINT handler");
-        tokio::spawn(async move {
-            loop {
-                let signal = tokio::select! {
-                    _ = interrupt.recv() => "SIGINT",
-                    _ = terminate.recv() => "SIGTERM",
-                };
-                if sender.send(signal).await.is_err() {
-                    return;
-                }
-            }
-        });
-    }
-    #[cfg(not(unix))]
+    // Fails only on a broken runtime/OS (unrecoverable process-level invariant)
+    let mut terminate = signal(SignalKind::terminate()).expect("register SIGTERM handler");
+    let mut interrupt = signal(SignalKind::interrupt()).expect("register SIGINT handler");
     tokio::spawn(async move {
-        while tokio::signal::ctrl_c().await.is_ok() {
-            if sender.send("ctrl-c").await.is_err() {
+        loop {
+            let signal = tokio::select! {
+                _ = interrupt.recv() => "SIGINT",
+                _ = terminate.recv() => "SIGTERM",
+            };
+            if sender.send(signal).await.is_err() {
                 return;
             }
         }
@@ -572,6 +561,8 @@ mod tests {
     use zaino_source::testing::{h, p2pkh, within, MockChain, MockValidator};
     use zaino_source::ZcashLegacyRpcClient;
 
+    use crate::config::{DaemonConfigFile, TrustedValidatorTable};
+
     /// Every way `supervise` ends: the first task to end = the daemon's failure, named; a signal =
     /// clean `Ok`
     ///
@@ -582,7 +573,6 @@ mod tests {
         let ends_ok: fn(CancellationToken) -> Run = |_| Box::pin(async { Ok(()) });
         let fails: fn(CancellationToken) -> Run =
             |_| Box::pin(async { Err(IndexerError::Config("boom".into())) });
-        let panics: fn(CancellationToken) -> Run = |_| Box::pin(async { panic!("boom") });
         let until_cancel: fn(CancellationToken) -> Run = |token| {
             Box::pin(async move {
                 token.cancelled().await;
@@ -594,7 +584,6 @@ mod tests {
             // case,          "early" task,  signal,          supervise's outcome (Debug)
             ("task ends ok",  ends_ok,       None,            r#"Err(TaskEnded { task: "early" })"#),
             ("task fails",    fails,         None,            r#"Err(Config("boom"))"#),
-            ("task panics",   panics,        None,            r#"Err(Join(JoinError::Panic("#),
             ("SIGTERM",       until_cancel,  Some("SIGTERM"), "Ok(())"),
         ];
 
@@ -628,6 +617,16 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[should_panic(expected = "task blew up")]
+    async fn a_tasks_panic_resumes_on_supervise() {
+        let mut tasks = JoinSet::new();
+        spawn_infallible(&mut tasks, "panics", Span::none(), async { panic!("task blew up") });
+        let (_signal, signals) = mpsc::channel(1);
+
+        let _ = supervise(tasks, CancellationToken::new(), signals).await;
+    }
+
     /// Real SIGTERM to this process while boot waits on a regtest validator that never answers:
     /// - boot returns (no download, no schedule needed), the daemon's handle ends `Ok`
     /// - the gRPC listener bound during boot is closed by then
@@ -639,17 +638,15 @@ mod tests {
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let (grpc, validator) = (probe.local_addr().expect("local addr"), "127.0.0.1:1");
         drop(probe);
-        let mut config = DaemonConfig {
-            network: NetworkType::Regtest,
-            trusted_validators: vec![TrustedValidatorConfig {
-                jsonrpc_address: validator.to_owned(),
-                ..TrustedValidatorConfig::default()
-            }],
-            ..DaemonConfig::default()
-        };
-        config.serve.grpc_listen_address = grpc;
-        config.serve.state_dir = dir.path().join("state");
-        config.grpc.max_connections = NonZeroUsize::new(16).expect("non-zero");
+        let mut trusted = TrustedValidatorTable::default();
+        trusted.jsonrpc_address = validator.to_owned();
+        let mut file = DaemonConfigFile::default();
+        file.network = NetworkType::Regtest;
+        file.trusted_validators = vec![trusted];
+        file.serve.grpc_listen_address = grpc;
+        file.serve.state_dir = Some(dir.path().join("state"));
+        file.grpc.max_connections = NonZeroUsize::new(16).expect("non-zero");
+        let config = file.resolve().expect("resolves");
         let status = Arc::new(DaemonStatus::new(config.network, []));
         let booting = tokio::spawn(start(config, Arc::clone(&status)));
 
@@ -729,10 +726,11 @@ mod tests {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
             let address = probe.local_addr().expect("local addr");
             drop(probe);
-            let mut config =
-                DaemonConfig { network: NetworkType::Regtest, ..DaemonConfig::default() };
-            config.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
-            config.serve.grpc_listen_address = address;
+            let mut file = DaemonConfigFile::default();
+            file.network = NetworkType::Regtest;
+            file.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
+            file.serve.grpc_listen_address = address;
+            let config = file.resolve().expect("resolves");
             let (cancel, mut tasks) = (CancellationToken::new(), JoinSet::new());
             let status = Arc::new(DaemonStatus::new(config.network, []));
             let serving = listen(&config, &status, &cancel, &mut tasks).await.expect("binds");
@@ -883,7 +881,8 @@ mod tests {
         assert_eq!(ended, None, "reorg: the stream's end, no further record");
         let after = pipeline.wallet.get_latest_block(ChainSpec {}).await.expect("served");
         let after = after.into_inner();
-        let on_b = b.get(after.height as usize).map(|at| at.header().hash.0.to_vec());
+        let height = usize::try_from(after.height).expect("test height fits usize");
+        let on_b = b.get(height).map(|at| at.header().hash.0.to_vec());
         assert_eq!(Some(after.hash.clone()), on_b, "{after:?}: on B's chain, never A8");
     }
 
@@ -893,7 +892,7 @@ mod tests {
     async fn a_scrape_of_a_running_pipeline_renders_every_ztest_family() {
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
         use crate::telemetry::metrics::{describe_all, recorder, scrape, Format};
-        let (recorder, rendered) = recorder().expect("native config is valid");
+        let (recorder, rendered) = recorder();
         let _recording = metrics::set_default_local_recorder(&recorder);
         describe_all();
         let mut blocks = MockChain::regtest();

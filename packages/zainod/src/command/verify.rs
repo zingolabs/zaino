@@ -10,9 +10,8 @@ use std::{
 };
 
 use serde::Serialize;
-use zaino_persistence::{
-    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, StoreError, Verification,
-};
+use zaino_persistence::{fs::RealFs, DiskEngine, PersistenceEngine, StoreError, Verification};
+use zaino_sync::IndexKind;
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
 use zaino_nfs::schema;
@@ -34,9 +33,6 @@ pub(crate) enum VerifyError {
 
     #[error("{index} index at {path}: {source}")]
     Index { index: &'static str, path: PathBuf, source: StoreError },
-
-    #[error("rendering the report: {0}")]
-    Render(#[from] serde_json::Error),
 }
 
 /// Verifies the indexes `config_path` enables (exit status 0 clean, 1 corrupt, 2 unreadable)
@@ -46,7 +42,8 @@ pub(crate) fn run(config_path: &Path) -> ExitCode {
 
 fn scrub(config_path: &Path) -> Result<ExitCode, VerifyError> {
     let report = verify(&load_config(config_path)?)?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let rendered = serde_json::to_string_pretty(&report).expect("verify Report serializes to JSON");
+    println!("{rendered}");
     eprint!("{}", report.summary());
     Ok(match report.clean {
         true => ExitCode::SUCCESS,
@@ -58,13 +55,13 @@ fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
     let engine = DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default());
     let mut reports = BTreeMap::new();
     for kind in IndexKind::ALL {
-        let index = kind.name();
-        let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
+        let name = kind.name();
+        let report = config.indexes.get(kind).map(|IndexConfig { path, .. }| {
             engine
-                .verify(&path, &schema(kind, config.network))
-                .map_err(|source| VerifyError::Index { index, path, source })
+                .verify(path, &schema(kind, config.network))
+                .map_err(|source| VerifyError::Index { index: name, path: path.clone(), source })
         });
-        reports.insert(index, report.transpose()?);
+        reports.insert(name, report.transpose()?);
     }
     let clean = reports.values().flatten().all(Verification::is_clean);
     Ok(Report { clean, indexes: reports })

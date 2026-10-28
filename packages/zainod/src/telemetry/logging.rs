@@ -2,7 +2,7 @@
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{filter::FromEnvError, layer::SubscriberExt, util::SubscriberInitExt};
-use zaino_persistence::IndexKind;
+use zaino_sync::IndexKind;
 
 const DEFAULT_FILTER: &str = "zaino=info,zainod=info";
 

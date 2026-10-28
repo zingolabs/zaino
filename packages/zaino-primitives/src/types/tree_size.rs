@@ -7,17 +7,9 @@ use super::{Block, PerPool};
 /// Cumulative note-commitment count of one pool's tree, as of a block
 ///
 /// - `u32`-backed = every format's range
-/// - full depth-32 tree (`2^32`) refused at [`TryFrom<u64>`] / `checked_add`, never written as `0`
-///   (#549)
+/// - full depth-32 tree (`2^32`) panics in [`TreeSizes::advance`], never written as `0` (#549)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TreeSize(u32);
-
-/// Size past the `u32` formats (only in-protocol cause: a full depth-32 tree)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("tree size {got} exceeds the compact protocol's u32 range")]
-pub struct TreeSizeOutOfRange {
-    pub got: u64,
-}
 
 impl TreeSize {
     pub(crate) const ZERO: Self = Self(0);
@@ -25,26 +17,11 @@ impl TreeSize {
     pub const fn get(self) -> u32 {
         self.0
     }
-
-    /// Size after one block's `count` new commitments
-    pub(crate) fn checked_add(self, count: u64) -> Result<Self, TreeSizeOutOfRange> {
-        let total =
-            u64::from(self.0).checked_add(count).ok_or(TreeSizeOutOfRange { got: count })?;
-        Self::try_from(total)
-    }
 }
 
 impl From<u32> for TreeSize {
     fn from(count: u32) -> Self {
         Self(count)
-    }
-}
-
-impl TryFrom<u64> for TreeSize {
-    type Error = TreeSizeOutOfRange;
-
-    fn try_from(count: u64) -> Result<Self, Self::Error> {
-        u32::try_from(count).map(Self).map_err(|_| TreeSizeOutOfRange { got: count })
     }
 }
 
@@ -86,9 +63,13 @@ impl TreeSizes {
     pub fn advance(self, block: &Block) -> Self {
         Self::from_fn(|pool| {
             let txs = block.transactions().iter();
-            let added = txs.map(|tx| tx.note_commitments(pool).count() as u64).sum();
-            let full = |_| panic!("{pool:?} commitment tree past 2^32 leaves: consensus caps it");
-            self.get(pool).checked_add(added).unwrap_or_else(full)
+            let added: usize = txs.map(|tx| tx.note_commitments(pool).count()).sum();
+            let added = u64::try_from(added).expect("usize <= u64 (64-bit targets only)");
+            let total = u64::from(*self.get(pool)).saturating_add(added);
+            let full = |_| {
+                panic!("{pool:?} commitment tree past 2^32 leaves at {total}: consensus caps it")
+            };
+            TreeSize(u32::try_from(total).unwrap_or_else(full))
         })
     }
 }
@@ -158,27 +139,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Sapling commitment tree past 2^32 leaves")]
+    #[should_panic(expected = "Sapling commitment tree past 2^32 leaves at 4294967296")]
     fn a_tree_past_2_32_leaves_panics() {
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
         full.advance(&block_of(&[PerPool { sapling: 1, orchard: 0, ironwood: 0 }]));
     }
 
-    /// Both doors refuse exactly the #549 boundary (a full depth-32 tree, `2^32`) and accept
-    /// everything below it
+    /// #549 boundary: `u32::MAX` leaves held, not refused or wrapped to 0
     #[test]
-    fn sizes_enter_up_to_u32_max_and_a_full_tree_is_refused_at_both_doors() {
-        let full = 1_u64 << 32;
-
-        let largest = TreeSize::try_from(u64::from(u32::MAX));
-        assert_eq!(largest, Ok(TreeSize::from(u32::MAX)), "u32::MAX enters");
-        assert_eq!(TreeSize::try_from(full), Err(TreeSizeOutOfRange { got: full }), "2^32 refused");
-
-        assert_eq!(TreeSize::ZERO.checked_add(0), Ok(TreeSize::ZERO), "0 + 0");
-        assert_eq!(TreeSize::from(10).checked_add(5), Ok(TreeSize::from(15)), "10 + 5");
-        let past_u32 = TreeSize::from(u32::MAX).checked_add(1);
-        assert_eq!(past_u32, Err(TreeSizeOutOfRange { got: full }), "refused, not wrapped to 0");
-        let past_u64 = TreeSize::from(1).checked_add(u64::MAX);
-        assert_eq!(past_u64, Err(TreeSizeOutOfRange { got: u64::MAX }), "names the count");
+    fn a_tree_fills_to_u32_max() {
+        let nearly = PerPool { sapling: u32::MAX - 1, orchard: 0, ironwood: 0 }.map(TreeSize::from);
+        let filled = nearly.advance(&block_of(&[PerPool { sapling: 1, orchard: 0, ironwood: 0 }]));
+        assert_eq!(filled.sapling, TreeSize::from(u32::MAX));
     }
 }

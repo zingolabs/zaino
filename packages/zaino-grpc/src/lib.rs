@@ -33,7 +33,7 @@ mod transport;
 mod wire;
 
 pub use crate::metrics::{sent_bytes_total, METRICS};
-pub use admission::{AdmissionReport, AdmissionState};
+pub use admission::AdmissionState;
 pub use health::Health;
 pub use lifetime::{Hold, Retire};
 pub use limits::{GrpcLimits, OverloadLimits};
@@ -45,7 +45,7 @@ pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};
 
 /// RPCs unserved without `kind` (`Method` order; none = an index no RPC reads directly)
-pub fn rpcs_gated_by(kind: zaino_persistence::IndexKind) -> impl Iterator<Item = &'static str> {
+pub fn rpcs_gated_by(kind: zaino_sync::IndexKind) -> impl Iterator<Item = &'static str> {
     use strum::VariantArray as _;
     let methods = service::Method::VARIANTS.iter();
     methods.filter(move |method| method.route().index == Some(kind)).map(|method| method.name())

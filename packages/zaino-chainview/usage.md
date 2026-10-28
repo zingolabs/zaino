@@ -67,13 +67,15 @@ a header, a witness, finality.
 
 - **Trusted runs** (`headers(Pinned)`, ≤ `HEADER_BATCH` = 2,000): from the first answering
   validator whose claim the header chain does not hold. Anchors at claim − `anchor_below()`
-  (max(depth, 113)) with no chain or that anchor past `ceiling`; otherwise extends. The run's last
+  (max(depth, 113)) with no chain or that anchor past `ceiling` (an anchor header refused for its
+  nBits = `report` + stall, nothing dropped); otherwise extends. The run's last
   header is vouched.
-- **Own anchor** (`with_own_chain(own)`, `with_peers`): no trusted run due before any anchor (a
-  restart while every validator is down) → the peers' headers after `own[0]`, each matched to
-  `own[1..]`'s hash in turn, anchor at `own[1]` and fill the tree as trusted (our indexes folded
-  those blocks). `own` = `CONTEXT` + 2 blocks ending at the indexes' lowest durable tip (zainod
-  reads tree-state's records). A mismatch or a short answer is asked again after 5 s.
+- **Own anchor** (`with_own_chain(OwnChain { locator, anchor, above })`, `with_peers`): no trusted
+  run due before any anchor (a restart while every validator is down) → the peers' headers after
+  `locator`, each matched to `anchor`'s hash then `above`'s in turn, anchor at `anchor` and fill
+  the tree as trusted (our indexes folded those blocks). zainod builds it from tree-state's records:
+  `above` = `CONTEXT` blocks ending at the indexes' lowest durable tip. A mismatch or a short answer
+  is asked again after 5 s.
 - **Peer runs** (`with_peers`, once anchored): `headers(Peers)` when no trusted run is due, every
   5 s (at once after progress), each header through `insert_untrusted` (`validate`). Never
   vouched. A refusal ends the run, and only `Fault::Sender` → `report`.
@@ -101,8 +103,7 @@ Cheap to clone; cannot drive polling or submit.
 | `held_by()` | `TrustedValidatorSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain: where each is now, read from its last poll |
 | `agreements()` | each trusted validator's `Agreement`, configured order |
 | `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
-| `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
-| `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no header chain) |
+| `mempool()` | `Some` iff a `Live` validator is in `held_by()` or the fresh peer listings span > 5 netgroups (needs no header chain) |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `mempool_states()` | each held transaction's `MempoolState`: `Verified` (a trusted listing), `Quorum` (a peer quorum's only), `Ours` (our relay, neither) |
 | `trusted_validators()` | per-validator `TrustedValidatorMeta`, configured order |
@@ -136,6 +137,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 - `excluding(suffixes)` = `GetMempoolTx`'s rule: a suffix matches the end of the txid's
   protocol-order bytes; a suffix matching 0 or ≥ 2 entries excludes nothing.
+- `get(txid)` = one entry by txid (`GetTransaction`'s mempool answer), no scan.
 - `MempoolEntry.fee: Option<Zatoshis>`: the first known (a trusted listing's, or computed for a
   quorum admission); `None` = an `ours` nothing has listed.
 - `ChainView::peer_mempool(utxos)` → `PeerMempool` to spawn. `PEER_MEMPOOL_POLL` = 5 s,

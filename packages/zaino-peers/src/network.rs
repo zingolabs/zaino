@@ -20,11 +20,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use metrics::Label;
 use tokio::sync::{broadcast, mpsc};
 use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
-use tracing::debug;
+use tracing::{debug, warn};
+use zaino_primitives::metric::CallOutcome;
 use zaino_primitives::types::{Announced, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::{BlockHash, TxId};
@@ -36,6 +38,7 @@ use zebra_network::{
     Request, Response, SharedPeerError,
 };
 
+use crate::metrics::CALLS;
 use crate::wire::{self, WireError};
 
 /// Score for one answer that was not what was asked (zebra bans past its threshold)
@@ -83,8 +86,6 @@ pub enum PeerError {
     Timeout(Duration),
     #[error("peer request failed: {0}")]
     Network(BoxError),
-    #[error("peer answered {got} to {asked}")]
-    Unexpected { asked: &'static str, got: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -168,7 +169,7 @@ impl PeerNetwork {
         let known_blocks = known.iter().copied().map(wire::zebra_block_hash).collect();
         match self.call(Request::FindHeaders { known_blocks, stop: None }).await? {
             Response::BlockHeaders(headers) => Ok(headers.iter().map(wire::header_bytes).collect()),
-            other => Err(unexpected("FindHeaders", &other)),
+            other => misanswered("FindHeaders", "BlockHeaders", &other),
         }
     }
 
@@ -180,7 +181,7 @@ impl PeerNetwork {
         let asked = [wire::zebra_block_hash(hash)].into_iter().collect();
         let items = match self.inventory(Request::BlocksByHash(asked)).await? {
             Some(Response::Blocks(items)) => items,
-            Some(other) => return Err(unexpected("BlocksByHash", &other)),
+            Some(other) => misanswered("BlocksByHash", "Blocks", &other),
             None => Vec::new(),
         };
         let answered = self.answered(&[hash], items, "a block not asked for", |block, peer| {
@@ -206,7 +207,7 @@ impl PeerNetwork {
             Response::TransactionIds(ids) => Ok(ids.into_iter().map(wire::peer_tx_id).collect()),
             // zebrad's empty mempool
             Response::Nil => Ok(Vec::new()),
-            other => Err(unexpected("MempoolTransactionIdsFrom", &other)),
+            other => misanswered("MempoolTransactionIdsFrom", "TransactionIds", &other),
         }
     }
 
@@ -221,7 +222,7 @@ impl PeerNetwork {
         let asked = ids.iter().copied().map(wire::unmined_tx_id).collect();
         let items = match self.inventory(Request::TransactionsById(asked)).await? {
             Some(Response::Transactions(items)) => items,
-            Some(other) => return Err(unexpected("TransactionsById", &other)),
+            Some(other) => misanswered("TransactionsById", "Transactions", &other),
             None => Vec::new(),
         };
         Ok(self.answered(ids, items, "a transaction not asked for", |tx, _| {
@@ -291,8 +292,9 @@ impl PeerNetwork {
     ///   refusing without the wire (`NoReadyPeers`, a synthetic `notfound`), a push = `Nil` from
     ///   zebra's fan-out, never a peer's answer
     async fn call(&self, request: Request) -> Result<Response, PeerError> {
-        let command = request.command();
+        let labels = [Label::new("request", request.command())];
         let round_trip = !matches!(request, Request::PushTransaction(..));
+        let _in_flight = CALLS.in_flight(&labels);
         let mut peers = self.peers.clone();
         let answered = async {
             let ready = peers.ready().await?;
@@ -300,28 +302,29 @@ impl PeerNetwork {
             let answer = ready.call(request).await?;
             Ok::<_, BoxError>((answer, sent.elapsed()))
         };
-        match tokio::time::timeout(self.timeout, answered).await {
+        let (settled, outcome) = match tokio::time::timeout(self.timeout, answered).await {
             Ok(Ok((answer, took))) => {
-                if round_trip {
-                    crate::metrics::answered(command, took);
-                }
-                Ok(answer)
+                (Ok(answer), round_trip.then_some(CallOutcome::Answered(took)))
             }
             Ok(Err(cause)) => {
-                crate::metrics::failed(command, "peer");
-                Err(PeerError::Network(cause))
+                (Err(PeerError::Network(cause)), Some(CallOutcome::Unanswered("peer")))
             }
             Err(_) => {
-                crate::metrics::failed(command, "timeout");
-                Err(PeerError::Timeout(self.timeout))
+                (Err(PeerError::Timeout(self.timeout)), Some(CallOutcome::Unanswered("timeout")))
             }
+        };
+        if let Some(outcome) = outcome {
+            CALLS.settled(&labels, outcome);
         }
+        settled
     }
 
     fn lied(&self, peer: Option<PeerSocketAddr>, what: &str) {
         let Some(peer) = peer else { return };
         debug!(%peer, what, "Peer answered with something not asked for");
-        let _ = self.misbehaved.try_send(MisbehaviorReport::new(peer, LIED, what));
+        if let Err(dropped) = self.misbehaved.try_send(MisbehaviorReport::new(peer, LIED, what)) {
+            warn!(%peer, what, %dropped, "Peer misbehavior report dropped, peer not scored");
+        }
     }
 }
 
@@ -346,6 +349,7 @@ fn inbound(
     })
 }
 
-fn unexpected(asked: &'static str, got: &Response) -> PeerError {
-    PeerError::Unexpected { asked, got: format!("{got:?}").chars().take(64).collect() }
+/// zebra-network contract breach (each request's `Handler` → one `Response` variant only)
+fn misanswered(asked: &str, only: &str, got: &Response) -> ! {
+    unreachable!("zebra-network answers {asked} with {only} only, got {}", got.command())
 }

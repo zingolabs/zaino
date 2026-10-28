@@ -34,8 +34,6 @@ pub(crate) enum IndexerError {
     Grpc(#[from] zaino_grpc::GrpcServeError),
     #[error(transparent)]
     Tls(#[from] zaino_grpc::TlsError),
-    #[error(transparent)]
-    Join(#[from] tokio::task::JoinError),
     #[error("metrics error: {0}")]
     Metrics(String),
     #[error("index snapshot: {0}")]

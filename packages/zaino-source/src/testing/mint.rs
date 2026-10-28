@@ -348,7 +348,7 @@ fn filler<const N: usize>(at: &At, bundle: &str, field: &str, index: usize) -> [
 pub(super) fn bip34(height: u32) -> Vec<u8> {
     match height {
         0 => vec![0x00],
-        1..=16 => vec![0x50 + height as u8],
+        1..=16 => vec![0x50 + u8::try_from(height).expect("1..=16")],
         _ => {
             let mut number: Vec<u8> = height.to_le_bytes().into_iter().collect();
             while number.last() == Some(&0) {

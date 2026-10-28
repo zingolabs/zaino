@@ -5028,6 +5028,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
+ "zaino-sync",
  "zaino-traffic",
  "zcash_address",
  "zcash_protocol",
@@ -5093,7 +5094,6 @@ dependencies = [
  "zaino-source",
  "zaino-sync",
  "zcash_protocol",
- "zcash_transparent",
 ]
 
 [[package]]
@@ -5193,7 +5193,6 @@ dependencies = [
  "zaino-sync",
  "zaino-traffic",
  "zcash_protocol",
- "zcash_transparent",
 ]
 
 [[package]]
@@ -5253,7 +5252,6 @@ dependencies = [
  "uint 0.9.5",
  "zcash_encoding 0.4.0",
  "zcash_protocol",
- "zcash_script",
  "zcash_transparent",
 ]
 

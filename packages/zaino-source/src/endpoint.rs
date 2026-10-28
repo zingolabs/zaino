@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::{ResponseSizeCap, RpcError};
+use crate::ResponseSizeCap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EndpointError {
@@ -19,9 +19,6 @@ pub enum EndpointError {
 
     #[error("cannot read indexer TLS {role} {path}: {source}")]
     TlsFile { role: &'static str, path: String, source: std::io::Error },
-
-    #[error("cannot build the validator RPC client: {0}")]
-    Client(#[source] RpcError),
 }
 
 /// Validator JSON-RPC endpoint: `address` = `host:port`

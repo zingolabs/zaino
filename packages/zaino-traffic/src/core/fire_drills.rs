@@ -173,7 +173,7 @@ fn a_core_past_the_validator_limit_panics() {
 #[test]
 #[should_panic(expected = "the peer set's in flight covers every lane reserve")]
 fn peer_permits_short_of_the_reserves_panic() {
-    Permits::peers(crate::class::LANES as u32 - 1);
+    Permits::peers(crate::class::LANE_RESERVES - 1);
 }
 
 #[test]

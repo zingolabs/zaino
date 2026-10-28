@@ -5,8 +5,10 @@ hold, systemd, index snapshots, `verify`, network exposure) is [`docs/running.md
 
 ## Layout
 
-- `config/`: `[…]` tables parsed into each crate's own config types; the only place daemon
-  config crosses into the stack crates.
+- `config/`: the file's `[…]` tables (`DaemonConfigFile`) resolved once, at load, into
+  `DaemonConfig` (paths set, enabled indexes, validator endpoints, every check passed): the one
+  shape `start` and every subcommand run on. Tables land in each crate's own config types; the
+  only place daemon config crosses into the stack crates.
 - `daemon/`: boot and pipeline composition. The pipeline's shape is drawn once, in
   `daemon/mod.rs`. Every stage is one task in a `JoinSet`; the first to end ends the daemon.
 - `health/`: the state rules (`readiness`, pure), `/readyz`, `/status`, the admin listener,

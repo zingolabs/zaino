@@ -14,9 +14,10 @@ use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, insert_unwitnessed};
 use zaino_header_chain::{HeaderChain, HeaderChainSnapshot};
 use zaino_nfs::{ChainParams, NfsPublication};
-use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
+use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, PersistenceEngine, Store};
 use zaino_primitives::types::{Block, BlockRef, FinalityDepth};
 use zaino_source::testing::{h, within, MockChain};
+use zaino_sync::IndexKind;
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, Limits, TrafficBalancer, TrustedValidator};
 use zcash_protocol::consensus::BlockHeight;
@@ -51,17 +52,22 @@ async fn the_publisher_stores_seq_0_then_one_publish_per_change_coalescing_burst
     let view = ChainView::new(balancer, DEPTH, schedule, CancellationToken::new());
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
-    let mut grpc_snapshots = publisher.handle();
+    let grpc_snapshots = publisher.handle();
     let first = grpc_snapshots.load();
-    assert_eq!((first.seq(), first.tips()), (0, Tips::default()), "(seq, tips) at new");
+    assert_eq!((first.seq, first.tips()), (0, Tips::default()), "(seq, tips) at new");
     tokio::spawn(publisher.run(CancellationToken::new()));
 
     let chain = HeaderChainSnapshot::of(&builder, a3);
     view.set_chain(Some(chain.clone()));
-    within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
+    let published_past = async |seq| {
+        while grpc_snapshots.load().seq < seq {
+            tokio::task::yield_now().await;
+        }
+    };
+    within("seq 1", published_past(1)).await;
     let grpc_snapshot = grpc_snapshots.load();
     let tips = grpc_snapshot.tips();
-    let published = (grpc_snapshot.seq(), tips.best, tips.served);
+    let published = (grpc_snapshot.seq, tips.best, tips.served);
     assert_eq!(published, (1, Some(a3), None), "chain view published: (seq, best, served)");
 
     let none: [(IndexKind, DiskView); 0] = [];
@@ -70,10 +76,10 @@ async fn the_publisher_stores_seq_0_then_one_publish_per_change_coalescing_burst
             NfsPublication::fixed(Arc::new(chain.clone()), block.block_ref(), params, none.clone());
         nfs.send_replace(Some(Arc::new(indexed)));
     }
-    within("a publish", grpc_snapshots.changed()).await.expect("publisher running");
+    within("seq 2", published_past(2)).await;
     let grpc_snapshot = grpc_snapshots.load();
     let tips = grpc_snapshot.tips();
-    let published = (grpc_snapshot.seq(), tips.served, tips.synced);
+    let published = (grpc_snapshot.seq, tips.served, tips.synced);
     assert_eq!(published, (2, Some(a3), true), "A1..=A3 coalesced: (seq, served, synced)");
 }
 

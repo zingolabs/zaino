@@ -10,7 +10,7 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tonic::transport::Channel;
 use tonic::{Code, Status};
@@ -143,16 +143,11 @@ impl ZebraIndexerGrpcClient {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let name = self.rpc.rpc.name();
-        let _in_flight = metrics::InFlight::start(name);
-        let started = Instant::now();
-        let settled = call.await;
-        let failure = match &settled {
+        let failure = |settled: &Result<T, QueryError<E>>| match settled {
             Err(QueryError::NonDomain(error)) => Some(error.mode),
             _ => None,
         };
-        metrics::call_settled(name, method, started.elapsed(), failure);
-        settled
+        metrics::observed(self.rpc.rpc.name(), method, call, failure).await
     }
 }
 
@@ -162,7 +157,7 @@ fn failed(status: Status) -> NonDomainError {
         Code::Unavailable | Code::Cancelled => FailureMode::Connection,
         Code::DeadlineExceeded => FailureMode::Timeout,
         Code::Unauthenticated | Code::PermissionDenied => FailureMode::Auth,
-        code => FailureMode::GrpcStatus(code as i32),
+        code => FailureMode::GrpcStatus(code),
     };
     NonDomainError::from_cause(mode, status)
 }

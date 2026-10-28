@@ -166,12 +166,14 @@ fn files_in_place(files: &[PathBuf], filesystem: Filesystem, dev: (u32, u32)) ->
 }
 
 /// `FS_IOC_FIEMAP` (`Documentation/filesystems/fiemap.rst`): any extent flagged
-/// `FIEMAP_EXTENT_SHARED` (libc has no FIEMAP items: the uapi layout, 32 extents a call)
+/// `FIEMAP_EXTENT_SHARED` (no FIEMAP items in libc / rustix: the uapi layout, 32 extents a call)
 #[allow(unsafe_code)]
 fn shares_extents(file: &std::fs::File) -> io::Result<bool> {
-    use std::os::fd::AsRawFd as _;
+    use rustix::ioctl::{ioctl, opcode, Opcode, Updater};
 
-    const FS_IOC_FIEMAP: u32 = 0xC020_660B;
+    const FS_IOC_FIEMAP: Opcode = opcode::read_write::<Header>(b'f', 11);
+    // uapi value (`Header` = 32 B)
+    const _: () = assert!(FS_IOC_FIEMAP == 0xC020_660B);
     const FIEMAP_EXTENT_LAST: u32 = 0x1;
     const FIEMAP_EXTENT_SHARED: u32 = 0x2000;
     const EXTENTS: usize = 32;
@@ -187,36 +189,40 @@ fn shares_extents(file: &std::fs::File) -> io::Result<bool> {
         reserved: [u32; 3],
     }
 
+    /// uapi `struct fiemap` minus its flexible extent array (= the `_IOWR` size)
     #[repr(C)]
-    struct Request {
+    struct Header {
         start: u64,
         length: u64,
         flags: u32,
         mapped: u32,
         count: u32,
         reserved: u32,
+    }
+
+    #[repr(C)]
+    struct Request {
+        header: Header,
         extents: [Extent; EXTENTS],
     }
 
     let mut start = 0;
     loop {
         let mut request = Request {
-            start,
-            length: u64::MAX - start,
-            flags: 0,
-            mapped: 0,
-            count: EXTENTS as u32,
-            reserved: 0,
+            header: Header {
+                start,
+                length: u64::MAX - start,
+                flags: 0,
+                mapped: 0,
+                count: u32::try_from(EXTENTS).expect("32 extents fit u32"),
+                reserved: 0,
+            },
             extents: [Extent::default(); EXTENTS],
         };
-        // sound: `request` = the uapi `struct fiemap` + room for `count` extents, live for the call
-        let request_ptr = std::ptr::from_mut(&mut request);
-        let done =
-            unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_FIEMAP as libc::Ioctl, request_ptr) };
-        if done != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mapped = &request.extents[..request.mapped as usize];
+        // sound: `Request` = `struct fiemap` + room for `count` extents, borrowed for the call
+        unsafe { ioctl(file, Updater::<FS_IOC_FIEMAP, Request>::new(&mut request)) }?;
+        let mapped = usize::try_from(request.header.mapped).expect("u32 fits usize (64-bit)");
+        let mapped = &request.extents[..mapped.min(EXTENTS)];
         if mapped.iter().any(|extent| extent.flags & FIEMAP_EXTENT_SHARED != 0) {
             return Ok(true);
         }

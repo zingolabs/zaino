@@ -413,7 +413,10 @@ fn run(case: &Case) -> Result<(), TestCaseError> {
         .peers
         .iter()
         .enumerate()
-        .map(|(n, peer)| SocketAddr::from(([10, peer.netgroup, 0, n as u8 + 1], 8233)))
+        .map(|(n, peer)| {
+            let host = u8::try_from(n + 1).expect("a case holds a few peers");
+            SocketAddr::from(([10, peer.netgroup, 0, host], 8233))
+        })
         .collect();
 
     let tip = chain.tip();

@@ -14,7 +14,9 @@ impl HeaderChain {
     pub fn anchored(chain: &MockChain, depth: FinalityDepth) -> Self {
         let mut headers = Self::new(depth);
         let genesis = decode_header(&chain.header_bytes(chain.genesis().hash));
-        headers.anchor(&genesis.expect("MockChain headers decode"), H0);
+        headers
+            .anchor(&genesis.expect("MockChain headers decode"), H0)
+            .expect("MockChain nBits valid");
         headers
     }
 }

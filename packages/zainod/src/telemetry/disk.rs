@@ -10,11 +10,11 @@ use metrics::Unit;
 use tokio::{sync::watch, time::Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
-use zaino_persistence::{DiskView, IndexKind};
+use zaino_persistence::DiskView;
 use zaino_primitives::metric::Metric;
+use zaino_sync::IndexKind;
 
 use crate::daemon::OpenedIndex;
-use crate::error::IndexerError;
 
 const SAMPLE_EVERY: Duration = Duration::from_secs(30);
 const WALK_EVERY: Duration = Duration::from_secs(120);
@@ -52,17 +52,17 @@ pub(crate) async fn run(
     indexes: Vec<OpenedIndex>,
     sizes: watch::Sender<Sizes>,
     cancel: CancellationToken,
-) -> Result<(), IndexerError> {
+) {
     let mut ticks = tokio::time::interval(SAMPLE_EVERY);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut walked = None::<Instant>;
     loop {
         tokio::select! {
-            () = cancel.cancelled() => return Ok(()),
+            () = cancel.cancelled() => return,
             _ = ticks.tick() => {}
         }
         if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
-            let walk = walk(&indexes).await?;
+            let walk = walk(&indexes).await;
             for (index, bytes) in &walk {
                 metrics::gauge!(names::BYTES, "index" => *index).set(*bytes as f64);
             }
@@ -71,7 +71,7 @@ pub(crate) async fn run(
         }
         let views: Vec<_> =
             indexes.iter().map(|index| (index.kind, index.handle.durable_view())).collect();
-        tokio::task::spawn_blocking(move || sample(&views)).await?;
+        zaino_sync::blocking(move || sample(&views)).await;
     }
 }
 
@@ -90,19 +90,18 @@ fn sample(indexes: &[(IndexKind, DiskView)]) {
 }
 
 /// Every index directory, off the runtime (an unreadable one logged here, under its component)
-async fn walk(indexes: &[OpenedIndex]) -> Result<Sizes, IndexerError> {
+async fn walk(indexes: &[OpenedIndex]) -> Sizes {
     let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
-    let walked = tokio::task::spawn_blocking(move || {
-        dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>()
-    });
+    let walked =
+        zaino_sync::blocking(move || dirs.iter().map(|dir| disk_bytes(dir)).collect::<Vec<_>>());
     let mut sizes = Sizes::new();
-    for (index, walked) in indexes.iter().zip(walked.await?) {
+    for (index, walked) in indexes.iter().zip(walked.await) {
         match walked {
             Ok(bytes) => drop(sizes.insert(index.kind.name(), bytes)),
             Err(error) => index.span.in_scope(|| warn!(%error, "Index size unreadable")),
         }
     }
-    Ok(sizes)
+    sizes
 }
 
 /// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)

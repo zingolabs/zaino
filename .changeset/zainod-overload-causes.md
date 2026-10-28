@@ -10,7 +10,7 @@ default: minor
   `no_validator_reachable`, `tip_unvouched`, `goaway_pending`, `goaway_sent`).
 - `zaino_grpc_overload_latched{cause}`: each overload cause's latch, also while detection is off.
 - `zainod overload on|off|set|unset`: overrides across restarts, as `zainod hold`.
-- Library: `AdmissionReport::overload: Option<OverloadCause>` replaces `overloaded`;
+- Library: `AdmissionState::overload() -> Option<OverloadCause>` replaces `AdmissionReport`;
   `GrpcLimits::overload`; `AdmissionState::set_overload`.
 - Logs: `State changed` on each `/readyz` state or detail change, `Not ready` every 60 s while
   down (error), held or degraded (warn); `Overload latched` / `Overload cleared` per cause.

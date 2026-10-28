@@ -91,7 +91,8 @@ fn getrawmempool(node: &mut Node, _: &[Value]) -> Reply {
         Err(GetMempoolListingError::Unavailable) => return Err(method_not_found()),
     }
     let entries = node.mempool.iter().map(|unmined| {
-        let fee = unmined.fee.into_u64() as f64 / 100_000_000.0;
+        let zats = u32::try_from(unmined.fee.into_u64()).expect("mock fees < 2^32 zats");
+        let fee = f64::from(zats) / 100_000_000.0;
         let entry =
             json!({ "size": unmined.bytes.len(), "fee": fee, "modifiedfee": fee, "depends": [] });
         (unmined.tx.txid.to_string(), entry)
@@ -535,8 +536,7 @@ impl Node {
         self.relay.clone()?;
         let malformed =
             |error: crate::DecodeError| SendRawTransactionError::Malformed(error.to_string());
-        crate::prepare_transaction(&raw).map_err(malformed)?;
-        let tx = crate::decode_transaction(&raw).map_err(malformed)?;
+        let (_, tx) = crate::decode_prepared(&raw).map_err(malformed)?;
         let invalid = |refused: Refused| SendRawTransactionError::Rejected {
             code: -25,
             message: refused.to_string(),
@@ -567,7 +567,7 @@ impl Lie {
     pub fn told(self, honest: &[u8]) -> Vec<u8> {
         let (header, _) = HeaderBytes::split(honest).expect("a block's header");
         let mut header = header.as_bytes().to_vec();
-        let txs = crate::decode::tx_spans(honest).expect("an honest block's transactions");
+        let (block, txs) = crate::decode::decode_block_with_spans(honest).expect("an honest block");
         let mut txs: Vec<Vec<u8>> = txs.into_iter().map(|span| honest[span].to_vec()).collect();
         match self {
             // nonce = header bytes 108..140
@@ -575,8 +575,7 @@ impl Lie {
             Lie::Poisoned => txs.push(raw_transaction(0xbad, 0).1),
             Lie::Mutated => txs.push(txs.last().expect("a coinbase").clone()),
             Lie::WrongHeight => {
-                let height = crate::decode_block(honest).expect("an honest block").header().height;
-                txs[0] = coinbase_at(&txs[0], u32::from(height) + 1);
+                txs[0] = coinbase_at(&txs[0], u32::from(block.header().height) + 1);
             }
         }
         let mut raw = header;

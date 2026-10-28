@@ -8,7 +8,7 @@ depends on this one. The types themselves: the rustdoc of `types`, `protocol` an
 
 Anything added here lands in every crate above it.
 
-- `zcash_protocol`, `zcash_transparent` and `zcash_script` carry the protocol types Zaino takes
+- `zcash_protocol` and `zcash_transparent` carry the protocol types Zaino takes
   as-is (heights, block hashes, txids, values, outpoints, scripts, upgrade schedules); there is no
   Zaino schedule type, only `zcash_protocol`'s `LocalNetwork`.
 - `sha2` for `sha256d`, the one implementation (block hashes, merkle nodes, pre-v5 txids);

@@ -74,7 +74,7 @@ pub fn fold<V: MapRead>(
     out: &mut BlockChanges,
 ) {
     assert_next(out, parent.view().tip(), block);
-    let height = u32::from(block.header().height);
+    let height = block.header().height;
     for tx in block.transactions() {
         // coinbase inputs elided upstream (`zaino-source` decode.rs)
         let mut spent = out.map(SPENT);
@@ -104,14 +104,14 @@ mod tests {
         block_on_paused, moves, open, step, write_buffers, FinalizedStreamFixture, Move, Writer,
         QUEUE,
     };
-    use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::consensus::{BlockHeight, NetworkType, H0};
     use zcash_protocol::value::Zatoshis;
     use zcash_script::script::Code;
     use zcash_transparent::address::{Script, TransparentAddress};
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
-    use crate::{address::AddressKey, AddressUtxo, ServeError, TransactionRef};
+    use crate::{address::AddressKey, AddressUtxo, ServeError};
 
     const SCHEMA: Schema = crate::schema(NetworkType::Regtest);
 
@@ -147,11 +147,11 @@ mod tests {
 
         let (coinbase, spender) = (chain.tx(chain.genesis(), 0).txid, chain.tx(one, 1).txid);
         let spent: Vec<_> = changes.inserts(SPENT).map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
-        let spend = encode_spend(&Spend { height: 1, spender });
+        let spend = encode_spend(&Spend { height: h(1), spender });
         let spent_key = encode_spent_key(paid.txid(), paid.n());
         assert_eq!(spent, vec![(spent_key.to_vec(), spend.to_vec())], "spent: alice's outpoint");
         let bob_receive = ReceiveRow {
-            key: ReceiveKey { address: bob, height: 1, txid: spender, vout: 0 },
+            key: ReceiveKey { address: bob, height: h(1), txid: spender, vout: 0 },
             value: zats(490),
         };
         let (key, value) = encode_receive(&bob_receive);
@@ -160,9 +160,9 @@ mod tests {
 
         store.apply(changes);
         let read = TransparentAddressReader::new(store.applied());
-        let unspent = read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX);
+        let unspent = read.unspent(&[alice, bob, AddressKey::opaque()], H0, usize::MAX);
         let at_genesis = |address, vout, value| ReceiveRow {
-            key: ReceiveKey { address, height: 0, txid: coinbase, vout },
+            key: ReceiveKey { address, height: H0, txid: coinbase, vout },
             value: zats(value),
         };
         let expected = vec![
@@ -173,7 +173,11 @@ mod tests {
         assert_eq!(unspent, Some(expected), "unspent of [alice, bob, opaque]");
         let alice_receive = at_genesis(alice, 0, 500).key;
         let spends = read.spends_of(&[alice_receive]);
-        assert_eq!(spends, vec![Some(Spend { height: 1, spender })], "alice's receive: spent by 1");
+        assert_eq!(
+            spends,
+            vec![Some(Spend { height: h(1), spender })],
+            "alice's receive: spent by 1"
+        );
     }
 
     /// Ten one-block commits, crashed at every persistence point: each state reopens to a durable
@@ -228,7 +232,7 @@ mod tests {
             assert_eq!(reader.balances(&[alice]), Ok(vec![balance]), "{label}: alice's balance");
 
             let writer = start(store);
-            writer.send(step(&blocks[count as usize])).await;
+            writer.send(step(chain.block(chain.at(h(count)).hash))).await;
             writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let after = TransparentAddressReader::new(
                 open(&state.fs, &SCHEMA, NonZeroUsize::MAX).durable(),
@@ -274,8 +278,8 @@ mod tests {
         owner: usize,
         outpoint: OutPoint,
         zats: u64,
-        received: TransactionRef,
-        spent: Option<TransactionRef>,
+        received: (BlockHeight, zcash_protocol::TxId),
+        spent: Option<(BlockHeight, zcash_protocol::TxId)>,
     }
 
     /// One address's answers
@@ -283,7 +287,7 @@ mod tests {
     struct Answers {
         utxos: Vec<AddressUtxo>,
         balance: Zatoshis,
-        transactions: Vec<TransactionRef>,
+        transactions: Vec<zcash_protocol::TxId>,
     }
 
     proptest::proptest! {
@@ -335,7 +339,7 @@ mod tests {
                     t.pay(&p2pkh(FAUCET), change)
                 })
             });
-            let tx = TransactionRef { height: h(height), txid: chain.tx(mined, 1).txid };
+            let tx = (h(height), chain.tx(mined, 1).txid);
             for &at in &spent {
                 outputs[at].spent = Some(tx);
             }
@@ -349,12 +353,14 @@ mod tests {
                     spent: None,
                 });
             }
-            faucet = (chain.output(mined, 1, plan.pays.len() as u32), change);
+            let change_vout =
+                u32::try_from(plan.pays.len()).expect("block_plans: pays << u32::MAX");
+            faucet = (chain.output(mined, 1, change_vout), change);
         }
         let blocks = chain.blocks(chain.tip());
-        // naive answers once heights `0..held` are indexed
-        let expected = |owner: usize, held: u32| {
-            let visible = |tx: &TransactionRef| u32::from(tx.height) < held;
+        // naive answers once heights `0..=tip` are indexed
+        let expected = |owner: usize, tip: Option<BlockHeight>| {
+            let visible = |&(height, _): &(BlockHeight, zcash_protocol::TxId)| Some(height) <= tip;
             let mine =
                 outputs.iter().filter(|output| output.owner == owner && visible(&output.received));
             let mut utxos = Vec::new();
@@ -365,7 +371,7 @@ mod tests {
                     Some(spender) => transactions.push(spender),
                     None => utxos.push(AddressUtxo {
                         outpoint: output.outpoint.clone(),
-                        height: output.received.height,
+                        height: output.received.0,
                         value: Zatoshis::from_u64(output.zats).expect("in supply"),
                     }),
                 }
@@ -376,7 +382,7 @@ mod tests {
             Answers {
                 utxos,
                 balance: Zatoshis::from_u64(balance).expect("in supply"),
-                transactions,
+                transactions: transactions.into_iter().map(|(_, txid)| txid).collect(),
             }
         };
 
@@ -393,7 +399,7 @@ mod tests {
             }
             writer.durable_at(stream.tip()).await;
 
-            let held = stream.sent() as u32;
+            let tip = stream.tip();
             let reader = TransparentAddressReader::new(writer.handle().durable_view());
             let refused = |method: &str| {
                 let method = method.to_owned();
@@ -410,22 +416,22 @@ mod tests {
             for (slot, ((owner, utxos), balance)) in
                 owners.into_iter().zip(utxos).zip(balances).enumerate()
             {
-                let transactions = match held.checked_sub(1) {
+                let transactions = match tip {
                     Some(tip) => reader
-                        .transactions(&addresses[slot], h(0), h(tip))
+                        .transactions(&addresses[slot], h(0), tip)
                         .map_err(refused("transactions"))?,
                     None => Vec::new(),
                 };
                 let served = Answers { utxos, balance, transactions };
                 prop_assert_eq!(
                     served,
-                    expected(owner, held),
-                    "served vs naive UTXO set, move {} {:?}: owner {} (slot {}), heights 0..{}",
+                    expected(owner, tip),
+                    "served vs naive UTXO set, move {} {:?}: owner {} (slot {}), tip {:?}",
                     at,
                     next,
                     owner,
                     slot,
-                    held
+                    tip
                 );
             }
         }

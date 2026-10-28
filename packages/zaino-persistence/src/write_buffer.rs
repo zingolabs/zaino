@@ -141,7 +141,7 @@ impl MapRows {
             }
             let first = self.keys.len(table.key);
             self.keys.extend_one(table.key, key);
-            let zeros = vec![0; table.value.get() as usize];
+            let zeros = vec![0; table.value.get()];
             self.values.extend_one(table.value, &zeros);
             self.kinds.push(Row::Tombstone);
             self.index(table, first, hasher);
@@ -197,7 +197,7 @@ impl AppliedLayer for WriteBuffer {
 
     fn len(&self, table: SequenceId) -> u64 {
         let (table, records) = self.sequence(table);
-        records.len(table.record) as u64
+        u64::try_from(records.len(table.record)).expect("usize fits u64")
     }
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
@@ -227,10 +227,10 @@ impl AppliedLayer for WriteBuffer {
 
 #[cfg(test)]
 mod tests {
-    use zcash_protocol::{consensus::NetworkType, BlockHash};
+    use zcash_protocol::BlockHash;
 
     use super::*;
-    use crate::schema::{IndexKind, Tables};
+    use crate::schema::Tables;
 
     impl WriteBuffer {
         /// - first <= tip
@@ -262,8 +262,7 @@ mod tests {
     }
 
     const IDS: MapTable = MapTable::point(0, "ids", 16, 4).deletes();
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[], &[IDS]));
+    const SCHEMA: Schema = Schema::new("blocks", 1, "regtest", Tables::new(&[], &[IDS]));
 
     /// Ids `[0; 16]`, `[1; 16]` inserted at height 0, `[0; 16]` removed at 1 (insert cancelled),
     /// `[2; 16]` removed at 1 (a tombstone row)

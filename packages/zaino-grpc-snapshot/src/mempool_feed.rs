@@ -31,7 +31,7 @@ pub(crate) fn above_durable_txids<V>(indexed: Option<&NfsPublication<V>>) -> Has
 /// One transaction in an epoch's log, with the serving layer's wire form once rendered
 #[derive(Debug)]
 pub struct Logged {
-    pub entry: MempoolEntry,
+    pub(crate) entry: MempoolEntry,
     rendered: OnceLock<Bytes>,
 }
 
@@ -114,8 +114,8 @@ impl Feed {
     }
 }
 
-/// One `GetMempoolStream`: [`opening`](Self::opening), then [`next`](Self::next) until the served
-/// tip moves
+/// One `GetMempoolStream`: [`opening_rendered`](Self::opening_rendered), then
+/// [`next`](Self::next) until the served tip moves
 ///
 /// - cost per arrival: one read lock + one `Arc` clone
 /// - nothing grows with the epoch
@@ -127,12 +127,13 @@ pub struct MempoolTail {
 }
 
 impl MempoolTail {
-    /// Servable mempool when the epoch opened, txid order
-    pub fn opening(&self) -> &[MempoolEntry] {
+    #[cfg(test)]
+    pub(crate) fn opening(&self) -> &[MempoolEntry] {
         &self.epoch.opening
     }
 
-    /// [`opening`](Self::opening) rendered once per epoch, shared by every tail on it
+    /// Servable mempool when the epoch opened (txid order), rendered once per epoch, shared by
+    /// every tail on it
     pub fn opening_rendered(&self, render: impl FnOnce(&[MempoolEntry]) -> Bytes) -> Bytes {
         self.epoch.opening_rendered.get_or_init(|| render(&self.epoch.opening)).clone()
     }

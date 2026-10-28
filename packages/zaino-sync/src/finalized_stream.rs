@@ -88,7 +88,7 @@ impl<T> Clone for Step<T> {
 
 /// Step + its share of the queue's budget, held until popped (`None` = `Shutdown`: budget
 /// bypassed, a full queue never holds back the stop)
-pub(crate) struct Queued<T> {
+struct Queued<T> {
     step: Step<T>,
     _held: Option<OwnedSemaphorePermit>,
 }

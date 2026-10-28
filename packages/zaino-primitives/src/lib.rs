@@ -1,7 +1,7 @@
 //! Vocabulary every Zaino crate shares (crates depend on this, never on each other)
 //!
 //! - `types`: chain domain types (blocks, hashes, trees) + peer grouping; `protocol`: spec rules
-//! - `display` (`ByteSize`, `Human`), `serde_secs`, [`sha256d`]; `testing`: regtest `MockChain`
+//! - `display` (`ByteSize`, `Human`), `serde_secs`, [`sha256d`]
 
 use sha2::{Digest, Sha256};
 

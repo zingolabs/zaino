@@ -31,7 +31,7 @@ const SPENT: MapTable = MapTable::point(0, "spent", 36, 36);  // key, value byte
 pub const FORMAT: u16 = 1;
 pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]); // ids = positions, checked at compile time
 
-let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
+let schema = Schema::new("blocks", FORMAT, "main", TABLES);  // name, layout version, scope
 let mut store = DiskEngine::new(fs, LsmConfig::default()).open(path, &schema, WRITE_BUFFER)?;
 
 let mut changes = store.changes(block.block_ref());           // one block's empty delta
@@ -72,8 +72,9 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **Misuse panics where it happens**, naming the table: a handle from another schema, a fixed-width
   item of the wrong size, a tip that does not advance, a key inserted twice, a table the engine
   cannot hold (for `DiskEngine`, see [its LSM's limits](#on-disk)).
-- **`IndexKind::name()`** (`compact_block`, …) is the one spelling of an index: metric label,
-  `/status` index name, default directory, task name.
+- **The engine knows no owner.** `Schema::name()` is the store's metric (`index` label) and log
+  label; `name`, `FORMAT` and `scope` are written into its manifest. Zaino's names and network
+  scopes come from `zaino_sync::schema`.
 
 ## Deletes
 
@@ -87,7 +88,7 @@ at most one value row and one tombstone row anywhere, so no answer depends on se
 - Otherwise it is written as a tombstone row. A point read checks every segment whose filter admits
   the key, and a tombstone in any of them means absent.
 - A merge holding a key's value and its tombstone drops both; a lone tombstone is kept. Any other
-  duplicate is `SegmentError::Contract`, surfaced at the next commit.
+  duplicate is a writer bug: the merge panics, and the next commit re-raises it.
 - In an `Overlay` a removal masks the durable value, and `rebase` never brings it back.
 - Rows of a `deletes()` map carry one flag byte; every other map's layout is unchanged.
 
@@ -158,8 +159,8 @@ always survives a torn write, and a slot that fails its CRC is read as a crash m
 
 Opening a store:
 
-- refuses a manifest written for another index kind, `FORMAT` or network
-  (`ManifestError::{Kind, Format, Network}`), and data in a directory with no manifest
+- refuses a manifest written under another name, `FORMAT` or scope
+  (`ManifestError::{Name, Format, Scope}`), and data in a directory with no manifest
   (`Unmanifested`);
 - truncates each sequence file to its seal and deletes segments the manifest does not list;
 - refuses a file shorter than its seal, a tail page that fails its checksum, or a `.crc` file whose

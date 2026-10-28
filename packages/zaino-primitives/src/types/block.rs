@@ -99,7 +99,6 @@ mod tests {
     };
     use zcash_protocol::value::Zatoshis;
     use zcash_protocol::TxId;
-    use zcash_script::script::Code;
     use zcash_transparent::address::Script;
     use zcash_transparent::bundle::OutPoint;
 
@@ -193,8 +192,9 @@ mod tests {
             ephemeral_key: EphemeralKey([3; 32]),
             enc_ciphertext: CompactCiphertext([4; CompactCiphertext::LENGTH]),
         };
-        let mut script = Vec::with_capacity(40);
-        script.extend_from_slice(&[0x76; 25]);
+        let mut script = Script::default();
+        script.0 .0 = Vec::with_capacity(40);
+        script.0 .0.extend_from_slice(&[0x76; 25]);
         let tx = Transaction {
             txid: TxId::from_bytes([9; 32]),
             transparent: TransparentData {
@@ -202,7 +202,7 @@ mod tests {
                 inputs: vec![OutPoint::new([8; 32], 0); 2],
                 outputs: vec![TransparentOutput {
                     value: Zatoshis::from_u64(5).expect("in supply"),
-                    script: Script(Code(script)),
+                    script,
                 }],
             },
             sprout: Default::default(),

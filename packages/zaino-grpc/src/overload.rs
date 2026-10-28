@@ -15,10 +15,9 @@ use crate::admission::Class;
 use crate::metrics;
 use crate::OverloadLimits;
 
-/// Refusals: >= ENTER_SHARE of work (at >= ENTER_REFUSALS_PER_S) / < EXIT_SHARE
-const ENTER_SHARE: f64 = 0.10;
-const ENTER_REFUSALS_PER_S: f64 = 1.0;
-const EXIT_SHARE: f64 = 0.02;
+/// Refusals: >= ENTER_PERCENT of work (at >= 1 refusal/s) / < EXIT_PERCENT
+const ENTER_PERCENT: u64 = 10;
+const EXIT_PERCENT: u64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverloadCause {
@@ -94,14 +93,12 @@ pub(crate) struct Overload {
 struct Closed {
     limits: OverloadLimits,
     detection: bool,
-    refused_per_s: f64,
     latches: [Latch; OverloadCause::ALL.len()],
 }
 
 impl Overload {
     pub(crate) fn new(limits: OverloadLimits) -> Self {
-        let closed =
-            Closed { limits, detection: true, refused_per_s: 0.0, latches: Default::default() };
+        let closed = Closed { limits, detection: true, latches: Default::default() };
         Self {
             admitted_work: AtomicU64::new(0),
             refused_work: AtomicU64::new(0),
@@ -134,11 +131,12 @@ impl Overload {
     pub(crate) fn tick(&self, elapsed: Duration, signals: Signals) -> u64 {
         let take = |counter: &AtomicU64| counter.swap(0, Ordering::Relaxed);
         let (admitted, refused) = (take(&self.admitted_work), take(&self.refused_work));
-        let share = match admitted + refused {
-            0 => 0.0,
-            attempts => refused as f64 / attempts as f64,
-        };
-        let refused_per_s = refused as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
+        let attempts = admitted.saturating_add(refused);
+        let percent_of_attempts = |percent: u64| attempts.saturating_mul(percent);
+        let refused_percent = refused.saturating_mul(100);
+        let refusing = refused_percent >= percent_of_attempts(ENTER_PERCENT)
+            && Duration::from_secs(refused) >= elapsed;
+        let quiet = refused == 0 || refused_percent < percent_of_attempts(EXIT_PERCENT);
 
         let mut closed = self.closed.lock().expect("overload latch poisoned");
         let limits = &closed.limits;
@@ -148,13 +146,11 @@ impl Overload {
                 against(signals.cpu, percent(limits.cpu_pressure_percent))
             }
             OverloadCause::IoPressure => against(signals.io, percent(limits.io_pressure_percent)),
-            OverloadCause::RefusingWork => {
-                (share >= ENTER_SHARE && refused_per_s >= ENTER_REFUSALS_PER_S, share < EXIT_SHARE)
-            }
+            OverloadCause::RefusingWork => (refusing, quiet),
         });
         let detection = closed.detection;
-        for (cause, (over, under)) in OverloadCause::ALL.into_iter().zip(conditions) {
-            let latch = &mut closed.latches[cause as usize];
+        let causes = OverloadCause::ALL.into_iter().zip(conditions);
+        for ((cause, (over, under)), latch) in causes.zip(&mut closed.latches) {
             let (enter, exit) = cause.rule();
             let (flipping, needed) = if latch.held { (under, exit) } else { (over, enter) };
             latch.flipping_for =
@@ -163,28 +159,24 @@ impl Overload {
                 (latch.held, latch.flipping_for) = (!latch.held, Duration::ZERO);
                 let cause = cause.detail();
                 match latch.held {
-                    true => warn!(cause, detection, ?signals, refused = share, "Overload latched"),
-                    false => info!(cause, ?signals, refused = share, "Overload cleared"),
+                    true => {
+                        warn!(cause, detection, ?signals, refused, attempts, "Overload latched")
+                    }
+                    false => info!(cause, ?signals, refused, attempts, "Overload cleared"),
                 }
             }
             metrics::overload_latched(cause, latch.held);
         }
-        closed.refused_per_s = refused_per_s;
 
-        refused + take(&self.refused_subscriptions)
-    }
-
-    /// Work refusals per second
-    pub(crate) fn refused_per_s(&self) -> f64 {
-        self.closed.lock().expect("overload latch poisoned").refused_per_s
+        refused.saturating_add(take(&self.refused_subscriptions))
     }
 
     /// The first latched cause (`None` while detection is off)
     pub(crate) fn cause(&self) -> Option<OverloadCause> {
         let closed = self.closed.lock().expect("overload latch poisoned");
-        let latched =
-            OverloadCause::ALL.into_iter().find(|&cause| closed.latches[cause as usize].held);
-        latched.filter(|_| closed.detection)
+        let mut latched = OverloadCause::ALL.into_iter().zip(&closed.latches);
+        let first = latched.find_map(|(cause, latch)| latch.held.then_some(cause));
+        first.filter(|_| closed.detection)
     }
 }
 
@@ -237,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_counts_every_refusal_and_reports_work_refusals_per_second() {
+    fn a_window_counts_every_refusal_of_every_class() {
         let overload = Overload::new(OverloadLimits::default());
         for _ in 0..120 {
             overload.refused(Class::Work);
@@ -247,7 +239,6 @@ mod tests {
         let refused = overload.tick(MINUTE, Signals::default());
 
         assert_eq!(refused, 121, "120 work + 1 subscription refused");
-        assert_eq!(overload.refused_per_s(), 2.0, "120 work refusals over 60 s");
         assert_eq!(overload.tick(MINUTE, Signals::default()), 0, "next window starts at zero");
     }
 

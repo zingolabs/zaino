@@ -1,7 +1,7 @@
-//! CPU / IO pressure (Linux PSI): share of a window this process's cgroup waited, else the
-//! system's (`/proc/pressure`), else none
+//! CPU / IO pressure (Linux PSI): share of a window this process's cgroup waited, else unmeasured
 //!
 //! - share = Δ `some total=` µs / window (exact, not the kernel's 10 s / 60 s averages)
+//! - never `/proc/pressure` (other processes' stalls would latch zainod's overload)
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -27,9 +27,8 @@ impl Pressure {
             let path = text.lines().find_map(|line| line.strip_prefix("0::"))?.to_owned();
             Some(PathBuf::from("/sys/fs/cgroup").join(path.trim_start_matches('/')))
         });
-        let own = cgroup.map(|dir| dir.join(format!("{resource}.pressure")));
-        let system = Some(PathBuf::from("/proc/pressure").join(resource));
-        let file = [own, system].into_iter().flatten().find(|file| file.exists());
+        let file =
+            cgroup.map(|dir| dir.join(format!("{resource}.pressure"))).filter(|file| file.exists());
         let mut pressure = Self { file, last_us: None };
         pressure.last_us = pressure.read();
         pressure
@@ -43,7 +42,8 @@ impl Pressure {
     pub(crate) fn share(&mut self, elapsed: Duration) -> Option<f64> {
         let now = self.read()?;
         let stalled = now.checked_sub(self.last_us.replace(now)?)?;
-        Some((stalled as f64 / elapsed.as_micros().max(1) as f64).min(1.0))
+        let window = elapsed.max(Duration::from_micros(1));
+        Some(Duration::from_micros(stalled).div_duration_f64(window).min(1.0))
     }
 }
 

@@ -24,8 +24,8 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
-use zaino_persistence::IndexKind;
 use zaino_primitives::display::{ByteSize, Human};
+use zaino_sync::IndexKind;
 
 use crate::config::{DaemonConfig, IndexSnapshotConfig};
 use crate::error::IndexerError;
@@ -115,12 +115,12 @@ pub(crate) async fn install(
     config: &DaemonConfig,
     status: &DaemonStatus,
 ) -> Result<(), IndexerError> {
-    let empty: Vec<(IndexKind, PathBuf)> = IndexKind::ALL
-        .iter()
-        .copied()
-        .filter_map(|kind| Some((kind, config.enabled(kind)?.path)))
-        .filter(|(_, path)| is_empty(path))
-        .collect();
+    let mut empty = Vec::new();
+    for index in config.indexes.iter() {
+        if is_empty(&index.path)? {
+            empty.push((index.kind, index.path.clone()));
+        }
+    }
     let Some((first_kind, first_path)) = empty.first() else {
         debug!("Every index holds data; snapshot not needed");
         return Ok(());
@@ -180,8 +180,13 @@ pub(crate) async fn install(
     Ok(())
 }
 
-fn is_empty(path: &Path) -> bool {
-    std::fs::read_dir(path).map_or(true, |mut entries| entries.next().is_none())
+/// Missing or no entries (`Err` = unreadable, never taken for empty)
+fn is_empty(path: &Path) -> Result<bool, IndexerError> {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => Ok(entries.next().is_none()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(at(path)(e)),
+    }
 }
 
 /// Hidden sibling of the index dir (rename into place never crosses a filesystem)
@@ -224,7 +229,7 @@ fn fetches(
 fn space_needed(fetches: &[Fetch]) -> Result<BTreeMap<u64, (PathBuf, u64)>, IndexerError> {
     let mut need = BTreeMap::new();
     for fetch in fetches.iter().filter(|fetch| !fetch.unpacked()) {
-        let dir = fetch.staging.parent().ok_or_else(|| error("staging has no parent"))?;
+        let dir = fetch.staging.parent().expect("staging() = parent.join(..): has a parent");
         std::fs::create_dir_all(dir).map_err(at(dir))?;
         let dev = std::fs::metadata(dir).map_err(at(dir))?;
         let staged = disk_bytes(&fetch.staging).unwrap_or(0);
@@ -269,7 +274,7 @@ async fn install_archive(
         downloaded?;
         let read = board.unpacking(slot);
         let (archive, into) = (fetch.staging.join(ARCHIVE), fetch.staging.join(UNPACKED));
-        tokio::task::spawn_blocking(move || unpack(&archive, &into, read)).await??;
+        zaino_sync::blocking(move || unpack(&archive, &into, read)).await?;
         marker(&fetch.staging.join(UNPACKED_DONE))?;
         let _ = std::fs::remove_file(fetch.staging.join(ARCHIVE));
     }
@@ -348,22 +353,23 @@ impl Board {
         Self { slots: Mutex::new(fetches.iter().map(slot).collect()) }
     }
 
-    /// Poison-tolerant: plain data, every update a field swap
+    /// Poisoned = a panicked holder (panic hook aborts first: unreachable)
     fn slots(&self) -> MutexGuard<'_, Vec<Slot>> {
         self.slots.lock().expect("download slots mutex poisoned")
     }
 
-    fn set(&self, slot: usize, step: Step, done: u64, rate: u64) -> Option<Arc<AtomicU64>> {
+    /// `slot` = an index into the fetches [`Board::new`] took
+    fn set(&self, slot: usize, step: Step, done: u64, rate: u64) -> Arc<AtomicU64> {
         let mut slots = self.slots();
-        let slot = slots.get_mut(slot)?;
+        let slot = &mut slots[slot];
         (slot.step, slot.rate) = (step, rate);
         slot.done.store(done, Ordering::Relaxed);
-        Some(Arc::clone(&slot.done))
+        Arc::clone(&slot.done)
     }
 
     /// `verifiedLength` present = aria2c hashing (else downloading)
     fn aria2(&self, slot: usize, state: State) {
-        let _ = match state.verified {
+        match state.verified {
             Some(verified) => self.set(slot, Step::Active(SnapshotPhase::Verifying), verified, 0),
             None => {
                 self.set(slot, Step::Active(SnapshotPhase::Downloading), state.done, state.rate)
@@ -373,11 +379,11 @@ impl Board {
 
     /// Unpack's byte counter (compressed bytes read)
     fn unpacking(&self, slot: usize) -> Arc<AtomicU64> {
-        self.set(slot, Step::Active(SnapshotPhase::Unpacking), 0, 0).unwrap_or_default()
+        self.set(slot, Step::Active(SnapshotPhase::Unpacking), 0, 0)
     }
 
     fn installed(&self, slot: usize) {
-        let _ = self.set(slot, Step::Installed, 0, 0);
+        self.set(slot, Step::Installed, 0, 0);
     }
 
     /// Publishes until dropped (raced against the installs), logs every [`LOG_EVERY`]
@@ -423,7 +429,10 @@ struct Counted<R> {
 impl<R: Read> Read for Counted<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.read.fetch_add(n as u64, Ordering::Relaxed);
+        self.read.fetch_add(
+            u64::try_from(n).expect("one read's byte count fits u64"),
+            Ordering::Relaxed,
+        );
         Ok(n)
     }
 }
@@ -459,6 +468,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::config::DaemonConfigFile;
 
     /// Three archives (100 / 200 / 300 bytes) through one install: phase = slowest archive's,
     /// archives past it counted whole, aria2's overshoot capped, rate only while downloading,
@@ -562,6 +572,32 @@ mod tests {
         assert!(lacking.to_string().contains("manifest holds no tree_state archive"), "{lacking}");
     }
 
+    /// Missing or entry-less dir = empty, one holding data = not, unlistable (a file) = error
+    #[test]
+    fn only_a_missing_or_entry_less_index_dir_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (missing, bare, held, file) = (
+            dir.path().join("m"),
+            dir.path().join("b"),
+            dir.path().join("h"),
+            dir.path().join("f"),
+        );
+        std::fs::create_dir(&bare).expect("bare dir");
+        std::fs::create_dir(&held).expect("held dir");
+        std::fs::write(held.join("manifest"), b"").expect("data");
+        std::fs::write(&file, b"").expect("file");
+
+        let empty = |path: &Path| is_empty(path).map_err(|e| e.to_string());
+        assert_eq!(empty(&missing), Ok(true), "missing");
+        assert_eq!(empty(&bare), Ok(true), "no entries");
+        assert_eq!(empty(&held), Ok(false), "holds data");
+        let refused = empty(&file);
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains(&file.display().to_string())),
+            "unlistable: error naming it, got {refused:?}"
+        );
+    }
+
     /// Space need = per filesystem Σ archive + installed − staged bytes (unpacked = none left),
     /// refused past free space naming the directory
     #[test]
@@ -606,7 +642,7 @@ mod tests {
         let mut tar = tar::Builder::new(Vec::new());
         for (name, body) in files {
             let mut header = tar::Header::new_gnu();
-            header.set_size(body.len() as u64);
+            header.set_size(u64::try_from(body.len()).expect("test body fits u64"));
             header.set_mode(0o644);
             header.set_cksum();
             tar.append_data(&mut header, name, *body).expect("tar entry");
@@ -669,13 +705,14 @@ mod tests {
             ("/v/utxo_set.tar.zst", utxo_set),
         ]))
         .await;
-        let config: DaemonConfig = toml::from_str(&format!(
+        let config: DaemonConfigFile = toml::from_str(&format!(
             "network = \"regtest\"\n[index.compact_block]\npath = {:?}\n\
              [index.block_hash]\nenabled = false\n[index.tree_state]\nenabled = false\n\
              [index.transparent_address]\nenabled = false\n[index.txid_location]\nenabled = false\n",
             indexes.join("compact_block"),
         ))
         .expect("config");
+        let config = config.resolve().expect("resolves");
         let snapshot = IndexSnapshotConfig {
             manifest: format!("http://{server}/v/manifest.json"),
             connections: NonZeroU32::new(4).expect("4"),
@@ -720,7 +757,7 @@ mod tests {
             ("/v/block_hash.tar.zst", b"never".to_vec()),
         ]))
         .await;
-        let config: DaemonConfig = toml::from_str(&format!(
+        let config: DaemonConfigFile = toml::from_str(&format!(
             "network = \"regtest\"\n[index.compact_block]\npath = {:?}\n\
              [index.block_hash]\npath = {:?}\n[index.tree_state]\nenabled = false\n\
              [index.transparent_address]\nenabled = false\n[index.txid_location]\nenabled = false\n",
@@ -728,6 +765,7 @@ mod tests {
             indexes.join("block_hash"),
         ))
         .expect("config");
+        let config = config.resolve().expect("resolves");
         let snapshot = IndexSnapshotConfig {
             manifest: format!("http://{server}/v/manifest.json"),
             connections: NonZeroU32::new(4).expect("4"),

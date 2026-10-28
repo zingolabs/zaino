@@ -7,14 +7,15 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
-use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
+use tokio::task::{AbortHandle, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::HeaderChainSnapshot;
-use zaino_persistence::{IndexKind, PinnedView};
+use zaino_persistence::PinnedView;
 use zaino_primitives::display::Human;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::ChainDataSource;
+use zaino_sync::IndexKind;
 use zaino_sync::{compute, fetch, Checked, IndexHandle};
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
@@ -30,8 +31,6 @@ use crate::FoldError;
 pub enum NfsError {
     #[error(transparent)]
     Fold(#[from] FoldError),
-    #[error("header sync stopped publishing the verified chain")]
-    ChainGone,
     #[error("{0} writer stopped publishing its durable view")]
     IndexGone(&'static str),
 }
@@ -89,15 +88,14 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
 
     /// Cancel → `Ok` (an input gone after it included: its owner stops on the same cancel)
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), NfsError> {
-        match cancel.run_until_cancelled(self.follow()).await {
-            Some(Err(NfsError::ChainGone | NfsError::IndexGone(_))) if cancel.is_cancelled() => {
-                Ok(())
-            }
+        match cancel.run_until_cancelled(self.follow(&cancel)).await {
+            Some(Err(NfsError::IndexGone(_))) if cancel.is_cancelled() => Ok(()),
             followed => followed.unwrap_or(Ok(())),
         }
     }
 
-    async fn follow(&mut self) -> Result<(), NfsError> {
+    /// Closed chain watch = cancel (header sync publishes until it) → `Ok`
+    async fn follow(&mut self, cancel: &CancellationToken) -> Result<(), NfsError> {
         let positions: Vec<IndexHandle<V>> =
             self.indexes.iter().map(|(_, handle)| handle.clone()).collect();
         let mut commits = JoinSet::new();
@@ -118,7 +116,13 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
             }
             tokio::select! {
                 changed = self.chain.changed() => {
-                    changed.map_err(|_| NfsError::ChainGone)?;
+                    if changed.is_err() {
+                        assert!(
+                            cancel.is_cancelled(),
+                            "header sync publishes the verified chain until cancel"
+                        );
+                        return Ok(());
+                    }
                     let chain = self.chain.borrow_and_update().clone();
                     inputs.extend(chain.map(Input::Chain));
                 }
@@ -230,29 +234,29 @@ async fn next_commit<V: PinnedView>(
     (position, handle, open)
 }
 
-/// Fetches in flight, by block (`ids` = each block's live task: an abandoned task ending never
+/// Fetches in flight, by block (`live` = each block's current task: an abandoned task ending never
 /// unlists its re-want's)
 #[derive(Default)]
 struct Fetches {
     tasks: JoinSet<Checked>,
-    ids: HashMap<BlockHash, (Id, AbortHandle)>,
+    live: HashMap<BlockHash, AbortHandle>,
 }
 
 impl Fetches {
     fn start(&mut self, block: BlockHash, fetch: impl Future<Output = Checked> + Send + 'static) {
-        let handle = self.tasks.spawn(fetch);
-        self.ids.insert(block, (handle.id(), handle));
+        self.live.insert(block, self.tasks.spawn(fetch));
     }
 
     fn abandon(&mut self, block: BlockHash) {
-        if let Some((_, handle)) = self.ids.remove(&block) {
+        if let Some(handle) = self.live.remove(&block) {
             handle.abort();
         }
     }
 
     /// Next checked body
     ///
-    /// - abandoned fetch's end skipped
+    /// - aborted fetch skipped (one done before its abort still returned: `NfsCore` drops an
+    ///   unwanted body)
     /// - none in flight = pending
     async fn next(&mut self) -> Checked {
         loop {
@@ -262,8 +266,8 @@ impl Fetches {
             match done {
                 Ok((id, body)) => {
                     let hash = body.block_ref().hash;
-                    if self.ids.get(&hash).is_some_and(|(held, _)| *held == id) {
-                        self.ids.remove(&hash);
+                    if self.live.get(&hash).is_some_and(|live| live.id() == id) {
+                        self.live.remove(&hash);
                     }
                     return body;
                 }
