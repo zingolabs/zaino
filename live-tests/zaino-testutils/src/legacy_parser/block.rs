@@ -23,11 +23,7 @@ impl FullBlockHeader {
         let raw_bytes = header.zcash_serialize_to_vec()?;
         let cached_hash = header.hash().0.to_vec();
 
-        Ok(Self {
-            header,
-            raw_bytes,
-            cached_hash,
-        })
+        Ok(Self { header, raw_bytes, cached_hash })
     }
 
     /// Returns the Zcash block version.
@@ -124,11 +120,10 @@ impl ParseFromSlice for FullBlock {
                 FullTransaction::from_zebra(transaction, txids.get(index).cloned())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let height = block
-            .coinbase_height()
-            .map(|height| i32::try_from(height.0))
-            .transpose()?
-            .ok_or_else(|| ParseError::InvalidData("missing block coinbase height".to_string()))?;
+        let height =
+            block.coinbase_height().map(|height| i32::try_from(height.0)).transpose()?.ok_or_else(
+                || ParseError::InvalidData("missing block coinbase height".to_string()),
+            )?;
 
         Ok((&data[consumed..], Self { hdr, vtx, height }))
     }
@@ -189,12 +184,10 @@ impl FullBlock {
             .vtx
             .into_iter()
             .enumerate()
-            .filter_map(
-                |(index, tx)| match tx.to_compact_tx(Some(index as u64), &pool_types) {
-                    Ok(compact_tx) => compact_tx.has_pool_data().then_some(Ok(compact_tx)),
-                    Err(parse_error) => Some(Err(parse_error)),
-                },
-            )
+            .filter_map(|(index, tx)| match tx.to_compact_tx(Some(index as u64), &pool_types) {
+                Ok(compact_tx) => compact_tx.has_pool_data().then_some(Ok(compact_tx)),
+                Err(parse_error) => Some(Err(parse_error)),
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(CompactBlock {
