@@ -26,6 +26,13 @@ pub enum GetAddressTxidsError {
         /// Last height requested.
         end: Height,
     },
+
+    /// More transactions match than the validator answers in one query.
+    #[error("more than {limit} transactions match; narrow the height range")]
+    TooManyResults {
+        /// The cap that was exceeded.
+        limit: usize,
+    },
 }
 
 /// Fetch transaction ids involving transparent addresses over a height range.

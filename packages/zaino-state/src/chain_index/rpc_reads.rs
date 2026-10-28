@@ -8,7 +8,7 @@ use zaino_chain_store_zainodb::conversion::{compact_block_to_wire, pool_filter_f
 use zaino_consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_primitives::types::{MempoolInfo, TxOutSetInfo};
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -164,6 +164,10 @@ impl<
         validator(self.source().get_block_subsidy(height).await)
     }
 
+    async fn get_standard_fee(&self) -> Result<StandardFee, Self::Error> {
+        validator(self.source().get_standard_fee().await)
+    }
+
     async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {
         validator(self.source().get_mining_info().await)
     }
@@ -222,6 +226,13 @@ impl<
         &self,
         params: AddressDeltasRequest,
     ) -> Result<AddressDeltas, Self::Error> {
+        let addresses = match &params {
+            AddressDeltasRequest::Address(address) => vec![String::from(address.clone())],
+            AddressDeltasRequest::Filtered { addresses, .. } => {
+                addresses.iter().cloned().map(String::from).collect()
+            }
+        };
+        types::checked_addresses(&zebra_rpc::client::GetAddressBalanceRequest::new(addresses))?;
         validator(self.source().get_address_deltas(params).await)
     }
 

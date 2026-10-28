@@ -163,6 +163,30 @@ async fn sync_to_height() {
     assert_eq!(built_db_height, Height(200));
 }
 
+/// A gap wider than `background_build_threshold` syncs in the background, but
+/// `build_to` must still return only once the database holds the target: its
+/// caller freezes `target + 1` straight after, which a store still building
+/// rejects as not ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn build_to_returns_once_the_database_holds_the_target() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = fake_validator_from_vectors(&blocks);
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db(source).await.unwrap();
+
+    zaino_db.build_to(Height(200)).await.unwrap();
+
+    // The persistent backend, not the routed read: during a background build
+    // reads are routed to the validator and would report its tip regardless.
+    use crate::store::capability::{CapabilityRequest, DbRead};
+    let persistent = zaino_db
+        .backend_for_cap(CapabilityRequest::WriteCore)
+        .unwrap();
+    assert_eq!(persistent.db_height().await.unwrap(), Some(Height(200)));
+    assert_eq!(zaino_db.status(), zaino_status::StatusType::Ready);
+}
+
 /// Bulk sync must stay correct when the run spans many write batches.
 ///
 /// The batches are pipelined — batch N commits on its own thread while batch N+1 is built — so a

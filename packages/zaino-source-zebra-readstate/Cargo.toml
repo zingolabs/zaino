@@ -35,3 +35,7 @@ test_dependencies = []
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[dev-dependencies]
+zcash_address.workspace = true
+zcash_protocol.workspace = true

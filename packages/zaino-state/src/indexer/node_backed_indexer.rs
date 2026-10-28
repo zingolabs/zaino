@@ -20,7 +20,7 @@ use zebra_rpc::{
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 
 use zaino_proto::proto::{
@@ -719,6 +719,10 @@ impl<
 
     async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         Ok(self.indexer.get_block_subsidy(height).await?)
+    }
+
+    async fn get_standard_fee(&self) -> Result<StandardFee, Self::Error> {
+        Ok(self.indexer.get_standard_fee().await?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
@@ -1699,8 +1703,15 @@ impl<
                 .unwrap_or_default(),
             upgrade_name: latest_upgrade.name.clone(),
             upgrade_height: u64::from(u32::from(latest_upgrade.activation_height)),
-            lightwallet_protocol_version: "v0.5.0".to_string(),
+            lightwallet_protocol_version: "v0.6.0".to_string(),
         })
+    }
+
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<zaino_proto::proto::service::StandardFee, Self::Error> {
+        let fee = ZcashIndexer::get_standard_fee(self).await?;
+        Ok(crate::chain_index::wire_types::standard_fee_to_wire(&fee))
     }
 
     /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)

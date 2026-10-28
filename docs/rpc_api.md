@@ -22,6 +22,9 @@ Zaino Currently Serves the following gRPC services as defined in the [LightWalle
   - GetAddressUtxos (GetAddressUtxosArg) returns (GetAddressUtxosReplyList)
   - GetAddressUtxosStream (GetAddressUtxosArg) returns (stream GetAddressUtxosReply)
   - GetLightdInfo (Empty) returns (LightdInfo)
+  - GetStandardFee (Empty) returns (StandardFee) (passed through from the validator's `getstandardfee`; `Unimplemented` when the validator lacks it)
+
+Zaino implements lightwallet-protocol **v0.6.0** (`LightdInfo.lightwalletProtocolVersion`).
 
 ## Zcash RPC Services
 Zaino has also committed to taking over responsibility for serving all [Zcash RPC Services](https://zcash.github.io/rpc/) required by non-validator (miner) clients from the legacy Zcash full node.
