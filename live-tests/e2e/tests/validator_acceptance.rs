@@ -61,11 +61,7 @@ async fn indexer_mempool_view_trails_validator_acceptance<B: ValidatorConfig>(
             (
                 env.add_validator(base.mount(&vol)),
                 env.add_indexer(
-                    image
-                        .regtest()
-                        .tuning(ZainoTuning::State)
-                        .mount(&vol)
-                        .named("zaino-state"),
+                    image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                 ),
             )
         }
@@ -73,9 +69,7 @@ async fn indexer_mempool_view_trails_validator_acceptance<B: ValidatorConfig>(
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let ua = recipient.address(Pool::Orchard.ztest()).await?;
     let txid = faucet
@@ -141,11 +135,7 @@ async fn indexer_converges_with_validator_after_block_generation<B: ValidatorCon
             (
                 env.add_validator(base.mount(&vol)),
                 env.add_indexer(
-                    image
-                        .regtest()
-                        .tuning(ZainoTuning::State)
-                        .mount(&vol)
-                        .named("zaino-state"),
+                    image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                 ),
             )
         }
@@ -185,9 +175,7 @@ async fn received_note_spends_to_receiver(#[case] target: Pool, #[case] age: u32
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let ua = recipient.address(Pool::Orchard.ztest()).await?;
     faucet.send(&ua, SEND_AMOUNT).await?;
@@ -196,12 +184,9 @@ async fn received_note_spends_to_receiver(#[case] target: Pool, #[case] age: u32
     recipient.sync().await?;
 
     let target_addr = faucet.address(target.ztest()).await?;
-    recipient
-        .send(&target_addr, SPEND_AMOUNT)
-        .await
-        .with_context(|| {
-            format!("the validator must accept a spend of a note aged {age} to {target:?}")
-        })?;
+    recipient.send(&target_addr, SPEND_AMOUNT).await.with_context(|| {
+        format!("the validator must accept a spend of a note aged {age} to {target:?}")
+    })?;
     Ok(())
 }
 
@@ -220,9 +205,7 @@ async fn coinbase_spends_to_receiver(#[case] target: Pool, #[case] age: u32) -> 
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 
-    let faucet = wallet
-        .funded_faucet_with_notes(&validator, &indexer, 1)
-        .await?;
+    let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
     if age > 0 {
         let tip = validator.generate_blocks(age).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -230,13 +213,10 @@ async fn coinbase_spends_to_receiver(#[case] target: Pool, #[case] age: u32) -> 
     }
     let recipient = wallet.recipient(&validator, &indexer).await?;
     let target_addr = recipient.address(target.ztest()).await?;
-    faucet
-        .send(&target_addr, SPEND_AMOUNT)
-        .await
-        .with_context(|| {
-            format!(
-                "the validator must accept the miner's spend of a coinbase aged {age} to {target:?}"
-            )
-        })?;
+    faucet.send(&target_addr, SPEND_AMOUNT).await.with_context(|| {
+        format!(
+            "the validator must accept the miner's spend of a coinbase aged {age} to {target:?}"
+        )
+    })?;
     Ok(())
 }

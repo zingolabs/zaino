@@ -73,8 +73,7 @@ fn json_eq_numeric(a: &Value, b: &Value) -> bool {
         },
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
-                && x.iter()
-                    .all(|(k, xv)| y.get(k).is_some_and(|yv| json_eq_numeric(xv, yv)))
+                && x.iter().all(|(k, xv)| y.get(k).is_some_and(|yv| json_eq_numeric(xv, yv)))
         }
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(xv, yv)| json_eq_numeric(xv, yv))
@@ -195,10 +194,7 @@ pub fn json_shape_matches(
             };
             anyhow::bail!("[{label}] checked field {name:?} is absent from {missing}");
         };
-        ensure!(
-            av == bv,
-            "[{label}] field {name:?} differs: validator={av}, indexer={bv}"
-        );
+        ensure!(av == bv, "[{label}] field {name:?} differs: validator={av}, indexer={bv}");
     }
     Ok(())
 }
@@ -262,13 +258,8 @@ mod tests {
     /// counts as the path firing.
     #[test]
     fn a_volatile_path_matching_one_side_is_accepted() {
-        json_equal_ignoring(
-            "getinfo",
-            json!({ "a": 1, "b": 2 }),
-            json!({ "a": 1 }),
-            &["b"],
-        )
-        .unwrap();
+        json_equal_ignoring("getinfo", json!({ "a": 1, "b": 2 }), json!({ "a": 1 }), &["b"])
+            .unwrap();
     }
 
     #[test]
