@@ -35,16 +35,8 @@ fn pre_v4_txs_parsing() -> anyhow::Result<()> {
 
         let tx = deserialized_tx.1;
 
-        assert_eq!(
-            tx.version(),
-            version,
-            "Version mismatch for transaction #{i} ({description})"
-        );
-        assert_eq!(
-            tx.tx_id(),
-            txid,
-            "TXID mismatch for transaction #{i} ({description})"
-        );
+        assert_eq!(tx.version(), version, "Version mismatch for transaction #{i} ({description})");
+        assert_eq!(tx.tx_id(), txid, "TXID mismatch for transaction #{i} ({description})");
         // Check Sapling spends (v4+ transactions)
         if version >= 4 {
             assert_eq!(
