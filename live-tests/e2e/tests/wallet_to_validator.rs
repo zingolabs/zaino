@@ -95,11 +95,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -107,9 +103,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let balances = faucet.balances().await?;
         assert!(
             balances.get(credited.ztest()) > 0,
@@ -139,11 +133,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -151,9 +141,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let _faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let _faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         recipient.sync().await?;
         assert!(!indexer.indexer_info().await?.chain_name.is_empty());
@@ -183,11 +171,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -195,9 +179,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(credited.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -230,11 +212,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -242,9 +220,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Sapling.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -280,11 +256,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -292,9 +264,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -327,11 +297,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -340,9 +306,7 @@ mod wallet {
         env.build().await?;
 
         // Three notes — one per send (no chaining of unconfirmed change).
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 3)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 3).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
         for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
@@ -386,11 +350,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -398,19 +358,14 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         recipient.sync().await?;
-        assert_eq!(
-            recipient.balances().await?.get(Pool::Transparent.ztest()),
-            SEND_AMOUNT
-        );
+        assert_eq!(recipient.balances().await?.get(Pool::Transparent.ztest()), SEND_AMOUNT);
 
         recipient.shield().await?;
         let tip = validator.generate_blocks(1).await?;
@@ -465,11 +420,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -477,9 +428,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -497,18 +446,13 @@ mod wallet {
             .await?
             .as_array()
             .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<String>>()
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
             })
             .unwrap_or_default();
 
         // The load-bearing advance: push the send below the seam so it crosses
         // the finalised floor (`tip - seam`) into the finalized DB.
-        let tip = validator
-            .generate_blocks(SEAM_ADVANCE)
-            .to(FILLER_ADDRESS)
-            .await?;
+        let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
         // Without this the test is vacuous: it would compare two reads that
@@ -526,9 +470,7 @@ mod wallet {
             .await?
             .as_array()
             .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<String>>()
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
             })
             .unwrap_or_default();
 
@@ -563,11 +505,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -575,17 +513,11 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        let txid = faucet
-            .send(&addr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let txid =
+            faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
@@ -595,15 +527,11 @@ mod wallet {
         let raw = validator
             .json_rpc()
             .await?
-            .call_value(
-                "getrawtransaction",
-                serde_json::json!([txid.to_string(), 0]),
-            )
+            .call_value("getrawtransaction", serde_json::json!([txid.to_string(), 0]))
             .await?;
         assert_eq!(
             zaino_testutils::hex::encode(&served.data),
-            raw.as_str()
-                .context("getrawtransaction returns a hex string")?,
+            raw.as_str().context("getrawtransaction returns a hex string")?,
             "zaino must serve the bytes the validator holds"
         );
         Ok(())
@@ -632,11 +560,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -644,9 +568,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
@@ -656,12 +578,8 @@ mod wallet {
             .into_iter()
             .next()
             .expect("send returns a txid");
-        let u_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let u_txid =
+            faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
 
         let vrpc = validator.json_rpc().await?;
         let irpc = indexer.json_rpc().await?;
@@ -728,24 +646,12 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
-        let t_txid = faucet
-            .send(&taddr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("txid");
-        let u_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("txid");
+        let t_txid = faucet.send(&taddr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
+        let u_txid = faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("txid");
 
         // The validator fixes what the mempool holds before GetMempoolTx is
         // asked; without it a count assertion only says zaino agrees with itself.
@@ -834,9 +740,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
@@ -846,12 +750,8 @@ mod wallet {
             .into_iter()
             .next()
             .expect("send returns a txid");
-        let u_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let u_txid =
+            faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
 
         let vrpc = validator.json_rpc().await?;
         let irpc = indexer.json_rpc().await?;
@@ -927,10 +827,8 @@ mod wallet {
         indexer.wait_for_block_num(tip, READY).await?;
 
         let txs = drain.await.expect("mempool-stream drain task joins")?;
-        let mut streamed: Vec<String> = txs
-            .iter()
-            .map(|tx| zaino_testutils::hex::encode(&tx.data))
-            .collect();
+        let mut streamed: Vec<String> =
+            txs.iter().map(|tx| zaino_testutils::hex::encode(&tx.data)).collect();
         streamed.sort();
         assert_eq!(
             streamed, expected,
@@ -972,11 +870,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -984,9 +878,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
@@ -996,12 +888,8 @@ mod wallet {
             .into_iter()
             .next()
             .expect("send returns a txid");
-        let u_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let u_txid =
+            faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
 
         let vrpc = validator.json_rpc().await?;
         let irpc = indexer.json_rpc().await?;
@@ -1071,56 +959,37 @@ mod wallet {
              not comparable"
         );
 
-        let size = indexer_info
-            .get("size")
-            .and_then(serde_json::Value::as_u64)
-            .with_context(|| {
+        let size =
+            indexer_info.get("size").and_then(serde_json::Value::as_u64).with_context(|| {
                 format!("getmempoolinfo must report a numeric `size`: {indexer_info}")
             })?;
-        let bytes = indexer_info
-            .get("bytes")
-            .and_then(serde_json::Value::as_u64)
-            .with_context(|| {
+        let bytes =
+            indexer_info.get("bytes").and_then(serde_json::Value::as_u64).with_context(|| {
                 format!("getmempoolinfo must report a numeric `bytes`: {indexer_info}")
             })?;
-        let usage = indexer_info
-            .get("usage")
-            .and_then(serde_json::Value::as_u64)
-            .with_context(|| {
+        let usage =
+            indexer_info.get("usage").and_then(serde_json::Value::as_u64).with_context(|| {
                 format!("getmempoolinfo must report a numeric `usage`: {indexer_info}")
             })?;
 
+        assert_eq!(size, mempool.len() as u64, "size must equal the mirrored txid count");
         assert_eq!(
             size,
-            mempool.len() as u64,
-            "size must equal the mirrored txid count"
-        );
-        assert_eq!(
-            size,
-            validator_info
-                .get("size")
-                .and_then(serde_json::Value::as_u64)
-                .with_context(|| format!(
-                    "getmempoolinfo must report a numeric `size`: {validator_info}"
-                ))?,
+            validator_info.get("size").and_then(serde_json::Value::as_u64).with_context(
+                || format!("getmempoolinfo must report a numeric `size`: {validator_info}")
+            )?,
             "zaino's mempool holds a different number of transactions than the \
              validator's"
         );
         assert_eq!(
             bytes,
-            validator_info
-                .get("bytes")
-                .and_then(serde_json::Value::as_u64)
-                .with_context(|| format!(
-                    "getmempoolinfo must report a numeric `bytes`: {validator_info}"
-                ))?,
+            validator_info.get("bytes").and_then(serde_json::Value::as_u64).with_context(
+                || format!("getmempoolinfo must report a numeric `bytes`: {validator_info}")
+            )?,
             "zaino's serialized-byte total disagrees with the validator's"
         );
         assert!(bytes > 0, "two unmined transactions cannot weigh nothing");
-        assert!(
-            usage >= bytes,
-            "usage must be at least bytes: {indexer_info}"
-        );
+        assert!(usage >= bytes, "usage must be at least bytes: {indexer_info}");
         Ok(())
     }
 
@@ -1145,11 +1014,7 @@ mod wallet {
                 (
                     env.add_validator(base.mount(&vol)),
                     env.add_indexer(
-                        image
-                            .regtest()
-                            .tuning(ZainoTuning::State)
-                            .mount(&vol)
-                            .named("zaino-state"),
+                        image.regtest().tuning(ZainoTuning::State).mount(&vol).named("zaino-state"),
                     ),
                 )
             }
@@ -1158,18 +1023,12 @@ mod wallet {
         env.build().await?;
 
         // Two shielded notes — one per unmined send.
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let ua = recipient.address(Pool::Ironwood.ztest()).await?;
         let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
-        let ua_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let ua_txid =
+            faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let sapling_txid = faucet
             .send(&zaddr, SEND_AMOUNT)
             .await?
@@ -1260,9 +1119,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -1280,21 +1137,11 @@ mod wallet {
             "start": height.saturating_sub(2),
             "end": height,
         }]);
-        let validator_txids = validator
-            .json_rpc()
-            .await?
-            .call_value("getaddresstxids", params.clone())
-            .await?;
-        let indexer_txids = indexer
-            .json_rpc()
-            .await?
-            .call_value("getaddresstxids", params)
-            .await?;
+        let validator_txids =
+            validator.json_rpc().await?.call_value("getaddresstxids", params.clone()).await?;
+        let indexer_txids = indexer.json_rpc().await?.call_value("getaddresstxids", params).await?;
         assert_eq!(
-            validator_txids
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(Value::as_str),
+            validator_txids.as_array().and_then(|a| a.first()).and_then(Value::as_str),
             Some(txid.to_string().as_str()),
             "getaddresstxids first txid must be the send {txid}, got {validator_txids}"
         );
@@ -1316,9 +1163,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -1330,26 +1175,14 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        let utxos = indexer
-            .get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0)
-            .await?;
-        assert_eq!(
-            utxos[0].txid,
-            txid.as_ref().to_vec(),
-            "utxo[0] txid must be the send"
-        );
+        let utxos =
+            indexer.get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0).await?;
+        assert_eq!(utxos[0].txid, txid.as_ref().to_vec(), "utxo[0] txid must be the send");
 
         let params = json!([{"addresses": [taddr]}]);
-        let validator_utxos = validator
-            .json_rpc()
-            .await?
-            .call_value("getaddressutxos", params.clone())
-            .await?;
-        let indexer_utxos = indexer
-            .json_rpc()
-            .await?
-            .call_value("getaddressutxos", params)
-            .await?;
+        let validator_utxos =
+            validator.json_rpc().await?.call_value("getaddressutxos", params.clone()).await?;
+        let indexer_utxos = indexer.json_rpc().await?.call_value("getaddressutxos", params).await?;
         let validator_txid = validator_utxos
             .as_array()
             .and_then(|a| a.first())
@@ -1381,9 +1214,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -1393,15 +1224,10 @@ mod wallet {
         let tip = indexer.latest_block_height().await?;
         let tree = indexer.get_tree_state(tip).await?;
         assert_eq!(tree.height, u64::from(u32::from(tip)));
-        let best = validator
-            .json_rpc()
-            .await?
-            .call_value("getbestblockhash", json!([]))
-            .await?;
+        let best = validator.json_rpc().await?.call_value("getbestblockhash", json!([])).await?;
         assert_eq!(
             tree.hash.as_str(),
-            best.as_str()
-                .context("getbestblockhash returns a hex string")?
+            best.as_str().context("getbestblockhash returns a hex string")?
         );
         assert!(!tree.sapling_tree.is_empty(), "sapling tree must be served");
         assert!(!tree.orchard_tree.is_empty(), "orchard tree must be served");
@@ -1432,9 +1258,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -1443,9 +1267,7 @@ mod wallet {
 
         // A subtree completes every 2^16 notes, which no regtest chain reaches;
         // a synthesised root would fail this.
-        let roots = indexer
-            .get_subtree_roots(0, ShieldedProtocol::Orchard, 0)
-            .await?;
+        let roots = indexer.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?;
         assert!(roots.is_empty(), "regtest completes no subtree: {roots:?}");
 
         assert_rpc_parity(
@@ -1474,17 +1296,11 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        let txid = faucet
-            .send(&addr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let txid =
+            faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
@@ -1496,10 +1312,7 @@ mod wallet {
             &[],
         )
         .await?;
-        assert_eq!(
-            served.get("txid").and_then(Value::as_str),
-            Some(txid.to_string().as_str())
-        );
+        assert_eq!(served.get("txid").and_then(Value::as_str), Some(txid.to_string().as_str()));
         assert_eq!(
             served.get("height").and_then(Value::as_u64),
             Some(u64::from(u32::from(tip))),
@@ -1530,9 +1343,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -1553,10 +1364,7 @@ mod wallet {
             validator
                 .json_rpc()
                 .await?
-                .call_value(
-                    "getrawtransaction",
-                    serde_json::json!([txid.to_string(), 0])
-                )
+                .call_value("getrawtransaction", serde_json::json!([txid.to_string(), 0]))
                 .await?
                 .as_str()
                 .context("getrawtransaction returns a hex string")?
@@ -1575,18 +1383,15 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        let utxos = indexer
-            .get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0)
-            .await?;
+        let utxos =
+            indexer.get_address_utxos(vec![taddr.clone()], BlockHeight::from(0u32), 0).await?;
         assert_eq!(utxos.len(), 1, "the send leaves exactly one utxo");
         assert_eq!(utxos[0].address, taddr);
         assert_eq!(utxos[0].value_zat, SEND_AMOUNT as i64);
@@ -1606,9 +1411,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -1624,9 +1427,7 @@ mod wallet {
         // The stream and unary forms serve the same set.
         assert_eq!(
             streamed,
-            indexer
-                .get_address_utxos(vec![taddr], BlockHeight::from(0u32), 0)
-                .await?
+            indexer.get_address_utxos(vec![taddr], BlockHeight::from(0u32), 0).await?
         );
         Ok(())
     }
@@ -1655,17 +1456,10 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        let txid = faucet
-            .send(&addr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("txid");
+        let txid = faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let unmined = indexer.get_transaction(txid).await?;
@@ -1677,9 +1471,7 @@ mod wallet {
 
         // The validator is the independent oracle for what was broadcast.
         let vrpc = validator.json_rpc().await?;
-        let raw_hex = vrpc
-            .call_value("getrawtransaction", json!([txid.to_string()]))
-            .await?;
+        let raw_hex = vrpc.call_value("getrawtransaction", json!([txid.to_string()])).await?;
         let raw_hex = raw_hex
             .as_str()
             .context("getrawtransaction must return a hex string at verbosity 0")?;
@@ -1724,9 +1516,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -1760,9 +1550,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -1794,12 +1582,8 @@ mod zebrad {
     async fn block_range_returns_default_pools() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -1818,9 +1602,7 @@ mod zebrad {
 
         // fund_and_send(Orchard): one shielded coinbase note, then send it to the
         // recipient's unified address and mine the send in.
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send(&ua, SEND_AMOUNT).await?;
@@ -1840,18 +1622,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -1863,14 +1636,12 @@ mod zebrad {
         let start = BlockHeight::from(1u32);
 
         let fetch_default = fetch.get_block_range(start, end).await?;
-        let fetch_shielded = fetch
-            .get_block_range_with_pools(start, end, shielded_pools.clone())
-            .await?;
+        let fetch_shielded =
+            fetch.get_block_range_with_pools(start, end, shielded_pools.clone()).await?;
         assert_eq!(fetch_default, fetch_shielded);
 
-        let state_shielded = state
-            .get_block_range_with_pools(start, end, shielded_pools.clone())
-            .await?;
+        let state_shielded =
+            state.get_block_range_with_pools(start, end, shielded_pools.clone()).await?;
         let state_default = state.get_block_range(start, end).await?;
         assert_eq!(state_default, state_shielded);
 
@@ -1901,12 +1672,8 @@ mod zebrad {
     async fn block_range_returns_all_pools() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -1925,21 +1692,14 @@ mod zebrad {
 
         // Three shielded coinbase notes (one per send below), then one send to
         // each pool's recipient address, mined into a single block.
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 3)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 3).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let mut txids = Vec::new();
         // NU6.3: the unified-address (Orchard-receiver) send emits Ironwood
         // actions, so the compact block carries them under `ironwood_actions`.
         for pool in [Pool::Transparent, Pool::Sapling, Pool::Ironwood] {
             let addr = recipient.address(pool.ztest()).await?;
-            let txid = faucet
-                .send(&addr, SEND_AMOUNT)
-                .await?
-                .into_iter()
-                .next()
-                .expect("txid");
+            let txid = faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
             txids.push(txid);
         }
         let end = validator.generate_blocks(1).await?;
@@ -1958,18 +1718,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -1978,12 +1729,8 @@ mod zebrad {
         let all_pools = vec![1, 2, 3, 4];
         let start = BlockHeight::from(1u32);
 
-        let fetch_range = fetch
-            .get_block_range_with_pools(start, end, all_pools.clone())
-            .await?;
-        let state_range = state
-            .get_block_range_with_pools(start, end, all_pools.clone())
-            .await?;
+        let fetch_range = fetch.get_block_range_with_pools(start, end, all_pools.clone()).await?;
+        let state_range = state.get_block_range_with_pools(start, end, all_pools.clone()).await?;
         assert_eq!(fetch_range, state_range);
 
         let compact_block = state_range.last().expect("non-empty range");
@@ -2007,12 +1754,8 @@ mod zebrad {
     async fn z_get_treestate_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2029,9 +1772,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -2051,18 +1792,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2091,12 +1823,8 @@ mod zebrad {
     async fn z_get_subtrees_by_index_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2113,9 +1841,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
@@ -2135,36 +1861,20 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
-        let fetch_roots = fetch
-            .get_subtree_roots(0, ShieldedProtocol::Orchard, 0)
-            .await?;
+        let fetch_roots = fetch.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?;
         assert!(
             fetch_roots.is_empty(),
             "a regtest chain completes no 2^16-note subtree, so no root can exist: \
              {fetch_roots:?}"
         );
-        assert_eq!(
-            fetch_roots,
-            state
-                .get_subtree_roots(0, ShieldedProtocol::Orchard, 0)
-                .await?,
-        );
+        assert_eq!(fetch_roots, state.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?,);
         Ok(())
     }
 
@@ -2176,12 +1886,8 @@ mod zebrad {
     async fn get_raw_transaction_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2198,17 +1904,11 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let addr = recipient.address(Pool::Orchard.ztest()).await?;
-        let txid = faucet
-            .send(&addr, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let txid =
+            faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
         let tip = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
@@ -2225,36 +1925,22 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
         let vrpc = validator.json_rpc().await?;
-        let raw_hex = vrpc
-            .call_value("getrawtransaction", json!([txid.to_string()]))
-            .await?;
+        let raw_hex = vrpc.call_value("getrawtransaction", json!([txid.to_string()])).await?;
         let raw_hex = raw_hex
             .as_str()
             .context("getrawtransaction must return a hex string at verbosity 0")?;
 
         let params = serde_json::json!([txid.to_string(), 1]);
-        let fetch_tx = fetch
-            .json_rpc()
-            .await?
-            .call_value("getrawtransaction", params.clone())
-            .await?;
+        let fetch_tx =
+            fetch.json_rpc().await?.call_value("getrawtransaction", params.clone()).await?;
         assert_eq!(
             fetch_tx.get("hex").and_then(serde_json::Value::as_str),
             Some(raw_hex),
@@ -2262,11 +1948,7 @@ mod zebrad {
         );
         assert_eq!(
             fetch_tx,
-            state
-                .json_rpc()
-                .await?
-                .call_value("getrawtransaction", params)
-                .await?,
+            state.json_rpc().await?.call_value("getrawtransaction", params).await?,
         );
         Ok(())
     }
@@ -2279,12 +1961,8 @@ mod zebrad {
     async fn get_address_tx_ids_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2301,9 +1979,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -2328,18 +2004,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2355,9 +2022,7 @@ mod zebrad {
             .await?
             .as_array()
             .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<String>>()
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
             })
             .unwrap_or_default();
         assert_eq!(
@@ -2377,9 +2042,7 @@ mod zebrad {
                 .await?
                 .as_array()
                 .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect::<Vec<String>>()
+                    a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
                 })
                 .unwrap_or_default()
         );
@@ -2394,12 +2057,8 @@ mod zebrad {
     async fn get_address_utxos_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2416,9 +2075,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -2443,63 +2100,40 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
         let params = serde_json::json!([{ "addresses": [&taddr] }]);
-        let fetch_json = fetch
-            .json_rpc()
-            .await?
-            .call_value("getaddressutxos", params.clone())
-            .await?;
+        let fetch_json =
+            fetch.json_rpc().await?.call_value("getaddressutxos", params.clone()).await?;
         assert_eq!(
             fetch_json.as_array().map(Vec::len),
             Some(1),
             "the send leaves exactly one utxo at the recipient taddr: {fetch_json}"
         );
         assert_eq!(
-            fetch_json
-                .pointer("/0/satoshis")
-                .and_then(serde_json::Value::as_u64),
+            fetch_json.pointer("/0/satoshis").and_then(serde_json::Value::as_u64),
             Some(SEND_AMOUNT),
             "the utxo must carry the send amount: {fetch_json}"
         );
         assert_eq!(
             fetch_json,
-            state
-                .json_rpc()
-                .await?
-                .call_value("getaddressutxos", params)
-                .await?,
+            state.json_rpc().await?.call_value("getaddressutxos", params).await?,
         );
 
         let zero = BlockHeight::from(0u32);
-        let fetch_utxos = fetch
-            .get_address_utxos(vec![taddr.clone()], zero, 0)
-            .await?;
+        let fetch_utxos = fetch.get_address_utxos(vec![taddr.clone()], zero, 0).await?;
         assert_eq!(fetch_utxos.len(), 1);
         assert_eq!(
             fetch_utxos[0].txid,
             txid.as_ref().to_vec(),
             "the only utxo must be the send's output"
         );
-        assert_eq!(
-            fetch_utxos,
-            state.get_address_utxos(vec![taddr], zero, 0).await?
-        );
+        assert_eq!(fetch_utxos, state.get_address_utxos(vec![taddr], zero, 0).await?);
         Ok(())
     }
 
@@ -2514,12 +2148,8 @@ mod zebrad {
     async fn get_raw_mempool_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2536,9 +2166,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 2)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 2).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
@@ -2548,12 +2176,8 @@ mod zebrad {
             .into_iter()
             .next()
             .expect("send returns a txid");
-        let u_txid = faucet
-            .send(&ua, SEND_AMOUNT)
-            .await?
-            .into_iter()
-            .next()
-            .expect("send returns a txid");
+        let u_txid =
+            faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
 
         let vrpc = validator.json_rpc().await?;
         let want = [t_txid.to_string(), u_txid.to_string()];
@@ -2608,12 +2232,8 @@ mod zebrad {
     async fn get_address_transactions_regtest() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -2630,9 +2250,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         let txid = faucet
@@ -2657,18 +2275,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2683,11 +2292,7 @@ mod zebrad {
             .context("getrawtransaction must return a hex string at verbosity 0")?;
 
         let fetch_txs = fetch.get_taddress_txids(taddr.clone(), tip, tip).await?;
-        assert_eq!(
-            fetch_txs.len(),
-            1,
-            "only the send pays the recipient taddr in block {tip:?}"
-        );
+        assert_eq!(fetch_txs.len(), 1, "only the send pays the recipient taddr in block {tip:?}");
         assert_eq!(
             zaino_testutils::hex::encode(&fetch_txs[0].data),
             raw_hex,
@@ -2705,10 +2310,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -2741,18 +2343,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2762,9 +2355,8 @@ mod zebrad {
         // Zaino cannot serve the non-standard genesis coinbase script in compact blocks, so
         // this starts at height 1, not 0 (zingolabs/zaino#818).
         let start = BlockHeight::from(1u32);
-        let state_range = state
-            .get_block_range_with_pools(start, chain_height, all_pools.clone())
-            .await?;
+        let state_range =
+            state.get_block_range_with_pools(start, chain_height, all_pools.clone()).await?;
         assert_eq!(
             state_range.len(),
             u32::from(chain_height) as usize,
@@ -2772,18 +2364,12 @@ mod zebrad {
         );
         assert_eq!(
             state_range,
-            fetch
-                .get_block_range_with_pools(start, chain_height, all_pools)
-                .await?
+            fetch.get_block_range_with_pools(start, chain_height, all_pools).await?
         );
         for cb in state_range {
             for tx in cb.vtx {
                 assert!(
-                    !tx.vout
-                        .first()
-                        .expect("transparent vout present")
-                        .script_pub_key
-                        .is_empty(),
+                    !tx.vout.first().expect("transparent vout present").script_pub_key.is_empty(),
                     "each tx's transparent output must carry a script pub key"
                 );
             }
@@ -2801,10 +2387,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -2840,18 +2423,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2866,9 +2440,7 @@ mod zebrad {
             .await?
             .as_array()
             .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<String>>()
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
             })
             .unwrap_or_default();
         let state_txids = state
@@ -2881,9 +2453,7 @@ mod zebrad {
             .await?
             .as_array()
             .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<String>>()
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<String>>()
             })
             .unwrap_or_default();
         assert_eq!(
@@ -2904,10 +2474,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -2943,18 +2510,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -2962,10 +2520,7 @@ mod zebrad {
         let utxos = fetch
             .json_rpc()
             .await?
-            .call_value(
-                "getaddressutxos",
-                serde_json::json!([{ "addresses": [&faucet_taddr] }]),
-            )
+            .call_value("getaddressutxos", serde_json::json!([{ "addresses": [&faucet_taddr] }]))
             .await?;
         let utxo_total: i64 = utxos
             .as_array()
@@ -2975,9 +2530,7 @@ mod zebrad {
             .sum();
         assert!(utxo_total > 0, "faucet taddr must hold coinbase value");
 
-        let fetch_bal = fetch
-            .get_taddress_balance(vec![faucet_taddr.clone()])
-            .await?;
+        let fetch_bal = fetch.get_taddress_balance(vec![faucet_taddr.clone()]).await?;
         let state_bal = state.get_taddress_balance(vec![faucet_taddr]).await?;
         assert_eq!(
             i64::from(fetch_bal),
@@ -2997,10 +2550,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3036,37 +2586,21 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
         let start = BlockHeight::from(2u32);
-        let fetch_utxos = fetch
-            .get_address_utxos(vec![faucet_taddr.clone()], start, 3)
-            .await?;
+        let fetch_utxos = fetch.get_address_utxos(vec![faucet_taddr.clone()], start, 3).await?;
         assert_eq!(
             fetch_utxos.len(),
             3,
             "every block from {start:?} pays the miner taddr, so `max_entries` binds"
         );
-        assert_eq!(
-            fetch_utxos,
-            state
-                .get_address_utxos(vec![faucet_taddr], start, 3)
-                .await?
-        );
+        assert_eq!(fetch_utxos, state.get_address_utxos(vec![faucet_taddr], start, 3).await?);
         Ok(())
     }
 
@@ -3078,10 +2612,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3117,26 +2648,16 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
         let start = BlockHeight::from(2u32);
-        let fetch_utxos = fetch
-            .get_address_utxos_stream(vec![faucet_taddr.clone()], start, 3)
-            .await?;
+        let fetch_utxos =
+            fetch.get_address_utxos_stream(vec![faucet_taddr.clone()], start, 3).await?;
         assert_eq!(
             fetch_utxos.len(),
             3,
@@ -3144,16 +2665,12 @@ mod zebrad {
         );
         assert_eq!(
             fetch_utxos,
-            fetch
-                .get_address_utxos(vec![faucet_taddr.clone()], start, 3)
-                .await?,
+            fetch.get_address_utxos(vec![faucet_taddr.clone()], start, 3).await?,
             "the streamed and unary replies must agree over the same arguments"
         );
         assert_eq!(
             fetch_utxos,
-            state
-                .get_address_utxos_stream(vec![faucet_taddr], start, 3)
-                .await?
+            state.get_address_utxos_stream(vec![faucet_taddr], start, 3).await?
         );
         Ok(())
     }
@@ -3170,10 +2687,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3194,9 +2708,7 @@ mod zebrad {
         // Transparent coinbase: `funded_faucet_with_notes` matures it and shields it into
         // Orchard, so the faucet taddr carries both the coinbase credits and the shield's
         // debits by the time the send credits the recipient taddr.
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
         let recipient_taddr = recipient.address(Pool::Transparent.ztest()).await?;
@@ -3210,9 +2722,8 @@ mod zebrad {
         // state pod must answer and the fetch pod must not, or the assertions below are
         // reading the validator over the one transport rather than zaino's read-state.
         let srpc = state.json_rpc().await?;
-        let bare = srpc
-            .call_value("getaddressdeltas", serde_json::json!([&recipient_taddr]))
-            .await?;
+        let bare =
+            srpc.call_value("getaddressdeltas", serde_json::json!([&recipient_taddr])).await?;
         anyhow::ensure!(
             fetch
                 .json_rpc()
@@ -3224,20 +2735,14 @@ mod zebrad {
         );
 
         // The bare-address form answers the rangeless whole chain as a plain array.
-        let bare = bare
-            .as_array()
-            .context("the bare-address form answers a delta array")?;
+        let bare = bare.as_array().context("the bare-address form answers a delta array")?;
         assert_eq!(
             bare.len(),
             1,
             "coinbase pays the faucet taddr, so the send is the recipient taddr's only delta"
         );
         assert_eq!(bare[0]["height"].as_u64(), Some(u64::from(tip)));
-        assert_eq!(
-            bare[0]["index"].as_u64(),
-            Some(0),
-            "the send's sole transparent output"
-        );
+        assert_eq!(bare[0]["index"].as_u64(), Some(0), "the send's sole transparent output");
         assert_eq!(bare[0]["satoshis"].as_u64(), Some(SEND_AMOUNT));
         assert_eq!(bare[0]["address"].as_str(), Some(recipient_taddr.as_str()));
 
@@ -3251,12 +2756,9 @@ mod zebrad {
                 }]),
             )
             .await?;
-        let both = both
-            .as_array()
-            .context("a request without chainInfo answers a delta array")?;
+        let both = both.as_array().context("a request without chainInfo answers a delta array")?;
         assert!(
-            both.iter()
-                .any(|delta| delta["address"].as_str() == Some(faucet_taddr.as_str()))
+            both.iter().any(|delta| delta["address"].as_str() == Some(faucet_taddr.as_str()))
                 && both
                     .iter()
                     .any(|delta| delta["address"].as_str() == Some(recipient_taddr.as_str())),
@@ -3357,10 +2859,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Orchard.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
         );
         let indexer = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3374,9 +2873,7 @@ mod zebrad {
 
         // One shielded coinbase note, then fund the recipient's transparent
         // address with a non-coinbase transparent output.
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &indexer, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let recipient_taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&recipient_taddr, FUNDING_AMOUNT as u64).await?;
@@ -3405,23 +2902,20 @@ mod zebrad {
 
         // Locate the funding output (unique by amount) and capture its
         // txid / index / address.
-        let funding = irpc
-            .call_value("getblockdeltas", serde_json::json!([funding_block_hash]))
-            .await?;
+        let funding =
+            irpc.call_value("getblockdeltas", serde_json::json!([funding_block_hash])).await?;
         let funding_delta = funding
             .get("deltas")
             .and_then(serde_json::Value::as_array)
             .unwrap_or(&Vec::new())
             .iter()
             .find(|d| {
-                d.get("outputs")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|outputs| {
-                        outputs.iter().any(|o| {
-                            o.get("satoshis").and_then(serde_json::Value::as_i64)
-                                == Some(FUNDING_AMOUNT)
-                        })
+                d.get("outputs").and_then(serde_json::Value::as_array).is_some_and(|outputs| {
+                    outputs.iter().any(|o| {
+                        o.get("satoshis").and_then(serde_json::Value::as_i64)
+                            == Some(FUNDING_AMOUNT)
                     })
+                })
             })
             .cloned()
             .expect("funding tx paying the recipient should be in its block");
@@ -3438,10 +2932,8 @@ mod zebrad {
             .and_then(serde_json::Value::as_str)
             .expect("delta txid")
             .to_string();
-        let funding_vout = funding_output
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .expect("output index");
+        let funding_vout =
+            funding_output.get("index").and_then(serde_json::Value::as_u64).expect("output index");
         let funding_address = funding_output
             .get("address")
             .and_then(serde_json::Value::as_str)
@@ -3451,19 +2943,15 @@ mod zebrad {
         // The spend's input must be present and resolved to the funding output's
         // address and full value (negative — it is a debit). Pre-fix `inputs` was
         // empty and this lookup would fail.
-        let spend = irpc
-            .call_value("getblockdeltas", serde_json::json!([spend_block_hash]))
-            .await?;
+        let spend =
+            irpc.call_value("getblockdeltas", serde_json::json!([spend_block_hash])).await?;
         let input = spend
             .get("deltas")
             .and_then(serde_json::Value::as_array)
             .unwrap_or(&Vec::new())
             .iter()
             .flat_map(|d| {
-                d.get("inputs")
-                    .and_then(serde_json::Value::as_array)
-                    .cloned()
-                    .unwrap_or_default()
+                d.get("inputs").and_then(serde_json::Value::as_array).cloned().unwrap_or_default()
             })
             .find(|i| {
                 i.get("prevtxid").and_then(serde_json::Value::as_str) == Some(&funding_txid)
@@ -3501,10 +2989,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Orchard.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
         );
         let indexer = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3526,9 +3011,7 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
 
-        let deltas = irpc
-            .call_value("getblockdeltas", serde_json::json!([block_hash]))
-            .await?;
+        let deltas = irpc.call_value("getblockdeltas", serde_json::json!([block_hash])).await?;
         let all_empty = deltas
             .get("deltas")
             .and_then(serde_json::Value::as_array)
@@ -3550,12 +3033,8 @@ mod zebrad {
     async fn get_address_balance_fetch_vs_state() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
-        let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(FUND.ztest())
-                .mount(&vol),
-        );
+        let validator = env
+            .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()).mount(&vol));
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
                 .regtest()
@@ -3572,9 +3051,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        let faucet = wallet
-            .funded_faucet_with_notes(&validator, &fetch, 1)
-            .await?;
+        let faucet = wallet.funded_faucet_with_notes(&validator, &fetch, 1).await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -3594,33 +3071,17 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
 
         let params = serde_json::json!([{ "addresses": [taddr] }]);
-        let fetch_bal = fetch
-            .json_rpc()
-            .await?
-            .call_value("getaddressbalance", params.clone())
-            .await?;
-        let state_bal = state
-            .json_rpc()
-            .await?
-            .call_value("getaddressbalance", params)
-            .await?;
+        let fetch_bal =
+            fetch.json_rpc().await?.call_value("getaddressbalance", params.clone()).await?;
+        let state_bal = state.json_rpc().await?.call_value("getaddressbalance", params).await?;
         assert_eq!(
             fetch_bal.get("balance").and_then(serde_json::Value::as_u64),
             Some(SEND_AMOUNT),
@@ -3638,10 +3099,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3659,9 +3117,7 @@ mod zebrad {
         env.build().await?;
 
         let height = u32::from(fetch.latest_block_height().await?);
-        let tip = validator
-            .generate_blocks(100u32.saturating_sub(height))
-            .await?;
+        let tip = validator.generate_blocks(100u32.saturating_sub(height)).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
 
@@ -3677,18 +3133,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -3696,12 +3143,10 @@ mod zebrad {
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
         let all_pools = vec![1, 2, 3, 4];
         let (start, end) = (BlockHeight::from(1u32), BlockHeight::from(106u32));
-        let (fetch_blocks, fetch_errored) = fetch
-            .drain_block_range(start, end, all_pools.clone())
-            .await?;
-        let (state_blocks, state_errored) = state
-            .drain_block_range(start, end, all_pools.clone())
-            .await?;
+        let (fetch_blocks, fetch_errored) =
+            fetch.drain_block_range(start, end, all_pools.clone()).await?;
+        let (state_blocks, state_errored) =
+            state.drain_block_range(start, end, all_pools.clone()).await?;
 
         assert_eq!(fetch_blocks, state_blocks);
         let compact_block = state_blocks.last().expect("non-empty range");
@@ -3723,10 +3168,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
-                .regtest()
-                .mine_to(Pool::Transparent.ztest())
-                .mount(&vol),
+            Validator::zebrad("6.2.3").regtest().mine_to(Pool::Transparent.ztest()).mount(&vol),
         );
         let fetch = env.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile")
@@ -3744,9 +3186,7 @@ mod zebrad {
         env.build().await?;
 
         let height = u32::from(fetch.latest_block_height().await?);
-        let tip = validator
-            .generate_blocks(100u32.saturating_sub(height))
-            .await?;
+        let tip = validator.generate_blocks(100u32.saturating_sub(height)).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
 
@@ -3762,18 +3202,9 @@ mod zebrad {
             .context("getbestblockhash returns a hash string")?
             .to_string();
         let deltas = serde_json::json!([&tip_hash]);
-        state
-            .json_rpc()
-            .await?
-            .call_value("getblockdeltas", deltas.clone())
-            .await?;
+        state.json_rpc().await?.call_value("getblockdeltas", deltas.clone()).await?;
         anyhow::ensure!(
-            fetch
-                .json_rpc()
-                .await?
-                .call_value("getblockdeltas", deltas)
-                .await
-                .is_err(),
+            fetch.json_rpc().await?.call_value("getblockdeltas", deltas).await.is_err(),
             "the fetch indexer answered getblockdeltas, which only a read-state can \
              synthesise; this pod pair is not comparing two ingest paths"
         );
@@ -3781,12 +3212,10 @@ mod zebrad {
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
         let all_pools = vec![1, 2, 3, 4];
         let (start, end) = (BlockHeight::from(106u32), BlockHeight::from(1u32));
-        let (fetch_blocks, fetch_errored) = fetch
-            .drain_block_range(start, end, all_pools.clone())
-            .await?;
-        let (state_blocks, state_errored) = state
-            .drain_block_range(start, end, all_pools.clone())
-            .await?;
+        let (fetch_blocks, fetch_errored) =
+            fetch.drain_block_range(start, end, all_pools.clone()).await?;
+        let (state_blocks, state_errored) =
+            state.drain_block_range(start, end, all_pools.clone()).await?;
 
         assert_eq!(fetch_blocks, state_blocks);
         assert!(
