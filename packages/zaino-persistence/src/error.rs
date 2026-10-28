@@ -1,104 +1,72 @@
-//! Store-level errors: [`StoreError`] (open / read / verify / commit) + [`CommitFailed`]
+//! Backend error types — one per operation.
+//!
+//! Each variant that wraps a backend's own failure keeps it as a boxed
+//! [`std::error::Error`] `#[source]`: the cause chain is preserved for
+//! diagnostics, yet the port names no concrete backend type and so stays
+//! backend-agnostic. A `&'static str` `operation` field names the step that
+//! failed.
 
-use std::{
-    error::Error,
-    fmt,
-    io::{self, ErrorKind},
-    path::{Path, PathBuf},
-};
-
-use crate::{lsm::SegmentError, manifest::ManifestError, pages::PageError};
-
-/// Why an index directory could not be opened, read, proven or committed
+/// Error when obtaining a reader or writer handle.
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error("index io: {0}")]
-    Io(#[from] io::Error),
-
-    #[error(transparent)]
-    Manifest(#[from] ManifestError),
-
-    #[error(transparent)]
-    Page(#[from] PageError),
-
-    #[error(transparent)]
-    Segment(#[from] SegmentError),
+pub enum OpenError {
+    /// The backend is not available (closed, corrupted, etc.). `operation` names
+    /// the open step that failed.
+    #[error("backend unavailable during {operation}")]
+    Unavailable {
+        /// The open step that failed (e.g. `"create directory"`, `"open environment"`).
+        operation: &'static str,
+        /// The backend's underlying error, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
-/// Failed commit of one index's store (store unusable after one, recovery = reopen)
-#[derive(Debug)]
-pub struct CommitFailed {
-    index: &'static str,
-    dir: PathBuf,
-    cause: StoreError,
+/// Error when committing a batch of write operations.
+#[derive(Debug, thiserror::Error)]
+pub enum CommitError {
+    /// A referenced namespace does not exist.
+    #[error("namespace not found: {0}")]
+    NamespaceNotFound(String),
+    /// The database is out of space: the reserved storage is exhausted. Distinct
+    /// from a generic write failure because it is neither corruption nor
+    /// transient — the caller must reopen the backend with a larger map size
+    /// (backed by enough disk); retrying without that fails identically.
+    #[error("database out of space: the reserved storage is full; reopen the backend with a larger map size (and enough disk to back it)")]
+    OutOfSpace,
+    /// The write failed (IO, transaction conflict, etc.). `operation` names the
+    /// write step that failed.
+    #[error("write failed during {operation}")]
+    WriteFailed {
+        /// The low-level write step that failed (e.g. `"put"`, `"commit"`).
+        operation: &'static str,
+        /// The backend's underlying error, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
-impl CommitFailed {
-    pub(crate) fn new(index: &'static str, dir: &Path, cause: StoreError) -> Self {
-        Self { index, dir: dir.to_path_buf(), cause }
-    }
-
-    /// Crash naming the index and its disk
-    pub fn crash(self) -> ! {
-        panic!("{self}")
-    }
+/// Error when reading from the backend.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadError {
+    /// A referenced namespace does not exist.
+    #[error("namespace not found: {0}")]
+    NamespaceNotFound(String),
+    /// The read failed (IO, corruption, etc.). `operation` names the read step
+    /// that failed.
+    #[error("read failed during {operation}")]
+    ReadFailed {
+        /// The read step that failed (e.g. `"get"`, `"open cursor"`).
+        operation: &'static str,
+        /// The backend's underlying error, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
-impl fmt::Display for CommitFailed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (index, dir) = (self.index, self.dir.display());
-        match self.cause.disk_full() {
-            true => write!(f, "{index} index commit failed: disk {dir} full"),
-            false => write!(f, "{index} index commit failed at {dir}: {}", self.cause),
-        }
-    }
-}
-
-impl Error for CommitFailed {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.cause)
-    }
-}
-
-impl StoreError {
-    fn disk_full(&self) -> bool {
-        let mut cause: Option<&(dyn Error + 'static)> = Some(self);
-        while let Some(error) = cause {
-            let kind = error.downcast_ref::<io::Error>().map(io::Error::kind);
-            if matches!(kind, Some(ErrorKind::StorageFull | ErrorKind::QuotaExceeded)) {
-                return true;
-            }
-            cause = error.source();
-        }
-        false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_full_disk_is_spotted_at_any_depth_of_the_error() {
-        let io = |kind| io::Error::from(kind);
-        let cases = [
-            (StoreError::Io(io(ErrorKind::StorageFull)), true),
-            (StoreError::Io(io(ErrorKind::QuotaExceeded)), true),
-            (StoreError::Manifest(ManifestError::Io(io(ErrorKind::StorageFull))), true),
-            (StoreError::Io(io::Error::other("EIO")), false),
-        ];
-        for (error, full) in cases {
-            assert_eq!(error.disk_full(), full, "{error:?}");
-        }
-    }
-
-    #[test]
-    fn a_failed_commit_names_the_index_and_its_disk_or_its_cause() {
-        let full = StoreError::Io(io::Error::from(ErrorKind::StorageFull));
-        let failed = CommitFailed::new("tb", Path::new("/idx"), full);
-        assert_eq!(failed.to_string(), "tb index commit failed: disk /idx full");
-        let eio =
-            CommitFailed::new("tb", Path::new("/idx"), StoreError::Io(io::Error::other("EIO")));
-        assert_eq!(eio.to_string(), "tb index commit failed at /idx: index io: EIO");
-    }
+/// Error when flushing the backend.
+#[derive(Debug, thiserror::Error)]
+pub enum FlushError {
+    /// The flush failed.
+    #[error("flush failed")]
+    IoError(#[source] Box<dyn std::error::Error + Send + Sync>),
 }

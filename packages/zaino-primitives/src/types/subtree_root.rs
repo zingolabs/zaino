@@ -1,8 +1,12 @@
-use super::{BlockRef, TreeRoot};
+//! Note commitment subtree root.
 
-/// Completed 2^16-leaf subtree's root + the block whose commitments completed it
+use super::{Height, TreeRoot};
+
+/// A single subtree root entry from the commitment tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubtreeRoot {
+    /// The root hash of this subtree.
     pub root: TreeRoot,
-    pub completing: BlockRef,
+    /// The block height at which this subtree was completed.
+    pub end_height: Height,
 }

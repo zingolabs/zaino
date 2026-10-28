@@ -40,8 +40,8 @@ body:
       label: Location in codebase
       description: Which modules, files, or components are affected?
       placeholder: |
-        - `packages/zaino-sync/src/...`
-        - `zaino_nfs::...`
+        - `zaino-state/src/...`
+        - `chain_index::finalized_state::...`
     validations:
       required: true
 

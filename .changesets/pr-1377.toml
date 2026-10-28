@@ -1,0 +1,5 @@
+id = "01a0db8a-f8b5-7391-b26c-b9aea6c1f9af"
+consumed_in = "zainod-0-10-1"
+
+[empty]
+reason = "Test-only: the mempool-stream tests in zaino-state order the stream and the mine with a handshake instead of a sleep."

@@ -1,9 +1,9 @@
 # Dependabot version updates.
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates
 #
-# - PRs target `dev` (integration branch)
-# - minor/patch bumps grouped per ecosystem (keeps PR volume manageable)
-# - major bumps = individual PRs (reviewed in isolation)
+# PRs target the `dev` branch (the repo's integration branch). Minor/patch
+# bumps are grouped per ecosystem to keep PR volume manageable; major bumps
+# come as individual PRs so they can be reviewed in isolation.
 version: 2
 
 updates:

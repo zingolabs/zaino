@@ -1,44 +1,44 @@
-//! zainod daemon errors
+//! Hold error types for the Indexer and related functionality.
 
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use zaino_serve::server::error::ServerError;
 
-/// Configuring, booting or running the daemon (`TaskEnded` = a task ended cleanly before any
-/// shutdown signal: never expected, a fault)
+use zaino_state::NodeBackedIndexerServiceError;
+
+/// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum IndexerError {
-    #[error("configuration error: {0}")]
-    Config(String),
-    #[error("writing {}: {source}", path.display())]
-    ConfigFile { path: PathBuf, source: std::io::Error },
-    #[error("raising the open-file limit: {0}")]
-    RaiseFdLimit(std::io::Error),
-    #[error(
-        "grpc.max_connections = {max_connections} needs {needed} open files ({reserved} kept for \
-         indexes and the validator) and the limit is {limit}: raise the hard limit (systemd \
-         LimitNOFILE=, docker --ulimit nofile=) or lower grpc.max_connections"
-    )]
-    FdLimit { max_connections: NonZeroUsize, needed: u64, reserved: u64, limit: u64 },
-    #[error(transparent)]
-    ValidatorEndpoint(#[from] zaino_source::EndpointError),
-    #[error(transparent)]
-    OpenIndex(#[from] zaino_persistence::StoreError),
-    #[error(transparent)]
-    Nfs(#[from] zaino_nfs::NfsError),
-    #[error(transparent)]
-    Follow(#[from] zaino_sync::FollowError),
-    #[error(transparent)]
-    GrpcSnapshot(#[from] zaino_grpc_snapshot::GrpcSnapshotError),
-    #[error(transparent)]
-    Grpc(#[from] zaino_grpc::GrpcServeError),
-    #[error(transparent)]
-    Tls(#[from] zaino_grpc::TlsError),
-    #[error(transparent)]
-    Join(#[from] tokio::task::JoinError),
-    #[error("metrics error: {0}")]
-    Metrics(String),
-    #[error("index snapshot: {0}")]
-    Bootstrap(String),
-    #[error("{task} task ended before shutdown")]
-    TaskEnded { task: &'static str },
+pub enum IndexerError {
+    /// Server based errors.
+    #[error("Server error: {0}")]
+    ServerError(#[from] ServerError),
+    /// Configuration errors.
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    /// Could not reach the backing validator's JSON-RPC endpoint at startup.
+    #[error("validator probe error: {0}")]
+    ProbeError(#[from] zaino_rpc::ProbeError),
+    /// NodeBackedIndexerService errors.
+    #[error("NodeBackedIndexerService error: {0}")]
+    NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),
+    /// HTTP related errors due to invalid URI.
+    #[error("HTTP error: Invalid URI {0}")]
+    HttpError(#[from] http::Error),
+    /// Returned from tokio joinhandles..
+    #[error("Join handle error: Invalid URI {0}")]
+    TokioJoinError(#[from] tokio::task::JoinError),
+    /// Custom indexor errors.
+    #[error("Misc indexer error: {0}")]
+    MiscIndexerError(String),
+    /// Metrics endpoint errors.
+    #[cfg(feature = "prometheus")]
+    #[error("Metrics error: {0}")]
+    MetricsError(String),
+    /// Zaino restart signal.
+    #[error("Restart Zaino")]
+    Restart,
+}
+
+impl From<NodeBackedIndexerServiceError> for IndexerError {
+    fn from(value: NodeBackedIndexerServiceError) -> Self {
+        IndexerError::NodeBackedIndexerServiceError(Box::new(value))
+    }
 }
