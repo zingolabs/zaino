@@ -60,9 +60,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
          or this proves nothing"
     );
 
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
@@ -71,9 +69,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     // Reaching the tip at all is the core regression: pre-adoption, the
     // chain-index sync died on the first block whose commitment scheme the
     // misconfigured heights got wrong.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1)
-        .await?;
+    let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1).await?;
     indexer.wait_for_block_num(tip, READY).await?;
     let indexed_tip = u64::from(indexer.latest_block_height().await?);
     assert!(
@@ -84,9 +80,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     // Era composition of the served chain proves the adopted schedule is the
     // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
     // the pre-boundary orchard coinbases would be misread as ironwood-era.
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(2u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(2u32), tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
     for block in &blocks {
         let height = block.height;
@@ -138,17 +132,12 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
          or this proves nothing"
     );
 
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     env.build().await?;
 
-    let blockchain_info = validator
-        .json_rpc()
-        .await?
-        .call_value("getblockchaininfo", json!([]))
-        .await?;
+    let blockchain_info =
+        validator.json_rpc().await?.call_value("getblockchaininfo", json!([])).await?;
     let upgrades = blockchain_info
         .get("upgrades")
         .and_then(Value::as_object)
