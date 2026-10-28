@@ -42,28 +42,19 @@ mod tests {
     fn decode_rejects_odd_length() {
         let err = format!("{:#}", decode("abc", "getrawtransaction").unwrap_err());
         assert!(err.contains("Odd number of digits"), "unexpected: {err}");
-        assert!(
-            err.contains("getrawtransaction"),
-            "error must name the source: {err}"
-        );
+        assert!(err.contains("getrawtransaction"), "error must name the source: {err}");
     }
 
     #[test]
     fn decode_rejects_non_hex() {
         let err = format!("{:#}", decode("zz", "getrawtransaction").unwrap_err());
-        assert!(
-            err.contains("getrawtransaction"),
-            "error must name the source: {err}"
-        );
+        assert!(err.contains("getrawtransaction"), "error must name the source: {err}");
     }
 
     /// Multi-byte input used to be sliced at a byte offset inside a char.
     #[test]
     fn decode_reports_non_ascii_rather_than_panicking() {
         let err = format!("{:#}", decode("aéb", "getrawtransaction").unwrap_err());
-        assert!(
-            err.contains("getrawtransaction"),
-            "error must name the source: {err}"
-        );
+        assert!(err.contains("getrawtransaction"), "error must name the source: {err}");
     }
 }

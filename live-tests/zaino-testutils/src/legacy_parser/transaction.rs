@@ -41,12 +41,7 @@ macro_rules! actions_to_byte_tuples {
                 let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
                 let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
 
-                (
-                    nullifier.to_vec(),
-                    cmx.to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
-                )
+                (nullifier.to_vec(), cmx.to_vec(), ephemeral_key.to_vec(), enc_ciphertext.to_vec())
             })
             .collect()
     };
@@ -102,11 +97,7 @@ impl FullTransaction {
         let raw_bytes = transaction.zcash_serialize_to_vec()?;
         let tx_id = tx_id.unwrap_or_else(|| transaction.hash().0.to_vec());
 
-        Ok(Self {
-            transaction,
-            raw_bytes,
-            tx_id,
-        })
+        Ok(Self { transaction, raw_bytes, tx_id })
     }
 
     /// Returns overwintered bool.
@@ -145,20 +136,14 @@ impl FullTransaction {
             .inputs()
             .iter()
             .map(|input| match input {
-                transparent::Input::PrevOut {
-                    outpoint,
-                    unlock_script,
-                    ..
-                } => (
+                transparent::Input::PrevOut { outpoint, unlock_script, .. } => (
                     outpoint.hash.0.to_vec(),
                     outpoint.index,
                     unlock_script.as_raw_bytes().to_vec(),
                 ),
-                transparent::Input::Coinbase { .. } => (
-                    vec![0; 32],
-                    u32::MAX,
-                    input.coinbase_script().unwrap_or_default(),
-                ),
+                transparent::Input::Coinbase { .. } => {
+                    (vec![0; 32], u32::MAX, input.coinbase_script().unwrap_or_default())
+                }
             })
             .collect()
     }
@@ -182,29 +167,20 @@ impl FullTransaction {
     /// Option\<valueBalanceIronwood\>).
     pub fn value_balances(&self) -> (Option<i64>, Option<i64>, Option<i64>) {
         let sapling = if self.version() == 4 || self.transaction.has_sapling_shielded_data() {
-            Some(
-                self.transaction
-                    .sapling_value_balance()
-                    .sapling_amount()
-                    .zatoshis(),
-            )
+            Some(self.transaction.sapling_value_balance().sapling_amount().zatoshis())
         } else {
             None
         };
 
-        let orchard = self.transaction.has_orchard_shielded_data().then(|| {
-            self.transaction
-                .orchard_value_balance()
-                .orchard_amount()
-                .zatoshis()
-        });
+        let orchard = self
+            .transaction
+            .has_orchard_shielded_data()
+            .then(|| self.transaction.orchard_value_balance().orchard_amount().zatoshis());
 
-        let ironwood = self.transaction.has_ironwood_shielded_data().then(|| {
-            self.transaction
-                .ironwood_value_balance()
-                .ironwood_amount()
-                .zatoshis()
-        });
+        let ironwood = self
+            .transaction
+            .has_ironwood_shielded_data()
+            .then(|| self.transaction.ironwood_value_balance().ironwood_amount().zatoshis());
 
         (sapling, orchard, ironwood)
     }
@@ -225,11 +201,7 @@ impl FullTransaction {
                 let ephemeral_key: [u8; 32] = (&output.ephemeral_key).into();
                 let enc_ciphertext: [u8; 580] = output.enc_ciphertext.into();
 
-                (
-                    output.cm_u.to_bytes().to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
-                )
+                (output.cm_u.to_bytes().to_vec(), ephemeral_key.to_vec(), enc_ciphertext.to_vec())
             })
             .collect()
     }
@@ -330,10 +302,7 @@ impl FullTransaction {
         let vout = compact_pool_items(
             pool_types.includes_transparent(),
             || self.transparent_outputs(),
-            |(value, script_hash)| CompactTxOut {
-                value,
-                script_pub_key: script_hash,
-            },
+            |(value, script_hash)| CompactTxOut { value, script_pub_key: script_hash },
         );
 
         let vin = if pool_types.includes_transparent() {
@@ -389,12 +358,7 @@ mod tests {
             )?;
 
             assert!(remaining.is_empty(), "{}", vector.description);
-            assert_eq!(
-                transaction.version(),
-                vector.version,
-                "{}",
-                vector.description
-            );
+            assert_eq!(transaction.version(), vector.version, "{}", vector.description);
             assert_eq!(
                 transaction.transparent_inputs().len(),
                 vector.transparent_inputs,
