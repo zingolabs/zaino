@@ -8,13 +8,19 @@
 //! # Namespaces
 //!
 //! Data is organised into **namespaces**: independent keyspaces, each with its
-//! own key ordering (named databases in LMDB, column families in RocksDB,
-//! separate maps in the in-memory backend). Namespaces are declared when the
-//! backend is constructed, because LMDB — the primary backend — needs the full
-//! set of named databases at environment-open time. Every read and write targets
-//! a declared namespace.
+//! own key ordering. Each is declared at construction by a [`NamespaceSpec`]:
+//! a **sequence** (records by position, append-only) or a **map** (fixed-width
+//! keys and values, each key inserted once, optionally removed once). Every read
+//! and write targets a declared namespace, and every commit obeys the rules
+//! [`check_commit`](crate::check_commit) enforces.
 
-use crate::error::{CommitError, FlushError, OpenError, ReadError};
+use core::num::{NonZeroU32, NonZeroUsize};
+use core::ops::Bound;
+
+use zaino_primitives::types::BlockRef;
+
+use crate::error::{CommitError, FlushError, FootprintError, OpenError, ReadError, VerifyError};
+use crate::verify::{NamespaceFootprint, Verification};
 
 /// A namespace identifier — names an independent keyspace within the backend.
 ///
@@ -48,6 +54,86 @@ impl From<zaino_primitives::types::IndexId> for Namespace {
     }
 }
 
+/// Bytes per record, key or value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Width {
+    /// Every item is exactly this many bytes.
+    Fixed(NonZeroU32),
+    /// Items of any length.
+    Variable,
+}
+
+/// The shape of a namespace's data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceKind {
+    /// Records by position: each `Put` key is the [`sequence_key`] of the next
+    /// position; records are never deleted.
+    Sequence {
+        /// Record width.
+        record: Width,
+    },
+    /// Fixed-width keys to fixed-width values; each key inserted at most once.
+    Map {
+        /// Key width.
+        key: NonZeroU32,
+        /// Value width.
+        value: NonZeroU32,
+        /// Keys removable, each at most once and never re-inserted.
+        deletes: bool,
+    },
+}
+
+/// A namespace and the shape of its data, declared at construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamespaceSpec {
+    /// The namespace.
+    pub namespace: Namespace,
+    /// Its shape.
+    pub kind: NamespaceKind,
+}
+
+impl NamespaceSpec {
+    /// A sequence of `record`-width records.
+    pub const fn sequence(namespace: Namespace, record: Width) -> Self {
+        Self {
+            namespace,
+            kind: NamespaceKind::Sequence { record },
+        }
+    }
+
+    /// A map of `key`-byte keys to `value`-byte values, removable when `deletes`.
+    pub const fn map(
+        namespace: Namespace,
+        key: NonZeroU32,
+        value: NonZeroU32,
+        deletes: bool,
+    ) -> Self {
+        Self {
+            namespace,
+            kind: NamespaceKind::Map {
+                key,
+                value,
+                deletes,
+            },
+        }
+    }
+}
+
+/// Bytes in a [`sequence_key`].
+pub const SEQUENCE_KEY_LEN: usize = 8;
+
+/// Key of a sequence record: its position, big-endian (key order = position order).
+pub fn sequence_key(position: u64) -> RawKey {
+    position.to_be_bytes().to_vec()
+}
+
+/// Position named by a sequence key; `None` = not a [`sequence_key`].
+pub fn sequence_position(key: &[u8]) -> Option<u64> {
+    <[u8; SEQUENCE_KEY_LEN]>::try_from(key)
+        .ok()
+        .map(u64::from_be_bytes)
+}
+
 /// Encoded key bytes, as produced by the index's schema encoding.
 ///
 /// Opaque to the backend — it stores and retrieves these without
@@ -60,10 +146,42 @@ pub type RawKey = Vec<u8>;
 /// interpretation.
 pub type RawValue = Vec<u8>;
 
+/// Order in which a range scan visits keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanDirection {
+    /// Ascending key order.
+    Forward,
+    /// Descending key order.
+    Reverse,
+}
+
+/// The keys a range scan visits, and how it chunks them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanRange {
+    /// Lower key bound.
+    pub lower: Bound<RawKey>,
+    /// Upper key bound.
+    pub upper: Bound<RawKey>,
+    /// Visit order.
+    pub direction: ScanDirection,
+    /// Raw bytes (key + value) of the entries one chunk visits, kept or skipped.
+    pub chunk_bytes: NonZeroUsize,
+}
+
+/// Range-scan filter that keeps every entry as owned raw bytes.
+pub fn raw_entry(key: &[u8], value: &[u8]) -> Option<(RawKey, RawValue)> {
+    Some((key.to_vec(), value.to_vec()))
+}
+
 /// A write operation: put or delete a key-value pair in a namespace.
-#[derive(Debug)]
+///
+/// - Sequence: `Put` appends at the key's position, which must be the next one;
+///   `Delete` is refused.
+/// - Map: `Put` inserts a key that is absent; `Delete` removes a present key of
+///   a namespace declared with `deletes`. A removed key must not be re-inserted.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteOp {
-    /// Insert or overwrite a key-value pair.
+    /// Insert a key-value pair (append, for a sequence).
     Put {
         /// Target namespace.
         namespace: Namespace,
@@ -92,27 +210,92 @@ pub trait Backend: Send + Sync {
     /// Writer handle type.
     type Writer: BackendWriter;
 
-    /// Obtain a read handle. May be called concurrently.
+    /// Obtain a read handle: a snapshot of every commit so far. May be called
+    /// concurrently.
     fn reader(&self) -> Result<Self::Reader, OpenError>;
 
     /// Obtain a write handle.
     fn writer(&self) -> Result<Self::Writer, OpenError>;
 
-    /// Force durability of all committed data.
+    /// Make every commit durable (a backend may buffer commits until then).
+    ///
+    /// A failed flush may still have made some or all buffered commits durable
+    /// (a failed sync cannot say what reached the disk): after a reopen, read
+    /// [`BackendReader::tip`] before writing again.
     fn flush(&self) -> Result<(), FlushError>;
+
+    /// Check that the stored bytes are exactly the bytes last made durable.
+    fn verify(&self) -> Result<Verification, VerifyError>;
+
+    /// Bytes each declared namespace holds: one entry per namespace, in
+    /// declaration order.
+    fn footprint(&self) -> Result<Vec<NamespaceFootprint>, FootprintError>;
 }
 
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.
 pub trait BackendWriter: Send {
-    /// Commit a batch of write operations atomically.
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError>;
+    /// Commit a batch of write operations atomically, as of block `tip`.
+    ///
+    /// - Visible to readers opened once this returns; durable after
+    ///   [`Backend::flush`] or the backend's own buffer limit.
+    /// - `tip` must be above the last committed tip.
+    /// - A batch breaking any rule of [`check_commit`](crate::check_commit)
+    ///   fails with that rule's [`CommitError`] and applies nothing.
+    /// - An empty batch is valid: it commits nothing but `tip`.
+    /// - A commit that fails while the backend writes may still be durable,
+    ///   as for [`Backend::flush`].
+    fn commit(&mut self, tip: BlockRef, ops: Vec<WriteOp>) -> Result<(), CommitError>;
 }
 
 /// Read handle. Used for state loading and query serving.
+///
+/// A snapshot: every read through one handle, [`tip`](Self::tip) included,
+/// sees the state as of [`Backend::reader`]; later commits need a new handle.
+///
+/// Every read of an undeclared namespace fails with
+/// [`ReadError::NamespaceNotFound`]; a declared, empty namespace reads as empty.
 pub trait BackendReader: Send {
+    /// The snapshot's tip; `None` = nothing committed.
+    fn tip(&self) -> Result<Option<BlockRef>, ReadError>;
+
     /// Read a single key from the given namespace.
+    ///
+    /// A key not of the namespace's key width is [`ReadError::WidthMismatch`].
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
 
-    /// Return all entries for a namespace as raw key-value byte pairs.
+    /// Entries of `namespace` within `range`, mapped through `filter`, as
+    /// lazily read chunks in `range.direction` order.
+    ///
+    /// - Each `next()` visits one chunk of entries; `filter` runs on the
+    ///   borrowed bytes, is called exactly once per visited entry, and entries
+    ///   it maps to `None` are skipped.
+    /// - A chunk ends before an entry whose raw size would take the bytes it
+    ///   visited past `range.chunk_bytes`, but always visits at least one
+    ///   entry: the work per `next()` is bounded, whatever the filter keeps.
+    /// - A chunk is empty when the filter skipped everything it visited;
+    ///   `None` means the range is exhausted. An empty or inverted range
+    ///   yields nothing.
+    /// - An undeclared namespace yields [`ReadError::NamespaceNotFound`] first.
+    /// - Every chunk reads the reader's snapshot, even after the handle is
+    ///   dropped. No key is returned twice.
+    /// - After an `Err` the iterator is finished.
+    fn scan_range<T, F>(
+        &self,
+        namespace: Namespace,
+        range: ScanRange,
+        filter: F,
+    ) -> impl Iterator<Item = Result<Vec<T>, ReadError>> + Send + 'static + use<Self, T, F>
+    where
+        T: Send + 'static,
+        F: FnMut(&[u8], &[u8]) -> Option<T> + Send + 'static;
+}
+
+/// Whole-namespace reads for maintenance, tests and tooling: **never** a client-serving path.
+///
+/// [`scan`](Self::scan) loads an entire namespace into memory at once, so its cost grows with
+/// the namespace, not the request; many callers at once can exhaust memory. Serve clients with
+/// [`BackendReader::scan_range`] (lazy, budget-bounded) instead.
+pub trait MaintenanceReader: BackendReader {
+    /// Every entry of `namespace`, in key order, from the reader's snapshot.
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError>;
 }

@@ -1,0 +1,27 @@
+[[changes]]
+crate = "zaino-persistence-lsm-tree"
+kind = "feature"
+description = """
+New crate: the on-disk backend for the `zaino-persistence` port. Sequence \
+namespaces are positional files, map namespaces a size-tiered LSM of \
+immutable, filtered, read-only segments merged in the background, and one \
+two-slot checksummed manifest per index directory is the atomic commit point. \
+Every page is checksummed, readers are lock-free snapshots over memory maps, \
+commits are buffered in RAM up to `write_buffer` and visible at once, and no \
+production code panics: every failure is a typed port error. `verify_dir` \
+scrubs a directory offline beside a live backend, and `describe_metrics` \
+registers the `zaino.store.*` and `zaino.lsm.*` metrics, every one labelled \
+`index` (`zaino.lsm.*` also `set`, per-tier ones `tier`).
+
+A `TAILS` doublewrite file keeps each sequence file's committed tail page, \
+restored at open if a crash tore it. A failed background merge is classed: \
+retryable I/O is `MergeFailed` within `LsmConfig::max_merge_failures` \
+(default 3) failures in a row on one tier, then `OutOfSpace` or `WriteFailed`; a corrupt \
+input is `Corrupted`; a failed sync, read-back or bug is `WriteFailed`. \
+`LsmConfig::spill_bytes` sets merge memory against scratch I/O, and an open \
+with any `LsmConfig` value out of range is refused. Each backend runs its \
+parallel work on its own thread pool of `LsmTreeConfig::threads` threads \
+(default: the machine's available parallelism). A scratch file a write cannot \
+remove never fails it: it is retried with the leftovers. The manifest is read past the page \
+cache, plainly only on tmpfs; elsewhere a refused direct read refuses the open.
+"""
