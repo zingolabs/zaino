@@ -29,28 +29,36 @@ Find out which dependencies use `zebra-*` crates by running
 ## Always specify `all-features` when building
 
 Make sure you build and run the project with `all-features` in
-order to catch any posible compile errors early.
+order to catch any posible compile errors early. Also build once with default
+features: some tests are compiled only when a feature is off.
 
-## Keep the zebra pin in the single root workspace
+## Bump every zebra pin
 
-This repo is **one Cargo workspace** with a single `Cargo.lock`: the live-test
-crates live in the standalone live-tests/ workspace.
-The zebra version requirements live once in the root `Cargo.toml`
-`[workspace.dependencies]`, and any unreleased pin lives once in the root
-`[patch.crates-io]`. Every member — the `packages/*` production crates and the
-`live-tests/{e2e,clientless,zaino-testutils}` crates alike — inherits them via
-`zebra-* = { workspace = true }`.
+The repo has **two Cargo workspaces**, each with its own `Cargo.lock`:
 
-Consequence: a zebra change — a version bump or a git-rev pin — is applied in
-**one place** (the root `Cargo.toml`) and reaches every member through workspace
-inheritance and the single lock. Cargo honours `[patch.crates-io]` only from the
-workspace root, so member manifests must **not** carry their own patch sections
-(they would be silently ignored).
+1. The root workspace (`packages/*`). Its zebra requirements live in the root
+   `Cargo.toml` `[workspace.dependencies]` and every member inherits them via
+   `zebra-* = { workspace = true }`. Run `cargo update -p zebra-chain -p
+   zebra-state -p zebra-rpc` at the root.
+2. The live-tests workspace (`live-tests/`). It pins `zebra-chain` again in
+   `live-tests/Cargo.toml`; bump it to the same version and run
+   `cargo update -p zebra-chain` inside `live-tests/`.
 
-(Historically this repo was three separate workspaces, each with its own lock,
-so the pin had to be mirrored across all three manifests or the same
-`zaino-state` source compiled against two zebra versions — `E0559`-style errors.
-The reunification removed that footgun.)
+Cargo honours `[patch.crates-io]` only from a workspace root, so member
+manifests must **not** carry their own patch sections (they would be silently
+ignored).
+
+## Bump the zebrad test image
+
+The live tests run the `zfnd/zebra:<version>` image named by
+`zaino_testutils::ZEBRAD_VERSION` (`live-tests/zaino-testutils/src/lib.rs`).
+Set it to the zebrad release whose crates the workspaces now use.
+
+## Check the test-only workarounds
+
+`proptest_blockgen.rs` (`without_empty_transparent_bundle`) works around a
+zebra-chain 13 test-generator bug in `Transaction::with_transparent_inputs`.
+Remove it once the upstream fix is released.
 
 ## Pinning to an unreleased zebra (git rev)
 
@@ -62,8 +70,8 @@ published version.
 
 When you do this:
 
-1. Mirror the **exact same** patch block into all three workspace
-   manifests (see the section above) — the git source carries a Cargo
+1. Mirror the **exact same** patch block into both workspace roots
+   (see the section above) — the git source carries a Cargo
    version that can equal a published version while differing in content
    (e.g. an unreleased `9.0.1` that is not the crates.io `9.0.1`).
 2. Add an inline comment at each patch site explaining *why* the pin is a
