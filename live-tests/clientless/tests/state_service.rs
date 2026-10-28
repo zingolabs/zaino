@@ -62,14 +62,7 @@ mod zebra {
                 fetch_info,
                 state_info,
                 &[],
-                &[
-                    "chain",
-                    "blocks",
-                    "bestblockhash",
-                    "estimatedheight",
-                    "upgrades",
-                    "consensus",
-                ],
+                &["chain", "blocks", "bestblockhash", "estimatedheight", "upgrades", "consensus"],
             );
             Ok(())
         }
@@ -343,15 +336,9 @@ mod zebra {
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             let block = assert_rpc_parity("getblock", r#"["1", 1]"#, &frpc, &srpc, &[]).await?;
-            let hash = block
-                .get("hash")
-                .and_then(Value::as_str)
-                .context("getblock.hash")?;
+            let hash = block.get("hash").and_then(Value::as_str).context("getblock.hash")?;
             let by_hash = srpc.call_value("getblock", json!([hash, 1])).await?;
-            assert_eq!(
-                by_hash, block,
-                "state getblock by-hash must equal by-height"
-            );
+            assert_eq!(by_hash, block, "state getblock by-hash must equal by-height");
             Ok(())
         }
 
@@ -460,12 +447,8 @@ mod zebra {
             let by_height_s = state.get_block(BlockHeight::from(2u32)).await?;
             assert_eq!(by_height_f, by_height_s, "get_block(2) must agree");
 
-            let hash_bytes: [u8; 32] = by_height_f
-                .hash
-                .clone()
-                .try_into()
-                .ok()
-                .context("block hash must be 32 bytes")?;
+            let hash_bytes: [u8; 32] =
+                by_height_f.hash.clone().try_into().ok().context("block hash must be 32 bytes")?;
             let by_hash_f = fetch.get_block_by_hash(BlockHash(hash_bytes)).await?;
             let by_hash_s = state.get_block_by_hash(BlockHash(hash_bytes)).await?;
             assert_eq!(by_hash_f, by_hash_s, "get_block by-hash must agree");
@@ -500,9 +483,7 @@ mod zebra {
                 let tip = validator.generate_blocks(1).await?;
                 fetch.wait_for_block_num(tip, READY).await?;
                 state.wait_for_block_num(tip, READY).await?;
-                let blk = frpc
-                    .call_value("getblock", json!([i.to_string(), 1]))
-                    .await?;
+                let blk = frpc.call_value("getblock", json!([i.to_string(), 1])).await?;
                 let hash = blk
                     .get("hash")
                     .and_then(Value::as_str)
@@ -571,12 +552,8 @@ mod zebra {
             fetch.wait_for_block_num(tip, READY).await?;
             state.wait_for_block_num(tip, READY).await?;
             assert_eq!(
-                fetch
-                    .get_subtree_roots(2, ShieldedProtocol::Sapling, 0)
-                    .await?,
-                state
-                    .get_subtree_roots(2, ShieldedProtocol::Sapling, 0)
-                    .await?,
+                fetch.get_subtree_roots(2, ShieldedProtocol::Sapling, 0).await?,
+                state.get_subtree_roots(2, ShieldedProtocol::Sapling, 0).await?,
                 "sapling subtree roots must agree"
             );
             Ok(())
