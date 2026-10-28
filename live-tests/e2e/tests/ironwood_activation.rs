@@ -80,20 +80,15 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env
+                .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
             // Funding warms up to NU5 then mines one Orchard-era block (tip 2),
             // well below the boundary, so the faucet holds an Orchard note.
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let faucet_balance = faucet.balances().await?;
             assert!(
                 faucet_balance.get(Pool::Orchard.ztest()) > 0,
@@ -144,11 +139,8 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env
+                .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -177,13 +169,9 @@ mod zebrad {
 
             // Fund one Orchard note below the boundary (tip 2), then snapshot the
             // funded tip's served value pools.
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let irpc = indexer.json_rpc().await?;
-            let info = irpc
-                .call_value("getblockchaininfo", serde_json::json!([]))
-                .await?;
+            let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
             orchard[2] = pool_zats(&info, "orchard")?;
             ironwood[2] = pool_zats(&info, "ironwood")?;
 
@@ -199,9 +187,7 @@ mod zebrad {
             for height in 3..=boundary {
                 let tip = validator.generate_blocks(1).await?;
                 indexer.wait_for_block_num(tip, READY).await?;
-                let info = irpc
-                    .call_value("getblockchaininfo", serde_json::json!([]))
-                    .await?;
+                let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
                 orchard[height] = pool_zats(&info, "orchard")?;
                 ironwood[height] = pool_zats(&info, "ironwood")?;
             }
@@ -218,14 +204,10 @@ mod zebrad {
             // Orchard note into a unified-address (Ironwood) receipt.
             let recipient = wallet.recipient(&validator, &indexer).await?;
             let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet
-                .send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT)
-                .await?;
+            faucet.send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
-            let info = irpc
-                .call_value("getblockchaininfo", serde_json::json!([]))
-                .await?;
+            let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
             orchard[migration_height] = pool_zats(&info, "orchard")?;
             ironwood[migration_height] = pool_zats(&info, "ironwood")?;
             faucet.sync().await?;
@@ -301,18 +283,13 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env
+                .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
 
             // Position the tip at boundary − 2, so the first send (built here)
             // confirms in the last Orchard-era block (boundary − 1).
@@ -371,9 +348,7 @@ mod zebrad {
 
             // Served edge-block pool-presence: the last Orchard block and the
             // activation block.
-            let blocks = indexer
-                .get_block_range(BlockHeight::from(1u32), tip)
-                .await?;
+            let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
             let last_orchard_block = blocks
                 .iter()
                 .find(|b| b.height == u64::from(NU6_3_TRANSITION_BOUNDARY - 1))
@@ -382,14 +357,8 @@ mod zebrad {
                 .iter()
                 .find(|b| b.height == u64::from(NU6_3_TRANSITION_BOUNDARY))
                 .expect("boundary block served");
-            assert_eq!(
-                last_orchard_block.height,
-                u64::from(NU6_3_TRANSITION_BOUNDARY - 1)
-            );
-            assert_eq!(
-                activation_block.height,
-                u64::from(NU6_3_TRANSITION_BOUNDARY)
-            );
+            assert_eq!(last_orchard_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY - 1));
+            assert_eq!(activation_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY));
             assert_pool_present(last_orchard_block, &last_orchard_txid, Pool::Orchard);
             assert_pool_absent(last_orchard_block, &last_orchard_txid, Pool::Ironwood);
             assert_pool_present(activation_block, &first_ironwood_txid, Pool::Ironwood);
@@ -421,18 +390,13 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env
+                .add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
             let taddr = recipient.address(Pool::Transparent.ztest()).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
@@ -440,15 +404,10 @@ mod zebrad {
             // Confirm the transparent receipt below the boundary (height 4).
             let cur = u32::from(validator.chain_height().await?);
             let target = NU6_3_TRANSITION_BOUNDARY - 2;
-            let tip = validator
-                .generate_blocks(target.saturating_sub(cur).max(1))
-                .await?;
+            let tip = validator.generate_blocks(target.saturating_sub(cur).max(1)).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
-                SEND_AMOUNT
-            );
+            assert_eq!(recipient.balances().await?.get(Pool::Transparent.ztest()), SEND_AMOUNT);
 
             // The shield is built below the boundary, so it deposits to Orchard.
             recipient.shield().await?;
@@ -492,10 +451,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest())
-                    .mount(&vol),
+                Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
             );
             let indexer = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
@@ -506,9 +462,7 @@ mod zebrad {
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let faucet_balance = faucet.balances().await?;
             assert!(
                 faucet_balance.get(Pool::Orchard.ztest()) > 0,
@@ -554,10 +508,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest())
-                    .mount(&vol),
+                Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
             );
             let indexer = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
@@ -588,13 +539,9 @@ mod zebrad {
                     .with_context(|| format!("valuePools[{pool_id}].chainValueZat"))
             };
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let irpc = indexer.json_rpc().await?;
-            let info = irpc
-                .call_value("getblockchaininfo", serde_json::json!([]))
-                .await?;
+            let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
             orchard[2] = pool_zats(&info, "orchard")?;
             ironwood[2] = pool_zats(&info, "ironwood")?;
 
@@ -607,9 +554,7 @@ mod zebrad {
             for height in 3..=boundary {
                 let tip = validator.generate_blocks(1).await?;
                 indexer.wait_for_block_num(tip, READY).await?;
-                let info = irpc
-                    .call_value("getblockchaininfo", serde_json::json!([]))
-                    .await?;
+                let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
                 orchard[height] = pool_zats(&info, "orchard")?;
                 ironwood[height] = pool_zats(&info, "ironwood")?;
             }
@@ -624,14 +569,10 @@ mod zebrad {
 
             let recipient = wallet.recipient(&validator, &indexer).await?;
             let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet
-                .send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT)
-                .await?;
+            faucet.send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
-            let info = irpc
-                .call_value("getblockchaininfo", serde_json::json!([]))
-                .await?;
+            let info = irpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
             orchard[migration_height] = pool_zats(&info, "orchard")?;
             ironwood[migration_height] = pool_zats(&info, "ironwood")?;
             faucet.sync().await?;
@@ -703,10 +644,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest())
-                    .mount(&vol),
+                Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
             );
             let indexer = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
@@ -717,9 +655,7 @@ mod zebrad {
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
 
             let cur = u32::from(validator.chain_height().await?);
             let target = NU6_3_TRANSITION_BOUNDARY - 2;
@@ -772,9 +708,7 @@ mod zebrad {
                 "the pre-boundary receipt must survive the flip unchanged"
             );
 
-            let blocks = indexer
-                .get_block_range(BlockHeight::from(1u32), tip)
-                .await?;
+            let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
             let last_orchard_block = blocks
                 .iter()
                 .find(|b| b.height == u64::from(NU6_3_TRANSITION_BOUNDARY - 1))
@@ -783,14 +717,8 @@ mod zebrad {
                 .iter()
                 .find(|b| b.height == u64::from(NU6_3_TRANSITION_BOUNDARY))
                 .expect("boundary block served");
-            assert_eq!(
-                last_orchard_block.height,
-                u64::from(NU6_3_TRANSITION_BOUNDARY - 1)
-            );
-            assert_eq!(
-                activation_block.height,
-                u64::from(NU6_3_TRANSITION_BOUNDARY)
-            );
+            assert_eq!(last_orchard_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY - 1));
+            assert_eq!(activation_block.height, u64::from(NU6_3_TRANSITION_BOUNDARY));
             assert_pool_present(last_orchard_block, &last_orchard_txid, Pool::Orchard);
             assert_pool_absent(last_orchard_block, &last_orchard_txid, Pool::Ironwood);
             assert_pool_present(activation_block, &first_ironwood_txid, Pool::Ironwood);
@@ -819,10 +747,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest())
-                    .mount(&vol),
+                Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard.ztest()).mount(&vol),
             );
             let indexer = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
@@ -833,24 +758,17 @@ mod zebrad {
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
+            let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
             let taddr = recipient.address(Pool::Transparent.ztest()).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
 
             let cur = u32::from(validator.chain_height().await?);
             let target = NU6_3_TRANSITION_BOUNDARY - 2;
-            let tip = validator
-                .generate_blocks(target.saturating_sub(cur).max(1))
-                .await?;
+            let tip = validator.generate_blocks(target.saturating_sub(cur).max(1)).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
-                SEND_AMOUNT
-            );
+            assert_eq!(recipient.balances().await?.get(Pool::Transparent.ztest()), SEND_AMOUNT);
 
             recipient.shield().await?;
             let tip = validator.generate_blocks(1).await?; // height 5, still Orchard era
