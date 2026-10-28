@@ -294,6 +294,50 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
     );
 }
 
+// multi_thread required: the chain store's validation uses `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn mined_transaction_is_served_while_the_mempool_still_lists_it() {
+    // The chain view can sync a block before the core mempool re-polls, so the
+    // core still lists a txid the caller's snapshot has mined. The chain
+    // answers; it must not be refused as "not coherent".
+    let (blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let block_data: Vec<zebra_chain::block::Block> = blocks
+        .iter()
+        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
+        .collect();
+
+    let pending = expected_mempool_txids(&block_data, mockchain.source().active_height());
+    wait_for_mempool_txids(&index_reader, &pending).await;
+    let mined_txid = *pending
+        .iter()
+        .next()
+        .expect("the block after the active tip has a non-coinbase transaction");
+
+    // The validator's mempool still serves the pre-mine tip and set.
+    mockchain.source().mine_blocks_ahead_of_mempool(1);
+    let new_tip = mockchain.source().active_height();
+    wait_for_indexer_tip(&index_reader, new_tip).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state();
+
+    let (bytes, _branch_id) = index_reader
+        .get_raw_transaction(&snapshot, &mined_txid)
+        .await
+        .expect("a mined transaction is served from the chain")
+        .expect("the snapshot holds the mined transaction");
+    let expected = block_data[new_tip as usize]
+        .transactions
+        .iter()
+        .find(|tx| TransactionHash::from(tx.hash()) == mined_txid)
+        .expect("the mined block holds the txid");
+    assert_eq!(
+        bytes
+            .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
+            .expect("valid transaction bytes"),
+        **expected
+    );
+}
+
 /// `get_mempool_info` reports the set the ChainIndex is actually serving.
 ///
 /// The mempool subsystem's own totals arithmetic is covered by mocks in
