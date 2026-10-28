@@ -8,15 +8,10 @@ multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 
-# TLS = rustls + ring only (gRPC termination in zaino-grpc, plain HTTP to the validator)
-# - ring = provider librustzcash and zallet use
-# - aws-lc-rs = rustls' default, opted out
+# Deny openssl and boringssl dependencies
 deny = [
-    { crate = "openssl", reason = "No system TLS stack: TLS is rustls + ring" },
-    { crate = "openssl-sys", reason = "No system TLS stack: TLS is rustls + ring" },
-    { crate = "boring", reason = "No system TLS stack: TLS is rustls + ring" },
-    { crate = "boring-sys", reason = "No system TLS stack: TLS is rustls + ring" },
-    { crate = "native-tls", reason = "No system TLS stack: TLS is rustls + ring" },
-    { crate = "aws-lc-rs", reason = "rustls provider = ring (default-features = false on rustls / tokio-rustls)" },
-    { crate = "aws-lc-sys", reason = "rustls provider = ring (default-features = false on rustls / tokio-rustls)" },
+    { crate = "openssl", reason = "Use rustls or other pure-Rust TLS implementations instead" },
+    { crate = "openssl-sys", reason = "Use rustls or other pure-Rust TLS implementations instead" },
+    { crate = "boring", reason = "Use rustls or other pure-Rust TLS implementations instead" },
+    { crate = "boring-sys", reason = "Use rustls or other pure-Rust TLS implementations instead" },
 ]

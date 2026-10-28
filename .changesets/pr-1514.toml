@@ -1,0 +1,33 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f87f-7e12-a0da-f52c04410ef7"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`TransparentAddress` is validated at construction: `try_new` accepts only P2PKH and \
+P2SH addresses of any Zcash network and rejects other kinds with a typed \
+`TransparentAddressError`. `network()` returns the new `AddressNetwork`, and \
+`script_type()` returns the address's `ScriptType`."""
+migration = "Replace `TransparentAddress::new` with `TransparentAddress::try_new` and handle `TransparentAddressError`."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "fix"
+description = "`getaddressdeltas` rejects an invalid address as invalid params instead of admitting it."
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = "Transparent addresses from the validator are validated, with a typed error for an invalid one."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "fix"
+description = "Transparent addresses from the read state are validated, with a typed error for an invalid one."
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = "Transparent addresses are constructed through the validating constructor."

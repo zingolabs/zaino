@@ -1,5 +1,5 @@
 {
-  description = "Zaino — Zcash indexer serving light wallets over lightwalletd-compatible gRPC";
+  description = "Zaino — indexer and proxy server for the Zcash protocol";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -16,6 +16,10 @@
   ### Build with Nix
   # nix build .#zainod — build the binary (output at `./result/bin/zainod`)
   # nix develop — enter a dev shell with the pinned Rust toolchain and build deps
+
+
+  # TODO: nixConfig (extra-substituters + extra-trusted-public-keys)
+  #       set once build-cache is setup
 
   outputs = { self, nixpkgs, flake-utils, crane, fenix }:
     let
@@ -44,22 +48,13 @@
 
         craneLib = mkCraneLib pkgs;
 
-        zainod = pkgs.zainod;
-
-        # Build env defined once in nix/package.nix, reused by devShell via passthru
-        inherit (zainod.passthru) commonArgs;
-
-        # crates.io tarball + its own Cargo.lock (not in nixpkgs)
-        code-dupes = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "code-dupes";
-          version = "0.2.1";
-          src = pkgs.fetchCrate {
-            inherit pname version;
-            hash = "sha256-WUF++iDROO4mjA5FseT3FpFExbVx0GEBd+KylkpYWc0=";
-          };
-          cargoHash = "sha256-sv7jawb02hi4h2LPLoDJA10Rnp8YVz/L+X5GNcm4/+Y=";
-          doCheck = false; # tests read ../cargo-dupes/tests/fixtures (absent from crates.io tarball)
+        # self.rev is set on clean trees; self.dirtyRev (with a "-dirty" suffix) on dirty trees.
+        zainod = pkgs.zainod.override {
+          gitCommit = self.rev or self.dirtyRev;
         };
+
+        # Build env defined once in nix/package.nix; devShell reuses it via passthru
+        inherit (zainod.passthru) commonArgs;
       in
       {
         packages = {
@@ -79,30 +74,24 @@
           packages = with pkgs; [
             protobuf
             pkg-config
+            cmake
+            rustPlatform.bindgenHook
             cargo-nextest
-            cargo-hack
-            # changesets, version bump, changelog, GitHub release (knope.toml)
-            knope
-            rust-analyzer
-
-            # .pre-commit-config.yaml hooks
-            pre-commit
             cargo-deny
-            code-dupes
-
-            # zainod `[snapshot]` bootstrap + its e2e test
-            aria2
+            cargo-make
+            shellcheck
+            rust-analyzer
 
             # Integration tests
             kind
             kubectl
+            openshift
           ];
 
-          # Debug builds = -O0 + nixpkgs' _FORTIFY_SOURCE = glibc warning; jemalloc's configure
-          # probes run -Werror (tikv-jemalloc-sys fails to configure)
-          hardeningDisable = [ "fortify" ];
-
-          env = commonArgs.env;
+          env = commonArgs.env // {
+            # Needed for librocksdb-sys
+            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          };
         };
 
         formatter = pkgs.nixfmt-rfc-style;

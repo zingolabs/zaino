@@ -1,0 +1,63 @@
+# ============================================================================
+# HOTFIX NOTICE — note an un-backported hotfix on the standing release PR.
+#
+# INERT until RELMAN_PIPELINE_ACTIVE=true.
+#
+# `rc` is normally advanced by a fast-forward to `dev` (rc-gate), which leaves
+# `rc` an ancestor of `dev`. A HOTFIX lands directly on `rc`, so `rc` gains a
+# commit `dev` lacks and is no longer an ancestor of `dev`. This workflow detects
+# that shape on every push to `rc` and, when a release PR is open, appends a note
+# to its timeline (the body is the live snapshot; comments are the event log).
+#
+# It never mutates anything but a PR comment; GITHUB_TOKEN with
+# pull-requests:write is enough (a comment triggers nothing, so no App token).
+# ============================================================================
+
+name: Hotfix notice
+
+on:
+  push:
+    branches: [rc]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  notice:
+    name: Note hotfix on the release PR
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Comment if rc carries un-backported (hotfix) commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin dev rc
+          # A dev fast-forward leaves rc an ancestor of dev; a hotfix does not.
+          if git merge-base --is-ancestor origin/rc origin/dev; then
+            echo "rc is an ancestor of dev (normal advance) — nothing to note."
+            exit 0
+          fi
+          pr="$(gh pr list --base stable --head release-ready --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$pr" ]; then
+            echo "::notice::rc carries hotfix commits but no release PR is open to note it on."
+            exit 0
+          fi
+          full="$(git rev-parse origin/rc)"
+          sha="${full:0:9}"
+          # The newest NON-merge commit rc has that dev lacks — the hotfix itself,
+          # not the merge commit that brought it in. Fall back to rc's tip subject.
+          subj="$(git log origin/dev..origin/rc --no-merges --format='%s' | head -1)"
+          [ -n "$subj" ] || subj="$(git log -1 --format='%s' origin/rc)"
+          repo="${{ github.server_url }}/${{ github.repository }}"
+          gh pr comment "$pr" --body \
+            "🚑 Hotfix landed on \`rc\` at [\`${sha}\`](${repo}/commit/${full}): ${subj}. Backport to \`dev\` is required before rc can advance (rc-gate will refuse until then)."
+          echo "Noted hotfix on release PR #${pr}"

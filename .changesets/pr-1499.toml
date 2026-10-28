@@ -1,0 +1,18 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f8a0-7ca1-8222-59a00a7c8890"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-status"
+kind = "internal"
+description = "The published package carries a README, keywords and categories."
+
+[[changes]]
+crate = "zaino-encoding"
+kind = "internal"
+description = "The published package carries a README, keywords and categories."
+
+[[changes]]
+crate = "zaino-source-macros"
+kind = "internal"
+description = "The published package carries a README, keywords and categories."

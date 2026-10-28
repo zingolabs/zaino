@@ -1,28 +1,21 @@
 [package]
 name = "zaino-primitives"
-publish.workspace = true
-description = "Zcash chain-level domain types (heights, hashes, blocks, transactions) shared by every Zaino crate."
-version.workspace = true
+description = "Zero-dependency Zcash chain-level domain types (heights, hashes, blocks, transactions) for the Zaino indexer."
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-metrics.workspace = true
-serde = { workspace = true, features = ["derive"] }
-sha2 = "0.10"
 thiserror = { workspace = true }
-uint = "0.9"
-zcash_encoding = "0.4"
+zcash_address.workspace = true
 zcash_protocol.workspace = true
-zcash_script.workspace = true
-zcash_transparent.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
-unreachable_pub = "warn"
-
-[dev-dependencies]
-toml.workspace = true
+missing_docs = "warn"

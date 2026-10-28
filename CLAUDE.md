@@ -1,7 +1,5 @@
 # Zaino AI Contributor Guidelines
 
-Terms: [`CONTEXT.md`](CONTEXT.md) is the glossary; names, docs and logs use its words.
-
 ## Tool selection
 
 Always prefer Rust-native tools in domains where they are designed to operate.
@@ -59,29 +57,82 @@ timers? If not, downgrade. Leave a brief comment only if the choice is
 non-obvious (e.g. "multi_thread required: test exercises a race between
 writer and reader on the db").
 
-## Disk and wire boundaries: named functions, not `From`/`TryFrom`
+## Persistence-boundary conversions: named methods, not `From`/`TryFrom`
 
-Bytes coming off disk or off the wire are the input-validation step, so the
-conversion is a named function whose signature states the direction and the
-failure — never `impl From` / `impl TryFrom`, which hide both behind `.into()`.
+Every DB-boundary helper that mirrors a business-layer type — named
+`Persistent<X>` by convention — crosses its boundary through inherent
+methods, not `impl From` / `impl TryFrom`. The canonical pair:
 
-- Disk: the index that owns a file owns its layout, as `encode(&X) -> [u8; N]`
-  and `decode(&[u8; N]) -> X` (or `Result<X, E>` when some bytes are invalid).
-  Reference: `packages/zaino-index-tree-state/src/heights.rs`.
-- Wire: domain crates (`zaino-primitives`, …) never depend on `zaino-proto`.
-  The crate that produces or consumes the wire bytes owns the conversion (e.g.
-  `encode_compact_block` in `packages/zaino-index-compact-block/src/encode.rs`); a fallible
-  wire → domain conversion returns an error enum naming each rejection.
-- A golden-bytes / round-trip test sits next to each layout and each wire
-  conversion, not in a distant test module.
-- Byte order (as zebra's state): a **locator** (height, transaction / output / subtree
-  index) is big-endian everywhere, key or value; a **quantity** (amount, size, count, time)
-  is little-endian, as the protocol encodes it; hashes and protocol structures as serialized.
-  Exempt: `zaino-persistence`'s engine-internal segment ids and page indexes (little-endian,
-  never a domain key).
+- `impl PersistentX { pub(super) fn from_business(src: &X) -> Self }`
+  (replaces `impl From<&X> for PersistentX`)
+- `impl PersistentX { pub(super) fn into_business(self) -> X }`
+  (replaces `impl From<PersistentX> for X`; return `Result<X, ..>` if
+  the on-disk → business step can fail validation)
 
-Error `From` impls used with `?`, and conversions between two domain types,
-are outside this rule.
+Both methods live on the persistent type. Visibility is `pub(super)` —
+`PersistentX` is module-private-by-design; only its sibling consumers
+in the same directory need access.
+
+**Why this rule exists**:
+
+1. The `PersistentX → X` direction *is* the validation step for bytes
+   coming off disk. A named method puts that contract in the API; a
+   `TryFrom` leaves it implicit.
+1. `TryFrom` forces one `Error` type per impl; separate methods give
+   per-conversion error granularity.
+1. Named methods are grep-friendly and disambiguate direction at every
+   call site (`pbc.into_business()` reads direction and boundary; `.into()`
+   hides both).
+
+**Reference**: `PersistentBlockContext` in
+`packages/zaino-state/src/chain_index/types/db/block.rs`. Copy its shape
+when adding new `Persistent*` types.
+
+**Scope**: this rule covers DB-boundary conversions. It does not govern
+conversions between two business-layer types, error `From` impls used
+with `?`, or conversions involving foreign types that don't cross the
+persistence or wire boundaries.
+
+## Wire-boundary conversions: named methods, not `From`/`TryFrom`
+
+The same rule applies at the gRPC/wire boundary for the same reasons —
+the wire → business direction is the *external-input* validation step
+and the named method encodes that contract in the API surface. Canonical
+methods live on the business-layer type (proto types are foreign; we
+can't add inherent methods to them):
+
+- `impl X { pub fn to_wire(&self) -> proto::X }` — infallible forward.
+  Replaces `impl From<X> for proto::X`.
+- `impl X { pub fn try_from_wire(w: proto::X) -> Result<Self, WireXError> }`
+  — fallible reverse. The conversion *is* the wire-input validation
+  step; the `WireXError` enum documents each rejection reason.
+  Replaces `impl TryFrom<proto::X> for X`.
+
+**Enforcement (covers both boundaries)**:
+
+- CI lint: `makers lint-boundary-conversions` (run as part of
+  `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
+  where either side is a `Persistent*` type or a `proto::` type and
+  fails the build. Mechanically prevents the common drift at both
+  boundaries.
+- Review checklist — apply on every PR that touches `types/db/`,
+  `types/wire.rs`, or introduces a new `Persistent*` type or wire
+  conversion:
+  1. No `impl From<&X> for PersistentY` / `impl From<PersistentX> for Y`;
+     no `impl From<X> for proto::Y` / `impl TryFrom<proto::X> for Y`.
+     (The lint catches these, but read for them anyway.)
+  1. Persistence methods are named `from_business` / `into_business`
+     (fallible variants `into_business*`). Wire methods are named
+     `to_wire` / `try_from_wire`. Any deviation has an in-file comment
+     explaining why.
+  1. `Persistent*` types are `pub(super)`. Wire methods are `pub`
+     (they're part of the business type's public API). Don't widen
+     `Persistent*` speculatively.
+  1. `Persistent*` types do *nothing else* — no business logic, no
+     accessors — they only cross the serde boundary. Round-trip tests
+     for the pair live in the same file under `#[cfg(test)] mod tests`.
+     Wire conversions get the same treatment: a golden / round-trip
+     test next to the method, not in a distant test module.
 
 ## No `.unwrap()`: propagate or handle every error
 
@@ -126,20 +177,11 @@ Reach for `grep` only as a fallback — when the server is genuinely
 unavailable, still indexing, or the target isn't code it understands — and
 say so when you do.
 
-## Docs: one home per fact
+## Crate usage guides: keep them current
 
-System design (how crates fit together, what each source is trusted for, why) lives
-in `docs/architecture.md` only; operating `zainod` lives in `docs/running.md`. Each
-crate's `packages/<crate>/usage.md` (the crate's rustdoc too, where its `lib.rs`
-has `#![doc = include_str!("../usage.md")]`) holds crate-specific detail only:
-wiring, API contract, invariant tables, tests. An invariant code (`T1`, `G5`, …)
-exists only while an assert, test or panic message cites it; architecture carries
-none. A guide links to an architecture section instead of restating it; never copy
-a fact into a second file, nor restate what code, `--help`, rustdoc or a metric's
-HELP text already carries. No status tables, phase lists, migration history or
-"before/after" prose: the code is the current shape, history goes in commit messages.
-
-Each guide is indexed from the root `README.md`'s "Crate usage guides" section.
+Each crate is documented by a usage guide at `packages/<crate>/usage.md`, indexed
+from the root `README.md`'s "Crate usage guides" section. The set is deliberately
+incomplete and filled in crate by crate.
 
 When a change adds or alters a crate's **public capability** — a new port,
 service, config knob, public method, or a behavioural contract consumers rely on
@@ -148,18 +190,3 @@ one if none fits. If the crate has no guide yet, create it and add it to the
 README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
 changed*, the guide records *how to use it*, and neither substitutes for the
 other. Purely internal refactors need no guide edit.
-
-## Heavy proptest run before you're done
-
-After **any** change inside a crate the [heavy run](docs/testing.md#heavy-run) lists (code,
-tests, `SimFs`, even a refactor), and before reporting the work as done, run that block with
-`crate=<that crate>`: the 3-minute loop, then every crate built on it. The default run is
-deliberately light and is not enough.
-
-- `DiskEngine`'s model test
-  (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`,
-  `packages/zaino-persistence/src/disk/model_tests.rs`) is its own: a new engine writes its own tests
-  and does not share or edit `DiskEngine`'s.
-- On a failure, commit the saved case, fix the bug and rerun the whole block. Never shorten the
-  run, lower case counts, loosen an assertion, or skip a test to get green.
-- Report the rounds completed and the result in your summary.

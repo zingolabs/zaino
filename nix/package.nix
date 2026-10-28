@@ -1,9 +1,15 @@
 { lib
+, stdenv
 , craneLib
+, rustPlatform
+, autoPatchelfHook
 , protobuf
 , pkg-config
-, makeWrapper
-, aria2
+, cmake
+, withTls ? true
+, gitCommit ? "unknown"
+, gitBranch ? "unknown"
+, rocksdb
 }:
 
 let
@@ -13,32 +19,48 @@ let
       (craneLib.fileset.commonCargoSources ../.)
       # commonCargoSources only includes .rs & cargo files
       #   .proto — read by tonic-build (zaino-proto/build.rs)
-      #   usage.md — crate docs via #![doc = include_str!("../usage.md")]
-      #   lightwallet-protocol/CHANGELOG.md — protocol version (zaino-proto/build.rs)
+      #   .txt   — embedded via include_str! (db schema)
+      #   .mmd   — embedded via simple_mermaid::mermaid! (doc diagrams)
       (lib.fileset.fileFilter (f: f.hasExt "proto") ../packages/zaino-proto)
-      ../packages/zaino-proto/lightwallet-protocol/CHANGELOG.md
-      (lib.fileset.fileFilter (f: f.name == "usage.md") ../packages)
+      (lib.fileset.fileFilter (f: f.hasExt "txt" || f.hasExt "mmd") ../packages/zaino-state/src)
     ];
+  };
+
+  crateInfo = craneLib.crateNameFromCargoToml {
+    cargoToml = ../packages/zainod/Cargo.toml;
   };
 
   commonArgs = {
     inherit src;
-    pname = "zainod";
-    # lockstep workspace version (crateNameFromCargoToml can't follow `version.workspace = true` → 0.0.1)
-    version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+    inherit (crateInfo) pname version;
 
     strictDeps = true;
     doCheck = false;
-    cargoExtraArgs = "--locked --package zainod";
 
     nativeBuildInputs = [
       protobuf
       pkg-config
+      cmake
+      # Sets LIBCLANG_PATH so librocksdb-sys's bindgen finds libclang
+      # without dragging LLVM into the build.
+      rustPlatform.bindgenHook
+      autoPatchelfHook
     ];
+
+    # stdenv.cc.cc.lib provides libstdc++.so.6 / libgcc_s.so.1 that
+    # rocksdb's C++ code transitively needs at runtime.
+    buildInputs = [ rocksdb stdenv.cc.cc.lib ];
 
     env = {
       PROTOC = "${protobuf}/bin/protoc";
       PROTOC_INCLUDE = "${protobuf}/include";
+
+      # Use nixpkgs' librocksdb instead of librocksdb-sys's bundled C++ compile.
+      ROCKSDB_LIB_DIR = "${rocksdb}/lib";
+      ROCKSDB_INCLUDE_DIR = "${rocksdb}/include";
+
+      ZAINO_GIT_COMMIT_ID = gitCommit;
+      ZAINO_GIT_BRANCH = gitBranch;
     };
   };
 
@@ -47,20 +69,16 @@ in
 craneLib.buildPackage (commonArgs // {
   inherit cargoArtifacts;
 
-  cargoExtraArgs = "${commonArgs.cargoExtraArgs} --bin zainod";
-
-  # aria2c = the `[snapshot]` bootstrap's downloader
-  nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ makeWrapper ];
-  postInstall = ''
-    wrapProgram $out/bin/zainod --prefix PATH : ${lib.makeBinPath [ aria2 ]}
-  '';
+  cargoExtraArgs =
+    "--locked --package zainod --bin zainod"
+    + lib.optionalString (!withTls) " --features no_tls_use_unencrypted_traffic";
 
   passthru = {
     inherit commonArgs;
   };
 
   meta = {
-    description = "Zcash indexer serving light wallets over lightwalletd-compatible gRPC";
+    description = "Indexer and proxy server for the Zcash protocol";
     homepage = "https://github.com/zingolabs/zaino";
     license = lib.licenses.asl20;
     mainProgram = "zainod";

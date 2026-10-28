@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 0a6b13d3490853ec7e05b25e2362c1f2bbe6a6c4a12dd431dc51ba9128d4c7a7 # shrinks to (validators, groups, byzantine, steps) = (1, [86, 179, 55, 4, 8, 81], [false, false, false, false, false, false], [Poll { validator: 0, listed: 43 }, Round { answers: [Some(29), Some(19), Some(47), Some(73), Some(103), Some(19)], wait: 0 }])
-cc 89b589a825a925138b7607738aecf5b700683c04bbf1cf1e3e164e8dd376e322 # shrinks to (validators, groups, byzantine, steps) = (2, [89, 0, 4, 21, 142, 175, 2, 0], [false, false, false, false, false, true, false, false], [Round { answers: [Some(132), None, Some(164), Some(68), Some(164), Some(86), Some(60), None], wait: 0 }, Round { answers: [Some(146), Some(92), Some(34), Some(86), Some(102), None, Some(42), Some(124)], wait: 0 }, Round { answers: [Some(124), None, None, None, None, Some(16), None, None], wait: 0 }])

@@ -1,43 +1,138 @@
-# Zaino glossary
+# Zaino
 
-One word per concept; names, docs and logs use these. System design: [docs/architecture.md](docs/architecture.md).
+Zaino is a Zcash indexing service. This glossary pins down the canonical
+terms for concepts where the team has picked one word among several.
 
-## Zaino terms
+## Language
 
-| Term | Meaning | Not / avoid |
-| --- | --- | --- |
-| **Finalized** | Blockchain: at or below the finalized tip, never reorged. `FinalizedStream`, `finalized_tip` | "final", "finalised" (outside the frozen `finalised_depth` key); never for storage state |
-| **Non-finalized** | Blockchain: above the finalized tip, still reorg-able | "unfinal"; never for "not yet on disk" |
-| **Finality depth** | Blocks between best and finalized tip (`FinalityDepth`, `[sync] finalised_depth`) | reorg depth |
-| **NFS** (non-finalized state, `zaino-nfs`) | Every block above the indexes' **durable** tips, folded in RAM and served: non-finalized blocks *and* finalized ones not yet durable. Its root = the lowest durable tip | "everything non-finalized" (it also holds finalized, not-yet-durable blocks) |
-| **Durable** | Persistence: on disk, committed by the store; survives a crash (`Store::durable()`, `DurableTip`) | "committed" as a state, "final" |
-| **Applied** | Persistence: handed to a store (`apply`), in its buffer, not yet durable (`AppliedView`, `AppliedLayer`) | "uncommitted", "staged" |
-| **commit** | The action that makes applied changes durable | "committed" / "uncommitted" as a state |
-| **Pinned view** | Owned read state, fixed while held (`PinnedView`): a durable view, or NFS layers over one | "snapshot read" |
-| **Fold** | One block → one index's changes (`fold(parent, block, out)`) | the chain view's poll **merge** (`ObservationMerge`) |
-| **Best tip** | Most-work tip of the header chain | "chain tip" alone |
-| **Served tip** | What gRPC answers at: deepest folded best-chain block, else the NFS root | best tip (they differ while folding) |
-| **Finalized tip** | min(highest settled best-chain block, best − depth) (`HeaderChain::finalizable`) | final tip |
-| **Vouched / settled** | Vouched = a trusted validator once had the block on its best chain. Settled = vouched, or witnessed by outbound peers in > 5 netgroups with no difficulty collapse since the last vouch | "confirmed" |
-| **GrpcSnapshot** | What gRPC serves: one atomic publication of chain view + NFS, one load per request (`zaino-grpc-snapshot`) | bare "snapshot" |
-| **IndexSnapshot** | Index archive downloaded to fill empty indexes (`[snapshot]` config, `IndexSnapshotConfig`) | bare "snapshot" |
-| **HeaderChainSnapshot** | The header chain's published state: every branch above the finalized tip, the best tip, each block's witnesses (`zaino-header-chain`) | "verified chain" (trusted headers enter unchecked; no block body is checked) |
-| **ChainViewSnapshot** | The chain view's published state: header chain, mempool, per-validator facts | bare "snapshot", "view" alone |
-| **Trusted validator** | A validator the operator configured (`[[trusted_validators]]`, `TrustedValidator*`) | endpoint, node, member |
-| **Peer** | Any node on the Zcash p2p network, unauthenticated (`Peer*`) | validator |
-| **Member** | `zaino-traffic` balancer only: one trusted validator, or the whole peer set (`MemberId`) | for a trusted validator anywhere else |
-| **Indexer** | Zaino as a whole (`IndexerError`, `zainod`) | one index |
-| **Index** | One served data index (`Index*`, `IndexKind`) | indexer |
-| **ZebraIndexer** | zebrad's indexer gRPC: blocks + push streams (`ZebraIndexer*`, `indexer_address`) | "indexer" alone |
-| **`zaino-index-*` / `zaino-internal-*`** | Crates of indexes gRPC serves / indexes only Zaino reads (block hash → height) | — |
-| **Locator / quantity** | Locator = height, tx / output / subtree index: big-endian. Quantity = amount, size, count, time: little-endian ([rule](CLAUDE.md#disk-and-wire-boundaries-named-functions-not-fromtryfrom)) | — |
+### Release engineering
 
-## Chains and pools
+**Publishable set**:
+The workspace members released to crates.io as a unit — every member not
+marked `publish = false`. Derived from workspace metadata, never from a
+hard-coded list.
+_Avoid_: crate list, publish list
 
-| Term | Meaning | Not / avoid |
-| --- | --- | --- |
-| **The Public Testnet** | The public Zcash test network only. Non-hermetic: state shared, and a left epoch (pre-NU6.3, since 4,134,000) cannot be re-entered | bare "testnet" for a locally launched chain |
-| **Regtest net** | Any hermetic, locally launched chain whose activation heights the launcher picks, whatever network-kind flag it runs under | local testnet, custom testnet |
-| **Ironwood / Orchard** | Eras, fixtures and predicates are named by pool, paired with the other pool (`ORCHARD_ONLY_*` ↔ `IRONWOOD_ONLY_*`). **NU6.3** names only the upgrade: heights, branch ID, rules | mixing pool and upgrade names (`NU6_3_ACTIVE_*`) |
-| **Unfiltered pool set** | Pools served for an empty `poolTypes`: Sapling, Orchard, Ironwood, transparent excluded (`zaino_index_compact_block::Pools::default`). Narrower = compact blocks disagree with their `chainMetadata` sizes, a phantom reorg to a scanning wallet | default pools, backfill set, "Sapling and Orchard" |
-| **Cross-address restriction** | Post-NU6.3 Orchard Action rule: an output carries the spent note's `(g_d, pk_d)`, so each action is change to its own address or a withdrawal ([spec](https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction)) | "exit-only" (same-receiver change stays in the pool) |
+**Blocking context**:
+A CI context in which release checks must pass: pushes to `stable`, whose
+tip is the release commit.
+_Avoid_: strict mode, release mode
+
+**Advisory context**:
+Any CI context that is not a blocking context. Release checks report
+findings (warnings, annotations) but do not fail the build there.
+_Avoid_: soft mode, informational mode
+
+**Version-reuse violation**:
+A publishable crate whose exact version already exists on crates.io while
+its packaged content differs. The tree cannot be released until that crate's
+version is bumped. An unchanged crate keeping its published version is not a
+violation.
+_Avoid_: stale version, forgotten bump
+
+### Chains and networks
+
+**The Public Testnet**:
+The public Zcash test network, and only that. Its regimes are
+non-hermetic — state is shared with other participants, and an epoch
+the public chain has left (e.g. pre-NU6.3 once NU6.3 activates there)
+cannot be re-entered. Always this exact phrase in prose; identifiers
+use `the_pub_testnet` and types use `PubTestnet`.
+_Avoid_: bare "Testnet"/"testnet", and especially "testnet" for any
+locally-launched chain, even one launched under a testnet network kind
+
+**Regtest net**:
+A hermetic, locally-launched chain whose activation heights the
+launcher chooses. Every hermetic local net is a regtest net, whatever
+network-kind flag it runs under.
+_Avoid_: local testnet, custom testnet
+
+### Pools and upgrades
+
+**Ironwood / Orchard (era naming)**:
+Eras, fixtures, and predicates that speak of shielded pools are named by
+pool — Orchard, Ironwood — and a name that mentions one pool pairs with
+the other pool's name, never with the upgrade's. **NU6.3** names only the
+network upgrade itself: activation heights, consensus branch ID,
+consensus rules.
+_Avoid_: mixing vocabularies in one name or one sibling set (e.g. an
+`ORCHARD_ONLY_*` fixture whose sibling is `NU6_3_ACTIVE_*` — the sibling
+is `IRONWOOD_ONLY_*`)
+
+**Unfiltered pool set**:
+The pool set served when a client's `poolTypes` request field is empty —
+every shielded pool (Sapling, Orchard, Ironwood), transparent excluded.
+It has exactly one definition (`PoolTypeFilter::default`); serving any
+narrower backfill makes compact blocks disagree with their own
+`chainMetadata` tree sizes, which scanning wallets read as a phantom
+reorg.
+_Avoid_: default pools, backfill set, "Sapling and Orchard" (stale —
+predates Ironwood)
+
+**Cross-address restriction**:
+The post-NU6.3 rule the Orchard Action circuit enforces: "(g_d, pk_d)
+of the output note must equal (g_d, pk_d) of the spent note" — the
+output note must carry the same expanded receiver (diversified base
+g_d, diversified transmission key pk_d) as its spent note, so each
+Orchard action is either change to the spent note's own address or a
+withdrawal (positive value balance). Orchard-to-Orchard transfers to
+any other address — including another address of the same wallet — are
+prohibited. A companion transaction-level rule forbids new value
+entering the pool. Source:
+<https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction>
+_Avoid_: "exit-only" (overclaims — same-receiver change still lands in
+the pool and its commitment tree still grows)
+
+### TLS and cryptography
+
+**Preferred CryptoProvider**:
+The TLS cryptography provider zaino installs as the process-wide default
+when no provider is installed yet. A preference, not a mandate: an
+embedder (e.g. zallet) that installs a provider before zaino keeps its
+choice, and zaino handshakes through it.
+_Avoid_: "enforced provider" (implies zaino overrides an embedder's
+already-installed provider; it never does)
+
+**Hybrid key exchange**:
+A TLS 1.3 key-exchange group combining a classical curve with a
+post-quantum KEM (key-encapsulation mechanism), e.g. X25519MLKEM768.
+Secure if either component holds. Hybrids are the post-quantum
+deployment vehicle, not a classical fallback.
+_Avoid_: calling hybrids "classical" because they contain a classical
+component
+
+**Classical key exchange**:
+A key-exchange group with no post-quantum component (X25519, SECP256R1,
+SECP384R1). Deprecated in zaino: still accepted for client
+compatibility, slated for refusal once major wallet stacks negotiate
+hybrids.
+
+### Decision records
+
+**zingo-adrs**:
+The `zingolabs/zingo-adrs` repository: the one append-only home of
+architecture decision records for every zingolabs code repository. A code
+repository checks in a submodule pointer to it and none of its content.
+_Avoid_: "the ledger", "the org ledger", zaino-adrs, "the ADR repo"
+
+**Org-scoped record**:
+A record that binds every zingolabs code repository. It lives at the top
+level of zingo-adrs.
+_Avoid_: global ADR, shared ADR
+
+**Repo-scoped record**:
+A record that binds exactly one code repository. It lives in that
+repository's subdirectory of zingo-adrs (`zaino/` for zaino).
+_Avoid_: local ADR, project ADR
+
+**Record citation**:
+A reference to a zingo-adrs record, in the form its medium requires. The
+[zingo-adrs README](https://github.com/zingolabs/zingo-adrs#citing-a-record) defines each form.
+_Avoid_: bare numbers across scopes, checkout paths, "zingolabs ADR" (stale form)
+
+**Record status**:
+The first line under a record's `## Status` heading, one of `proposed`,
+`accepted`, or `superseded by <record citation>`. Prose after that line
+may narrow a partial supersession; the line itself is the whole record's
+standing.
+_Avoid_: deprecated, retired, obsolete, "no longer applies"

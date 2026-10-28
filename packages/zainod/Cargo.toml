@@ -1,83 +1,106 @@
 [package]
 name = "zainod"
-publish.workspace = true
-version.workspace = true
-description = "The Zaino indexer daemon."
+version = "0.10.1"
+description = "Crate containing the Zaino Indexer binary."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+
+[[bin]]
+name = "zainod"
+path = "src/main.rs"
+
+[lib]
+name = "zainodlib"
+path = "src/lib.rs"
+
+[features]
+default = []
+
+# Test-only seam: `Indexer::launch_inner_with_listeners`, which threads
+# pre-bound listeners through to the gRPC/JSON-RPC servers. Forwards to
+# zaino-serve.
+test_dependencies = ["zaino-serve/test_dependencies"]
+
+# TEST-ONLY seam: non-finalised depth 1001 -> 100 (NFS tests mine no 1k-block chain)
+# - forwards to zaino-state (owns the depth constant)
+fast-test-seam = ["zaino-state/fast-test-seam"]
+
+# Removes network restrictions.
+no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
+
+# Operator build: no TLS + Prometheus metrics endpoint.
+no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
+
+# Prometheus /metrics scrape endpoint.
+prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-process", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
+
+# DANGER: allows the JSON-RPC server to bind to a public (non-private,
+# non-loopback) address. The JSON-RPC interface has NO transport encryption and
+# is intended for loopback or trusted private networks only. Enabling this
+# exposes unencrypted RPC to whatever network the bind address reaches. Only use
+# for deployments on trusted private networks (e.g. containers behind a
+# mesh/proxy that terminates encryption).
+allow_unencrypted_public_json_rpc_bind = []
+
+# **Experimental and alpha features**
+# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
+experimental_features = ["transparent_address_history_experimental"]
+
+# Activates transparent address history capability in zaino
+#
+# NOTE: currently this is only implemented in the finalised state.
+transparent_address_history_experimental = [
+  "zaino-state/transparent_address_history_experimental",
+  "zaino-serve/transparent_address_history_experimental"
+]
 
 [dependencies]
-# Runtime stack (config-agnostic, zainod translates its config into their typed params at boot)
-zaino-primitives.workspace = true
-zaino-persistence.workspace = true
-zaino-source.workspace = true
-zaino-traffic.workspace = true
-zaino-header-chain.workspace = true
-zaino-peers.workspace = true
-zaino-chainview.workspace = true
-zaino-sync.workspace = true
-zaino-nfs.workspace = true
-zaino-index-tree-state.workspace = true
-zaino-index-transparent-address.workspace = true
-zaino-grpc-snapshot.workspace = true
-zaino-grpc.workspace = true
-zcash_protocol.workspace = true
+zaino-common = { workspace = true }
+zaino-rpc = { workspace = true }
+zaino-state = { workspace = true }
+zaino-chain-head-service = { workspace = true }
+zaino-serve = { workspace = true }
+
+# Zebra
+zebra-state = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
-tokio-util.workspace = true
-futures.workspace = true
-bytes.workspace = true
-tikv-jemallocator.workspace = true
-rlimit = "0.11"
 
-# CLI + default config/store paths
+# CLI
 clap = { workspace = true, features = ["derive"] }
-dirs.workspace = true
 
-# Config
+# Tracing
+tracing = { workspace = true }
+
+# Network / RPC
+http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-toml.workspace = true
-config.workspace = true
-thiserror.workspace = true
 
-# Logging
-tracing.workspace = true
-tracing-subscriber.workspace = true
-tracing-logfmt = { version = "0.3.7", features = ["ansi_logs"] }
+# Metrics (behind "prometheus" feature)
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+metrics-process = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+http-body-util = { workspace = true, optional = true }
 
-# Admin listener: Prometheus /metrics scrape endpoint and /livez probe
-metrics.workspace = true
-metrics-exporter-prometheus = { workspace = true, features = ["protobuf"] }
-metrics-process.workspace = true
-hyper = { workspace = true, features = ["server", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
-http-body-util.workspace = true
+# Utility
+thiserror = { workspace = true }
 
-# Index snapshot bootstrap: aria2c JSON-RPC, free space, unpack
-reqwest.workspace = true
-rustix = { version = "1.1", features = ["fs"] }
-zstd = "0.14.0"
-tar = "0.4.46"
+# Formats
+toml = { workspace = true }
+config = { workspace = true }
+zaino-status.workspace = true
+zaino-mempool.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
-zaino-persistence = { workspace = true, features = ["testing"] }
-tokio = { workspace = true, features = ["test-util"] }
-zaino-header-chain = { workspace = true, features = ["testing"] }
-zaino-proto.workspace = true
-tonic.workspace = true
-zaino-source = { workspace = true, features = ["testing"] }
-zaino-chainview = { workspace = true, features = ["testing"] }
-sha2 = "0.10"
-rustix = { version = "1.1", features = ["process"] }
-
-[target."cfg(unix)".dependencies]
-sd-notify = "0.5"
-
-[lints.rust]
-unreachable_pub = "warn"
+zcash_address = { workspace = true }
+zcash_protocol = { workspace = true }
