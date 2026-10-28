@@ -24,11 +24,8 @@ pub async fn assert_rpc_parity(
     b: &JsonRpcClient,
     volatile: &[&str],
 ) -> Result<Value> {
-    let params: Value = if params.is_empty() {
-        Value::Array(Vec::new())
-    } else {
-        serde_json::from_str(params)?
-    };
+    let params: Value =
+        if params.is_empty() { Value::Array(Vec::new()) } else { serde_json::from_str(params)? };
     let av = a.call_value(method, params.clone()).await?;
     let bv = b.call_value(method, params).await?;
     json_equal_ignoring(method, av.clone(), bv, volatile)?;

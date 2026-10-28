@@ -42,14 +42,8 @@ async fn orchard_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
@@ -82,14 +76,8 @@ async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
@@ -137,14 +125,8 @@ async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(mined).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
