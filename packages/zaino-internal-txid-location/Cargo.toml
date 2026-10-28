@@ -1,0 +1,23 @@
+[package]
+name = "zaino-internal-txid-location"
+publish.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Txid -> mined location index: where GetTransaction finds a mined transaction's block"
+
+[dependencies]
+zaino-persistence.workspace = true
+zaino-primitives.workspace = true
+zaino-sync.workspace = true
+zcash_protocol.workspace = true
+
+[dev-dependencies]
+zaino-persistence = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+zaino-sync = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unreachable_pub = "warn"

@@ -1,14 +1,11 @@
-//! Where a transaction lives in the chain.
+//! Where a transaction lives in the chain
 
-use super::Height;
+use zcash_protocol::consensus::BlockHeight;
 
-/// Where in the chain a transaction was found.
+/// `NonBestChain` = orphaned branch
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionLocation {
-    /// In the best chain at this height.
-    BestChain(Height),
-    /// In a non-best chain branch (orphaned).
+    BestChain(BlockHeight),
     NonBestChain,
-    /// In the mempool (not yet mined).
     Mempool,
 }

@@ -1,52 +1,201 @@
-# Zaino Configuration
+# zainod config paired with zebrad.toml (Testnet)
 #
-# Generated with `zainod generate-config`
-#
-# Configuration sources are layered (highest priority first):
-#   1. Environment variables (prefix: ZAINO_)
-#   2. TOML configuration file
-#   3. Built-in defaults
-#
-# For detailed documentation, see:
-#   https://github.com/zingolabs/zaino
+# - Env overrides + unknown-key rule: docs/running.md#configuration
+# - `zainod generate-config` = every key at its default
 
-backend = 'fetch'
-zebra_db_path = '<PATH_TO_ZEBRA>'
-network = 'Testnet'
+# mainnet | testnet | regtest (default mainnet)
+# - declared, never read off the validator (Zebra on regtest reports "test")
+network = "testnet"
 
-# Run the finalised state in ephemeral/stateless mode. When true, Zaino opens no
-# persistent finalised-state database and serves finalised reads directly from
-# the backing validator via a stateless passthrough. Default: false.
-ephemeral_finalised_state = false
+# How zainod talks to every [[trusted_validators]] entry (default legacy_rpc)
+# - legacy_rpc = JSON-RPC for everything (zebrad or zcashd); blocks arrive as hex inside JSON
+# - grpc = blocks over zebrad's indexer gRPC (GetBlock, GetBlockRange) as stored bytes, no hex
+#   or JSON; everything else over JSON-RPC. Needs each validator's indexer_address and a zebrad
+#   serving GetBlockRange: Zaino's zebra fork only (elicbarbieri/zebra perf/indexer-block-range)
+# validator_client = "grpc"
 
-[grpc_settings]
-listen_address = '127.0.0.1:8137'
+# Admin listener (/metrics, /livez, /readyz). Omit listen_address to disable.
+# [metrics]
+# listen_address = "127.0.0.1:9999"
 
-[validator_settings]
-validator_grpc_listen_address = '127.0.0.1:18232'
-validator_jsonrpc_listen_address = '127.0.0.1:18231'
-validator_user = 'xxxxxx'
-validator_password = 'xxxxxx'
+# Validators Zaino trusts (Zebra JSON-RPC), at least one; no vote (`priority` orders who is asked)
+# - tip = their most-work header (trusted: zebra validated it), served while any of them holds it
+# - one listing admits a mempool transaction; submission: see [submission]
+# - 2+ = survives one going down (no vote: more never weakens it)
+# - down at boot or later = retried, never fatal
+[[trusted_validators]]
+jsonrpc_address = "127.0.0.1:18232"
+# zebrad enable_cookie_auth = true
+# cookie_path = "<PATH_TO_ZEBRA>/.cookie"
+# basic auth
+# user = "xxxxxx"
+# password = "xxxxxx"
+# connect_timeout_secs = 2
+# Silence before a request fails, never total duration (raise for a slow or lossy link)
+# read_timeout_secs = 30
+# Link budget to this validator (zaino never exceeds it): at least 5 connections, one for the poll,
+# one reserved per lane (control, interactive, bulk) + one shared, the rest to whichever lane
+# waits
+# max_connections = 32
+# Largest JSON-RPC reply read, 4 (one full block) ..= 32; batches are split to fit
+# max_response_mib = 32
+# zebrad's indexer gRPC (its `indexer_listen_addr`): tip + mempool push streams wake polling at
+# once; polling slows to a 15 s reconcile while they are up. Unset = poll every second.
+# validator_client = "grpc" fetches blocks here too (then required)
+# indexer_address = "127.0.0.1:8230"
+# Tier: every 0 asked before any 1 (a farther validator = 1: overflow + hedges only)
+# priority = 0
+# Mutual TLS to indexer_address (zakurad requires it off loopback: its [rpc.indexer_tls], whose
+# client_ca_file signs cert_path). Unset = plaintext.
+# [trusted_validators.indexer_tls]
+# ca_path = "/etc/zaino/indexer-ca.pem"
+# cert_path = "/etc/zaino/indexer-client.pem"
+# key_path = "/etc/zaino/indexer-client-key.pem"
+# Name on the validator's certificate (unset = the indexer_address host)
+# server_name = "zakura-1.internal"
 
-[service]
-timeout = 30
-channel_size = 32
-[storage.cache]
-capacity = 10000
-shard_power = 4
+# [[trusted_validators]]
+# jsonrpc_address = "127.0.0.1:18242"
 
-[storage.database]
-path = '<ZAINO_CACHE>'
-size = 128
-# Heap budget (in GiB) for the bulk-sync write batch (buffered blocks only). Lower this on
-# memory-constrained hosts; a larger value does not speed up a small host, it just risks the
-# OOM-killer. Defaults to 8.
-sync_write_batch_size = 8
-# Heap budget (in GiB) for the from-genesis txout-set accumulator rebuild's spent set. Separate from
-# sync_write_batch_size: the rebuild auto-shards to keep peak RAM within this budget. Lower it on
-# memory-constrained hosts (more, smaller passes). Defaults to 8.
-accumulator_rebuild_memory_size = 8
-# Max wall-clock time (seconds) spent buffering a bulk-sync batch before flushing. Because the DB
-# runs with NO_SYNC, this also bounds the window of unflushed writes at risk on a hard kill /
-# eviction. Lower it to shrink that window. Defaults to 120 (2 minutes).
-sync_checkpoint_interval = 120
+# SendTransaction: a trusted validator's checkadmission answers the wallet (refused = that
+# refusal, nothing sent); then one relay per attempt, through a random trusted validator, or
+# the peers with [p2p] on (defaults shown)
+[submission]
+# Seconds an accepted transaction gets to be seen beyond the nodes relayed to before relaying again
+propagation_threshold_secs = 15
+# Relays per transaction at most; without a check, the wallet is answered at the first acceptance
+max_attempts = 4
+
+# Zaino's own peers on the Zcash p2p network (zebra-network), off by default: headers and blocks
+# (checked by proof of work and merkle root: the tip keeps up while every trusted validator is
+# down; finality too, once peers in more than 5 netgroups carry the chain), each peer's mempool
+# polled (a transaction > 2/3 of them list from > 5 netgroups is served after Zaino's consensus
+# checks: needs index.compact_block), and SendTransaction relays (zebra's own, to a third of the
+# peers per attempt; then one trusted validator if still unseen). Zaino serves no peer (listener
+# on loopback, no services advertised).
+# [p2p]
+# enabled = true
+# Each peer holds one inbound slot on a public node: keep it modest
+# peer_target = 8
+# Empty = the network's DNS seeders (regtest has none: list peers)
+# initial_peers = []
+# cache_dir = "<ZAINO_DATA>/peers"
+
+[serve]
+# CompactTxStreamer gRPC: plaintext HTTP/2, or TLS with [serve.tls]
+grpc_listen_address = "127.0.0.1:8137"
+# Max transparent receives one address request walks (all its addresses); over = RESOURCE_EXHAUSTED
+# max_address_rows = 100000
+# zainod's own state, kept across restarts (`zainod hold` writes its marker here);
+# default <data dir>/zaino/state
+# state_dir = "/var/lib/zainod"
+# held: /readyz fails with "held" while still serving this long, then every open gRPC connection
+# gets a GOAWAY; >= the balancer's down detection + DNS TTL
+hold_goaway_delay_secs = 0
+
+# TLS on the gRPC listener (rustls + ring); PEM files re-read on change (renewal = no restart)
+# [serve.tls]
+# cert_path = "/etc/zaino/fullchain.pem"
+# key_path = "/etc/zaino/key.pem"
+
+# Serving caps (defaults shown); every cap refuses rather than queues, except the read lanes
+[grpc]
+# excess accepts closed; + 1024 must fit the open-file limit or boot fails
+max_connections = 4096
+# per client: the peer, or the address a trusted proxy's PROXY header names
+max_connections_per_ip = 32
+# HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS: every stream on one connection, of any method
+max_streams_per_connection = 8
+# work streams (every method but GetMempoolStream) across all connections; excess = UNAVAILABLE +
+# retry hint
+max_work_streams = 2048
+# work streams admitted at once follow measured latency, max_work_streams the ceiling: a saturated
+# node refuses new work within seconds (UNAVAILABLE + retry hint); false = always max_work_streams
+adaptive_work_streams = true
+# GetMempoolStream subscriptions (idle until the next block), counted apart from max_work_streams
+max_subscriptions = 4096
+# index reads in flight on the blocking pool, per lane; excess waits in its own lane
+# - point: one block / tree state / root list; range: one GetBlockRange window; scan: one address
+#   history
+max_point_reads = 64
+max_range_reads = 32
+max_scan_reads = 4
+# no-progress bounds, never a cap on a stream's length (the client's grpc-timeout is its deadline)
+# data its client does not read for this long closes its connection
+unread_timeout_secs = 300
+# a stream with nothing to send for this long ends UNAVAILABLE (GetMempoolStream exempt)
+silent_timeout_secs = 300
+# GOAWAY after this long (±10% per connection): the client reconnects and re-resolves DNS, so a
+# load balancer or a replaced node moves long-held wallet connections; 0 = never
+max_connection_age_secs = 1800
+# in-flight streams of a GOAWAY'd connection get this long to finish (a whole GetBlockRange sync)
+max_connection_age_grace_secs = 600
+# GOAWAY a connection with no open stream for this long (frees its per-client slot); 0 = never
+max_connection_idle_secs = 1800
+# proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
+trusted_proxies = []
+# SIGTERM/SIGINT closes the listener at once; open connections get this long to finish (GOAWAY
+# sent). Out of a load balancer's rotation first = `zainod hold` (see docs/running.md)
+shutdown_grace_secs = 10
+
+# When /readyz reports `Overloaded: <cause>` (0 = that cause off; `zainod overload` overrides live)
+[grpc.overload]
+# 20th percentiles of zaino_grpc_queue_delay_seconds / zaino_grpc_retransmit_ratio (either =
+# saturated); off until real traffic sets them
+network_queue_delay_ms = 0
+network_retransmit_percent = 0
+network_min_networks = 20
+cpu_pressure_percent = 25
+io_pressure_percent = 25
+
+# One block-fetch pipeline, shared by every index (defaults shown; all non-zero)
+[sync]
+# Blocks below the tip kept reorg-able (in memory, served, written once buried); >= 1000 off regtest
+finalised_depth = 1000
+# Block fetches (and folds) in flight ahead of the next one needed, over every trusted validator
+concurrency = 32
+# MiB of finalized blocks one index may lag the fetch before it throttles the pipeline
+queue_mib = 256
+
+# The disk engine's map tables (one engine per process: every index shares merge_slots)
+# [sync.lsm_store]
+# Same-tier segments merged into one (>= 2; higher = less rewriting, larger merges)
+# fanout = 16
+# Merges doing disk I/O at once (the rest wait, smallest first)
+# merge_slots = 4
+# MiB/s every merge together may read + write (commits are never paced)
+# merge_mib_per_sec = 200
+
+# One table per index: `enabled` (default true; off = its methods UNIMPLEMENTED) and `path`
+# (default $XDG_CACHE_HOME/zaino/indexes/<name>); an omitted table takes both defaults
+[index.compact_block]
+# GetBlock, GetBlockRange (GetLatestBlock, GetLightdInfo = the served tip, either way)
+# - its fee index (each CompactTx.fee) lives beside it, in `utxo_set`
+enabled = true
+path = "<ZAINO_DATA>/compact_block"
+
+[index.block_hash]
+# GetBlock / GetTreeState by hash (by height unaffected)
+enabled = true
+path = "<ZAINO_DATA>/block_hash"
+
+[index.tree_state]
+# GetTreeState, GetLatestTreeState, GetSubtreeRoots
+enabled = true
+path = "<ZAINO_DATA>/tree_state"
+
+[index.transparent_address]
+# GetAddressUtxos(+Stream), GetTaddressBalance(+Stream), GetTaddressTransactions
+enabled = true
+path = "<ZAINO_DATA>/transparent_address"
+
+[index.txid_location]
+# GetTransaction / GetTaddressTransactions bytes with no validator answering: the block it names,
+# fetched from p2p peers
+enabled = true
+path = "<ZAINO_DATA>/txid_location"
+
+# Fill empty indexes from a published snapshot before boot (aria2c on PATH)
+# [snapshot]
+# manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.1.0/manifest.json"
+# connections = 8   # total across every archive

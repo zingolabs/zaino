@@ -1,0 +1,283 @@
+//! One member: identity, health, bench, permits, poll cadence (`usage.md`)
+
+use std::num::NonZeroU32;
+use std::time::{Duration, Instant};
+
+use crate::class::{Lane, PerLane, Permits, LANES, MIN_CONNECTIONS};
+
+/// Configured order, `< MAX`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TrustedValidatorId(u8);
+
+impl TrustedValidatorId {
+    /// chainview's `TrustedValidatorSet::MAX`
+    pub const MAX: usize = 64;
+
+    pub fn new(index: usize) -> Option<Self> {
+        u8::try_from(index).ok().filter(|_| index < Self::MAX).map(Self)
+    }
+
+    pub fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+/// `Peers` = the p2p network's peer set, one member (zebra picks the peer per request)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemberId {
+    TrustedValidator(TrustedValidatorId),
+    Peers,
+}
+
+/// One trusted validator's connection budget (config: its `max_connections`, refused at parse
+/// below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS))
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct Limits {
+    max_connections: NonZeroU32,
+}
+
+impl Limits {
+    /// The poll's own + one reserved per lane (control, interactive, bulk) + one shared
+    pub const MIN_CONNECTIONS: u32 = MIN_CONNECTIONS;
+
+    /// `None` below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS)
+    pub fn new(max_connections: u32) -> Option<Self> {
+        let max_connections = NonZeroU32::new(max_connections)?;
+        (max_connections.get() >= MIN_CONNECTIONS).then_some(Self { max_connections })
+    }
+
+    pub fn max_connections(self) -> NonZeroU32 {
+        self.max_connections
+    }
+}
+
+/// The transport's pool ([`LinkLimits`](zaino_source::LinkLimits)`::default()`)
+impl Default for Limits {
+    fn default() -> Self {
+        let max_connections = zaino_source::LinkLimits::default().max_connections;
+        Self::new(max_connections.get()).expect("LinkLimits default >= MIN_CONNECTIONS")
+    }
+}
+
+impl TryFrom<u32> for Limits {
+    type Error = String;
+
+    fn try_from(max_connections: u32) -> Result<Self, String> {
+        Self::new(max_connections).ok_or_else(|| {
+            format!(
+                "max_connections = {max_connections} is below {MIN_CONNECTIONS} (one for the poll, \
+                 one reserved per lane + one shared)"
+            )
+        })
+    }
+}
+
+impl From<Limits> for u32 {
+    fn from(limits: Limits) -> Self {
+        limits.max_connections.get()
+    }
+}
+
+/// Poll = the active check, every reply the passive one
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    Pending,
+    Live,
+    CatchingUp,
+    Degraded,
+    Down,
+}
+
+impl Health {
+    /// Metric label + status text
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Live => "live",
+            Self::CatchingUp => "catching_up",
+            Self::Degraded => "degraded",
+            Self::Down => "down",
+        }
+    }
+}
+
+/// Last answered poll (peers: `Live` always)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Synced {
+    Live,
+    CatchingUp,
+}
+
+/// Consecutive failures → `Down` (its poll probe alone, at the ladder's ceiling)
+pub(crate) const DOWN_AFTER: u32 = 10;
+const BENCH: Duration = Duration::from_secs(60);
+const BENCH_MAX: Duration = Duration::from_secs(3600);
+const PEER_TIER: u16 = u8::MAX as u16 + 1;
+
+#[derive(Debug, Clone)]
+pub(crate) struct Member {
+    pub(crate) tier: u16,
+    pub(crate) synced: Option<Synced>,
+    pub(crate) failures: u32,
+    pub(crate) down: bool,
+    pub(crate) bench: Option<Bench>,
+    pub(crate) in_flight: PerLane<u32>,
+    pub(crate) permits: Permits,
+    pub(crate) poller: Option<Poller>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Bench {
+    pub(crate) until: Instant,
+    pub(crate) times: u32,
+}
+
+impl Member {
+    pub(crate) fn trusted(priority: u8, limits: Limits) -> Self {
+        let mut member =
+            Self::new(u16::from(priority), Permits::trusted(limits.max_connections.get()));
+        member.poller = Some(Poller::default());
+        member
+    }
+
+    /// `in_flight` = requests the peer set carries at once (one lane reserve each)
+    pub(crate) fn peers(in_flight: u32) -> Self {
+        let mut member = Self::new(PEER_TIER, Permits::peers(in_flight));
+        member.synced = Some(Synced::Live);
+        member
+    }
+
+    fn new(tier: u16, permits: Permits) -> Self {
+        Self {
+            tier,
+            synced: None,
+            failures: 0,
+            down: false,
+            bench: None,
+            in_flight: [0; LANES],
+            permits,
+            poller: None,
+        }
+    }
+
+    pub(crate) fn health(&self) -> Health {
+        match (self.failures, self.synced) {
+            _ if self.down => Health::Down,
+            (failures, _) if failures > 0 => Health::Degraded,
+            (_, None) => Health::Pending,
+            (_, Some(Synced::Live)) => Health::Live,
+            (_, Some(Synced::CatchingUp)) => Health::CatchingUp,
+        }
+    }
+
+    pub(crate) fn benched(&self, now: Instant) -> bool {
+        self.bench.is_some_and(|bench| bench.until > now)
+    }
+
+    /// 60 s × 2^(times − 1), ≤ 1 h
+    pub(crate) fn bench(&mut self, now: Instant) {
+        let times = self.bench.map_or(1, |bench| bench.times + 1);
+        let span = BENCH.saturating_mul(1 << (times - 1).min(6)).min(BENCH_MAX);
+        self.bench = Some(Bench { until: now + span, times });
+    }
+
+    /// Passive (any reply) or active (poll) check
+    ///
+    /// - `Down` only with a poller (its probe = the way back up, the peer set has none)
+    pub(crate) fn outcome(&mut self, answered: bool) {
+        match answered {
+            true => (self.failures, self.down) = (0, false),
+            false => {
+                self.failures += 1;
+                if self.failures == DOWN_AFTER && self.poller.is_some() {
+                    self.down = true;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn room(&self, lane: Lane) -> bool {
+        self.permits.admits(&self.in_flight, lane)
+    }
+
+    /// Lane sends + its poll
+    pub(crate) fn load(&self) -> u32 {
+        let polling = self.poller.as_ref().is_some_and(|poller| poller.in_flight);
+        self.in_flight.iter().sum::<u32>() + u32::from(polling)
+    }
+}
+
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Push stream up: events wake it sooner, the poll stays the truth
+pub(crate) const STREAMED_POLL_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const MIN_POLL_SPACING: Duration = Duration::from_millis(200);
+const LADDER_START: Duration = Duration::from_millis(500);
+pub(crate) const LADDER_CEILING: Duration = Duration::from_secs(30);
+pub(crate) const METADATA_REFRESH: Duration = Duration::from_secs(60);
+
+/// One trusted member's poll cadence (`last` = latest start, `previous` = the one before)
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Poller {
+    pub(crate) last: Option<Instant>,
+    pub(crate) previous: Option<Instant>,
+    pub(crate) in_flight: bool,
+    pub(crate) wake: bool,
+    pub(crate) streaming: bool,
+    metadata_at: Option<Instant>,
+    metadata_asked: bool,
+}
+
+impl Poller {
+    /// Interval, a wake (≥ 200 ms after the last), or the ladder while failing
+    pub(crate) fn due(&self, failures: u32, now: Instant) -> Instant {
+        let Some(last) = self.last else { return now };
+        let wait = match failures {
+            0 if self.wake => MIN_POLL_SPACING,
+            0 if self.streaming => STREAMED_POLL_INTERVAL,
+            0 => POLL_INTERVAL,
+            failing if self.wake && failing < DOWN_AFTER => MIN_POLL_SPACING,
+            failing => LADDER_START.saturating_mul(1 << (failing - 1).min(16)).min(LADDER_CEILING),
+        };
+        last + wait
+    }
+
+    /// `true` = metadata due with this poll
+    pub(crate) fn start(&mut self, now: Instant) -> bool {
+        (self.previous, self.last, self.in_flight, self.wake) = (self.last, Some(now), true, false);
+        self.metadata_asked = self.metadata_at.is_none_or(|at| now >= at + METADATA_REFRESH);
+        self.metadata_asked
+    }
+
+    /// Answered = its metadata read (a failed poll leaves it due: the next answer carries it)
+    pub(crate) fn finished(&mut self, answered: bool) {
+        self.in_flight = false;
+        if std::mem::take(&mut self.metadata_asked) && answered {
+            self.metadata_at = self.last;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bench_lasts_60_s_doubling_per_report_up_to_an_hour() {
+        let limits = Limits::new(MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
+        let t0 = Instant::now();
+        let mut member = Member::trusted(0, limits);
+        member.bench(t0);
+        let edge =
+            (member.benched(t0 + BENCH - Duration::from_millis(1)), member.benched(t0 + BENCH));
+        assert_eq!(edge, (true, false), "benched (1 ms before, at) {BENCH:?} after one report");
+
+        let spans: Vec<u64> = (2..=8)
+            .map(|_| {
+                member.bench(t0);
+                (member.bench.expect("benched").until - t0).as_secs()
+            })
+            .collect();
+        assert_eq!(spans, [120, 240, 480, 960, 1_920, 3_600, 3_600], "span (s) of reports 2..=8");
+    }
+}
