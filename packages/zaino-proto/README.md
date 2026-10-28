@@ -1,95 +1,55 @@
-# Zaino Proto files module
+# zaino-proto
 
-This module encapsulates the lightclient-protocol functionality and imports the canonicals files
-using `git subtree`.
+Rust bindings (prost + tonic) for the
+[lightwallet-protocol](https://github.com/zcash/lightwallet-protocol) gRPC
+surface that `zaino-grpc` serves, and for zebrad's indexer service that the
+chain view subscribes to. Vendored for the local `service.proto` edits below and
+the `bytes::Bytes` fields.
 
-<!-- TODO: this is a mess. fix later and vendor ourself?
+## Modules
 
-Current state, for whoever picks this up:
+- `proto::compact_formats` — `CompactBlock`, `CompactTx`, `ChainMetadata`,
+  `CompactSaplingSpend`, `CompactSaplingOutput`, `CompactOrchardAction`, …
+- `proto::service` — `CompactTxStreamer` messages plus
+  `compact_tx_streamer_client` (no server stub). Compact-format
+  types are mapped onto `proto::compact_formats` rather than duplicated.
+  `RawTransaction.data` is `bytes::Bytes`, so fanning one transaction out to
+  many streams is a refcount bump.
+- `proto::zebra_indexer` — zebrad's indexer service (`zebra.indexer.rpc`:
+  `ChainTipChange`, `NonFinalizedStateChange`, `MempoolChange`, `GetBlock`,
+  `GetBlockRange`): zebra's `zebra-rpc/proto/indexer.proto` plus `GetBlockRange`
+  (Zaino's zebra fork). Zaino is a client (`zaino-source`: push streams and block
+  fetch, `[[trusted_validators]] indexer_address`); the server half serves tests'
+  fake zebrad.
+- `LIGHTWALLET_PROTOCOL_VERSION` — the vendored release (newest
+  `lightwallet-protocol/CHANGELOG.md` heading), served as
+  `LightdInfo.lightwalletProtocolVersion`.
+- `frame` — gRPC length-prefixed framing (`[0x00][len u32 BE][message]`):
+  `FRAME_HEADER`, `frame_into` (frame a message written in place), `framed_len`
+  and `split_frame` (walk framed bytes). One implementation for every crate that
+  writes or reads gRPC frames by hand.
 
-- `lightwallet-protocol/` is a `git subtree` of https://github.com/zcash/lightwallet-protocol,
-  currently at upstream tag **v0.5.0** (`git-subtree-split: ac7cee05`).
-- It drifted badly before this: the subtree was recorded against the prefix
-  `zaino-proto/lightwallet-protocol`, the crate then moved under `packages/`, and
-  `git subtree pull` could no longer find its ancestry. Two years of upstream releases
-  were hand-copied into the vendored files instead of pulled, including a partial
-  re-implementation of upstream v0.5.0 filed under a hand-written changelog heading.
-  Missing `ShieldedProtocol.ironwood` is what that cost us.
-- We vendor rather than depend because Zaino is a *server*: `zcash_client_backend`
-  generates only `compact_tx_streamer_client`, and the zcash org publishes protos, not
-  Rust bindings. `zcash_client_backend` vendors this same directory for the same reason.
-- zingolabs also publishes `lightwallet-protocol` (from `zingolabs/lightwallet_protocols`),
-  which *does* generate the server. It is stale — no Ironwood, last released 2026-03-27 —
-  so today it is not usable, and the org is maintaining two overlapping proto crates.
+## Layout
 
-The open question is whether to own this properly (one zingolabs crate tracking upstream on
-a real cadence, with `zaino-proto` reduced to `utils.rs` + `proposal.proto`), or to keep
-vendoring and add a repo guard that fails when the subtree drifts from the tracked upstream
-tag. Nothing here notices when upstream releases, which is the actual defect.
-
-To pull upstream again:
-
-    git subtree pull --prefix=packages/zaino-proto/lightwallet-protocol \
-        https://github.com/zcash/lightwallet-protocol.git <tag> --squash
-
--->
-
-
-Below you can see the structure of the module
-
-````
-zaino-proto
-├── build.rs
-├── build.rs.bak
-├── Cargo.toml
-├── CHANGELOG.md
-├── lightwallet-protocol <=== this is the git subtree
-│   ├── CHANGELOG.md
-│   ├── LICENSE
-│   └── walletrpc
-│       ├── compact_formats.proto
-│       └── service.proto
-├── proto
-│   ├── compact_formats.proto -> ../lightwallet-protocol/walletrpc/compact_formats.proto
-│   ├── proposal.proto
-│   └── service.proto -> ../lightwallet-protocol/walletrpc/service.proto
-└── src
-    ├── lib.rs
-    ├── proto
-    │   ├── compact_formats.rs
-    │   ├── proposal.rs
-    │   ├── service.rs
-    │   └── utils.rs
-    └── proto.rs
+```text
+lightwallet-protocol/walletrpc/   upstream protos (release: CHANGELOG.md), with local edits
+proto/compact_formats.proto       → symlink into lightwallet-protocol/
+proto/service.proto               → symlink into lightwallet-protocol/
+proto/zebra_indexer.proto         zebra's indexer.proto + GetBlockRange
 ```
 
-Handling maintaining the git subtree history has its own tricks. We recommend developers updating
-zaino proto that they are wary of these shortcomings.
+Local edits to upstream `service.proto`: `Ping` / `Duration` / `PingResponse`
+and `GetBlockNullifiers` removed; `GetBlockRangeNullifiers` and
+`GetTaddressTxids` marked deprecated and TODO: REMOVE (served only while
+pepper-sync calls them — see [`docs/rpc_api.md`](../../docs/rpc_api.md)).
 
-If you need to update the canonical files to for your feature, maintain a linear and simple git
-commit history in your PR.
+## Generation
 
-We recommend that PRs that change the reference to the git subtree do so in this fashion.
+`build.rs` generates the bindings into `OUT_DIR` on every build, so building
+needs `protoc` (on `PATH`, or named by `PROTOC`). Nothing generated is
+committed. `CompactTxStreamer` is generated client-only: `zaino-grpc` serves it
+by dispatching on the request path, not through a tonic server.
 
-for example:
-============
-
-when doing
-```
-git subtree --prefix=zaino-proto/lightwallet-protocol pull git@github.com:zcash/lightwallet-protocol.git v0.5.0 --squash
-```
-
-your branch's commits must be sequenced like this.
-
-```
-  your-branch-name
-    - commit applying the git subtree command
-    - commit merging the canonical files
-    - commits fixing compiler errors
-    - commit indicating the version adopted in the CHANGELOG.md of zaino-proto
-```
-
-If you are developing the `lightclient-protocol` and adopting it on Zaino, it is recommended that
-you don't do subsequent `git subtree` to revisions and always rebase against the latest latest version
-that you will be using in your latest commit to avoid rebasing issues and also keeping a coherent
-git commit history for when your branch merges to `dev`.
+To move to a new upstream release, replace `lightwallet-protocol/` with that
+tag's contents, re-apply the local edits above, and record the change in a
+`.changeset/` file ([RELEASING.md](../../RELEASING.md)).

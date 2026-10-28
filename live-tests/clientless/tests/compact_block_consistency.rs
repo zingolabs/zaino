@@ -51,18 +51,10 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     let vrpc = validator.json_rpc().await?;
     let mut oracle: Vec<(u64, u64, u64)> = Vec::new();
     for height in 0..=u64::from(tip) {
-        let block = vrpc
-            .call_value("getblock", json!([height.to_string(), 1]))
-            .await?;
-        let trees = block
-            .get("trees")
-            .context("verbose getblock must carry a trees field")?;
+        let block = vrpc.call_value("getblock", json!([height.to_string(), 1])).await?;
+        let trees = block.get("trees").context("verbose getblock must carry a trees field")?;
         let size = |pool: &str| {
-            trees
-                .get(pool)
-                .and_then(|t| t.get("size"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
+            trees.get(pool).and_then(|t| t.get("size")).and_then(Value::as_u64).unwrap_or(0)
         };
         oracle.push((size("sapling"), size("orchard"), size("ironwood")));
     }
@@ -93,11 +85,8 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
 
         let sapling_outputs: u64 = block.vtx.iter().map(|tx| tx.outputs.len() as u64).sum();
         let orchard_actions: u64 = block.vtx.iter().map(|tx| tx.actions.len() as u64).sum();
-        let ironwood_actions: u64 = block
-            .vtx
-            .iter()
-            .map(|tx| tx.ironwood_actions.len() as u64)
-            .sum();
+        let ironwood_actions: u64 =
+            block.vtx.iter().map(|tx| tx.ironwood_actions.len() as u64).sum();
         total_orchard_actions += orchard_actions;
         total_ironwood_actions += ironwood_actions;
 
@@ -196,9 +185,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -215,12 +202,9 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
+        let raw = vrpc.call_value("getblock", json!([height.to_string(), 0])).await?;
         let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
+            raw.as_str().context("verbosity-0 getblock returns a hex string")?,
             "getblock verbosity 0",
         )?;
         let coinbase = FullBlock::parse_from_hex(&raw, None)?
@@ -288,9 +272,7 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -307,12 +289,9 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
+        let raw = vrpc.call_value("getblock", json!([height.to_string(), 0])).await?;
         let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
+            raw.as_str().context("verbosity-0 getblock returns a hex string")?,
             "getblock verbosity 0",
         )?;
         let coinbase = FullBlock::parse_from_hex(&raw, None)?
@@ -392,14 +371,10 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
     env.build().await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2)
-        .await?;
+    let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
     assert_eq!(
         blocks.len() as u64,
         u64::from(tip),
@@ -416,12 +391,9 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
+        let raw = vrpc.call_value("getblock", json!([height.to_string(), 0])).await?;
         let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
+            raw.as_str().context("verbosity-0 getblock returns a hex string")?,
             "getblock verbosity 0",
         )?;
         let coinbase = FullBlock::parse_from_hex(&raw, None)?

@@ -1,32 +1,19 @@
-# zainod images, on blessing's `zainod-X.Y.Z` provenance tag (image version = X.Y.Z)
-name: Zaino Release
+# zainod image on Knope's `vX.Y.Z` release tag (RELEASING.md)
+name: Release
 
 on:
   push:
     tags:
-      - 'zainod-[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
-    inputs:
-      push:
-        description: 'Push the built image to DockerHub. Set false to verify build on a feature branch without publishing.'
-        type: boolean
-        default: true
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: read
 
 jobs:
   docker:
-    name: Docker image (${{ matrix.variant }})
+    name: zainod image
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - variant: default
-            suffix: ''
-            features: ''
-          - variant: no-tls
-            suffix: '-no-tls'
-            features: no_tls_use_unencrypted_traffic
-    env:
-      PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
       - uses: actions/checkout@v7
 
@@ -37,31 +24,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
+      # X.Y.Z, + `latest` unless a pre-release
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/zaino
-            ${{ secrets.DOCKERHUB_USERNAME }}/zainod
-          flavor: |
-            suffix=${{ matrix.suffix }}
-          tags: |
-            type=match,pattern=zainod-(.*),group=1
-            type=ref,event=branch
-            type=sha,prefix=,format=short
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/zainod
+          tags: type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            CARGO_FEATURES=${{ matrix.features }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }}
-            type=gha,scope=${{ matrix.variant }}
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }},mode=max
-            type=gha,scope=${{ matrix.variant }},mode=max
