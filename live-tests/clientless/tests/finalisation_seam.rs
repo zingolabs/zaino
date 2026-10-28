@@ -97,9 +97,7 @@ async fn range_across_the_seam_is_one_unbroken_chain() -> Result<()> {
     let floor = tip.saturating_sub(FAST_SEAM);
     wait_for_finalised(&indexer, floor, FINALISE_TIMEOUT).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip))
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip)).await?;
     assert_eq!(
         blocks.len(),
         tip as usize,
@@ -154,9 +152,8 @@ async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
     wait_for_finalised(&indexer, floor, FINALISE_TIMEOUT).await?;
 
     let straddling = [floor - 1, floor, floor + 1, floor + 2];
-    let spanning = indexer
-        .get_block_range(BlockHeight::from(floor - 1), BlockHeight::from(floor + 2))
-        .await?;
+    let spanning =
+        indexer.get_block_range(BlockHeight::from(floor - 1), BlockHeight::from(floor + 2)).await?;
     assert_eq!(
         spanning.len(),
         straddling.len(),
@@ -166,9 +163,8 @@ async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
     for (height, from_span) in straddling.iter().zip(spanning.iter()) {
         assert_eq!(from_span.height, u64::from(*height), "spanning range order");
 
-        let confined = indexer
-            .get_block_range(BlockHeight::from(*height), BlockHeight::from(*height))
-            .await?;
+        let confined =
+            indexer.get_block_range(BlockHeight::from(*height), BlockHeight::from(*height)).await?;
         assert_eq!(confined.len(), 1, "single-height range at {height}");
         assert_eq!(
             &confined[0], from_span,
@@ -213,12 +209,10 @@ async fn descending_range_across_the_seam_reverses_the_ascending_one() -> Result
     wait_for_finalised(&indexer, floor, FINALISE_TIMEOUT).await?;
 
     let (low, high) = (floor - 5, floor + 5);
-    let ascending = indexer
-        .get_block_range(BlockHeight::from(low), BlockHeight::from(high))
-        .await?;
-    let descending = indexer
-        .get_block_range(BlockHeight::from(high), BlockHeight::from(low))
-        .await?;
+    let ascending =
+        indexer.get_block_range(BlockHeight::from(low), BlockHeight::from(high)).await?;
+    let descending =
+        indexer.get_block_range(BlockHeight::from(high), BlockHeight::from(low)).await?;
 
     assert_eq!(
         descending.len(),
@@ -271,9 +265,7 @@ async fn served_blocks_match_the_validator_on_both_sides_of_the_seam() -> Result
         .await?;
 
     for block in &blocks {
-        let hash = vrpc
-            .call_value("getblockhash", json!([block.height]))
-            .await?;
+        let hash = vrpc.call_value("getblockhash", json!([block.height])).await?;
         // Wire carries internal byte order; JSON-RPC uses the reverse.
         let mut served = block.hash.clone();
         served.reverse();
