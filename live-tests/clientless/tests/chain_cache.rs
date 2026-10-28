@@ -26,9 +26,8 @@ mod chain_query_interface {
         indexer.wait_for_block_num(tip, READY).await?;
 
         let tip_u32 = u32::from(validator.chain_height().await?);
-        let range = indexer
-            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip_u32))
-            .await?;
+        let range =
+            indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip_u32)).await?;
         assert_eq!(
             range.len(),
             tip_u32 as usize,
@@ -95,9 +94,8 @@ mod chain_query_interface {
              reported a committed tip"
         );
 
-        let range = indexer
-            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip))
-            .await?;
+        let range =
+            indexer.get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip)).await?;
         assert_eq!(
             range.len(),
             tip as usize,
@@ -120,12 +118,8 @@ mod chain_query_interface {
 
         let below_floor = BlockHeight::from(CACHE_FLOOR / 2);
         let by_height = indexer.get_block(below_floor).await?;
-        let hash_bytes: [u8; 32] = by_height
-            .hash
-            .clone()
-            .try_into()
-            .ok()
-            .context("served block hash must be 32 bytes")?;
+        let hash_bytes: [u8; 32] =
+            by_height.hash.clone().try_into().ok().context("served block hash must be 32 bytes")?;
         let by_hash = indexer.get_block_by_hash(BlockHash(hash_bytes)).await?;
         assert_eq!(
             by_hash, by_height,
@@ -133,9 +127,7 @@ mod chain_query_interface {
         );
 
         let vrpc = validator.json_rpc().await?;
-        let hash = vrpc
-            .call_value("getblockhash", json!([by_height.height]))
-            .await?;
+        let hash = vrpc.call_value("getblockhash", json!([by_height.height])).await?;
         let mut served = by_height.hash.clone();
         served.reverse();
         assert_eq!(
@@ -169,10 +161,7 @@ mod chain_query_interface {
     }
 
     fn indexer_subtrees(roots: &[SubtreeRoot]) -> Vec<(Vec<u8>, u64)> {
-        roots
-            .iter()
-            .map(|r| (r.root_hash.clone(), r.completing_block_height))
-            .collect()
+        roots.iter().map(|r| (r.root_hash.clone(), r.completing_block_height)).collect()
     }
 
     #[rstest]
@@ -190,18 +179,15 @@ mod chain_query_interface {
 
         let vrpc = validator.json_rpc().await?;
 
-        let test_pools = [
-            ("sapling", ShieldedProtocol::Sapling),
-            ("orchard", ShieldedProtocol::Orchard),
-        ];
+        let test_pools =
+            [("sapling", ShieldedProtocol::Sapling), ("orchard", ShieldedProtocol::Orchard)];
         let valid_start_index: u32 = 0;
         let max_entries: u32 = 0;
 
         // *** Test valid requests ***
         for (pool_string, protocol) in test_pools {
-            let indexer_roots = indexer
-                .get_subtree_roots(valid_start_index, protocol, max_entries)
-                .await?;
+            let indexer_roots =
+                indexer.get_subtree_roots(valid_start_index, protocol, max_entries).await?;
             let validator_reply = vrpc
                 .call_value(
                     "z_getsubtreesbyindex",
@@ -218,9 +204,8 @@ mod chain_query_interface {
         // *** Test invalid requests ***
         let invalid_start_index: u32 = 10000;
         let (orchard_string, orchard_protocol) = test_pools[1];
-        let indexer_roots = indexer
-            .get_subtree_roots(invalid_start_index, orchard_protocol, max_entries)
-            .await?;
+        let indexer_roots =
+            indexer.get_subtree_roots(invalid_start_index, orchard_protocol, max_entries).await?;
         let validator_reply = vrpc
             .call_value(
                 "z_getsubtreesbyindex",
@@ -259,10 +244,9 @@ mod chain_query_interface {
                 indexer.wait_for_block_num(tip, READY).await
             };
 
-            let joined = tokio::time::timeout(Duration::from_secs(20), async {
-                tokio::join!(stream, mine)
-            })
-            .await;
+            let joined =
+                tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(stream, mine) })
+                    .await;
             let (stream_result, mine_result) = joined.unwrap_or_else(|_| {
                 panic!(
                     "mempool stream did not close after chain tip changed on iteration {iteration}"
