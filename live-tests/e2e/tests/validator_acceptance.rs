@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use rstest::rstest;
 use serde_json::json;
+use zaino_testutils::ZEBRAD_VERSION;
 use ztest::prelude::*;
 
 use e2e::Pool;
@@ -43,8 +44,8 @@ enum Backend {
 /// H-LAG and H-FAITHFUL-ACCEPT: after the validator accepts a transaction, the
 /// indexer's mempool shows it within the bound.
 #[rstest]
-#[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-#[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+#[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+#[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
 #[ztest::qos::wallet]
 #[tokio::test(flavor = "multi_thread")]
 async fn indexer_mempool_view_trails_validator_acceptance<B: ValidatorConfig>(
@@ -123,8 +124,8 @@ async fn indexer_mempool_view_trails_validator_acceptance<B: ValidatorConfig>(
 
 /// After each generated block the indexer serves the validator's tip.
 #[rstest]
-#[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-#[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+#[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+#[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn indexer_converges_with_validator_after_block_generation<B: ValidatorConfig>(
@@ -180,7 +181,11 @@ async fn indexer_converges_with_validator_after_block_generation<B: ValidatorCon
 #[tokio::test(flavor = "multi_thread")]
 async fn received_note_spends_to_receiver(#[case] target: Pool, #[case] age: u32) -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+    let validator = env.add_validator(
+        Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest()),
+    );
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
@@ -215,7 +220,11 @@ async fn received_note_spends_to_receiver(#[case] target: Pool, #[case] age: u32
 #[tokio::test(flavor = "multi_thread")]
 async fn coinbase_spends_to_receiver(#[case] target: Pool, #[case] age: u32) -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+    let validator = env.add_validator(
+        Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest()),
+    );
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;

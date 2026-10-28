@@ -21,7 +21,7 @@ async fn rpc_error(rpc: &JsonRpcClient, method: &'static str, params: Value) -> 
         .await
         .err()
         .with_context(|| format!("{method} must be refused"))?;
-    let text = format!("{:#}", anyhow::Error::from(error));
+    let text = error.to_string();
     let body = text
         .split_once("RPC error: ")
         .map(|(_, body)| body)
