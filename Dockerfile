@@ -4,7 +4,7 @@
 # - bases pinned by digest (frozen apk index = reproducible; dependabot bumps), apk unpinned
 
 # Same toolchain as rust-toolchain.toml (else rustup downloads that one at build)
-FROM docker.io/library/rust:1.96.0-alpine3.24@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41 AS builder
+FROM docker.io/library/rust:1.99.1-alpine3.24@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS builder
 WORKDIR /src
 
 # `release` or `profiling` (line tables + frame pointers)
