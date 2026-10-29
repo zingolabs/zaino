@@ -28,50 +28,32 @@ impl<V: SequenceRead> TreeStateReader<V> {
     /// - reads mmapped nodes: run off async workers
     pub fn treestate(&self, at: BlockHeight) -> Result<Treestate, ServeError> {
         let record = self.height_record(at).ok_or(ServeError::NotFound { height: at })?;
-        let inconsistent = ServeError::Inconsistent { height: at };
-        let tree = |pool| self.pool_tree(pool, record.sizes).ok_or(inconsistent.clone());
+        let tree = |pool| {
+            self.pool_tree(pool, record.sizes).unwrap_or_else(|| {
+                panic!("tree_state: stored nodes rebuild the {pool:?} frontier at {at}")
+            })
+        };
 
         Ok(Treestate {
             block_hash: record.hash,
             height: at,
             time: record.time,
-            trees: PerPool {
-                sapling: tree(ShieldedPool::Sapling)?,
-                orchard: tree(ShieldedPool::Orchard)?,
-                ironwood: tree(ShieldedPool::Ironwood)?,
-            },
+            trees: PerPool::from_fn(tree),
         })
     }
 
-    /// Completed subtree roots `start_index` inclusive to `start_index + max_entries` exclusive
+    /// Every completed subtree root of `pool`, index order
     ///
-    /// - `max_entries == 0` = to the last root
-    /// - `start_index == count` = an empty list, never an error (pepper-sync's probe pass)
     /// - completing block's hash = its height's record (a subtree completes at a held height)
-    pub fn subtree_roots(
-        &self,
-        pool: ShieldedPool,
-        start_index: u16,
-        max_entries: u16,
-    ) -> Result<Vec<SubtreeRoot>, ServeError> {
-        let limit = match max_entries {
-            0 => u64::MAX,
-            entries => u64::from(entries),
-        };
-        let count = self.len(subtree_table(pool));
-        let start = u64::from(start_index);
-        let end = count.min(start.saturating_add(limit));
-
-        (start..end)
+    pub fn subtree_roots(&self, pool: ShieldedPool) -> Vec<SubtreeRoot> {
+        (0..self.len(subtree_table(pool)))
             .map(|index| {
                 let entry = subtrees::entry(self.view(), pool, index).expect("below the count");
                 let height = entry.end_height;
-                let record =
-                    self.height_record(height).ok_or(ServeError::Inconsistent { height })?;
-                Ok(SubtreeRoot {
-                    root: entry.root,
-                    completing: BlockRef { hash: record.hash, height },
-                })
+                let record = self.height_record(height).unwrap_or_else(|| {
+                    panic!("tree_state: heights holds subtree {index}'s completing height {height}")
+                });
+                SubtreeRoot { root: entry.root, completing: BlockRef { hash: record.hash, height } }
             })
             .collect()
     }
@@ -100,12 +82,8 @@ fn serialize<H: Hashable + HashSer + Clone>(
     CommitmentTreeBytes::new(serialized)
 }
 
-/// `Inconsistent` = stored nodes rebuild no frontier (a fold bug, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("no tree state at height {height}")]
     NotFound { height: BlockHeight },
-
-    #[error("stored tree state at height {height} is inconsistent")]
-    Inconsistent { height: BlockHeight },
 }

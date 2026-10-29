@@ -30,7 +30,8 @@ pub use chain_data_source::{
     TransactionResponse,
 };
 pub use decode::{
-    decode_block, decode_transaction, mined_transaction, prepare_transaction, DecodeError, Prepared,
+    decode_block, decode_prepared, decode_transaction, mined_transaction, prepare_transaction,
+    DecodeError, Prepared,
 };
 pub use endpoint::{Auth, Endpoint, EndpointError, LinkLimits, Timeouts};
 pub use error::{FailureMode, NonDomainError, QueryError};

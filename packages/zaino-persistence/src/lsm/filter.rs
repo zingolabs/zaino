@@ -11,7 +11,7 @@ use xorf::{BinaryFuse8, BinaryFuse8Ref, DmaSerializable, Filter, FilterRef};
 use super::spill::Spill;
 
 /// Target keys per shard (xorf build scratch ≈ 25 B/key → ≈ 26 MiB per shard)
-pub(crate) const SHARD_KEYS: u64 = 1 << 20;
+pub(crate) const SHARD_KEYS: usize = 1 << 20;
 
 /// Serialized `Descriptor` (seed u64, three u32)
 const DESCRIPTOR: usize = BinaryFuse8::DESCRIPTOR_LEN;
@@ -47,7 +47,7 @@ fn mix(mut z: u64) -> u64 {
 }
 
 /// Shard bits for a segment of `records` keys (`records / 2^bits ≤ SHARD_KEYS`)
-pub(crate) fn shard_bits(records: u64) -> u8 {
+pub(crate) fn shard_bits(records: usize) -> u8 {
     let shards = records.div_ceil(SHARD_KEYS).max(1);
     u8::try_from(shards.next_power_of_two().trailing_zeros()).expect("< 64 shard bits")
 }
@@ -58,14 +58,6 @@ fn shard(key: &[u8], bits: u8) -> usize {
         bits => usize::try_from(word(&key[..8]) >> (64 - u32::from(bits)))
             .expect("shard < 2^bits fits usize"),
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum FilterError {
-    #[error("{0}")]
-    Build(&'static str),
-    #[error(transparent)]
-    Io(#[from] io::Error),
 }
 
 /// Streams ascending keys into the serialized filter section
@@ -81,7 +73,7 @@ pub(crate) struct FilterWriter {
 }
 
 impl FilterWriter {
-    pub(crate) fn new(records: u64, fingerprints: Spill) -> Self {
+    pub(crate) fn new(records: usize, fingerprints: Spill) -> Self {
         Self {
             bits: shard_bits(records),
             current: 0,
@@ -92,7 +84,7 @@ impl FilterWriter {
     }
 
     /// Keys in ascending order (shards then close in order)
-    pub(crate) fn push(&mut self, key: &[u8]) -> Result<(), FilterError> {
+    pub(crate) fn push(&mut self, key: &[u8]) -> io::Result<()> {
         let at = shard(key, self.bits);
         assert!(at >= self.current, "filter keys arrive in key order");
         while self.current < at {
@@ -104,7 +96,7 @@ impl FilterWriter {
 
     /// Section head `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE)` + the fingerprints
     /// after it
-    pub(crate) fn finish(mut self) -> Result<(Vec<u8>, Spill), FilterError> {
+    pub(crate) fn finish(mut self) -> io::Result<(Vec<u8>, Spill)> {
         while self.current < 1 << self.bits {
             self.close()?;
         }
@@ -114,12 +106,14 @@ impl FilterWriter {
         Ok((head, self.fingerprints))
     }
 
-    fn close(&mut self) -> Result<(), FilterError> {
+    fn close(&mut self) -> io::Result<()> {
         let mut entry = [0u8; ENTRY];
         if !self.hashes.is_empty() {
             self.hashes.sort_unstable();
             self.hashes.dedup();
-            let built = BinaryFuse8::try_from(&self.hashes).map_err(FilterError::Build)?;
+            // xorf `Err` = every bounded seed retry failed (negligible over deduped hashes)
+            let built = BinaryFuse8::try_from(&self.hashes)
+                .expect("binary fuse filter builds over deduped hashes");
             built.dma_copy_descriptor_to(&mut entry[..DESCRIPTOR]);
             let fingerprints = built.dma_fingerprints();
             let count = u32::try_from(fingerprints.len()).expect("shard fingerprints < 2^32");
@@ -154,7 +148,8 @@ impl FilterLayout {
         let mut at = 1 + table_len;
         let mut shard_ranges = Vec::with_capacity(count);
         for (index, entry) in table.chunks_exact(ENTRY).enumerate() {
-            let shard_len = u32::from_le_bytes(entry[DESCRIPTOR..].try_into().ok()?) as usize;
+            let shard_len = u32::from_le_bytes(entry[DESCRIPTOR..].try_into().ok()?);
+            let shard_len = usize::try_from(shard_len).ok()?;
             let (descriptor, end) = (1 + index * ENTRY, at.checked_add(shard_len)?);
             shard_ranges.push([descriptor..descriptor + DESCRIPTOR, at..end]);
             at = end;
@@ -201,8 +196,7 @@ mod tests {
         let fs = SimFs::new();
         let dir = Path::new("/f");
         fs.create_dir_all(dir).expect("dir");
-        let mut writer =
-            FilterWriter::new(keys.len() as u64, Spill::new(fs.clone(), dir.join("spill")));
+        let mut writer = FilterWriter::new(keys.len(), Spill::new(fs.clone(), dir.join("spill")));
         for key in keys {
             writer.push(key).expect("push");
         }
@@ -265,7 +259,9 @@ mod tests {
     /// 1.5 × `SHARD_KEYS` keys (2 shards), 200 000 strangers
     #[test]
     fn a_filter_finds_every_written_key_and_admits_strangers_at_its_false_positive_rate() {
-        let mut keys: Vec<Vec<u8>> = (0..3 * SHARD_KEYS / 2).map(key).collect();
+        let mut keys: Vec<Vec<u8>> = (0..3 * SHARD_KEYS / 2)
+            .map(|n| key(u64::try_from(n).expect("usize fits u64")))
+            .collect();
         keys.sort_unstable();
         let section = section(&keys);
         let read = |range: Range<usize>| &section[range];

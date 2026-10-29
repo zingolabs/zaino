@@ -20,8 +20,8 @@ const _: () =
     assert!(TrustedValidatorId::MAX <= TrustedValidatorSet::MAX, "every validator has a bit");
 
 impl TrustedValidatorSet {
-    /// Ceiling on the configured set (the bitset's width)
-    pub(crate) const MAX: usize = u64::BITS as usize;
+    /// Ceiling on the configured set (the `u64` bitset's width)
+    const MAX: usize = 64;
 
     pub(crate) fn insert(&mut self, validator: TrustedValidatorId) {
         self.0 |= 1u64 << validator.get();
@@ -36,7 +36,7 @@ impl TrustedValidatorSet {
     }
 
     pub fn count(&self) -> usize {
-        self.0.count_ones() as usize
+        usize::try_from(self.0.count_ones()).expect("count_ones <= 64")
     }
 
     pub fn is_empty(&self) -> bool {

@@ -382,8 +382,9 @@ impl TrafficCore {
             );
             let mut counted = [0u32; LANES];
             for ask in self.asks.values() {
+                let sends = ask.sends.iter().filter(|s| s.member == *id).count();
                 counted[ask.class.lane().index()] +=
-                    ask.sends.iter().filter(|s| s.member == *id).count() as u32;
+                    u32::try_from(sends).expect("sends per ask <= members");
             }
             assert_eq!(
                 in_flight, counted,

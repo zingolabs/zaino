@@ -14,8 +14,9 @@ use zaino_primitives::types::TreeSizes;
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
 
+use zcash_protocol::BlockHash;
+
 use crate::encode::decode_chain_metadata;
-use crate::HASH;
 
 /// `CompactBlock.vtx`, the only block-level field rewritten
 ///
@@ -100,8 +101,8 @@ pub fn project_tx_at(encoded: &[u8], slot: u64, pools: Pools) -> Option<Bytes> {
 /// One framed record's `CompactBlock.hash` (`None` = absent, not 32 bytes, or unwalkable)
 ///
 /// - precedes `vtx`: a lookup never walks the transactions
-pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
-    block_field(record, BLOCK_HASH)?.try_into().ok()
+pub(crate) fn record_hash(record: &[u8]) -> Option<BlockHash> {
+    block_field(record, BLOCK_HASH)?.try_into().ok().map(BlockHash)
 }
 
 /// One framed record's `CompactBlock.chainMetadata` (`None` = absent or unwalkable)
@@ -140,7 +141,7 @@ fn project_block(block: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
             let mut tx = Vec::with_capacity(value.len());
             if project_tx(value, pools, &mut tx)? {
                 put_varint(key, out);
-                put_varint(tx.len() as u64, out);
+                prost::encode_length_delimiter(tx.len(), out).expect("Vec<u8> grows to fit");
                 out.extend_from_slice(&tx);
             }
         } else {
@@ -230,12 +231,13 @@ fn varint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
     }
 }
 
+/// `to_le_bytes()[0]` = low byte
 fn put_varint(mut value: u64, out: &mut Vec<u8>) {
     while value >= 0x80 {
-        out.push((value as u8) | 0x80);
+        out.push(value.to_le_bytes()[0] | 0x80);
         value >>= 7;
     }
-    out.push(value as u8);
+    out.push(value.to_le_bytes()[0]);
 }
 
 #[cfg(test)]
@@ -263,7 +265,7 @@ mod tests {
         };
         let framed = encode_compact_block(chain.block(one.hash), &chain.fees(one.hash), &sizes);
 
-        assert_eq!(record_hash(&framed), Some(one.hash.0), "whole record: its hash");
+        assert_eq!(record_hash(&framed), Some(one.hash), "whole record: its hash");
         assert_eq!(record_hash(&framed[..FRAME_HEADER + 4]), None, "cut before the hash");
         assert_eq!(record_sizes(&framed), Some(sizes), "whole record: its chainMetadata");
         assert_eq!(record_sizes(&framed[..framed.len() - 1]), None, "cut inside chainMetadata");
@@ -359,10 +361,9 @@ mod tests {
 
             let fee = Some(Zatoshis::from_u64(1_000).expect("in range"));
             let mut from_mempool = Vec::new();
-            for (slot, tx) in block.transactions().iter().enumerate() {
+            for (slot, tx) in (0u64..).zip(block.transactions()) {
                 let rendered = compact_tx(0, tx, fee);
-                let Some(framed) = project_tx_at(&rendered.encode_to_vec(), slot as u64, pools)
-                else {
+                let Some(framed) = project_tx_at(&rendered.encode_to_vec(), slot, pools) else {
                     continue;
                 };
                 let decoded =

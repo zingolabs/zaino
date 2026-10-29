@@ -8,16 +8,16 @@
 use bytes::Bytes;
 use zaino_persistence::{OverlayView, SequenceRead, View};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 use crate::{
     project::{project, record_hash},
-    CompactBlockReader, Pools, HASH,
+    CompactBlockReader, Pools,
 };
 
 /// Ceiling on one range window's records (one chunk handed to the socket)
 const WINDOW_BYTES: usize = 1 << 20;
 
-/// `Malformed` = stored record that will not walk (corruption, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("block {height} is not in the index")]
@@ -25,21 +25,17 @@ pub enum ServeError {
 
     #[error("block hash is not in the index")]
     HashNotFound,
-
-    #[error("stored record at height {height} is malformed")]
-    Malformed { height: BlockHeight },
 }
 
 impl<V: SequenceRead> CompactBlockReader<V> {
     /// `GetBlock` by hash, `height` located by the block-hash index: the record there only if it
     /// is `hash`'s (the locator and this index may hold different blocks there)
-    pub fn block_at(&self, height: BlockHeight, hash: &[u8; HASH]) -> Result<Bytes, ServeError> {
+    pub fn block_at(&self, height: BlockHeight, hash: &BlockHash) -> Result<Bytes, ServeError> {
         let record = self.block(height).ok_or(ServeError::HashNotFound)?;
-        match record_hash(&record) {
-            Some(held) if held == *hash => Ok(record),
-            Some(_) => Err(ServeError::HashNotFound),
-            None => Err(ServeError::Malformed { height }),
-        }
+        let held = record_hash(&record).unwrap_or_else(|| {
+            panic!("compact_block: record at {height} carries its hash (encode_compact_block)")
+        });
+        (held == *hash).then_some(record).ok_or(ServeError::HashNotFound)
     }
 }
 
@@ -129,16 +125,15 @@ impl<V: SequenceRead> RangeCursor<V> {
 
     /// Next wire chunk (framed records back to back, in walk order, projected to the cursor's
     /// pools), `None` once the range is spent
-    pub fn next_chunk(&mut self) -> Option<Result<Bytes, ServeError>> {
+    pub fn next_chunk(&mut self) -> Option<Bytes> {
         let height = self.next?;
         if !self.next_touches_disk() {
             // layer: one record per chunk, projected on read
             self.step_past(height);
-            let Some(record) = self.reader.resident_block(height) else {
-                return Some(Err(ServeError::NotFound { height }));
-            };
-            let projected = project(std::slice::from_ref(&record), self.pools);
-            return Some(projected.ok_or(ServeError::Malformed { height }));
+            let record = self.reader.resident_block(height).unwrap_or_else(|| {
+                panic!("compact_block: layer holds every height above durable through its tip ({height})")
+            });
+            return Some(projected(std::slice::from_ref(&record), self.pools));
         }
 
         // descending: every height left sits in the files (the layer's went first)
@@ -148,7 +143,7 @@ impl<V: SequenceRead> RangeCursor<V> {
         };
         let (records, reached) = self.reader.range(height, files_last, self.budget);
         self.step_past(reached);
-        Some(project(&records, self.pools).ok_or(ServeError::Malformed { height }))
+        Some(projected(&records, self.pools))
     }
 
     /// `next` = one past `reached` in walk order (`None` once `last` is served)
@@ -159,6 +154,10 @@ impl<V: SequenceRead> RangeCursor<V> {
             (false, true) => u32::from(reached).checked_sub(1).map(BlockHeight::from),
         };
     }
+}
+
+fn projected(records: &[Bytes], pools: Pools) -> Bytes {
+    project(records, pools).expect("compact_block: stored records walk (encode_compact_block)")
 }
 
 #[cfg(test)]
@@ -180,9 +179,11 @@ mod tests {
     /// `chain` as an NFS publication reads it: heights `0..durable` committed, the rest folded
     /// into the layer above them
     fn publication(chain: &MockChain, durable: u32) -> CompactBlockReader<OverlayView<DiskView>> {
-        let (blocks, durable) = (chain.blocks(chain.tip()), durable as usize);
+        let blocks = chain.blocks(chain.tip());
+        let (files, layered): (Vec<_>, Vec<_>) =
+            blocks.iter().partition(|block| u32::from(block.header().height) < durable);
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
-        for block in &blocks[..durable] {
+        for block in files {
             let mut changes = store.changes(block.block_ref());
             let parent = CompactBlockReader::new(store.applied());
             fold(&parent, block, &chain.fees(block.header().hash), &mut changes);
@@ -190,7 +191,7 @@ mod tests {
         }
         store.commit().expect("SimFs commit");
         let mut layer = Overlay::empty(store.schema());
-        for block in &blocks[durable..] {
+        for block in layered {
             let mut changes = store.schema().changes(block.block_ref());
             let parent = CompactBlockReader::new(OverlayView::new(store.durable(), layer.clone()));
             fold(&parent, block, &chain.fees(block.header().hash), &mut changes);
@@ -215,7 +216,7 @@ mod tests {
     fn drain(mut cursor: RangeCursor<DiskView>) -> Vec<Bytes> {
         let mut chunks = Vec::new();
         while let Some(chunk) = cursor.next_chunk() {
-            chunks.push(chunk.expect("chunk"));
+            chunks.push(chunk);
         }
         assert!(cursor.next_chunk().is_none(), "spent cursor stays spent");
         chunks
@@ -258,10 +259,10 @@ mod tests {
         assert_eq!(tip.hash, three.hash.0, "tip record = the chain's tip");
         assert_eq!(reader.block(h(4)), None, "past the tip");
 
-        assert_eq!(reader.block_at(h(2), &two.hash.0), Ok(body), "by hash = by height");
-        let other = reader.block_at(h(2), &three.hash.0);
+        assert_eq!(reader.block_at(h(2), &two.hash), Ok(body), "by hash = by height");
+        let other = reader.block_at(h(2), &three.hash);
         assert_eq!(other, Err(ServeError::HashNotFound), "another block at the located height");
-        let past = reader.block_at(h(9), &[0xee; HASH]);
+        let past = reader.block_at(h(9), &BlockHash([0xee; 32]));
         assert_eq!(past, Err(ServeError::HashNotFound), "a height past the tip");
     }
 
@@ -273,7 +274,7 @@ mod tests {
 
         assert_eq!(reader.resident_block(h(5)), reader.block(h(5)), "layer: RAM");
         assert_eq!(reader.resident_block(h(2)), None, "files: not resident");
-        let by_hash = reader.block_at(h(6), &six.hash.0);
+        let by_hash = reader.block_at(h(6), &six.hash);
         assert_eq!(by_hash, Ok(reader.block(h(6)).expect("held")), "layer block by hash");
     }
 
@@ -334,7 +335,10 @@ mod tests {
             assert_eq!(served, expected, "{range:?}");
             let records: Vec<Bytes> = heights_served
                 .iter()
-                .map(|&at| reader.block(h(at as u32)).expect("held"))
+                .map(|&at| {
+                    let at = BlockHeight::try_from(at).expect("test heights < 99");
+                    reader.block(at).expect("held")
+                })
                 .collect();
             let expected = project(&records, Pools::ALL).expect("walks");
             assert_eq!(chunks.concat(), expected, "{range:?}: chunks = those heights' records");
@@ -409,7 +413,7 @@ mod tests {
         };
 
         let (up, down) = (range(0, tip), range(tip, 0));
-        let capped = vec![WINDOW_RECORDS as usize, 2];
+        let capped = vec![usize::try_from(WINDOW_RECORDS).expect("256 fits usize"), 2];
         assert_eq!(per_chunk(&up), capped, "0 to {tip}: records per window");
         assert_eq!(per_chunk(&down), capped, "{tip} to 0: records per window");
         let top_down: Vec<u64> = (0..=u64::from(tip)).rev().collect();

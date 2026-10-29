@@ -12,7 +12,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{metrics, GrpcLimits};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ConnectionCaps {
     total: Arc<Semaphore>,
     total_max: usize,

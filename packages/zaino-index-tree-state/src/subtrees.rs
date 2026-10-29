@@ -1,6 +1,6 @@
 //! `<pool>/subtrees`: 36 B per completed subtree (root, completing height)
 //!
-//! - slot = subtree index → a `start_index` resume = a seek, not a scan
+//! - slot = subtree index
 
 use zaino_persistence::SequenceRead;
 use zaino_primitives::types::TreeRoot;
@@ -51,7 +51,7 @@ mod tests {
     /// Slot = subtree index → a width change re-addresses every entry
     #[test]
     fn subtree_entry_golden_bytes_round_trip() {
-        let root: [u8; 32] = std::array::from_fn(|at| 0xe0 ^ at as u8);
+        let root: [u8; 32] = std::array::from_fn(|at| 0xe0 ^ u8::try_from(at).expect("32 < 256"));
         let entry =
             SubtreeEntry { root: TreeRoot(root), end_height: BlockHeight::from(0x0012_3456) };
         // height = a locator: big-endian

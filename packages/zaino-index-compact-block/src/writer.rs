@@ -8,8 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store};
+use zaino_persistence::{BlockChanges, SequenceRead, Store};
 use zaino_primitives::types::{Block, BlockFees};
+use zaino_sync::IndexKind;
 use zaino_sync::{
     apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Step,
     Subscription,
@@ -224,7 +225,9 @@ mod tests {
             let (Step::Apply(block) | Step::FinalizedTip(block)) = &step else {
                 panic!("Shutdown = `stop`");
             };
-            let fees = Arc::new(self.fees[u32::from(block.header().height) as usize].clone());
+            let height = block.header().height;
+            let fees = self.fees.iter().find(|fees| fees.height == height);
+            let fees = Arc::new(fees.expect("fees for every height").clone());
             self.fee_sink.send(Step::Apply(fees)).await;
             self.writer.send(step).await;
         }
@@ -247,7 +250,7 @@ mod tests {
         let decoded =
             compact_formats::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
         Stored {
-            hash: BlockHash(record_hash(record).expect("carries its hash")),
+            hash: record_hash(record).expect("carries its hash"),
             sizes: record_sizes(record).expect("carries its chainMetadata"),
             fees: decoded.vtx.iter().map(|tx| tx.fee).collect(),
         }
@@ -317,7 +320,7 @@ mod tests {
                 .map(TreeSize::from),
             fees: match height {
                 0 => vec![0],
-                paid => vec![0, 1_000 * paid as u32],
+                paid => vec![0, 1_000 * u32::try_from(paid).expect("< 10 blocks")],
             },
         };
 
@@ -337,8 +340,8 @@ mod tests {
             let case = format!("move {at} {next:?}");
             let reader = CompactBlockReader::new(index.writer.handle().durable_view());
             let mut records = Vec::new();
-            for height in 0..stream.sent() {
-                let record = reader.block(h(height as u32));
+            for (height, block) in blocks[..stream.sent()].iter().enumerate() {
+                let record = reader.block(block.header().height);
                 prop_assert!(record.is_some(), "{case}: no record at {height}");
                 let record = record.expect("checked above");
                 prop_assert_eq!(stored(&record), model(height), "{}: record {}", case, height);
@@ -377,8 +380,10 @@ mod tests {
             });
         }
         let (blocks, fees_by_height) = blocks_and_fees(&mock);
-        let sizes_after = |count: usize| {
-            let added = |pool: fn(&PerPool<u32>) -> u32| per_block[..count].iter().map(pool).sum();
+        let sizes_after = |count: u32| {
+            let added = |pool: fn(&PerPool<u32>) -> u32| {
+                (0..count).zip(&per_block).map(|(_, adds)| pool(adds)).sum()
+            };
             sizes(added(|p| p.sapling), added(|p| p.orchard), added(|p| p.ironwood))
         };
         let (fs, recording) = SimFs::recording();
@@ -395,26 +400,26 @@ mod tests {
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let recovered =
-                store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
-            let acknowledged = (state.tag as usize).min(5);
+            let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let acknowledged = state.tag.min(5);
             let attempted = (acknowledged + 1).min(5);
             let case =
                 format!("{}: recovered {recovered} blocks, next height {recovered}", state.label);
             assert!(
-                [acknowledged, attempted].contains(&recovered),
+                [acknowledged, attempted].contains(&u64::from(recovered)),
                 "{case}: acknowledged {acknowledged}, attempted {attempted}"
             );
             let reader = CompactBlockReader::new(store.durable());
-            for (height, acked) in (0u32..).zip(&records[..recovered]) {
+            for (height, acked) in (0..recovered).zip(&records) {
                 let served = reader.block(h(height));
                 assert!(served == *acked, "{case}: record {height} byte-identical");
             }
 
+            let next = mock.block(mock.at(h(recovered)).hash);
             let mut index = Running::start(store, &fees_by_height);
-            index.send(step(&blocks[recovered])).await;
-            index.writer.durable_at(blocks[recovered].header().height).await;
-            let next = CompactBlockReader::new(index.stop().await).block(h(recovered as u32));
+            index.send(step(next)).await;
+            index.writer.durable_at(h(recovered)).await;
+            let next = CompactBlockReader::new(index.stop().await).block(h(recovered));
             let next = stored(&next.expect("next block's record"));
             assert_eq!(next.sizes, sizes_after(recovered), "{case}: folded onto the tip record");
         }

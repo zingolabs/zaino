@@ -104,7 +104,8 @@ pub const METRICS: &[Metric] = {
 /// One block's changes applied to `index`'s store
 pub(crate) fn applied_block(index: &'static str, rows: usize) {
     metrics::counter!(names::INDEX_APPLIED_BLOCKS_TOTAL, "index" => index).increment(1);
-    metrics::counter!(names::INDEX_APPLIED_ROWS_TOTAL, "index" => index).increment(rows as u64);
+    let rows = u64::try_from(rows).expect("usize = u64 (64-bit targets only)");
+    metrics::counter!(names::INDEX_APPLIED_ROWS_TOTAL, "index" => index).increment(rows);
 }
 
 /// `index`'s store: applied through `applied`, durable through `durable` (`None` = nothing yet)
@@ -126,10 +127,11 @@ pub(crate) fn index_tips(
 /// `block` sent on the finalized stream
 pub(crate) fn handed(block: &Block) {
     let txs = block.transactions();
-    let sum = |count: fn(&Transaction) -> usize| txs.iter().map(count).sum::<usize>() as u64;
+    let total = |n: usize| u64::try_from(n).expect("usize = u64 (64-bit targets only)");
+    let sum = |count: fn(&Transaction) -> usize| total(txs.iter().map(count).sum());
 
     metrics::counter!(names::FETCH_BLOCKS_TOTAL).increment(1);
-    metrics::counter!(names::FETCH_TRANSACTIONS_TOTAL).increment(txs.len() as u64);
+    metrics::counter!(names::FETCH_TRANSACTIONS_TOTAL).increment(total(txs.len()));
     metrics::counter!(names::FETCH_TRANSPARENT_INPUTS_TOTAL)
         .increment(sum(|tx| tx.transparent.inputs.len()));
     metrics::counter!(names::FETCH_TRANSPARENT_OUTPUTS_TOTAL)

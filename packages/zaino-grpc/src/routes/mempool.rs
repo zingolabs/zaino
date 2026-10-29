@@ -1,8 +1,8 @@
 //! Mempool methods: `GetMempoolTx`, `GetMempoolStream`, both over the `GrpcSnapshot`'s mempool
 //! (the chain view's servable entries at the served tip)
 
+use futures::StreamExt as _;
 use http::Response;
-use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_chainview::MempoolEntry;
 use zaino_grpc_snapshot::GrpcSnapshot;
@@ -10,7 +10,7 @@ use zaino_index_compact_block::project_tx_at;
 use zaino_proto::proto::service;
 
 use super::args;
-use crate::wire::{self, frame, streamed_response, trailers};
+use crate::wire::{self, frame, streamed_response};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
@@ -30,14 +30,14 @@ pub(crate) fn get_mempool_tx<V>(
     let unknown_to_client = mempool.excluding(&request.exclude_txid_suffixes);
 
     let mut compact_txs = Vec::new();
-    for (slot, entry) in unknown_to_client.into_iter().enumerate() {
+    for (slot, entry) in (0u64..).zip(unknown_to_client) {
         let every_pool = entry.projection.get_or_render(|| {
             let parsed = zaino_source::decode_transaction(&entry.raw)
                 .map_err(|failed| Status::internal(format!("mempool transaction: {failed}")))?;
             let compact_tx = zaino_index_compact_block::compact_tx(0, &parsed, entry.fee);
             Ok::<_, Status>(bytes::Bytes::from(prost::Message::encode_to_vec(&compact_tx)))
         })?;
-        compact_txs.extend(project_tx_at(&every_pool, slot as u64, pools));
+        compact_txs.extend(project_tx_at(&every_pool, slot, pools));
     }
     Ok(streamed_response(compact_txs))
 }
@@ -55,22 +55,15 @@ pub(crate) fn get_mempool_stream<V>(
     let current_mempool = feed.opening_rendered(|entries| {
         wire::frame_all(&entries.iter().map(unmined).collect::<Vec<_>>())
     });
-    let current_mempool =
-        (!current_mempool.is_empty()).then(|| Ok::<_, Status>(Frame::data(current_mempool)));
+    let current_mempool = (!current_mempool.is_empty()).then_some(Ok(current_mempool));
 
     // feed in the unfold state, not captured (borrowed mutably across an await: `FnMut` can't)
-    let arrivals = futures::stream::unfold(Some(feed), move |state| async move {
-        let mut feed = state?;
-        let Some(arrival) = feed.next().await else {
-            return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
-        };
-
-        let framed = arrival.rendered(|entry| frame(&unmined(entry)));
-        Some((Ok::<_, Status>(Frame::data(framed)), Some(feed)))
+    let arrivals = futures::stream::unfold(feed, |mut feed| async move {
+        let arrival = feed.next().await?;
+        Some((Ok(arrival.rendered(|entry| frame(&unmined(entry)))), feed))
     });
-    let frames = futures::StreamExt::chain(futures::stream::iter(current_mempool), arrivals);
 
-    Ok(wire::streaming(frames))
+    Ok(wire::streaming(futures::stream::iter(current_mempool).chain(arrivals)))
 }
 
 /// Unmined by construction (wire spells that `height: 0`)
@@ -140,9 +133,8 @@ mod tests {
         let seeded: Vec<TxId> =
             (1..=5).map(|seed| chain.submit_raw(raw_transaction(seed, 0).1)).collect();
         let node = chain.validator(tip_10);
-        let hear = |seeds: &[u32]| {
-            seeds.iter().for_each(|&seed| node.hear(&chain, seeded[seed as usize - 1]))
-        };
+        let hear =
+            |seeds: &[usize]| seeds.iter().for_each(|&seed| node.hear(&chain, seeded[seed - 1]));
         let live = LiveRoutes::over(&node, MAINNET, &[]);
         let mut router = live.router.clone();
         let stream = || framed_request(Method::GetMempoolStream, Bytes::new());
@@ -266,7 +258,7 @@ mod tests {
         let tip = chain.mine_empty(1);
         let node = chain.validator(tip);
         let [a, b, c] = [0, 1, 2].map(|vout| chain.output(funded, 0, vout));
-        let deposit = -(zec as i64) + 1_000;
+        let deposit = 1_000 - i64::try_from(zec).expect("1 ZEC fits i64");
         let submitted = [
             ("transparent", chain.submit(|t| t.spend(a).pay(&alice, zec - 1_000))),
             (
@@ -348,7 +340,8 @@ mod tests {
 
         let orchard_slot =
             all.iter().position(|row| row.1 == Some("1 orchard action")).expect("listed");
-        let orchard_only = vec![(orchard_slot as u64, Some("1 orchard action"), (0, 0, 1))];
+        let orchard_slot = u64::try_from(orchard_slot).expect("a slot of 3");
+        let orchard_only = vec![(orchard_slot, Some("1 orchard action"), (0, 0, 1))];
         assert_eq!(
             ask(vec![3], Vec::new()).await,
             orchard_only,

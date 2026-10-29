@@ -301,8 +301,8 @@ mod tests {
     async fn the_router_cuts_each_request_at_its_own_grpc_timeout() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_persistence::IndexKind;
         use zaino_proto::proto::service;
+        use zaino_sync::IndexKind;
 
         use crate::service::Method;
         use crate::testing::{dispatch, fixed_snapshots, indexed, routes_serving, MAINNET};

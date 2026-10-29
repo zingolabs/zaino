@@ -14,14 +14,20 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-/// Short-term RTT may reach this × the long-term baseline before the limit shrinks
-const TOLERANCE: f64 = 1.5;
+/// Fixed-point scale of the estimated limit and the gradient (integer Gradient2)
+const MILLI: usize = 1000;
 
-/// Weight of each window's new limit
-const SMOOTHING: f64 = 0.2;
+/// Short-term RTT may reach this × the long-term baseline before the limit shrinks (‰)
+const TOLERANCE_MILLI: u64 = 1500;
+
+/// Gradient bounds (‰)
+const GRADIENT_MILLI: std::ops::RangeInclusive<u64> = 500..=1000;
+
+/// Weight of each window's new limit = 1 / SMOOTHING_PARTS
+const SMOOTHING_PARTS: usize = 5;
 
 /// Windows the long-term RTT averages over (5 min at [`WINDOW`])
-const LONG_WINDOWS: f64 = 600.0;
+const LONG_WINDOWS: u64 = 600;
 
 /// A window closes once both this long and [`WINDOW_SAMPLES`] in
 const WINDOW: Duration = Duration::from_millis(500);
@@ -58,11 +64,11 @@ struct OpenWindow {
     peak: AtomicUsize,
 }
 
-/// `long` = baseline RTT (seconds, `None` before the first window)
+/// `long_ns` = baseline RTT (`None` before the first window)
 #[derive(Debug)]
 struct Gradient {
-    estimated: f64,
-    long: Option<f64>,
+    estimated_milli: usize,
+    long_ns: Option<u64>,
 }
 
 impl Limiter {
@@ -82,7 +88,10 @@ impl Limiter {
             ceiling,
             adaptive,
             window,
-            gradient: Mutex::new(Gradient { estimated: initial as f64, long: None }),
+            gradient: Mutex::new(Gradient {
+                estimated_milli: initial.saturating_mul(MILLI),
+                long_ns: None,
+            }),
         }
     }
 
@@ -109,34 +118,44 @@ impl Limiter {
         if window.opened_us.compare_exchange(opened, now, Relaxed, Relaxed).is_err() {
             return;
         }
-        let sum = window.sum_us.swap(0, Relaxed) as f64 / 1e6;
+        let sum_ns = window.sum_us.swap(0, Relaxed).saturating_mul(1000);
         let (samples, peak) = (window.samples.swap(0, Relaxed), window.peak.swap(0, Relaxed));
         let mut gradient = self.gradient.lock().expect("adaptive limiter poisoned");
         let limit =
-            gradient.update(sum / f64::from(samples.max(1)), peak, self.floor, self.ceiling);
+            gradient.update(sum_ns / u64::from(samples.max(1)), peak, self.floor, self.ceiling);
         self.limit.store(limit, Relaxed);
     }
 }
 
 impl Gradient {
-    /// Gradient2's update, one closed window (`short` = its mean RTT, `peak` = most in flight)
-    fn update(&mut self, short: f64, peak: usize, floor: usize, ceiling: usize) -> usize {
+    /// Gradient2's update, one closed window (`short_ns` = its mean RTT, `peak` = most in flight)
+    fn update(&mut self, short_ns: u64, peak: usize, floor: usize, ceiling: usize) -> usize {
         // a zero-time window carries no signal (and would divide by zero)
-        let short = short.max(1e-6);
-        let long = self.long.get_or_insert(short);
-        *long += (short - *long) / LONG_WINDOWS;
+        let short = short_ns.max(1);
+        let long = self.long_ns.get_or_insert(short);
+        match short >= *long {
+            true => *long += (short - *long) / LONG_WINDOWS,
+            false => *long -= (*long - short) / LONG_WINDOWS,
+        }
         // load gone: the baseline follows the faster RTT down
-        if *long / short > 2.0 {
-            *long *= 0.95;
+        if *long > short.saturating_mul(2) {
+            *long -= *long / 20;
         }
-        if (peak as f64) < self.estimated / 2.0 {
-            return self.estimated as usize;
+        let estimated = self.estimated_milli;
+        if peak.saturating_mul(2 * MILLI) < estimated {
+            return estimated / MILLI;
         }
-        let gradient = (TOLERANCE * *long / short).clamp(0.5, 1.0);
-        let next = self.estimated * gradient + self.estimated.sqrt();
-        let smoothed = self.estimated * (1.0 - SMOOTHING) + next * SMOOTHING;
-        self.estimated = smoothed.clamp(floor as f64, ceiling as f64);
-        self.estimated as usize
+        let gradient = TOLERANCE_MILLI.saturating_mul(*long) / short;
+        let gradient = gradient.clamp(*GRADIENT_MILLI.start(), *GRADIENT_MILLI.end());
+        let gradient = usize::from(u16::try_from(gradient).expect("clamped to <= 1000"));
+        // √(e / MILLI) × MILLI = √(e × MILLI)
+        let next =
+            estimated.saturating_mul(gradient) / MILLI + estimated.saturating_mul(MILLI).isqrt();
+        let smoothed =
+            estimated.saturating_mul(SMOOTHING_PARTS - 1).saturating_add(next) / SMOOTHING_PARTS;
+        self.estimated_milli =
+            smoothed.clamp(floor.saturating_mul(MILLI), ceiling.saturating_mul(MILLI));
+        self.estimated_milli / MILLI
     }
 }
 

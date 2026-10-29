@@ -156,7 +156,7 @@ impl<B: Body<Data = Bytes> + Unpin> Body for Guarded<B> {
                         close.first_message = Some(elapsed);
                         metrics::first_message(close.method, elapsed);
                     }
-                    close.sent += chunk.len() as u64;
+                    close.sent += u64::try_from(chunk.len()).expect("usize fits u64");
                 }
                 // trailers = a streaming answer's real status
                 None => {
@@ -215,7 +215,6 @@ mod tests {
 
     use super::*;
     use crate::overload::Signals;
-    use crate::AdmissionReport;
 
     /// - `/open` + `GetMempoolStream` never end
     /// - `/data` = one frame then waits
@@ -298,7 +297,7 @@ mod tests {
     async fn a_stream_slot_lives_as_long_as_its_body() {
         let state = Arc::new(AdmissionState::new(&crate::GrpcLimits::default()));
         let mut guard = Guard::new(Answers, Arc::clone(&state), Arc::default(), Arc::default());
-        let in_flight = || state.report().in_flight;
+        let in_flight = || state.held(Class::Work);
 
         let open = guard.call(request("/open")).await.expect("infallible");
         assert_eq!(in_flight(), 1, "handler returned, stream still open");
@@ -347,7 +346,7 @@ mod tests {
     ///
     /// - 257th open work stream refused at once (a queue would hang a wallet behind the open
     ///   streams), below the ceiling, `UNAVAILABLE` + pushback, taking no slot
-    /// - report says so once the window closes
+    /// - counted once the window closes
     #[tokio::test]
     async fn work_past_the_adaptive_limit_is_refused_at_once_below_the_ceiling() {
         use futures::FutureExt as _;
@@ -369,9 +368,7 @@ mod tests {
 
         let refusals = state.tick(Duration::from_secs(1), Signals::default());
         assert_eq!(refusals, 1, "the window's one refusal");
-        let report = state.report();
-        let expected =
-            AdmissionReport { limit: 256, in_flight: 256, refused_per_s: 1.0, overload: None };
-        assert_eq!(report, expected, "refused below the 2048 ceiling, no slot of its own");
+        let work = (state.work_limit(), state.held(Class::Work));
+        assert_eq!(work, (256, 256), "refused below the 2048 ceiling, no slot of its own");
     }
 }

@@ -47,18 +47,6 @@ pub struct AdmissionState {
     overload: Overload,
 }
 
-/// Work pool
-///
-/// - `limit` = the adaptive one (`max_work_streams` when off)
-/// - `refused_per_s`, `overload` as of the last serving summary (rules: `overload.rs`)
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdmissionReport {
-    pub limit: usize,
-    pub in_flight: usize,
-    pub refused_per_s: f64,
-    pub overload: Option<OverloadCause>,
-}
-
 impl AdmissionState {
     pub(crate) fn new(limits: &crate::GrpcLimits) -> Self {
         Self {
@@ -70,13 +58,14 @@ impl AdmissionState {
         }
     }
 
-    pub fn report(&self) -> AdmissionReport {
-        AdmissionReport {
-            limit: self.limiter.limit(),
-            in_flight: self.held(Class::Work),
-            refused_per_s: self.overload.refused_per_s(),
-            overload: self.overload.cause(),
-        }
+    /// First latched cause as of the last serving summary (rules: `overload.rs`)
+    pub fn overload(&self) -> Option<OverloadCause> {
+        self.overload.cause()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn work_limit(&self) -> usize {
+        self.limiter.limit()
     }
 
     /// The operator's overload thresholds + whether a latched cause is reported (next window on)
@@ -104,7 +93,7 @@ impl AdmissionState {
     }
 
     /// Streams of `class` held now
-    fn held(&self, class: Class) -> usize {
+    pub(crate) fn held(&self, class: Class) -> usize {
         self.pool(class).0.load(Ordering::Relaxed)
     }
 

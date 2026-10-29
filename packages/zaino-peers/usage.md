@@ -76,7 +76,8 @@ several.
   unsolicited transaction also ends a reply partway: items after it come back `None`
   and are asked again later.
 - `PeerError::Timeout` / `Network` = the request failed (no ready peer, a transport
-  error).
+  error). zebra-network answering with a `Response` variant other than the one its handler
+  for that request yields = a panic (its contract breached, never a peer's doing).
 - `push(raw)`: parses `raw` (zebra's parse-time checks and point rules; `PushError::Wire`
   otherwise, nothing sent), then zebra relays it as zebrad relays its own: to ⌈ready/3⌉
   random ready peers (all of them on regtest), over the peer set's existing connections

@@ -25,11 +25,11 @@ use crate::admission::AdmissionState;
 use crate::connections::{ConnectionCaps, Reserved};
 use crate::guard::Guard;
 use crate::health::{Health, HealthRoute};
-use crate::lifetime::{Activity, Retire, Retirement};
+use crate::lifetime::{Activity, Retire, RetireReason, Retirement};
 use crate::network;
 use crate::overload::Signals;
 use crate::pressure::{Pressure, Resource};
-use crate::proxy_protocol::{self, TrustedProxies};
+use crate::proxy_protocol;
 use crate::service::{Dispatch, Routing};
 use crate::summary::{self, INTERVAL};
 use crate::{metrics, GrpcLimits};
@@ -168,7 +168,6 @@ type Stack<S, V> = TowerToHyperService<HealthRoute<Guard<Dispatch<S, V>>>>;
 /// What every connection task shares
 struct Shared<S: ChainDataSource, V> {
     caps: ConnectionCaps,
-    proxies: TrustedProxies,
     tls: Option<tokio_rustls::TlsAcceptor>,
     http: auto::Builder<TokioExecutor>,
     health: Option<Arc<dyn Health>>,
@@ -220,7 +219,6 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         let (mut cpu, mut io) = (Pressure::new(Resource::Cpu), Pressure::new(Resource::Io));
         let shared = Arc::new(Shared {
             caps: ConnectionCaps::new(&server.limits),
-            proxies: server.limits.trusted_proxies.clone(),
             tls: server.tls.as_ref().map(crate::Tls::acceptor),
             http: http(&server.limits),
             health: server.health,
@@ -240,7 +238,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 _ = cancel.cancelled() => return,
                 accepted = listener.accept() => accepted,
                 now = summaries.tick() => {
-                    let elapsed = now - window_opened;
+                    let elapsed = now.saturating_duration_since(window_opened);
                     let min_networks = shared.admission.overload_limits().network_min_networks;
                     let saturation = network.verdict(min_networks.get());
                     let signals = Signals {
@@ -318,7 +316,7 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
         retirement: Retirement,
     ) {
         let peer_ip = peer.ip().to_canonical();
-        if !self.proxies.trusts(peer_ip) {
+        if !self.limits.trusted_proxies.trusts(peer_ip) {
             let Some(_connection) = self.caps.admit(reserved, peer_ip) else {
                 return;
             };
@@ -403,9 +401,9 @@ impl<S: ChainDataSource, V: PinnedView> Shared<S, V> {
                 let _ = serving.await;
                 return;
             }
-            () = aged => "age",
-            () = idled => "idle",
-            () = retirement.fired() => "retired",
+            () = aged => RetireReason::Age,
+            () = idled => RetireReason::Idle,
+            () = retirement.fired() => RetireReason::Hold,
         };
         metrics::connection_retired(retired);
         serving.as_mut().graceful_shutdown();
@@ -426,11 +424,12 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use tonic::Code;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::{DiskView, IndexKind};
+    use zaino_persistence::DiskView;
     use zaino_proto::proto::service;
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
     use zaino_source::testing::{p2pkh, MockChain};
     use zaino_source::ZcashLegacyRpcClient;
+    use zaino_sync::IndexKind;
 
     use super::{GrpcServeError, GrpcService};
     use crate::service::{Method, RouteDeps};
@@ -749,7 +748,8 @@ mod tests {
         let (mut client, lifetime) = h2_client(bind).await;
         let (response, mut request) = open_balance_stream(&mut client).expect("opens");
 
-        tokio::time::sleep(age.mul_f64(1.0 + crate::lifetime::JITTER) + SCHEDULING).await;
+        let oldest = age + age / crate::lifetime::JITTER_DIVISOR;
+        tokio::time::sleep(oldest + SCHEDULING).await;
 
         let refused = match client.ready().await {
             Ok(mut ready) => open_balance_stream(&mut ready).map(drop),
@@ -767,7 +767,7 @@ mod tests {
         let (closed, lived) =
             tokio::time::timeout(grace, lifetime).await.expect("closed").expect("joins");
         assert!(
-            lived < age.mul_f64(1.0 + crate::lifetime::JITTER) + SCHEDULING * 2,
+            lived < oldest + SCHEDULING * 2,
             "closed once the stream ended, not at the grace: {lived:?} ({closed:?})"
         );
     }
@@ -787,9 +787,8 @@ mod tests {
 
         let (closed, lived) = lifetime.await.expect("joins");
 
-        let jitter = crate::lifetime::JITTER;
-        let window =
-            age.mul_f64(1.0 - jitter) + grace..age.mul_f64(1.0 + jitter) + grace + SCHEDULING;
+        let jitter = age / crate::lifetime::JITTER_DIVISOR;
+        let window = age - jitter + grace..age + jitter + grace + SCHEDULING;
         assert!(
             window.contains(&lived),
             "closed after {lived:?}, not age ± 10% + grace {window:?} ({closed:?})"
@@ -906,7 +905,11 @@ mod tests {
 
         let healthy = ("200".to_owned(), r#"{"state":"serving","detail":null}"#.to_owned());
         assert_eq!(readyz().await, healthy, "ALPN http/1.1 /readyz, unrouted");
-        assert_eq!(admission.report().in_flight, 0, "a monitor's /readyz never holds a work slot");
+        assert_eq!(
+            admission.held(crate::admission::Class::Work),
+            0,
+            "a monitor's /readyz never holds a work slot"
+        );
         let starting = (Code::Unavailable, crate::service::STARTING.to_owned());
         assert_eq!(lightd_info().await, starting, "ALPN h2 → the gRPC stack, unrouted");
 

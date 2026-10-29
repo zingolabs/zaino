@@ -8,6 +8,7 @@ use tonic::Code;
 use zaino_primitives::metric::Metric;
 
 use crate::admission::Class;
+use crate::lifetime::RetireReason;
 use crate::overload::OverloadCause;
 use crate::read_lanes::Lane;
 use crate::service::{Method, Reply};
@@ -46,27 +47,25 @@ pub(crate) fn method_label(method: Option<Method>) -> &'static str {
 
 /// `code` label = `Code`'s `Debug` spelling (never formatted per request)
 pub(crate) fn code_label(code: Code) -> &'static str {
-    const CODES: [&str; 17] = [
-        "Ok",
-        "Cancelled",
-        "Unknown",
-        "InvalidArgument",
-        "DeadlineExceeded",
-        "NotFound",
-        "AlreadyExists",
-        "PermissionDenied",
-        "ResourceExhausted",
-        "FailedPrecondition",
-        "Aborted",
-        "OutOfRange",
-        "Unimplemented",
-        "Internal",
-        "Unavailable",
-        "DataLoss",
-        "Unauthenticated",
-    ];
-    // `Code` = the 17 gRPC codes, discriminants 0..=16
-    CODES[code as usize]
+    match code {
+        Code::Ok => "Ok",
+        Code::Cancelled => "Cancelled",
+        Code::Unknown => "Unknown",
+        Code::InvalidArgument => "InvalidArgument",
+        Code::DeadlineExceeded => "DeadlineExceeded",
+        Code::NotFound => "NotFound",
+        Code::AlreadyExists => "AlreadyExists",
+        Code::PermissionDenied => "PermissionDenied",
+        Code::ResourceExhausted => "ResourceExhausted",
+        Code::FailedPrecondition => "FailedPrecondition",
+        Code::Aborted => "Aborted",
+        Code::OutOfRange => "OutOfRange",
+        Code::Unimplemented => "Unimplemented",
+        Code::Internal => "Internal",
+        Code::Unavailable => "Unavailable",
+        Code::DataLoss => "DataLoss",
+        Code::Unauthenticated => "Unauthenticated",
+    }
 }
 
 /// Unknown path = one reply (answered `UNIMPLEMENTED`)
@@ -138,9 +137,8 @@ pub const METRICS: &[Metric] = &[
     ),
 ];
 
-/// A connection sent GOAWAY (`reason` = `age` | `idle` | `retired`)
-pub(crate) fn connection_retired(reason: &'static str) {
-    metrics::counter!(RETIRED_CONNECTIONS_TOTAL, "reason" => reason).increment(1);
+pub(crate) fn connection_retired(reason: RetireReason) {
+    metrics::counter!(RETIRED_CONNECTIONS_TOTAL, "reason" => reason.label()).increment(1);
 }
 
 /// Set at each serving summary

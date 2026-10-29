@@ -10,9 +10,10 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
-use zaino_persistence::{IndexKind, OverlayView, PinnedView};
+use zaino_persistence::{OverlayView, PinnedView};
 use zaino_primitives::types::{SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
+use zaino_sync::IndexKind;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, ShieldedPool};
 
@@ -29,7 +30,7 @@ use crate::wire::{self, streamed_response, unary_response};
 ///   fold)
 pub(crate) struct Memos<V> {
     tree_states: Memo<V, BlockHeight, Result<Bytes, Status>>,
-    subtree_roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
+    subtree_roots: Memo<V, ShieldedPool, Arc<FramedRoots>>,
 }
 
 /// One answer kind, keyed by `K`, per NFS publish
@@ -82,7 +83,7 @@ impl<V: PinnedView> TreeStateReads<V> {
     ) -> Result<Bytes, Status> {
         let (reader, params) = (self.reader.clone(), self.served().params());
         let read = move || {
-            let tree_state = reader.treestate(height).map_err(serve_error_status)?;
+            let tree_state = held_tree_state(&reader, height);
             if tree_state.block_hash != hash {
                 return Err(Status::not_found(format!(
                     "block {hash} is not the one this index holds at {height} (reorg)"
@@ -97,11 +98,11 @@ impl<V: PinnedView> TreeStateReads<V> {
     async fn memoized_subtree_roots(&self, pool: ShieldedPool) -> Result<Arc<FramedRoots>, Status> {
         let tip = self.served().tip().height;
         let frame = move |reader: &TreeStateReader<OverlayView<V>>| {
-            let mut roots = reader.subtree_roots(pool, 0, 0).map_err(serve_error_status)?;
+            let mut roots = reader.subtree_roots(pool);
             roots.retain(|root| root.completing.height <= tip);
-            Ok(Arc::new(FramedRoots::of(&roots)))
+            Arc::new(FramedRoots::of(&roots))
         };
-        self.memoized(|memos| &memos.subtree_roots, pool, frame).await?
+        self.memoized(|memos| &memos.subtree_roots, pool, frame).await
     }
 
     /// `compute` on first ask per NFS publish, on the point lane (single flight), then the cached
@@ -138,10 +139,18 @@ fn framed_tree_state<V: PinnedView>(
     params: zaino_nfs::ChainParams,
 ) -> Result<Bytes, Status> {
     if height > served_through {
-        return Err(serve_error_status(ServeError::NotFound { height }));
+        return Err(Status::not_found(ServeError::NotFound { height }.to_string()));
     }
-    let tree_state = reader.treestate(height).map_err(serve_error_status)?;
-    Ok(tree_state_message(&tree_state, params))
+    Ok(tree_state_message(&held_tree_state(reader, height), params))
+}
+
+/// `height` <= `answers_through` (a miss = the publication's own hole)
+fn held_tree_state<V: PinnedView>(
+    reader: &TreeStateReader<OverlayView<V>>,
+    height: BlockHeight,
+) -> Treestate {
+    let held = reader.treestate(height);
+    held.unwrap_or_else(|_| panic!("tree-state view holds {height} <= answers_through"))
 }
 
 /// One pool's completed roots, framed back to back
@@ -169,7 +178,7 @@ impl FramedRoots {
     /// - `start ≥ count` = none, any `u32` (pepper-sync resumes until an empty answer)
     fn slice(&self, start: u32, max: u32) -> Bytes {
         let count = self.ends.len();
-        let wide = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
+        let wide = |value: u32| usize::try_from(value).expect("u32 fits usize");
         let start = wide(start).min(count);
         let end = match max {
             0 => count,
@@ -241,14 +250,6 @@ fn shielded_pool(protocol: i32) -> Result<ShieldedPool, Status> {
     }
 }
 
-/// Miss != corruption
-fn serve_error_status(error: ServeError) -> Status {
-    match &error {
-        ServeError::NotFound { .. } => Status::not_found(error.to_string()),
-        ServeError::Inconsistent { .. } => Status::internal(error.to_string()),
-    }
-}
-
 /// Domain tree state → wire `TreeState`, framed (trees hex, hash in display order)
 ///
 /// - pool below its upgrade = `""` (zebra's `z_gettreestate` omits it, lightwalletd copies that)
@@ -288,10 +289,10 @@ mod tests {
     use prost::Message as _;
     use tonic::Code;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_primitives::types::{BlockRef, SubtreeRoot, TreeRoot};
     use zaino_proto::proto::service;
     use zaino_source::testing::{all_at, h, MockChain};
+    use zaino_sync::IndexKind;
     use zcash_protocol::consensus::NetworkUpgrade;
     use zcash_protocol::local_consensus::LocalNetwork;
     use zcash_protocol::BlockHash;

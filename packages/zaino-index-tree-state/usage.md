@@ -43,8 +43,8 @@ holds, and the subtree roots it closes. Each one lands at its table's end
 `treestate(h)` reads `heights[h]` for the block hash, time and each pool's tree
 size `s`. Then, per pool, with `p = s − 1`, it reads the leaf `l00[p]` plus one
 stored node per set bit of `p`. That is at most 33 reads of 32 bytes, and no
-hashing. `subtree_roots(pool, i, n)` is a seek to slot `i`; each root's block
-hash comes from its completing height's `heights` record.
+hashing. `subtree_roots(pool)` reads every slot of `<pool>/subtrees` in index
+order; each root's block hash comes from its completing height's `heights` record.
 
 ## Wiring
 
@@ -81,9 +81,9 @@ fold(&parent, &block, &mut out)?;          // block = next above parent's tip
   `combine_pairs` per tree level across every block, the three pools
   concurrently. A node lands in the delta of the block holding its last leaf,
   so any split into runs gives the same deltas. `fold` is a run of one.
-- `FoldError::Inconsistent`: the parent's nodes do not rebuild a frontier (a
-  fold bug). `FoldError::Commitment`: a non-canonical note commitment off the
-  wire, naming its block. Every leaf is decoded before any hashing.
+- `FoldError::Commitment`: a non-canonical note commitment off the wire, naming
+  its block. Every leaf is decoded before any hashing. Parent nodes that do not
+  rebuild a frontier panic (our own write).
 
 ## Serving
 
@@ -92,8 +92,8 @@ Routes read through one `GrpcSnapshot` per request (`at.views().tree_state()`,
 
 | Reader method | Returns |
 |---|---|
-| `treestate(height)` | `Treestate` with all three pools; `NotFound` with no record, `Inconsistent` if stored nodes will not rebuild |
-| `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>`; `max_entries == 0` = to the end, `start_index == count` = empty |
+| `treestate(height)` | `Treestate` with all three pools; `NotFound` with no record (stored nodes that will not rebuild panic) |
+| `subtree_roots(pool)` | every completed `SubtreeRoot` of `pool`, index order (paging = `zaino-grpc`'s) |
 | `is_above_durable(height)` | `height` is in the NFS layer above the durable files |
 
 `zaino-grpc` adds what the reader does not know:

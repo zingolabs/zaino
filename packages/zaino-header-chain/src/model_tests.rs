@@ -99,10 +99,7 @@ struct Model {
 impl Model {
     fn finalized_tip(&self) -> Option<BlockRef> {
         let record = self.finalized_headers.last()?;
-        Some(BlockRef {
-            hash: record.hash,
-            height: height(self.finalized_headers.len() as u32 - 1),
-        })
+        Some(BlockRef { hash: record.hash, height: height(self.finalized_headers.len() - 1) })
     }
 
     /// Lowest finalized height the chain still answers by height
@@ -223,15 +220,12 @@ impl Model {
             bits: header.bits(),
             cumulative_work: parent_work + own,
         };
-        let before = self.best();
         self.received += 1;
         let alive =
             Alive { record, height: at, parent: header.prev_hash(), received: self.received };
         self.alive.insert(hash, alive);
         let inserted = match self.best().map(|best| best.block.hash) == Some(hash) {
-            true => Inserted::Best {
-                reorg: before.is_some_and(|best| best.block.hash != header.prev_hash()),
-            },
+            true => Inserted::Best,
             false => Inserted::Side,
         };
         self.evict();
@@ -315,27 +309,27 @@ impl Model {
             let hash = &path[*h].hash;
             vouched.contains(hash) || (quorate(hash) && !collapsed)
         });
-        top.map(|h| height(h as u32)).or(self.finalized_tip().map(|tip| tip.height))
+        top.map(height).or(self.finalized_tip().map(|tip| tip.height))
     }
 
     /// Highest height `HeaderSync` fetches
     fn ceiling(&self) -> BlockHeight {
-        height(self.finalized_headers.len() as u32 + DEPTH + RUN - 1)
+        height(self.finalized_headers.len()) + DEPTH + RUN - 1
     }
 
     fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let below = BlockHeight::from(u32::from(best.block.height).checked_sub(DEPTH)?);
         let boundary = below.min(self.settled_height()?);
-        (u32::from(boundary) >= self.finalized_headers.len() as u32).then(|| BlockRef {
-            hash: self.best_path()[u32::from(boundary) as usize].hash,
-            height: boundary,
-        })
+        let index = usize::try_from(u32::from(boundary)).expect("u32 fits usize");
+        (index >= self.finalized_headers.len())
+            .then(|| BlockRef { hash: self.best_path()[index].hash, height: boundary })
     }
 
     fn finalize(&mut self, through: BlockRef) {
         let path = self.best_path();
-        self.finalized_headers = path[..=u32::from(through.height) as usize].to_vec();
+        let through_index = usize::try_from(u32::from(through.height)).expect("u32 fits usize");
+        self.finalized_headers = path[..=through_index].to_vec();
         let descends = |model: &Model, mut at: BlockHash| loop {
             match model.alive.get(&at) {
                 _ if at == through.hash => return true,
@@ -357,7 +351,7 @@ impl Model {
     /// `holds`: on the best path (older finalized headers than the chain keeps = on it by
     /// definition), or a live side node
     fn holds(&self, at: BlockRef, path: &[Record]) -> bool {
-        let index = u32::from(at.height) as usize;
+        let index = usize::try_from(u32::from(at.height)).expect("u32 fits usize");
         let finalized_unkept = index < self.kept_from();
         let on_best = path.get(index).is_some_and(|record| record.hash == at.hash);
         let side = self.alive.get(&at.hash).is_some_and(|alive| alive.height == at.height);
@@ -374,7 +368,7 @@ impl Model {
         let doubling = (2..40).map(|k| best - 9 - (1i64 << k));
         let mut locator = Vec::new();
         for at in consecutive.chain(doubling).map(|at| at.max(floor)) {
-            locator.push(path[at as usize].hash);
+            locator.push(path[usize::try_from(at).expect("clamped to floor >= 0")].hash);
             if at == floor {
                 break;
             }
@@ -383,8 +377,9 @@ impl Model {
     }
 }
 
-fn height(h: u32) -> BlockHeight {
-    BlockHeight::from(h)
+/// Best-path index → height
+fn height(h: usize) -> BlockHeight {
+    BlockHeight::from(u32::try_from(h).expect("model chains stay far below u32::MAX"))
 }
 
 /// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
@@ -453,7 +448,7 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
     let genesis = builder.genesis();
     let depth = FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut chain = HeaderChain::new(depth);
-    chain.anchor(&genesis, H0);
+    chain.anchor(&genesis, H0).expect("MockChain nBits valid");
     let anchor = Record {
         hash: genesis.hash(),
         time: genesis.time(),
@@ -579,7 +574,8 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
                 live.sort_unstable_by_key(|(received, _)| *received);
                 for branch in 0..branches.min(live.len() * 4) {
                     let parent = live[(from + branch) % live.len()].1;
-                    let time = model.by_hash[&parent].time() + 1 + branch as u32;
+                    let branch = u32::try_from(branch).expect("branches < 4 · live tree");
+                    let time = model.by_hash[&parent].time() + 1 + branch;
                     let header = mine(&mut builder, &mut model, parent, time, BITS[0]);
                     offer(&mut chain, &mut model, &header, true, &context)?;
                 }
@@ -612,7 +608,7 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
         prop_assert_eq!(chain.ceiling(RUN), model.ceiling(), "{}: ceiling", context);
         prop_assert_eq!(chain.tree_len(), model.alive.len(), "{}: live tree size", context);
         let non_finalized = model.best_path().len() - model.finalized_headers.len();
-        let bound = (DEPTH + RUN) as usize;
+        let bound = usize::try_from(DEPTH + RUN).expect("u32 fits usize");
         prop_assert!(
             non_finalized <= bound,
             "{}: non-finalized on best within depth + run (H9): {} > {}",
@@ -624,7 +620,7 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
         let kept_from = model.kept_from();
         let verified = chain.snapshot().expect("anchored");
         let answers = |chain: &HeaderChainSnapshot, path: &[Record]| -> Vec<Option<Record>> {
-            (0..path.len() as u32).map(|at| chain.header_at(height(at))).collect()
+            (0..path.len()).map(|at| chain.header_at(height(at))).collect()
         };
         let expected = |path: &[Record], kept_from: usize| -> Vec<Option<Record>> {
             path.iter()
@@ -634,7 +630,7 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
         };
         let answered = answers(&verified, &path);
         prop_assert_eq!(answered, expected(&path, kept_from), "{}: header by height", context);
-        let above = verified.hash_at(height(path.len() as u32));
+        let above = verified.hash_at(height(path.len()));
         prop_assert_eq!(above, None, "{}: above best", context);
         prop_assert_eq!(verified.locator(), model.locator(), "{}: locator", context);
         let (vouched, _) = model.witnessed();
@@ -642,7 +638,7 @@ fn run(moves: Vec<Move>) -> Result<(), TestCaseError> {
         let model_vouched: Vec<bool> =
             (0..path.len()).map(|at| at < finalized || vouched.contains(&path[at].hash)).collect();
         let chain_vouched: Vec<bool> =
-            (0..path.len() as u32).map(|at| verified.vouched(height(at))).collect();
+            (0..path.len()).map(|at| verified.vouched(height(at))).collect();
         prop_assert_eq!(chain_vouched, model_vouched, "{}: vouched per best-path height", context);
 
         let mut holds = Vec::new();

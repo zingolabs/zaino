@@ -31,7 +31,7 @@ pub(crate) fn above_durable_txids<V>(indexed: Option<&NfsPublication<V>>) -> Has
 /// One transaction in an epoch's log, with the serving layer's wire form once rendered
 #[derive(Debug)]
 pub struct Logged {
-    pub entry: MempoolEntry,
+    pub(crate) entry: MempoolEntry,
     rendered: OnceLock<Bytes>,
 }
 

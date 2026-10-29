@@ -30,7 +30,7 @@ pub(crate) fn get_block_range_nullifiers<V: zaino_persistence::PinnedView>(
     mut range: service::BlockRange,
     reads: ReadLanes,
 ) -> Result<Response<Body>, Status> {
-    range.pool_types.retain(|pool| *pool != service::PoolType::Transparent as i32);
+    range.pool_types.retain(|&pool| pool != i32::from(service::PoolType::Transparent));
 
     let pools = args::pools(&range.pool_types)?;
     let blocks = compact_blocks.open_range(&range, pools)?;
@@ -38,18 +38,19 @@ pub(crate) fn get_block_range_nullifiers<V: zaino_persistence::PinnedView>(
 }
 
 /// Framed records → framed nullifier-only records, one frame per block
-fn nullifiers_only_chunk(chunk: Bytes) -> Result<Bytes, Status> {
+///
+/// - `chunk` = a `RangeCursor` chunk: our own stored records, past their checksum
+fn nullifiers_only_chunk(chunk: Bytes) -> Bytes {
     let mut out = Vec::with_capacity(chunk.len());
-    let messages = wire::messages(&chunk)
-        .ok_or_else(|| Status::internal("stored range chunk is not whole frames"))?;
+    let messages = wire::messages(&chunk).expect("stored range chunk = whole frames");
     for message in messages {
         let block = compact_formats::CompactBlock::decode(message)
-            .map_err(|e| Status::internal(e.to_string()));
-        let block = nullifiers_only(block?);
+            .expect("stored compact block record decodes (encode_compact_block)");
+        let block = nullifiers_only(block);
         frame_into(&mut out, |out| block.encode_raw(out));
     }
 
-    Ok(Bytes::from(out))
+    Bytes::from(out)
 }
 
 /// Spends whole (a spend = its nullifier record), actions cut to `nullifier`, rest emptied
@@ -80,8 +81,8 @@ fn nullifiers_only(mut block: compact_formats::CompactBlock) -> compact_formats:
 #[cfg(test)]
 mod tests {
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_source::testing::MockChain;
+    use zaino_sync::IndexKind;
 
     use crate::service::Method;
     use crate::testing::{
@@ -124,7 +125,7 @@ mod tests {
         let range = service::BlockRange {
             start: Some(service::BlockId { height: 1, hash: Vec::new() }),
             end: Some(service::BlockId { height: 4, hash: Vec::new() }),
-            pool_types: vec![service::PoolType::Transparent as i32],
+            pool_types: vec![i32::from(service::PoolType::Transparent)],
         };
         let request = framed_request(Method::GetBlockRangeNullifiers, range.encode_to_vec().into());
         let (chunks, status) = answer(router.call(request).await.expect("infallible")).await;

@@ -33,7 +33,7 @@ pub use chain_view_snapshot::{
     ChainViewSnapshot, MempoolEntry, MempoolState, MempoolView, Projection,
 };
 pub use error::SubmitError;
-pub use header_sync::HeaderSync;
+pub use header_sync::{HeaderSync, OwnChain};
 pub use observation_merge::ObservationMerge;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;

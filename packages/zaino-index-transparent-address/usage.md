@@ -81,7 +81,7 @@ Wired by `zaino_nfs::writer` ([zaino-nfs wiring](../zaino-nfs/usage.md#wiring-nf
 let reader = reader.as_of(at.tip().height).with_max_rows(max_address_rows);
 let utxos = reader.utxos_of(&addresses, start)?;          // Vec<Vec<AddressUtxo>>, oldest first
 let balances = reader.balances(&addresses)?;               // Vec<Zatoshis>
-let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>
+let touched = reader.transactions(&address, start, end)?; // Vec<TxId>, (height, txid) order
 ```
 
 - Queries take librustzcash's `TransparentAddress`. Its `script()` is the exact
@@ -117,7 +117,7 @@ let touched = reader.transactions(&address, start, end)?; // Vec<TransactionRef>
 | Case | Result | gRPC |
 |---|---|---|
 | more receives than the request may walk | `ServeError::TooManyRows` | `RESOURCE_EXHAUSTED` |
-| unspent sum over the money supply (corrupt store) | `ServeError::SupplyExceeded` | `INTERNAL` |
+| unspent sum past `MAX_MONEY` (a block paying past the supply: coinbase value is unchecked) | `ServeError::SupplyExceeded` | `FAILED_PRECONDITION` |
 | nothing matched | `Ok`, empty | — |
 
 An empty result is never an error: a gap-limit walk must tell "no transactions"

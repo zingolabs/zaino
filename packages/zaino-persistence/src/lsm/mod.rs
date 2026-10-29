@@ -110,13 +110,6 @@ pub enum SegmentError {
 
     #[error(transparent)]
     Page(#[from] PageError),
-
-    #[error("segment {segment} filter build failed: {reason}")]
-    Filter { segment: u32, reason: &'static str },
-
-    /// Rows breaking the insert-once / remove-once contract met in a merge (a writer bug)
-    #[error("merge into segment {segment}: {reason}")]
-    Contract { segment: u32, reason: String },
 }
 
 type Result<T> = std::result::Result<T, SegmentError>;

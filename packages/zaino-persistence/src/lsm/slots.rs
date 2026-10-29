@@ -10,6 +10,7 @@
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
+    num::NonZeroU64,
     sync::{
         atomic::{AtomicBool, Ordering},
         Condvar, Mutex, MutexGuard,
@@ -32,16 +33,18 @@ pub(crate) struct Slots {
 /// Merge bytes per second across every slot holder: a debt bucket, one second's worth of burst
 ///
 /// - each charge sleeps off the debt it finds (concurrent merges share the rate, never exceed it)
+/// - `bucket.0` = bytes available (< 0 = owed)
 #[derive(Debug)]
 struct Bandwidth {
-    per_sec: f64,
-    bucket: Mutex<(f64, Instant)>,
+    per_sec: NonZeroU64,
+    bucket: Mutex<(i128, Instant)>,
 }
 
 impl Bandwidth {
-    fn new(bytes_per_sec: u64) -> Self {
-        let per_sec = bytes_per_sec as f64;
-        Self { per_sec, bucket: Mutex::new((per_sec, Instant::now())) }
+    const NANOS_PER_SEC: i128 = 1_000_000_000;
+
+    fn new(per_sec: NonZeroU64) -> Self {
+        Self { per_sec, bucket: Mutex::new((i128::from(per_sec.get()), Instant::now())) }
     }
 
     fn charge(&self, bytes: usize) {
@@ -54,10 +57,17 @@ impl Bandwidth {
     fn debt(&self, bytes: usize, now: Instant) -> Option<Duration> {
         let mut bucket = self.bucket.lock().expect("bandwidth never held across a panic");
         let (tokens, at) = &mut *bucket;
-        let refill = now.saturating_duration_since(*at).as_secs_f64() * self.per_sec;
-        *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
+        let per_sec = i128::from(self.per_sec.get());
+        let idle =
+            i128::try_from(now.saturating_duration_since(*at).as_nanos()).unwrap_or(i128::MAX);
+        let refill = idle.saturating_mul(per_sec) / Self::NANOS_PER_SEC;
+        let charged = i128::try_from(bytes).expect("usize fits i128");
+        *tokens = tokens.saturating_add(refill).min(per_sec) - charged;
         *at = now.max(*at);
-        (*tokens < 0.0).then(|| Duration::from_secs_f64(-*tokens / self.per_sec))
+        (*tokens < 0).then(|| {
+            let owed = -*tokens * Self::NANOS_PER_SEC / per_sec;
+            Duration::from_nanos(u64::try_from(owed).unwrap_or(u64::MAX))
+        })
     }
 }
 
@@ -75,7 +85,7 @@ pub(super) struct Slot<'a> {
 }
 
 impl Slots {
-    pub(crate) fn new(capacity: usize, bytes_per_sec: u64) -> Self {
+    pub(crate) fn new(capacity: usize, bytes_per_sec: NonZeroU64) -> Self {
         Self {
             state: Mutex::new(State { running: 0, waiting: BinaryHeap::new(), arrivals: 0 }),
             freed: Condvar::new(),
@@ -135,7 +145,7 @@ mod tests {
     /// - cancelled waiter leaves the queue without a slot
     #[test]
     fn slots_cap_concurrency_and_serve_the_lowest_tier_first() {
-        let slots: &'static Slots = Box::leak(Box::new(Slots::new(1, u64::MAX)));
+        let slots: &'static Slots = Box::leak(Box::new(Slots::new(1, NonZeroU64::MAX)));
         let running = AtomicBool::new(false);
         let held = slots.acquire(5, &running).expect("free slot");
 
@@ -174,7 +184,7 @@ mod tests {
     #[test]
     fn bandwidth_lets_one_second_s_burst_through_then_paces_to_the_rate() {
         const MB: usize = 1_000_000;
-        let bandwidth = Bandwidth::new(20_000_000);
+        let bandwidth = Bandwidth::new(NonZeroU64::new(20_000_000).expect("20 MB/s"));
         let created = bandwidth.bucket.lock().expect("bucket").1;
         let at = |secs: f64| created + Duration::from_secs_f64(secs);
         #[rustfmt::skip]
@@ -187,7 +197,7 @@ mod tests {
         for (case, now, bytes, owed_ms) in charges {
             let owed = bandwidth.debt(bytes, now);
 
-            let owed = owed.map(|owed| (owed.as_secs_f64() * 1e3).round() as u64);
+            let owed = owed.map(|owed| owed.as_millis());
             assert_eq!(owed, owed_ms, "{case}: ms owed");
         }
     }

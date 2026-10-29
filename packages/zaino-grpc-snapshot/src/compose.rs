@@ -38,10 +38,11 @@ fn synced(
 ) -> bool {
     let Some(served) = served else { return false };
     let best = chain.best();
-    let on_best = chain.on_best(served);
-    let behind = u32::from(best.height).saturating_sub(served.height.into());
     match was {
         false => served == best && !ahead,
-        true => on_best && behind <= depth.get(),
+        true => {
+            let behind = u32::from(best.height).saturating_sub(served.height.into());
+            chain.on_best(served) && behind <= depth.get()
+        }
     }
 }

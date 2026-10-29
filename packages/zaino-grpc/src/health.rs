@@ -2,12 +2,13 @@
 //!
 //! - load-balancer monitors speak HTTPS/1.1 (`200` here also proves TLS + this listener up)
 //! - answered before admission: never a work permit, never counted as a gRPC request
-//! - per connection: [`BURST`] at once, refilled [`PER_SECOND`] (per client ≤
+//! - per connection: [`BURST`] at once, one back per [`REFILL`] (per client ≤
 //!   `max_connections_per_ip` × that), over = `429`
 //! - anything else over HTTP/1.x = `404` (gRPC needs h2)
 
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -28,27 +29,24 @@ const READYZ: &str = "/readyz";
 const STATUS: &str = "/status";
 
 /// Health requests one connection may send at once
-const BURST: f64 = 10.0;
+const BURST: u32 = 10;
 
-/// Health requests one connection regains per second
-const PER_SECOND: f64 = 1.0;
+/// One health request regained per `REFILL`
+const REFILL: Duration = Duration::from_secs(1);
 
-/// One connection's health allowance
+/// One connection's health allowance (GCRA: `due` = when the bucket refills to full)
 #[derive(Debug)]
 struct Bucket {
-    tokens: f64,
-    at: Instant,
+    due: Instant,
 }
 
 impl Bucket {
     fn take(&mut self) -> bool {
         let now = Instant::now();
-        let refilled = self.tokens + (now - self.at).as_secs_f64() * PER_SECOND;
-        self.tokens = refilled.min(BURST);
-        self.at = now;
-        let allowed = self.tokens >= 1.0;
+        let due = self.due.max(now);
+        let allowed = due.duration_since(now) <= REFILL.saturating_mul(BURST - 1);
         if allowed {
-            self.tokens -= 1.0;
+            self.due = due + REFILL;
         }
         allowed
     }
@@ -65,7 +63,7 @@ pub(crate) struct HealthRoute<Inner> {
 
 impl<Inner> HealthRoute<Inner> {
     pub(crate) fn new(inner: Inner, health: Option<Arc<dyn Health>>) -> Self {
-        let bucket = Bucket { tokens: BURST, at: Instant::now() };
+        let bucket = Bucket { due: Instant::now() };
         Self { inner, health, bucket: Arc::new(Mutex::new(bucket)) }
     }
 
@@ -147,7 +145,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
-    use std::time::Duration;
 
     use http_body_util::BodyExt as _;
     use tower::Service as _;
@@ -232,21 +229,21 @@ mod tests {
         }
     }
 
-    /// Paused clock: `BURST` at once, then one back per `PER_SECOND`
+    /// Paused clock: `BURST` at once, then one back per `REFILL`
     #[tokio::test(start_paused = true)]
     async fn health_requests_are_rate_limited_per_connection() {
         let mut route = HealthRoute::new(Passed, Some(Arc::new(Fixed { ready: true }) as _));
         let mut readyz = async || send(&mut route, Method::GET, READYZ, Version::HTTP_11).await.0;
-        let burst = BURST as usize;
 
         let mut codes = Vec::new();
-        for _ in 0..=burst {
+        for _ in 0..=BURST {
             codes.push(readyz().await);
         }
-        tokio::time::advance(Duration::from_secs_f64(1.0 / PER_SECOND)).await;
+        tokio::time::advance(REFILL).await;
         let refilled = [readyz().await, readyz().await];
 
-        assert_eq!(codes, [vec![200; burst], vec![429]].concat(), "{burst} at once, then 429");
+        let expected: Vec<_> = (0..BURST).map(|_| 200).chain([429]).collect();
+        assert_eq!(codes, expected, "{BURST} at once, then 429");
         assert_eq!(refilled, [200, 429], "one back a second later");
     }
 }

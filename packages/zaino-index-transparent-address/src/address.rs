@@ -6,14 +6,21 @@ pub(super) const HASH160: usize = 20;
 
 /// Standard form an output's 20 bytes came from
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
 pub(super) enum AddressKind {
-    P2pkh = 0x00,
-    P2sh = 0x01,
-    Opaque = 0x02,
+    P2pkh,
+    P2sh,
+    Opaque,
 }
 
 impl AddressKind {
+    pub(super) fn encode(self) -> u8 {
+        match self {
+            Self::P2pkh => 0x00,
+            Self::P2sh => 0x01,
+            Self::Opaque => 0x02,
+        }
+    }
+
     pub(super) fn decode(tag: u8) -> Option<Self> {
         match tag {
             0x00 => Some(Self::P2pkh),

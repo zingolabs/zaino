@@ -5,21 +5,29 @@
 ///
 /// - hint: failures ignored
 /// - I/O class honoured by BFQ / mq-deadline only (`none`, common on NVMe, ignores it)
-/// - sound: plain syscalls on the calling thread's own id, no memory passed
+#[cfg(target_os = "linux")]
+pub(crate) fn background_priority() {
+    const NICE: i32 = 10;
+
+    let thread = rustix::thread::gettid();
+    io_priority_lowest(thread);
+    let _ = rustix::process::setpriority_process(Some(thread), NICE);
+}
+
+/// `ioprio_set(IOPRIO_WHO_PROCESS, thread, best-effort level 7)` (no rustix wrapper)
+///
+/// - sound: plain syscall on a thread id, no memory passed
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub(crate) fn background_priority() {
+fn io_priority_lowest(thread: rustix::process::Pid) {
     const IOPRIO_WHO_PROCESS: libc::c_int = 1;
     const IOPRIO_CLASS_BE: libc::c_int = 2;
     const IOPRIO_CLASS_SHIFT: libc::c_int = 13;
     const LOWEST_BE_LEVEL: libc::c_int = 7;
-    const NICE: libc::c_int = 10;
 
+    let io_priority = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | LOWEST_BE_LEVEL;
     unsafe {
-        let thread = libc::gettid();
-        let io_priority = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | LOWEST_BE_LEVEL;
-        libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, thread, io_priority);
-        libc::setpriority(libc::PRIO_PROCESS as _, thread as _, NICE);
+        libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, thread.as_raw_pid(), io_priority);
     }
 }
 

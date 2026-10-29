@@ -1,5 +1,6 @@
 //! [`ZcashLegacyRpcClient`]: every question over the validator's JSON-RPC (zebrad or zcashd)
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use zaino_primitives::types::Block;
 use zcash_protocol::consensus::BlockHeight;
@@ -33,8 +34,7 @@ impl ZcashLegacyRpcClient {
             auth: endpoint.auth.credentials()?,
             timeouts: endpoint.timeouts,
             limits: endpoint.limits,
-        })
-        .map_err(EndpointError::Client)?;
+        });
         Ok(Self { rpc })
     }
 
@@ -54,14 +54,55 @@ impl ZcashLegacyRpcClient {
         let value = call.map_err(|error| classify(error, answer))?;
         parse(value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
+
+    /// `method` once per item, one batch per chunk, each reply handed to `reply` with its item
+    /// (call order; a whole-batch failure or `reply`'s error = the end)
+    async fn batched<'i, I: 'i, T: DeserializeOwned, E: From<NonDomainError>>(
+        &self,
+        method: &'static str,
+        chunks: impl IntoIterator<Item = &'i [I]>,
+        params: impl Fn(&I) -> Vec<Value>,
+        mut reply: impl FnMut(&I, Result<T, RpcError>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for chunk in chunks {
+            let calls = chunk.iter().map(|item| Call { method, params: params(item) }).collect();
+            let replies = self.rpc.call_batch::<T>(method, calls).await;
+            let replies = replies.map_err(|error| E::from(error.into()))?;
+            for (item, answer) in chunk.iter().zip(replies) {
+                reply(item, answer)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn from_parse(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)
 }
 
-/// JSON-RPC "method not found"
+/// zcashd `rpc/protocol.h` names (zebrad reuses them)
+const MISC: i64 = -1;
+const INVALID_ADDRESS_OR_KEY: i64 = -5;
+const INVALID_PARAMETER: i64 = -8;
+const DESERIALIZATION: i64 = -22;
+const VERIFY_ERROR: i64 = -25;
+const VERIFY_REJECTED: i64 = -26;
+const VERIFY_ALREADY_IN_CHAIN: i64 = -27;
 const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+
+/// Every code a verdict fn below reads (the metric's `rpc_<code>` labels, any other = `rpc_other`)
+pub(crate) const VERDICT_CODES: [i64; 9] = [
+    MISC,
+    INVALID_ADDRESS_OR_KEY,
+    INVALID_PARAMETER,
+    DESERIALIZATION,
+    VERIFY_ERROR,
+    VERIFY_REJECTED,
+    VERIFY_ALREADY_IN_CHAIN,
+    METHOD_NOT_FOUND,
+    INVALID_PARAMS,
+];
 
 /// One call's error as a port reads it: `-32601` = `Unsupported` (whatever the method), else
 /// `answer`'s verdict, else no answer
@@ -95,12 +136,12 @@ fn batch_item<T, E>(
 ///
 /// - both also "malformed parameter" upstream (safe: every param rendered from a domain type)
 fn not_found(error: &RpcError) -> bool {
-    matches!(error, RpcError::Rpc { code: -5 | -8, .. })
+    matches!(error, RpcError::Rpc { code: INVALID_ADDRESS_OR_KEY | INVALID_PARAMETER, .. })
 }
 
 /// `getblockhash` above the tip: zebrad `-32602` (index past the tip), zcashd `-8` (out of range)
 fn above_tip(error: &RpcError) -> bool {
-    matches!(error, RpcError::Rpc { code: -8 | -32602, .. })
+    matches!(error, RpcError::Rpc { code: INVALID_PARAMETER | INVALID_PARAMS, .. })
 }
 
 /// zebrad's `-1` verdicts on the transaction itself (zebrad/src/components/mempool/error.rs)
@@ -121,10 +162,10 @@ fn submission_rejection(error: &RpcError) -> Option<SendRawTransactionError> {
         let code = i32::try_from(*code).ok()?;
         Some(SendRawTransactionError::Rejected { code, message: message.clone() })
     };
-    match code {
-        -22 => Some(SendRawTransactionError::Malformed(message.clone())),
-        -27..=-25 => rejected(),
-        -1 if MEMPOOL_VERDICTS.iter().any(|verdict| message.contains(verdict)) => rejected(),
+    match *code {
+        DESERIALIZATION => Some(SendRawTransactionError::Malformed(message.clone())),
+        VERIFY_ALREADY_IN_CHAIN..=VERIFY_ERROR => rejected(),
+        MISC if MEMPOOL_VERDICTS.iter().any(|verdict| message.contains(verdict)) => rejected(),
         _ => None,
     }
 }
@@ -142,7 +183,7 @@ const MEMPOOL_INACTIVE: &str = "mempool is not active";
 fn listing_verdict(error: &RpcError) -> Option<GetMempoolListingError> {
     match error {
         RpcError::Rpc { code: METHOD_NOT_FOUND, .. } => Some(GetMempoolListingError::Unavailable),
-        RpcError::Rpc { code: -1, message } if message.starts_with(MEMPOOL_INACTIVE) => {
+        RpcError::Rpc { code: MISC, message } if message.starts_with(MEMPOOL_INACTIVE) => {
             Some(GetMempoolListingError::Inactive)
         }
         _ => None,
@@ -218,46 +259,40 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         &self,
         heights: &[BlockHeight],
     ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
-        let call = |height: &BlockHeight| Call {
-            method: "getblock",
-            params: vec![u32::from(*height).to_string().into(), 0.into()],
-        };
+        let chunks = heights.chunks(self.rpc.response_size_cap().blocks_per_batch().get());
+        let params = |height: &BlockHeight| vec![u32::from(*height).to_string().into(), 0.into()];
         let mut blocks = Vec::with_capacity(heights.len());
-        for batch in heights.chunks(self.rpc.response_size_cap().blocks_per_batch().get()) {
-            let calls = batch.iter().map(call).collect();
-            let replies = self.rpc.call_batch::<json::HexBytes>("getblock", calls);
-            let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
-            for (height, reply) in batch.iter().zip(replies) {
-                let absent = |error: &RpcError| {
-                    not_found(error).then_some(GetAtHeightError::HeightNotFound(*height))
-                };
-                let json::HexBytes(raw) = reply.map_err(|error| classify(error, absent))?;
-                blocks.push(decode::served_block(&raw)?);
-            }
-        }
+        self.batched("getblock", chunks, params, |height, reply| {
+            let absent = |error: &RpcError| {
+                not_found(error).then_some(GetAtHeightError::HeightNotFound(*height))
+            };
+            let json::HexBytes(raw) = reply.map_err(|error| classify(error, absent))?;
+            blocks.push(decode::served_block(&raw)?);
+            Ok::<_, QueryError<GetAtHeightError>>(())
+        })
+        .await?;
         Ok(blocks)
     }
 
     /// Raw form (verbose = two extra state reads per header on zebrad)
     async fn get_block_links(&self, heights: &[BlockHeight]) -> Result<BlockLinks, NonDomainError> {
+        let params =
+            |height: &BlockHeight| vec![u32::from(*height).to_string().into(), false.into()];
         let mut links = Vec::with_capacity(heights.len());
-        for batch in heights.chunks(LINK_BATCH_CALLS) {
-            let calls = batch
-                .iter()
-                .map(|height| Call {
-                    method: "getblockheader",
-                    params: vec![u32::from(*height).to_string().into(), false.into()],
-                })
-                .collect();
-            let replies = self.rpc.call_batch::<json::HexBytes>("getblockheader", calls).await?;
-            for (height, reply) in batch.iter().zip(replies) {
+        self.batched(
+            "getblockheader",
+            heights.chunks(LINK_BATCH_CALLS),
+            params,
+            |height, reply| {
                 let absent = |error: &RpcError| {
                     not_found(error).then_some(GetAtHeightError::HeightNotFound(*height))
                 };
                 let link = reply.map(|json::HexBytes(header)| BlockLink { header });
                 links.push(batch_item(link, absent)?);
-            }
-        }
+                Ok::<_, NonDomainError>(())
+            },
+        )
+        .await?;
         Ok(links)
     }
 
@@ -287,24 +322,17 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         &self,
         listed: &[MempoolListed],
     ) -> Result<RawMempoolTransactions, NonDomainError> {
+        let chunks = raw_batches(listed, raw_batch_bytes(self.rpc.response_size_cap()));
+        let params = |entry: &MempoolListed| vec![entry.txid.to_string().into(), 0.into()];
         let mut fetched = Vec::with_capacity(listed.len());
-        let budget = raw_batch_bytes(self.rpc.response_size_cap());
-        for batch in raw_batches(listed, budget) {
-            let calls = batch
-                .iter()
-                .map(|entry| Call {
-                    method: "getrawtransaction",
-                    params: vec![entry.txid.to_string().into(), 0.into()],
-                })
-                .collect();
-            let replies = self.rpc.call_batch::<json::HexBytes>("getrawtransaction", calls).await?;
-            for (entry, reply) in batch.iter().zip(replies) {
-                let absent = |error: &RpcError| {
-                    not_found(error).then_some(GetRawMempoolTransactionError::NotFound(entry.txid))
-                };
-                fetched.push(batch_item(reply.map(|json::HexBytes(raw)| raw), absent)?);
-            }
-        }
+        self.batched("getrawtransaction", chunks, params, |entry, reply| {
+            let absent = |error: &RpcError| {
+                not_found(error).then_some(GetRawMempoolTransactionError::NotFound(entry.txid))
+            };
+            fetched.push(batch_item(reply.map(|json::HexBytes(raw)| raw), absent)?);
+            Ok::<_, NonDomainError>(())
+        })
+        .await?;
         Ok(fetched)
     }
 
@@ -341,7 +369,8 @@ const RAW_BATCH_CALLS: usize = 100;
 
 /// Raw bytes per `getrawtransaction` batch: its hex reply (2x) + envelopes within `cap`
 fn raw_batch_bytes(cap: ResponseSizeCap) -> u64 {
-    ((cap.bytes() - RAW_BATCH_CALLS * REPLY_ENVELOPE_BYTES) / 2) as u64
+    let budget = (cap.bytes() - RAW_BATCH_CALLS * REPLY_ENVELOPE_BYTES) / 2;
+    u64::try_from(budget).expect("usize <= u64 (64-bit targets only)")
 }
 
 /// `listed` cut in order into batches within both budgets (an entry over `budget` alone)
@@ -409,7 +438,7 @@ mod tests {
             ("5 MiB", ResponseSizeCap::new(5 << 20).expect("5 MiB holds a full block")),
         ];
         for (case, cap) in cases {
-            let budget = raw_batch_bytes(cap) as usize;
+            let budget = usize::try_from(raw_batch_bytes(cap)).expect("budget < 32 MiB");
             let each = budget / RAW_BATCH_CALLS;
             let first = each + budget % RAW_BATCH_CALLS;
             let replies: Vec<Value> = (0..RAW_BATCH_CALLS)

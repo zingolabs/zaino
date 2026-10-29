@@ -17,8 +17,6 @@ use metrics_exporter_prometheus::{
 };
 use zaino_primitives::metric::Metric;
 
-use crate::error::IndexerError;
-
 /// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
 const BUILD_INFO: &str = "zaino.build_info";
 
@@ -63,27 +61,26 @@ impl Format {
 }
 
 /// Global recorder + every `# HELP` (served by the admin listener, which binds first)
-pub(crate) fn install_recorder() -> Result<PrometheusHandle, IndexerError> {
-    let (recorder, handle) = recorder()?;
+pub(crate) fn install_recorder() -> PrometheusHandle {
+    let (recorder, handle) = recorder();
     metrics::set_global_recorder(recorder)
-        .map_err(|e| IndexerError::Metrics(format!("installing the recorder: {e}")))?;
+        .expect("global metrics recorder installed once (admin::start, once per process)");
 
     describe_all();
-    Ok(handle)
+    handle
 }
 
 /// zainod's recorder (tests' too) + its scrape handle
 ///
 /// - every histogram native (empty prefix = every metric name, zebra-network's included)
-pub(crate) fn recorder(
-) -> Result<(ZebraNetworkSummary<PrometheusRecorder>, PrometheusHandle), IndexerError> {
+pub(crate) fn recorder() -> (ZebraNetworkSummary<PrometheusRecorder>, PrometheusHandle) {
     let native = NativeHistogramConfig::new(BUCKET_FACTOR, MAX_BUCKETS, 0.0)
-        .map_err(|e| IndexerError::Metrics(format!("native histogram config: {e}")))?;
+        .expect("BUCKET_FACTOR / MAX_BUCKETS = valid native histogram config");
     let recorder = PrometheusBuilder::new()
         .set_native_histogram_for_metric(Matcher::Prefix(String::new()), native)
         .build_recorder();
     let handle = recorder.handle();
-    Ok((ZebraNetworkSummary(recorder), handle))
+    (ZebraNetworkSummary(recorder), handle)
 }
 
 /// zebra-network's metrics cut to [`ZEBRA_NETWORK_KEPT`], minus who the peer is (its address, or
@@ -238,7 +235,7 @@ mod tests {
     /// - no peer address or user agent anywhere in the scrape
     #[test]
     fn zebra_network_keeps_its_summary_series_without_peer_identity() {
-        let (recorder, rendered) = super::recorder().expect("native config is valid");
+        let (recorder, rendered) = super::recorder();
         metrics::with_local_recorder(&recorder, || {
             for addr in ["203.0.113.7:8233", "198.51.100.2:8233"] {
                 metrics::counter!("zcash.net.out.messages", "command" => "ping", "addr" => addr)

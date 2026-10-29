@@ -18,7 +18,6 @@ use zaino_sync::SyncProgress;
 
 use super::disk::Sizes;
 use super::OpenedIndex;
-use crate::error::IndexerError;
 
 const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -32,10 +31,15 @@ struct Sample {
 
 impl Sample {
     /// `phase`'s blocks since `before` (a reorg lowering the served tip = none)
-    fn advanced(&self, before: &Sample, phase: Phase) -> u64 {
+    ///
+    /// - handed past `u32::MAX` in one tick saturates (a chain's height is a `u32`)
+    fn advanced(&self, before: &Sample, phase: Phase) -> u32 {
         match phase {
-            Phase::Finalized { .. } => self.handed - before.handed,
-            Phase::Window { .. } => u64::from(self.served.saturating_sub(before.served)),
+            Phase::Finalized { .. } => {
+                let handed = self.handed.saturating_sub(before.handed);
+                u32::try_from(handed).unwrap_or(u32::MAX)
+            }
+            Phase::Window { .. } => self.served.saturating_sub(before.served),
         }
     }
 }
@@ -80,7 +84,7 @@ pub(crate) async fn run(
     sizes: watch::Receiver<Sizes>,
     rate: watch::Sender<Option<f64>>,
     cancel: tokio_util::sync::CancellationToken,
-) -> Result<(), IndexerError> {
+) {
     let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_INTERVAL, REPORT_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let sample = |tips: &Tips| {
@@ -92,7 +96,7 @@ pub(crate) async fn run(
     let (mut last_phase, mut moved_at) = (None::<Phase>, last.at);
     loop {
         tokio::select! {
-            () = cancel.cancelled() => return Ok(()),
+            () = cancel.cancelled() => return,
             _ = ticks.tick() => {}
         }
         let tips = grpc_snapshots.load().tips();
@@ -103,14 +107,19 @@ pub(crate) async fn run(
             .min()
             .flatten();
         let phase = Phase::of(&tips, progress.handed().map(u32::from), durable);
-        let over_two = (now.at - before_last.at).as_secs_f64();
-        rate.send_replace(phase.map(|phase| now.advanced(&before_last, phase) as f64 / over_two));
+        let over_two = now.at.saturating_duration_since(before_last.at).as_secs_f64();
+        let blocks_per_sec = |phase| f64::from(now.advanced(&before_last, phase)) / over_two;
+        rate.send_replace(phase.map(blocks_per_sec));
         if let Some(phase) = phase {
             let kind = |phase: Option<Phase>| phase.as_ref().map(std::mem::discriminant);
             if kind(last_phase) != kind(Some(phase)) || now.advanced(&last, phase) > 0 {
                 moved_at = now.at;
             }
-            report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
+            let (over, idle) = (
+                now.at.saturating_duration_since(last.at),
+                now.at.saturating_duration_since(moved_at),
+            );
+            report(phase, now.advanced(&last, phase), over, idle);
         }
         if matches!(phase, Some(Phase::Finalized { .. })) {
             let disk = sizes.borrow();
@@ -127,11 +136,11 @@ pub(crate) async fn run(
 
 /// One line per tick: `advanced` blocks `over` the interval (rate + eta), or a stall once `idle`
 /// (unmoved) for a whole [`REPORT_INTERVAL`]
-fn report(phase: Phase, advanced: u64, over: Duration, idle: Duration) {
+fn report(phase: Phase, advanced: u32, over: Duration, idle: Duration) {
     let bps = per_second(advanced, over);
     let eta = (advanced > 0).then(|| {
-        let secs_per_block = over.as_secs_f64() / advanced as f64;
-        display(Human(Duration::from_secs_f64(f64::from(phase.remaining()) * secs_per_block)))
+        let per_block = over / advanced;
+        display(Human(per_block.checked_mul(phase.remaining()).unwrap_or(Duration::MAX)))
     });
     let stalled = (idle >= REPORT_INTERVAL).then(|| display(Human(idle)));
     match (phase, stalled) {
@@ -150,11 +159,14 @@ fn report(phase: Phase, advanced: u64, over: Duration, idle: Duration) {
     }
 }
 
-/// Whole units per second
-fn per_second(count: u64, over: Duration) -> u64 {
-    match over.as_secs_f64() {
-        secs if secs > 0.0 => (count as f64 / secs).round() as u64,
-        _ => 0,
+/// Whole units per second, rounded
+fn per_second(count: u32, over: Duration) -> u64 {
+    match over.as_nanos() {
+        0 => 0,
+        nanos => {
+            let rounded = (u128::from(count) * 1_000_000_000 + nanos / 2) / nanos;
+            u64::try_from(rounded).expect("<= u32::MAX * 1e9 < u64::MAX")
+        }
     }
 }
 

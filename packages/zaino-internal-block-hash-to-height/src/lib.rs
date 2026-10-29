@@ -1,6 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
-use zaino_persistence::{IndexKind, Schema, Tables};
+use zaino_persistence::{Schema, Tables};
+use zaino_sync::IndexKind;
 use zcash_protocol::consensus::NetworkType;
 
 use by_hash::BY_HASH;
@@ -21,7 +22,7 @@ const TABLES: Tables = Tables::new(&[], &[BY_HASH]);
 
 /// Store layout on `network` (`zainod` opens and verifies by it)
 pub const fn schema(network: NetworkType) -> Schema {
-    Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)
+    zaino_sync::schema(IndexKind::BlockHash, FORMAT, network, TABLES)
 }
 
 /// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks)

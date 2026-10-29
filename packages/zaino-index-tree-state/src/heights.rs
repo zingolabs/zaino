@@ -51,7 +51,7 @@ mod tests {
     /// Slot = height × RECORD → a width or order change silently re-addresses every stored height
     #[test]
     fn height_record_golden_bytes_round_trip() {
-        let hash: [u8; 32] = std::array::from_fn(|at| at as u8);
+        let hash: [u8; 32] = std::array::from_fn(|at| u8::try_from(at).expect("32 < 256"));
         let height = TreeStateHeight {
             hash: BlockHash(hash),
             time: 0x1122_3344,

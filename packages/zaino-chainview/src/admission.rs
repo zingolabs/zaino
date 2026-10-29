@@ -5,7 +5,7 @@
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
 use zaino_primitives::types::{Fee, FeeError};
-use zaino_source::{decode_transaction, prepare_transaction, Prepared};
+use zaino_source::{decode_prepared, Prepared};
 use zcash_protocol::consensus::{BlockHeight, BranchId};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
@@ -61,7 +61,7 @@ pub(crate) fn valid_in(prepared: &Prepared, next: NextBlock) -> Result<(), Refus
     }
 }
 
-/// Every check a peer quorum's transaction must pass here → its txid + fee
+/// Every check a peer quorum's transaction must pass here → its fee
 ///
 /// - `prevouts` = each input's value, in order, unspent (served UTXO set, else a held
 ///   transaction's output): one batch per transaction (one served set prices it)
@@ -69,14 +69,10 @@ pub(crate) fn admissible(
     raw: &[u8],
     next: NextBlock,
     prevouts: impl FnOnce(&[OutPoint]) -> Vec<Option<Zatoshis>>,
-) -> Result<(TxId, Zatoshis), Refused> {
-    let malformed = |cause: zaino_source::DecodeError| Refused::Malformed(cause.to_string());
-    let prepared = prepare_transaction(raw).map_err(malformed)?;
+) -> Result<Zatoshis, Refused> {
+    let (prepared, tx) =
+        decode_prepared(raw).map_err(|cause| Refused::Malformed(cause.to_string()))?;
     valid_in(&prepared, next)?;
-    let tx = decode_transaction(raw).map_err(malformed)?;
-    if tx.transparent.coinbase {
-        return Err(Refused::Coinbase);
-    }
     let values = prevouts(&tx.transparent.inputs);
     let mut spent = Zatoshis::ZERO;
     for (at, input) in tx.transparent.inputs.iter().enumerate() {
@@ -85,7 +81,7 @@ pub(crate) fn admissible(
         spent = (spent + value).ok_or(Refused::Fee(FeeError::Overflow))?;
     }
     match tx.fee(spent)? {
-        Fee::Paid(fee) => Ok((tx.txid, fee)),
+        Fee::Paid(fee) => Ok(fee),
         Fee::Coinbase => Err(Refused::Coinbase),
     }
 }
@@ -119,19 +115,19 @@ mod tests {
             inputs.iter().map(|at| (*at == known).then(|| zats(10_000))).collect()
         };
 
-        let (paying, pays) = raw_transparent(slice::from_ref(&known), &[(&alice, 9_000)]);
+        let (_, pays) = raw_transparent(slice::from_ref(&known), &[(&alice, 9_000)]);
         let (_, overpays) = raw_transparent(slice::from_ref(&known), &[(&alice, 11_000)]);
         let (_, orphan) = raw_transparent(&[unknown], &[(&alice, 1)]);
         let (_, coinbase) = raw_transparent(&[coinbase_input], &[(&alice, 1)]);
-        let (lasts, lasting) = raw_transaction(1, 3_428_143);
+        let (_, lasting) = raw_transaction(1, 3_428_143);
         let (_, expired) = raw_transaction(2, 3_428_142);
-        let (current, nu6_3) = raw_v5(BranchId::Nu6_3, 3, 0);
+        let (_, nu6_3) = raw_v5(BranchId::Nu6_3, 3, 0);
         let (_, nu6_2) = raw_v5(BranchId::Nu6_2, 4, 0);
-        type Admitted = Result<(TxId, Zatoshis), Refused>;
+        type Admitted = Result<Zatoshis, Refused>;
         let malformed =
             Refused::Malformed("malformed consensus bytes: failed to fill whole buffer".into());
         let rows: [(&str, &[u8], Admitted, bool); 9] = [
-            ("pays 9,000 of 10,000", &pays, Ok((paying, zats(1_000))), false),
+            ("pays 9,000 of 10,000", &pays, Ok(zats(1_000)), false),
             ("pays 11,000 of 10,000", &overpays, Err(Refused::Fee(FeeError::Negative)), false),
             (
                 "spends an unknown prevout",
@@ -140,14 +136,14 @@ mod tests {
                 true,
             ),
             ("a coinbase", &coinbase, Err(Refused::Coinbase), false),
-            ("expires in the next block", &lasting, Ok((lasts, zats(0))), false),
+            ("expires in the next block", &lasting, Ok(zats(0)), false),
             (
                 "expired below it",
                 &expired,
                 Err(Refused::Expired { expiry: 3_428_142, next: 3_428_143 }),
                 false,
             ),
-            ("signed for NU6.3", &nu6_3, Ok((current, zats(0))), false),
+            ("signed for NU6.3", &nu6_3, Ok(zats(0)), false),
             (
                 "signed for NU6.2",
                 &nu6_2,

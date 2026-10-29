@@ -25,7 +25,7 @@ for &kind in IndexKind::ALL {
 }
 
 let publisher = zaino_grpc_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
-tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone | IndexGone
+tasks.spawn(nfs.run(cancel));                          // Err: Fold | IndexGone
 ```
 
 - `Nfs::new`: the `HeaderChainSnapshot` watch, the traffic balancer (`zaino_sync::fetch` per wanted
@@ -34,8 +34,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
   or folding ahead of the next fold).
 - `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's durable view is
   what publications and folds read.
-- `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
-  `IndexGone(index)` = an input dropped.
+- `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block;
+  `IndexGone(index)` = a writer dropped its durable view. The chain watch closing before cancel
+  panics (header sync publishes until cancel).
 - Every index by kind, one match per question (`indexes.rs`): `schema`, `write_buffer`, `fold`,
   `writer`. A new index = one arm in each + its `Views` reader.
 - `FeeWiring`: utxo-set's fees → compact-block's writer, paired inside `writer`.

@@ -29,11 +29,16 @@ use bytes::Bytes;
 
 use crate::{
     fs::{Access, Durability, FileHandle, Fs, Mapping, ReadHandle},
-    manifest::{BodyReader, ManifestError},
+    manifest::BodyReader,
     port::Checked,
 };
 
-pub(crate) const PAGE: usize = 4096;
+const PAGE_SHIFT: u32 = 12;
+
+pub(crate) const PAGE: usize = 1 << PAGE_SHIFT;
+
+/// [`PAGE`] as a file length
+const PAGE_LEN: u64 = 1 << PAGE_SHIFT;
 
 const SUM: usize = 4;
 
@@ -71,23 +76,28 @@ impl Sealed {
         out.extend_from_slice(&self.sums.to_le_bytes());
     }
 
-    pub(crate) fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
-        Ok(Self { len: body.u64()?, tail: body.u32()?, sums: body.u32()? })
+    pub(crate) fn decode(body: &mut BodyReader<'_>) -> Self {
+        Self { len: body.u64(), tail: body.u32(), sums: body.u32() }
     }
 
     fn full_pages(&self) -> u64 {
-        self.len / PAGE as u64
+        self.len / PAGE_LEN
     }
 
     /// Bytes of `<file>.crc` this seal covers
     fn sums_len(&self) -> u64 {
-        self.full_pages() * SUM as u64
+        sums_at(self.full_pages())
     }
 
     /// `sums` = the checksums this seal records
     fn digest_matches(&self, sums: &[u8]) -> bool {
         crc32fast::hash(sums) == self.sums
     }
+}
+
+/// Offset of page `index`'s CRC in `<file>.crc`
+fn sums_at(index: u64) -> u64 {
+    index * u64::try_from(SUM).expect("SUM = 4")
 }
 
 /// Page `index` (`bytes`: a full page, or the tail) against its CRC in `sums`, or `tail`
@@ -197,12 +207,13 @@ impl Reserve {
             return Ok(());
         }
         let step = self.end.clamp(MIN_RESERVE, MAX_RESERVE);
-        let grown = end.max(self.end + step).next_multiple_of(PAGE as u64);
+        let grown = end.max(self.end + step).next_multiple_of(PAGE_LEN);
         let mut at = self.end;
         while at < grown {
-            let take = (grown - at).min(ZEROS.len() as u64);
-            file.write_all_at(&ZEROS[..take as usize], at)?;
-            at += take;
+            let take =
+                usize::try_from(grown - at).map_or(ZEROS.len(), |left| left.min(ZEROS.len()));
+            file.write_all_at(&ZEROS[..take], at)?;
+            at += u64::try_from(take).expect("take <= ZEROS.len()");
         }
         file.sync_data()?;
         self.end = grown;
@@ -252,7 +263,7 @@ impl PagedFile {
         truncate(data.as_ref(), path, sealed.len)?;
         truncate(sums.as_ref(), &sums_path(path), sums_len)?;
 
-        let tail_at = sealed.full_pages() * PAGE as u64;
+        let tail_at = sealed.full_pages() * PAGE_LEN;
         let mut tail_page = vec![0; usize::try_from(sealed.len - tail_at).expect("tail < PAGE")];
         data.read_exact_at(&mut tail_page, tail_at)?;
         if tail_sum(sealed.full_pages(), &tail_page) != sealed.tail {
@@ -289,11 +300,12 @@ impl PagedFile {
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
     pub(crate) fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        let appended = u64::try_from(bytes.len()).expect("usize fits u64 (64-bit target)");
         if let Some([data, _]) = &mut self.reserves {
-            data.cover(self.data.as_ref(), self.len + bytes.len() as u64)?;
+            data.cover(self.data.as_ref(), self.len + appended)?;
         }
         self.data.write_all_at(bytes, self.len)?;
-        self.len += bytes.len() as u64;
+        self.len += appended;
         if self.len - self.writeback_from >= WRITE_BEHIND {
             self.data.write_behind(self.writeback_from..self.len)?;
             self.writeback_from = self.len;
@@ -303,13 +315,18 @@ impl PagedFile {
             self.tail_page.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
             if self.tail_page.len() == PAGE {
-                let index = self.sealed_pages + (self.unsealed_sums.len() / SUM) as u64;
+                let index = self.sealed_pages + self.unsealed_pages();
                 let sum = page_sum(index, &self.tail_page);
                 self.unsealed_sums.extend_from_slice(&sum.to_le_bytes());
                 self.tail_page.clear();
             }
         }
         Ok(())
+    }
+
+    /// Pages completed since the last seal
+    fn unsealed_pages(&self) -> u64 {
+        u64::try_from(self.unsealed_sums.len() / SUM).expect("usize fits u64 (64-bit target)")
     }
 
     /// Synced data out of page cache (advisory)
@@ -334,13 +351,13 @@ impl PagedFile {
         };
         durable(self.data.as_ref())?;
         if !self.unsealed_sums.is_empty() {
-            let at = self.sealed_pages * SUM as u64;
+            let sealed_pages = self.sealed_pages + self.unsealed_pages();
             if let Some([_, sums]) = &mut self.reserves {
-                sums.cover(self.sums.as_ref(), at + self.unsealed_sums.len() as u64)?;
+                sums.cover(self.sums.as_ref(), sums_at(sealed_pages))?;
             }
-            self.sums.write_all_at(&self.unsealed_sums, at)?;
+            self.sums.write_all_at(&self.unsealed_sums, sums_at(self.sealed_pages))?;
             durable(self.sums.as_ref())?;
-            self.sealed_pages += (self.unsealed_sums.len() / SUM) as u64;
+            self.sealed_pages = sealed_pages;
             self.sums_digest = extend_digest(self.sums_digest, &self.unsealed_sums);
             self.unsealed_sums.clear();
         }
@@ -366,7 +383,7 @@ fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageErr
 pub(crate) fn footprint<'a>(pages: impl IntoIterator<Item = &'a Pages>) -> (u64, Option<u64>) {
     pages.into_iter().fold((0, Some(0)), |(bytes, cached), pages| {
         let cached = cached.zip(pages.resident_bytes()).map(|(sum, resident)| sum + resident);
-        (bytes + pages.len() as u64, cached)
+        (bytes + u64::try_from(pages.len()).expect("usize fits u64 (64-bit target)"), cached)
     })
 }
 
@@ -513,7 +530,12 @@ impl Pages {
             }
             let at = page * PAGE;
             let bytes = &inner.data[at..(at + PAGE).min(inner.data.len())];
-            if !page_intact(page as u64, bytes, &inner.sums, inner.tail) {
+            if !page_intact(
+                u64::try_from(page).expect("usize fits u64 (64-bit target)"),
+                bytes,
+                &inner.sums,
+                inner.tail,
+            ) {
                 let path = inner.path.display();
                 panic!("{path} page {page}: checksum mismatch ({CORRUPTION})");
             }
@@ -560,9 +582,10 @@ pub(crate) fn scrub(
     report.bad_sums = !sealed.digest_matches(&durable_sums);
 
     let mut page = vec![0u8; PAGE];
-    for index in 0..sealed.len.div_ceil(PAGE as u64) {
-        let size = (sealed.len - index * PAGE as u64).min(PAGE as u64) as usize;
-        data.read_exact_at(&mut page[..size], index * PAGE as u64)?;
+    for index in 0..sealed.len.div_ceil(PAGE_LEN) {
+        let at = index * PAGE_LEN;
+        let size = usize::try_from((sealed.len - at).min(PAGE_LEN)).expect("<= PAGE");
+        data.read_exact_at(&mut page[..size], at)?;
         if !page_intact(index, &page[..size], &durable_sums, sealed.tail) {
             report.bad_pages.push(index);
         }
@@ -577,7 +600,7 @@ mod tests {
 
     /// 3 pages + 100 bytes, no page repeating another
     fn three_pages_and_a_tail() -> Vec<u8> {
-        (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect()
+        (0..3 * PAGE + 100).map(|n| u8::try_from(n * 7 % 251).expect("< 251")).collect()
     }
 
     /// Checksum index = page index: a page moved with its checksum fails at its new place
@@ -624,7 +647,7 @@ mod tests {
         let sealed = file.seal(Durability::PerFile).expect("seal");
 
         let tail_only =
-            Sealed { len: PAGE as u64 - 3, tail: page_sum(0, &bytes[..PAGE - 3]), sums: 0 };
+            Sealed { len: PAGE_LEN - 3, tail: page_sum(0, &bytes[..PAGE - 3]), sums: 0 };
         assert_eq!(first, tail_only, "first seal: no complete page, the tail's checksum");
         let sums = [
             page_sum(0, &bytes[..PAGE]).to_le_bytes(),
@@ -635,7 +658,11 @@ mod tests {
         let stored = fs.contents(&sums_path(path)).expect("sums");
         assert_eq!(&stored[..sums.len()], &sums[..], ".crc = pages 0, 1, 2 (then its reserve)");
         let tail = page_sum(3, &bytes[3 * PAGE..]);
-        let whole = Sealed { len: bytes.len() as u64, tail, sums: crc32fast::hash(&sums) };
+        let whole = Sealed {
+            len: u64::try_from(bytes.len()).expect("usize fits u64"),
+            tail,
+            sums: crc32fast::hash(&sums),
+        };
         assert_eq!(sealed, whole, "second seal: page 3's tail + the digest of pages 0-2");
         let pages = file.pages(sealed, None).expect("pages");
         let across = PAGE - 10..PAGE + 10;
@@ -778,7 +805,9 @@ mod tests {
         let open = |path, kind| PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, kind);
         let mut segment = open(segment_path, FileKind::Segment).expect("open segment");
         let mut log = open(log_path, FileKind::Log).expect("open log");
-        let len = |path: &Path| fs.contents(path).expect("file").len() as u64;
+        let len = |path: &Path| {
+            u64::try_from(fs.contents(path).expect("file").len()).expect("usize fits u64")
+        };
         let bytes = three_pages_and_a_tail();
 
         for piece in [&bytes[..10], &bytes[10..]] {
@@ -828,7 +857,7 @@ mod tests {
         const LEN: usize = (1 << 20) + 2 * PAGE + 9;
         let clean = Checked {
             name: "data".to_owned(),
-            committed_bytes: LEN as u64,
+            committed_bytes: u64::try_from(LEN).expect("usize fits u64"),
             orphaned_bytes: 0,
             lost: false,
             bad_sums: false,
@@ -875,7 +904,10 @@ mod tests {
             let path = dir.path().join("data");
             let mut file = PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)
                 .expect("open");
-            file.append(&(0..LEN).map(|n| n as u8).collect::<Vec<_>>()).expect("append");
+            file.append(
+                &(0..LEN).map(|n| u8::try_from(n % 256).expect("< 256")).collect::<Vec<_>>(),
+            )
+            .expect("append");
             let sealed = file.seal(Durability::PerFile).expect("seal");
             damage(&path);
 

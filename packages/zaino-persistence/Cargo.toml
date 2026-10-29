@@ -27,7 +27,7 @@ metrics = { workspace = true }
 tracing.workspace = true
 imbl.workspace = true
 hashbrown.workspace = true
-rustix = { version = "1.1", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs", "param", "process", "thread"] }
 
 [dev-dependencies]
 metrics-exporter-prometheus.workspace = true

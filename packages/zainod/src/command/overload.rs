@@ -38,6 +38,10 @@ struct Settings {
 }
 
 impl Settings {
+    fn unmarked(config: &OverloadLimits) -> Self {
+        Self { limits: config.clone(), detection: true, overrides: Vec::new() }
+    }
+
     /// Log notes (none while nothing is overridden)
     fn notes(&self) -> Vec<String> {
         let off =
@@ -53,7 +57,8 @@ impl Settings {
 ///
 /// - each marker checked as it lands: a refusal names its `key = value`
 fn merged(config: &OverloadLimits, markers: &[(String, String)]) -> Result<OverloadLimits, String> {
-    let mut table = toml::Table::try_from(config).map_err(|error| error.to_string())?;
+    let mut table =
+        toml::Table::try_from(config).expect("OverloadLimits serializes to a TOML table");
     let mut limits = config.clone();
     for (key, value) in markers {
         let refused = |why: &str| format!("{key} = {value}: {why}");
@@ -67,24 +72,32 @@ fn merged(config: &OverloadLimits, markers: &[(String, String)]) -> Result<Overl
     Ok(limits)
 }
 
-/// `dir`'s markers over `config`
-fn read(dir: &Path, config: &OverloadLimits) -> Result<Settings, String> {
+/// `dir`'s markers over `config` (no `dir` = no markers)
+fn read(dir: &Path, config: &OverloadLimits) -> Result<Settings, MarkerError> {
+    let io = |path: &Path, source| MarkerError::Io { path: path.to_owned(), source };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Settings::unmarked(config))
+        }
+        Err(error) => return Err(io(dir, error)),
+    };
     let mut markers = Vec::new();
     let mut detection = true;
-    for entry in std::fs::read_dir(dir).into_iter().flatten() {
-        let entry = entry.map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| io(dir, error))?;
         let key = entry.file_name().to_string_lossy().into_owned();
         match key.as_str() {
             OFF => detection = false,
             _ => {
-                let value =
-                    std::fs::read_to_string(entry.path()).map_err(|error| error.to_string())?;
+                let path = entry.path();
+                let value = std::fs::read_to_string(&path).map_err(|error| io(&path, error))?;
                 markers.push((key, value.trim().to_owned()));
             }
         }
     }
     markers.sort();
-    let limits = merged(config, &markers)?;
+    let limits = merged(config, &markers).map_err(MarkerError::Invalid)?;
     let overrides = markers.iter().map(|(key, value)| format!("{key} = {value}")).collect();
     Ok(Settings { limits, detection, overrides })
 }
@@ -108,10 +121,10 @@ pub(crate) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ma
     let dir = config.serve.state_dir.join("overload");
     let limits = &config.grpc.overload;
     apply(&dir, limits, &action)?;
-    let settings = read(&dir, limits).map_err(MarkerError::Invalid)?;
-    let printed = toml::to_string(&settings.limits);
+    let settings = read(&dir, limits)?;
+    let printed = toml::to_string(&settings.limits).expect("OverloadLimits serializes to TOML");
     println!("detection = {}", settings.detection);
-    print!("{}", printed.map_err(|error| MarkerError::Invalid(error.to_string()))?);
+    print!("{printed}");
     eprintln!(
         "overridden: [{}] in {} (a running zainod applies within 1 s)",
         settings.overrides.join(", "),
@@ -125,8 +138,7 @@ pub(crate) fn command(config_path: &Path, action: Action) -> Result<ExitCode, Ma
 pub(crate) fn spawn(admission: Arc<AdmissionState>, state_dir: &Path, config: OverloadLimits) {
     let dir: PathBuf = state_dir.join("overload");
     tokio::spawn(async move {
-        let mut current =
-            Settings { limits: config.clone(), detection: true, overrides: Vec::new() };
+        let mut current = Settings::unmarked(&config);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
@@ -162,7 +174,7 @@ mod tests {
             |key: &str, value: &str| Action::Set { key: key.to_owned(), value: value.to_owned() };
         let defaults = Settings { limits: config.clone(), detection: true, overrides: vec![] };
 
-        assert_eq!(read(&dir, &config), Ok(defaults.clone()), "no markers: the config");
+        assert_eq!(read(&dir, &config).expect("reads"), defaults, "no markers: the config");
         for action in [
             Action::Off,
             Action::Off,
@@ -183,7 +195,7 @@ mod tests {
                 "network_queue_delay_ms = 10".into(),
             ],
         };
-        assert_eq!(read(&dir, &config), Ok(expected.clone()), "off twice + two keys set");
+        assert_eq!(read(&dir, &config).expect("reads"), expected, "off twice + two keys set");
         assert_eq!(
             expected.notes(),
             [
@@ -202,7 +214,7 @@ mod tests {
         ] {
             run(action).expect("applies");
         }
-        assert_eq!(read(&dir, &config), Ok(defaults.clone()), "all undone");
+        assert_eq!(read(&dir, &config).expect("reads"), defaults, "all undone");
         assert_eq!(defaults.notes(), Vec::<String>::new(), "nothing overridden: no notes");
     }
 
@@ -229,6 +241,21 @@ mod tests {
             );
         }
         let untouched = Settings { limits: config.clone(), detection: true, overrides: vec![] };
-        assert_eq!(read(&dir, &config), Ok(untouched), "nothing refused landed");
+        assert_eq!(read(&dir, &config).expect("reads"), untouched, "nothing refused landed");
+    }
+
+    /// Marker dir present but unlistable (a file here) = error naming it, never "no markers"
+    #[test]
+    fn an_unreadable_marker_dir_is_an_error_not_the_config() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("overload");
+        std::fs::write(&dir, "").expect("file where the dir goes");
+
+        let read = read(&dir, &OverloadLimits::default());
+        assert!(
+            matches!(&read, Err(MarkerError::Io { path, .. }) if *path == dir),
+            "Io error naming {}, got {read:?}",
+            dir.display()
+        );
     }
 }

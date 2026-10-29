@@ -51,7 +51,7 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     fn lock(&self, path: &Path) -> io::Result<LockGuard>;
 
     /// How a commit may make `files` durable (decided once, at open: the files a barrier covers)
-    fn durability(&self, files: &[PathBuf]) -> io::Result<Durability>;
+    fn durability(&self, files: &[PathBuf]) -> Durability;
 }
 
 /// [`Fs::open`]'s file + whether this call created it

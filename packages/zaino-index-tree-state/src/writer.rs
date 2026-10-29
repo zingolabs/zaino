@@ -15,8 +15,9 @@ use std::{
 
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store};
+use zaino_persistence::{BlockChanges, SequenceRead, SequenceTable, Store};
 use zaino_primitives::types::{Block, PerPool, TreeRoot, TreeSizes};
+use zaino_sync::IndexKind;
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
@@ -91,13 +92,9 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     }
 }
 
-/// - `Inconsistent` = parent's nodes rebuild no frontier of its recorded size (a fold bug)
-/// - `Commitment` = non-canonical field element off the wire
+/// `Commitment` = non-canonical field element off the wire
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FoldError {
-    #[error("tree-state store is inconsistent at size {size}")]
-    Inconsistent { size: u64 },
-
     #[error("block {height} carries an uncommittable note commitment")]
     Commitment { height: BlockHeight },
 }
@@ -166,7 +163,9 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
         pool: ShieldedPool,
     ) -> Result<Self, FoldError> {
         let size = u64::from(sizes.get(pool).get());
-        let frontier = parent.frontier(pool, size).ok_or(FoldError::Inconsistent { size })?;
+        let frontier = parent.frontier(pool, size).unwrap_or_else(|| {
+            panic!("tree_state: parent nodes rebuild the {pool:?} frontier at size {size}")
+        });
         let mut leaves = Vec::new();
         let mut ends = Vec::with_capacity(blocks.len());
         for block in blocks {
@@ -274,7 +273,7 @@ mod tests {
         Writer, QUEUE,
     };
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
-    use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::consensus::{NetworkType, H0};
     use zcash_protocol::BlockHash;
 
     use crate::ServeError;
@@ -296,9 +295,9 @@ mod tests {
         }
         fn combine(level: Level, a: &Self, b: &Self) -> Self {
             let mut out = [0u8; 32];
-            for (i, byte) in out.iter_mut().enumerate() {
+            for ((i, byte), salt) in out.iter_mut().enumerate().zip(0u8..) {
                 *byte = a.0[i].wrapping_mul(31).wrapping_add(b.0[(i + 7) % 32].rotate_left(3))
-                    ^ u8::from(level).wrapping_add(i as u8);
+                    ^ u8::from(level).wrapping_add(salt);
             }
             Mix(out)
         }
@@ -338,7 +337,7 @@ mod tests {
         let block_of_leaf: Vec<usize> = (0..leaves_per_block.len())
             .flat_map(|block| std::iter::repeat_n(block, leaves_per_block[block]))
             .collect();
-        let total = block_of_leaf.len() as u64;
+        let total = u64::try_from(block_of_leaf.len()).expect("usize = u64 (64-bit targets only)");
         let mut retained = vec![Retained::default(); leaves_per_block.len()];
         let mut level_nodes: Vec<Mix> = (0..total).map(leaf).collect();
         for level in 0..MERKLE_DEPTH {
@@ -400,7 +399,7 @@ mod tests {
                 let mut ends = Vec::new();
                 for (offset, &count) in these.iter().enumerate() {
                     leaves.extend((leaves_before..).take(count).map(leaf));
-                    leaves_before += count as u64;
+                    leaves_before += u64::try_from(count).expect("< 40 leaves per block");
                     ends.push((height(first + offset), leaves.len()));
                 }
                 let frontier = frontier.expect("compared above");
@@ -579,7 +578,10 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
-        let naive_through = |through: u32| naive_trees(&blocks[..=through as usize]);
+        let naive_through = |through: u32| {
+            let held = blocks.iter().take_while(|block| block.header().height <= h(through));
+            naive_trees(&held.cloned().collect::<Vec<_>>())
+        };
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
         for (acked, block) in (1u64..).zip(&blocks[..5]) {
             writer.send(step(block)).await;
@@ -596,12 +598,12 @@ mod tests {
         for state in states {
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
             let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
-            let acknowledged = (state.tag as u32).min(5);
+            let acknowledged = state.tag.min(5);
             let attempted = (acknowledged + 1).min(5);
             let case =
                 format!("{}: recovered {recovered} blocks, next height {recovered}", state.label);
             assert!(
-                [acknowledged, attempted].contains(&recovered),
+                [acknowledged, attempted].contains(&u64::from(recovered)),
                 "{case}: acknowledged {acknowledged}, attempted {attempted}"
             );
             if let Some(tip) = recovered.checked_sub(1) {
@@ -610,7 +612,7 @@ mod tests {
             }
 
             let writer = start(store);
-            writer.send(step(&blocks[recovered as usize])).await;
+            writer.send(step(chain.block(chain.at(h(recovered)).hash))).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{case}: {error}"));
             let next = trees(handle.durable_view(), recovered);
             assert_eq!(next, naive_through(recovered), "{case}: trees after folding on");
@@ -687,14 +689,15 @@ mod tests {
 
             let case = format!("move {at} {next:?}");
             let reader = TreeStateReader::new(writer.handle().durable_view());
-            let sent = stream.sent() as u32;
-            for height in 0..sent {
-                let served = reader.treestate(h(height)).map(|served| served.trees);
-                let expected = Ok(trees_through(height as usize));
+            for (slot, block) in chain[..stream.sent()].iter().enumerate() {
+                let height = block.header().height;
+                let served = reader.treestate(height).map(|served| served.trees);
+                let expected = Ok(trees_through(slot));
                 prop_assert_eq!(served, expected, "{}: trees at {}", case, height);
             }
-            let absent = Err(ServeError::NotFound { height: h(sent) });
-            prop_assert_eq!(reader.treestate(h(sent)), absent, "{}: past the tip {}", case, sent);
+            let past = stream.tip().map_or(H0, |tip| tip + 1);
+            let absent = Err(ServeError::NotFound { height: past });
+            prop_assert_eq!(reader.treestate(past), absent, "{}: past the tip {}", case, past);
         }
         writer.stop().await.expect("stops at Shutdown");
         Ok(())
@@ -727,18 +730,20 @@ mod tests {
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block, resumable from any `start_index`, appended to after a reopen
-    /// (`split()` reads `subtree_table` length)
+    /// height, named by that block, appended to after a reopen (`split()` reads `subtree_table`
+    /// length); paging = grpc's `FramedRoots::slice`
     #[tokio::test]
-    async fn subtree_roots_name_their_completing_blocks_resume_and_append_across_a_reopen() {
+    async fn subtree_roots_name_their_completing_blocks_and_append_across_a_reopen() {
         let fs = SimFs::new();
         let mut chain = MockChain::regtest();
         for (first, count) in ORCHARD_LEAVES {
             chain.mine(|b| {
-                (first..first + count).step_by(PER_TX as usize).fold(b, |b, from| {
-                    let to = (from + PER_TX).min(first + count);
-                    b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
-                })
+                (first..first + count)
+                    .step_by(usize::try_from(PER_TX).expect("8 192 fits usize"))
+                    .fold(b, |b, from| {
+                        let to = (from + PER_TX).min(first + count);
+                        b.tx(|t| (from..to).fold(t, |t, leaf| t.orchard_action(leaf, leaf)))
+                    })
             });
         }
         let blocks = chain.blocks(chain.tip());
@@ -750,32 +755,21 @@ mod tests {
         writer.durable_at(h(4)).await;
         let view = TreeStateReader::new(writer.stop().await.expect("stops").durable_view());
 
-        let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
+        let roots = view.subtree_roots(ShieldedPool::Orchard);
+        let untouched = view.subtree_roots(ShieldedPool::Sapling);
 
         let expected = [2, 4].map(|at| SubtreeRoot {
             root: served_subtree_root(&view, at),
-            completing: blocks[at as usize].block_ref(),
+            completing: chain.at(h(at)),
         });
         assert_eq!(roots, expected, "two boundaries, their completing blocks");
-        // (pool, start_index, max_entries) → served = a slice of `roots`
-        use ShieldedPool::{Orchard, Sapling};
-        #[rustfmt::skip]
-        let cases = [
-            ("resume = a seek",                   Orchard, 1, 0, &roots[1..]),
-            ("bound = a prefix",                  Orchard, 0, 1, &roots[..1]),
-            ("start = count = empty (the probe)", Orchard, 2, 0, &[][..]),
-            ("untouched pool",                    Sapling, 0, 0, &[][..]),
-        ];
-        for (case, pool, start_index, max_entries, expected) in cases {
-            let served = view.subtree_roots(pool, start_index, max_entries);
-            assert_eq!(served.as_deref(), Ok(expected), "{case}: {pool:?} from {start_index}");
-        }
+        assert_eq!(untouched, Vec::new(), "untouched pool: no roots");
 
         let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         writer.send(step(&blocks[5])).await;
         let view = TreeStateReader::new(writer.stop().await.expect("stops").durable_view());
 
-        let after = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
+        let after = view.subtree_roots(ShieldedPool::Orchard);
         let third =
             SubtreeRoot { root: served_subtree_root(&view, 5), completing: blocks[5].block_ref() };
         let expected = [&roots[..], &[third]].concat();

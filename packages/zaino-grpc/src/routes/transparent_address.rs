@@ -15,14 +15,14 @@ use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_script::script::Evaluable;
 use zcash_transparent::address::TransparentAddress;
 
+use futures::StreamExt as _;
 use http::Response;
-use http_body::Frame;
 use tonic::{body::Body, Status};
 
 use super::args;
 use super::info::chain_name;
 use crate::read_lanes::{Lane, ReadLanes};
-use crate::wire::{self, frame, streamed_response, trailers, unary_response};
+use crate::wire::{self, frame, streamed_response, unary_response};
 
 /// One request's transparent-address index: the reader (as of the served tip, row-capped) + the
 /// network its addresses parse in
@@ -84,7 +84,7 @@ pub(crate) async fn get_taddress_transactions<S: ChainDataSource, V: PinnedView>
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status> {
     let txids = address_txids(address_index, filter, reads).await?;
-    Ok(streamed_raw_transactions(txids, validators, grpc_snapshot))
+    Ok(streamed_raw_transactions(txids, validators, grpc_snapshot, reads.clone()))
 }
 
 /// Utxos of every requested address at or above `startHeight`, height order, capped at
@@ -115,7 +115,7 @@ async fn address_utxos<V: PinnedView>(
         request.addresses.iter().zip(&addresses).zip(utxos_per_address)
     {
         for utxo in &utxos {
-            address_utxos.push(address_utxo_message(encoded, address, utxo)?);
+            address_utxos.push(address_utxo_message(encoded, address, utxo));
         }
     }
 
@@ -124,14 +124,15 @@ async fn address_utxos<V: PinnedView>(
         (left.height, &left.txid, left.index).cmp(&(right.height, &right.txid, right.index))
     });
     if request.max_entries > 0 {
-        address_utxos.truncate(request.max_entries as usize);
+        let max_entries = usize::try_from(request.max_entries).expect("u32 fits usize");
+        address_utxos.truncate(max_entries);
     }
     Ok(address_utxos)
 }
 
 /// Sum over the distinct parsed addresses (a repeated address counts once)
 ///
-/// - distinct addresses' balances sum within the supply: overflow = index corruption
+/// - sum past `MAX_MONEY` = `FAILED_PRECONDITION`, as [`serve_error_status`]
 async fn total_balance<V: PinnedView>(
     address_index: AddressIndex<V>,
     addresses: &[String],
@@ -148,7 +149,7 @@ async fn total_balance<V: PinnedView>(
     let balances = reads.read(Lane::Scan, move || reader.balances(&distinct)).await?;
     let total = balances.map_err(serve_error_status)?.into_iter().sum::<Option<Zatoshis>>();
     let total = total.ok_or_else(|| {
-        Status::internal("distinct addresses' balances exceed the money supply: index corrupt")
+        Status::failed_precondition("these addresses' unspent total exceeds the money supply")
     })?;
     Ok(service::Balance { value_zat: i64::from(ZatBalance::from(total)) })
 }
@@ -170,44 +171,38 @@ async fn address_txids<V: PinnedView>(
 
     let reader = address_index.reader;
     let touching = reads.read(Lane::Scan, move || reader.transactions(&address, start, end));
-    let touching = touching.await?.map_err(serve_error_status)?;
-    Ok(touching.into_iter().map(|transaction| transaction.txid).collect())
+    touching.await?.map_err(serve_error_status)
 }
 
 /// One `RawTransaction` per txid, fetched lazily
 ///
 /// - one fetch per poll (busy address = thousands)
 /// - client that stops reading stops the round trips (HTTP/2 flow control paces)
-/// - trailer frame always last, always sent (`None` state = stream ended)
 fn streamed_raw_transactions<S: ChainDataSource, V: PinnedView>(
     txids: Vec<zcash_protocol::TxId>,
     validators: TrafficBalancer<S>,
     grpc_snapshot: Arc<GrpcSnapshot<V>>,
+    reads: ReadLanes,
 ) -> Response<Body> {
-    let frames = futures::stream::unfold(Some(txids.into_iter()), move |state| {
+    let transactions = futures::stream::iter(txids).then(move |txid| {
         let (validators, grpc_snapshot) = (validators.clone(), Arc::clone(&grpc_snapshot));
+        let reads = reads.clone();
         async move {
-            let mut remaining = state?;
-            let Some(txid) = remaining.next() else {
-                return Some((Ok(Frame::trailers(trailers(&Status::ok("")))), None));
-            };
-
+            let snapshot = &grpc_snapshot;
             let fetched =
-                super::transactions::fetch_raw_transaction(&validators, &grpc_snapshot, txid).await;
-            match fetched {
-                Ok(transaction) => {
-                    Some((Ok::<_, Status>(Frame::data(frame(&transaction))), Some(remaining)))
-                }
-                Err(status) => Some((Ok(Frame::trailers(trailers(&status))), None)),
-            }
+                super::transactions::fetch_raw_transaction(&validators, snapshot, &reads, txid)
+                    .await;
+            fetched.map(|transaction| frame(&transaction))
         }
     });
-    wire::streaming(frames)
+    wire::streaming(transactions)
 }
 
+/// - `SupplyExceeded` = indexed chain pays past `MAX_MONEY` (block content, never a server bug):
+///   unanswerable until that chain is replaced, so no retry code
 fn serve_error_status(error: ServeError) -> Status {
     match &error {
-        ServeError::SupplyExceeded => Status::internal(error.to_string()),
+        ServeError::SupplyExceeded => Status::failed_precondition(error.to_string()),
         ServeError::TooManyRows { .. } => Status::resource_exhausted(error.to_string()),
     }
 }
@@ -239,16 +234,16 @@ fn address_utxo_message(
     encoded: &str,
     address: &TransparentAddress,
     utxo: &AddressUtxo,
-) -> Result<service::GetAddressUtxosReply, Status> {
-    Ok(service::GetAddressUtxosReply {
+) -> service::GetAddressUtxosReply {
+    service::GetAddressUtxosReply {
         address: encoded.to_owned(),
         txid: utxo.outpoint.hash().to_vec(),
         index: i32::try_from(utxo.outpoint.n())
-            .map_err(|_| Status::internal("stored vout is above the protocol ceiling"))?,
+            .expect("stored vout < 2^31 (outputs per tx bounded by MAX_BLOCK_BYTES)"),
         script: address.script().to_bytes(),
         value_zat: i64::from(ZatBalance::from(utxo.value)),
         height: u64::from(utxo.height),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -258,9 +253,9 @@ mod tests {
     use tonic::Code;
     use tower::Service as _;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_proto::proto::service;
     use zaino_source::testing::{p2pkh, raw_transparent, MockChain};
+    use zaino_sync::IndexKind;
     use zcash_transparent::bundle::OutPoint;
 
     use crate::service::Method;

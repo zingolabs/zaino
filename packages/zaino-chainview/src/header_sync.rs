@@ -19,6 +19,7 @@ use zaino_primitives::types::{BlockRef, Netgroup};
 use zaino_source::{BlockLink, BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::chain_view_core::ChainViewCore;
 use crate::chain_view_snapshot::ChainViewSnapshot;
@@ -43,7 +44,15 @@ pub struct HeaderSync<S> {
     published: Option<u64>,
     fetch_states: Vec<FetchState>,
     peers: Option<Peers>,
-    own: Option<Vec<BlockRef>>,
+    own: Option<OwnChain>,
+}
+
+/// Our indexes' chain by hash: the peers' headers after `locator` = `anchor`, then each of `above`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnChain {
+    pub locator: BlockHash,
+    pub anchor: BlockRef,
+    pub above: Vec<BlockHash>,
 }
 
 /// The peer path: the rules its headers meet, when it is next asked
@@ -78,6 +87,13 @@ enum Run {
     Extend { validator: TrustedValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
 }
 
+/// [`HeaderSync::next_run`]'s pick: `Idle` = no trusted run due (`retry` = earliest back-off)
+#[derive(Debug, Clone, Copy)]
+enum Next {
+    Run(Run),
+    Idle { retry: Option<Instant> },
+}
+
 impl<S: ChainDataSource> HeaderSync<S> {
     pub(crate) fn new(
         core: Arc<ChainViewCore>,
@@ -95,10 +111,8 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
     }
 
-    /// Anchor with no trusted validator answering (a restart mid-outage) on our indexes' chain:
-    /// `own` = `[locator, anchor, …, durable tip]` by hash (`CONTEXT` + 2 blocks), peers' headers
-    /// each matched to our hash in turn
-    pub fn with_own_chain(self, own: Vec<BlockRef>) -> Self {
+    /// Anchor with no trusted validator answering (a restart mid-outage) on our indexes' chain
+    pub fn with_own_chain(self, own: OwnChain) -> Self {
         Self { own: Some(own), ..self }
     }
 
@@ -119,12 +133,12 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 self.witness(&view);
                 let now = Instant::now();
                 match self.next_run(&view, now) {
-                    Ok(run) => self.fetch(run).await,
-                    Err(_) if self.peers_due(now) => match self.chain.finalized_tip() {
+                    Next::Run(run) => self.fetch(run).await,
+                    Next::Idle { .. } if self.peers_due(now) => match self.chain.finalized_tip() {
                         Some(_) => self.extend_from_peers().await,
                         None => self.anchor_own().await,
                     },
-                    Err(retry) => {
+                    Next::Idle { retry } => {
                         let peers = self.peers.as_ref().map(|peers| peers.due);
                         let retry = retry.into_iter().chain(peers).min();
                         let backoff = async {
@@ -160,9 +174,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     }
 
     /// First answering validator whose claim we lack, not backing off, not forked below finalized
-    ///
-    /// - `Err` = none (the earliest back-off, if any)
-    fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Result<Run, Option<Instant>> {
+    fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Next {
         let snapshot = self.snapshots.borrow().clone();
         let chain = &self.chain;
         let ceiling = chain.ceiling(HEADER_BATCH);
@@ -188,7 +200,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             let id = TrustedValidatorId::new(at).expect("configured below TrustedValidatorId::MAX");
             let anchor = claim.height.saturating_sub(chain.anchor_below());
             if chain.finalized_tip().is_none() || anchor > ceiling {
-                return Ok(Run::Anchor { validator: id, at: anchor });
+                return Next::Run(Run::Anchor { validator: id, at: anchor });
             }
             let above_best = snapshot.as_ref().map_or(H0, |s| s.best().height + 1);
             let next = fetch.next.filter(|next| *next <= claim.height);
@@ -196,10 +208,10 @@ impl<S: ChainDataSource> HeaderSync<S> {
             let to = claim.height.min(ceiling);
             let to = (from + (HEADER_BATCH - 1)).min(to);
             if from <= to {
-                return Ok(Run::Extend { validator: id, from, to, claim });
+                return Next::Run(Run::Extend { validator: id, from, to, claim });
             }
         }
-        Err(retry)
+        Next::Idle { retry }
     }
 
     /// One run from its validator (its fetch state follows the outcome)
@@ -213,13 +225,18 @@ impl<S: ChainDataSource> HeaderSync<S> {
         self.fetch_states[validator.get()] = after;
     }
 
+    /// `validator`'s configured address (log field)
+    fn address(&self, validator: TrustedValidatorId) -> String {
+        self.core.current().trusted_validators()[validator.get()].address.clone()
+    }
+
     /// `validator`'s headers at `heights`, decoded (`Err` = its fetch state: stalled, reported)
     async fn headers(
         &self,
         validator: TrustedValidatorId,
         heights: Vec<BlockHeight>,
-    ) -> Result<Vec<Header>, FetchState> {
-        let address = self.core.current().trusted_validators()[validator.get()].address.clone();
+    ) -> Result<Answered<Vec<Header>>, FetchState> {
+        let address = self.address(validator);
         let answered = match self.balancer.headers(HeaderAsk::Pinned { validator, heights }).await {
             Ok(answered) => answered,
             Err(unanswered) => {
@@ -241,17 +258,22 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
         match headers.is_empty() {
             true => Err(FetchState::stalled()),
-            false => Ok(headers),
+            false => Ok(Answered { value: headers, ticket: answered.ticket }),
         }
     }
 
     /// `validator`'s header at `at` = the finalized tip, everything held before dropped
+    ///
+    /// - invalid nBits = reported, stalled, nothing dropped
     async fn anchored(&mut self, validator: TrustedValidatorId, at: BlockHeight) -> FetchState {
-        let header = match self.headers(validator, vec![at]).await {
-            Ok(mut headers) => headers.remove(0),
+        let (header, ticket) = match self.headers(validator, vec![at]).await {
+            Ok(mut answered) => (answered.value.remove(0), answered.ticket),
             Err(after) => return after,
         };
-        self.chain.anchor(&header, at);
+        if let Err(rejected) = self.chain.anchor(&header, at) {
+            self.balancer.report(ticket, &rejected);
+            return FetchState::stalled();
+        }
         info!(height = u32::from(at), hash = %header.hash(), "Header chain anchored");
         self.publish();
         FetchState::default()
@@ -269,7 +291,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             .headers(validator, (u32::from(from)..=u32::from(to)).map(BlockHeight::from).collect())
             .await
         {
-            Ok(headers) => headers,
+            Ok(answered) => answered.value,
             Err(after) => return after,
         };
         let top =
@@ -295,9 +317,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 false => FetchState { next: Some(floor), ..FetchState::default() },
             },
             Some(rejected) => {
-                let address =
-                    self.core.current().trusted_validators()[validator.get()].address.clone();
-                debug!(validator = %address, %rejected, "Trusted header refused");
+                debug!(validator = %self.address(validator), %rejected, "Trusted header refused");
                 FetchState::stalled()
             }
         }
@@ -309,29 +329,37 @@ impl<S: ChainDataSource> HeaderSync<S> {
         locator && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
     }
 
-    /// Peers' headers after `own[0]`, each the hash of `own[1..]` in turn → anchored at `own[1]`,
-    /// the rest inserted as trusted (our indexes folded them); else asked again after `PEER_POLL`
+    /// Peers' headers after `own.locator`, each the hash of `own.anchor`, `own.above` in turn →
+    /// anchored at `own.anchor`, the rest inserted as trusted (our indexes folded them); else
+    /// asked again after `PEER_POLL`
     async fn anchor_own(&mut self) {
-        let Some(own) = self.own.clone() else { return };
+        let Some(locator) = self.own.as_ref().map(|own| own.locator) else { return };
         if let Some(peers) = &mut self.peers {
             peers.due = Instant::now() + PEER_POLL;
         }
-        let asked = self.balancer.headers(HeaderAsk::Peers { locator: vec![own[0].hash] }).await;
+        let asked = self.balancer.headers(HeaderAsk::Peers { locator: vec![locator] }).await;
         let links = asked.map(|answered| answered.value).unwrap_or_default();
-        let ours = |(link, at): (Result<BlockLink, _>, &BlockRef)| {
+        let Some(own) = &self.own else { return };
+        let ours = |(link, hash): (Result<BlockLink, _>, BlockHash)| {
             let header = decode_header(&link.ok()?.header).ok()?;
-            (header.hash() == at.hash).then_some(header)
+            (header.hash() == hash).then_some(header)
         };
-        let headers: Vec<Header> = links.into_iter().zip(&own[1..]).map_while(ours).collect();
-        let (Some(anchor), true) = (headers.first(), headers.len() == own.len() - 1) else {
+        let hashes = std::iter::once(own.anchor.hash).chain(own.above.iter().copied());
+        let headers: Vec<Header> = links.into_iter().zip(hashes).map_while(ours).collect();
+        let whole = headers.split_first().filter(|(_, above)| above.len() == own.above.len());
+        let Some((anchor, above)) = whole else {
             debug!(matched = headers.len(), "Peers short of our own chain, asked again");
             return;
         };
-        self.chain.anchor(anchor, own[1].height);
-        for header in &headers[1..] {
+        // hash = our indexed block's: nBits validated when its block decoded
+        self.chain
+            .anchor(anchor, own.anchor.height)
+            .expect("our own chain: indexed blocks' nBits valid");
+        for header in above {
             self.chain.insert(header).expect("our own chain: each a child of the last");
         }
-        info!(height = u32::from(own[1].height), hash = %own[1].hash, "Header chain anchored on our own indexes");
+        let (height, hash) = (u32::from(own.anchor.height), own.anchor.hash);
+        info!(height, %hash, "Header chain anchored on our own indexes");
         self.own = None;
         self.publish();
     }
@@ -362,8 +390,15 @@ impl<S: ChainDataSource> HeaderSync<S> {
     fn insert_from_peers(&mut self, answered: Answered<BlockLinks>) -> bool {
         let params = self.peers.as_ref().expect("the peer path is on").params;
         let ceiling = self.chain.ceiling(HEADER_BATCH);
-        let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let now_unix = i64::try_from(now_unix).unwrap_or(i64::MAX);
+        let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+            |before| {
+                let by = before.duration();
+                warn!(?by, "Local clock before 1970: every peer header refused as from the future");
+                0
+            },
+            |since| since.as_secs(),
+        );
+        let now_unix = i64::try_from(now_unix).expect("unix seconds fit i64");
         let mut progressed = false;
         for link in answered.value {
             let header = match link.map(|link| decode_header(&link.header)) {
@@ -379,7 +414,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             }
             match self.chain.insert_untrusted(&header, &params, now_unix) {
                 Ok(Inserted::Known) => {}
-                Ok(Inserted::Side | Inserted::Best { .. }) => progressed = true,
+                Ok(Inserted::Side | Inserted::Best) => progressed = true,
                 Err(refused) => {
                     if refused.fault() == Fault::Sender {
                         self.balancer.report(answered.ticket, &refused);

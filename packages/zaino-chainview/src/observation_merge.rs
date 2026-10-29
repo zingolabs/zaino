@@ -120,17 +120,11 @@ impl<S: ChainDataSource> ValidatorFollower<'_, S> {
         let held = self.held(observation.asked, held);
         let streaming = observation.streaming;
         let reading = Reading { block_at_best: held, info: info.clone(), telemetry, streaming };
-        let health = observation.health;
-        match listing {
-            Ok(listing) => {
-                let report = TrustedValidatorReport::Read { reading, health, listed: true };
-                self.core.apply(self.validator, report);
-                self.listed(listing).await;
-            }
-            Err(_) => {
-                let report = TrustedValidatorReport::Read { reading, health, listed: false };
-                self.core.apply(self.validator, report);
-            }
+        let (health, listed) = (observation.health, listing.as_ref().ok());
+        let report = TrustedValidatorReport::Read { reading, health, listed: listed.is_some() };
+        self.core.apply(self.validator, report);
+        if let Some(listing) = listed {
+            self.listed(listing).await;
         }
     }
 

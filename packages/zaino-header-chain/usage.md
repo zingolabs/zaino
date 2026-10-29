@@ -9,11 +9,11 @@ trusted header enters by `insert`, a peer's by `insert_untrusted` (`validate` fi
 use zaino_header_chain::{decode_header, HeaderChain, Inserted, Witness};
 
 let mut chain = HeaderChain::new(depth);              // in memory, nothing held
-chain.anchor(&decode_header(&raw)?, claim_height - chain.anchor_below()); // max(depth, CONTEXT)
+chain.anchor(&decode_header(&raw)?, claim_height - chain.anchor_below())?; // max(depth, CONTEXT)
 
 for header in &run {                                  // a trusted validator's headers, in order
     match chain.insert(header)? {                     // parent link + work, best, bounds
-        Inserted::Best { reorg } => { /* new most-work tip */ }
+        Inserted::Best => { /* new most-work tip */ }
         Inserted::Side | Inserted::Known => {}
     }
 }
@@ -33,7 +33,8 @@ let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds
 `Orphan` (parent unknown: no orphan pool), `BelowFinalized` (parent finalized but off the finalized chain),
 `Bits` (nBits not a valid compact target: no work to count), `WorkOverflow`. Work is counted from
 the anchor (work 0). `anchor(header, height)` drops everything held and makes `header` the finalized
-tip: a start, or a jump to a trusted validator far ahead.
+tip: a start, or a jump to a trusted validator far ahead. It refuses `Bits` first and then changes
+nothing: the rules read the anchor's nBits as an untrusted header's ancestor, and expect them valid.
 
 ## `validate` (untrusted fallback)
 

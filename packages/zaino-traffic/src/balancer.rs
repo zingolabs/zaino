@@ -5,6 +5,7 @@
 //! - [`TrafficDriver`]: the core's clock (hedges, retries, poll cadence), polls
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,9 +20,8 @@ use tracing::{info, warn};
 use zaino_primitives::metric::Metric;
 use zaino_primitives::types::Block;
 use zaino_source::{
-    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
-    GetRawMempoolTransactionError, MempoolListed, NonDomainError, PollReading, QueryError,
-    RawMempoolTransactions,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
+    MempoolListed, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -114,7 +114,7 @@ pub struct Peers {
 
 impl Peers {
     /// One reserved per lane (control: headers, interactive: tip blocks, bulk: bulk blocks)
-    pub const MIN_IN_FLIGHT: u32 = crate::class::LANES as u32;
+    pub const MIN_IN_FLIGHT: u32 = crate::class::LANE_RESERVES;
 }
 
 /// One trusted member's latest poll (raw reading, latest only)
@@ -204,12 +204,12 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// Pending until a member serves it (rounds retried, drop = abandon)
     pub async fn block(&self, hash: BlockHash, urgency: Urgency) -> Answered<Block> {
         let shared = Arc::clone(&self.shared);
-        let send = move |member| {
-            shared.send(
-                member,
-                move |source| async move { source.get_block_by_hash(hash).await },
-                move |peers| peers.block(hash),
-            )
+        let send = move |member| match member {
+            MemberId::TrustedValidator(validator) => {
+                let source = Arc::clone(&shared.trusted[validator.get()]);
+                async move { source.get_block_by_hash(hash).await }.boxed()
+            }
+            MemberId::Peers => shared.peers().block(hash).map_err(QueryError::NonDomain).boxed(),
         };
         self.block_by(urgency, Route::Any, send).await
     }
@@ -220,10 +220,9 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.shared.peers.as_ref()?;
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
-            let trusted = |_| async { unreachable!("Route::Peers asks no trusted member") };
-            shared.send::<_, GetBlockByHashError, _>(member, trusted, move |peers| {
-                peers.block_bytes(hash)
-            })
+            let bytes = shared.peers_only(member).block_bytes(hash);
+            // peers answer no domain error
+            bytes.map_err(QueryError::<Infallible>::NonDomain).boxed()
         };
         Some(self.block_by(Urgency::Tip, Route::Peers, send).await)
     }
@@ -281,11 +280,10 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             }
             HeaderAsk::Peers { locator } => {
                 let send = move |to| {
-                    assert_eq!(to, MemberId::Peers, "Route::Peers reaches the peer set only");
                     let links = |headers: Vec<Vec<u8>>| {
                         headers.into_iter().map(|header| Ok(BlockLink { header })).collect()
                     };
-                    let headers = shared.peers().headers(locator.clone());
+                    let headers = shared.peers_only(to).headers(locator.clone());
                     headers.map_ok(links).map_err(QueryError::NonDomain).boxed()
                 };
                 self.ask(Class::Headers, Route::Peers, send).await
@@ -505,13 +503,12 @@ struct Open<'a, S> {
 
 impl<S> Drop for Open<'_, S> {
     fn drop(&mut self) {
-        let mut state = self.shared.lock();
-        state.mailboxes.remove(&self.ask);
-        if !self.ended {
-            self.shared.step_locked(&mut state, Input::Abandon(self.ask));
-        }
-        drop(state);
-        self.shared.changed.notify_one();
+        self.shared.with_step(|state| {
+            state.mailboxes.remove(&self.ask);
+            if !self.ended {
+                self.shared.step_locked(state, Input::Abandon(self.ask));
+            }
+        });
     }
 }
 
@@ -520,11 +517,15 @@ impl<S> Shared<S> {
         self.state.lock().expect("traffic state mutex poisoned")
     }
 
-    fn step(&self, input: Input) {
-        let mut state = self.lock();
-        self.step_locked(&mut state, input);
-        drop(state);
+    /// `change` under the lock (its [`step_locked`](Self::step_locked)s), then the driver woken
+    fn with_step<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+        let out = change(&mut self.lock());
         self.changed.notify_one();
+        out
+    }
+
+    fn step(&self, input: Input) {
+        self.with_step(|state| self.step_locked(state, input));
     }
 
     /// Ask events to their futures (a dropped one's = ignored), polls to the driver, each health
@@ -553,14 +554,13 @@ impl<S> Shared<S> {
     }
 
     fn open(&self, mailbox: mpsc::UnboundedSender<Event>, class: Class, route: Route) -> AskId {
-        let mut state = self.lock();
-        let ask = AskId(state.next_ask);
-        state.next_ask += 1;
-        state.mailboxes.insert(ask, mailbox);
-        self.step_locked(&mut state, Input::Ask { ask, class, route });
-        drop(state);
-        self.changed.notify_one();
-        ask
+        self.with_step(|state| {
+            let ask = AskId(state.next_ask);
+            state.next_ask += 1;
+            state.mailboxes.insert(ask, mailbox);
+            self.step_locked(state, Input::Ask { ask, class, route });
+            ask
+        })
     }
 
     /// T2: the core sends trusted-only classes to trusted members
@@ -571,24 +571,12 @@ impl<S> Shared<S> {
         Arc::clone(&self.trusted[validator.get()])
     }
 
-    /// One send's future: the trusted source's, or the peer set's (its `Err` = `NonDomain`)
-    fn send<T, E, F>(
-        &self,
-        member: MemberId,
-        trusted: impl FnOnce(Arc<S>) -> F,
-        peers: impl FnOnce(&dyn PeerTransport) -> BoxFuture<'static, Result<T, NonDomainError>>,
-    ) -> BoxFuture<'static, Result<T, QueryError<E>>>
-    where
-        T: 'static,
-        E: fmt::Debug + fmt::Display + 'static,
-        F: Future<Output = Result<T, QueryError<E>>> + Send + 'static,
-    {
-        match member {
-            MemberId::TrustedValidator(validator) => {
-                trusted(Arc::clone(&self.trusted[validator.get()])).boxed()
-            }
-            MemberId::Peers => peers(self.peers()).map_err(QueryError::NonDomain).boxed(),
-        }
+    /// T2: the core sends `Route::Peers` asks to the peer set
+    fn peers_only(&self, member: MemberId) -> &dyn PeerTransport {
+        let MemberId::Peers = member else {
+            unreachable!("T2: a peers-only ask reached a trusted member");
+        };
+        self.peers()
     }
 
     fn peers(&self) -> &dyn PeerTransport {
@@ -641,11 +629,10 @@ impl<S: ChainDataSource> Shared<S> {
             Ok(_) => Synced::Live,
             Err(_) => Synced::CatchingUp,
         });
-        let mut state = self.lock();
-        self.step_locked(&mut state, Input::Polled { validator: order.validator, read });
-        let health = state.core.health(order.validator);
-        drop(state);
-        self.changed.notify_one();
+        let health = self.with_step(|state| {
+            self.step_locked(state, Input::Polled { validator: order.validator, read });
+            state.core.health(order.validator)
+        });
         let PollOrder { validator, streaming, .. } = order;
         if let (Err(cause), false) = (&polled, health == Health::Down) {
             warn!(validator = self.addresses[validator.get()], %cause, "Validator poll failed");

@@ -45,7 +45,7 @@ impl ChainViewSnapshot {
             }
         }
         for (txid, raw) in ours {
-            view.mempool.insert(*txid, Sighting::new(raw.clone(), None, true));
+            view.mempool.insert(*txid, Sighting::relayed(raw.clone()));
         }
         view
     }

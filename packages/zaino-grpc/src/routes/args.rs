@@ -84,11 +84,11 @@ mod tests {
     #[test]
     fn pool_types_name_the_pools_empty_means_shielded_only_and_unknown_is_refused() {
         let pools = |named: &[PoolType]| {
-            let raw: Vec<i32> = named.iter().map(|pool| *pool as i32).collect();
+            let raw: Vec<i32> = named.iter().map(|&pool| i32::from(pool)).collect();
             super::pools(&raw).expect("known pools")
         };
 
-        for (raw, value) in [(vec![PoolType::Invalid as i32], 0), (vec![2, 99, 3], 99)] {
+        for (raw, value) in [(vec![i32::from(PoolType::Invalid)], 0), (vec![2, 99, 3], 99)] {
             let refused = super::pools(&raw).expect_err("names no pool");
             let expected = format!(
                 "poolTypes value {value} is not a pool \

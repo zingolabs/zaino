@@ -17,7 +17,7 @@ use crate::{metrics, IndexHandle};
 /// Fold's preconditions, panic naming the index: `out` opened for `block`, `block` next above
 /// `parent` (`None` = empty parent: genesis)
 pub fn assert_next(out: &BlockChanges, parent: Option<BlockRef>, block: &Block) {
-    let (name, at, opened) = (out.schema().kind.name(), block.block_ref(), out.block());
+    let (name, at, opened) = (out.schema().name(), block.block_ref(), out.block());
     assert!(opened == at, "{name}: changes opened for another block ({opened:?}), folding {at:?}");
     let extends = block.header().extends(parent);
     assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
@@ -25,7 +25,7 @@ pub fn assert_next(out: &BlockChanges, parent: Option<BlockRef>, block: &Block) 
 
 /// Writer's open precondition, panic naming the index: `table` holds one record per durable height
 pub fn assert_dense<V: View + SequenceRead>(view: &V, table: SequenceTable) {
-    let name = view.schema().kind.name();
+    let name = view.schema().name();
     let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
     assert_eq!(view.sequence(table).len(), held, "{name}: one record per durable height");
 }
@@ -49,7 +49,7 @@ pub fn held<S: Store>(store: &S, block: &Block) -> bool {
 /// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`) → time it took
 /// (auto-commit included)
 pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
-    metrics::applied_block(store.schema().kind.name(), changes.rows());
+    metrics::applied_block(store.schema().name(), changes.rows());
     let started = Instant::now();
     store.apply(changes);
     started.elapsed()
@@ -69,7 +69,7 @@ pub fn commit<S: Store>(store: &mut S) -> Duration {
 /// One run done: `started` (taken off the queue) → now, `write` of it in [`apply`] + [`commit`]
 /// (`zaino_index_{run,write}_seconds`)
 pub fn ran<S: Store>(store: &S, started: Instant, write: Duration) {
-    metrics::index_run(store.schema().kind.name(), started.elapsed(), write);
+    metrics::index_run(store.schema().name(), started.elapsed(), write);
 }
 
 /// Writer's end of its [`IndexHandle`]: applied tip after every hop, durable view on each commit
@@ -96,7 +96,7 @@ impl<V: View> IndexPublisher<V> {
     pub fn publish<S: Store<View = V>>(&self, store: &S) {
         let (applied, durable) = (store.applied().tip(), store.durable().tip());
         let height = |tip: Option<BlockRef>| tip.map(|tip| tip.height);
-        metrics::index_tips(store.schema().kind.name(), height(applied), height(durable));
+        metrics::index_tips(store.schema().name(), height(applied), height(durable));
         self.applied.send_replace(applied);
         if self.durable.borrow().tip() != durable {
             self.durable.send_replace(store.durable());
@@ -108,15 +108,16 @@ impl<V: View> IndexPublisher<V> {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use zaino_persistence::{fs::SimFs, IndexKind, Schema, Tables};
+    use zaino_persistence::{fs::SimFs, Schema, Tables};
     use zaino_source::testing::{h, MockChain};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::testing::open;
+    use crate::{schema, IndexKind};
 
     const SCHEMA: Schema =
-        Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, Tables::new(&[], &[]));
+        schema(IndexKind::BlockHash, 1, NetworkType::Regtest, Tables::new(&[], &[]));
 
     #[test]
     #[should_panic(expected = "block_hash: changes opened for another block")]

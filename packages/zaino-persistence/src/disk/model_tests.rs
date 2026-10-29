@@ -10,7 +10,7 @@ use std::{
 
 use proptest::{prelude::*, strategy::Union};
 
-use super::model::{assert_tiers, open, scanned_key, sim_fs, Key, Model, Writes, SCHEMA};
+use super::model::{assert_tiers, open, sim_fs, Model, ScannedKey, Writes, SCHEMA};
 use super::*;
 use crate::overlay::Overlay;
 
@@ -316,15 +316,15 @@ fn run(fanout: usize, flush_device: bool, steps: &[Step]) {
             Step::Scan { from, to, limit } => {
                 let newest = oracle.newest();
                 let bound =
-                    |(owner, seq): (u8, u32)| Key(scanned_key(owner, seq.min(newest.seq + 1)));
-                let (from, to) = (bound(*from), bound(*to));
+                    |(owner, seq): (u8, u32)| ScannedKey::new(owner, seq.min(newest.last_seq + 1));
+                let range = bound(*from)..bound(*to);
                 let applied = format!("{label}: applied");
-                oracle.buffered().assert_scans(&store.applied(), (&from, &to), *limit, &applied);
+                oracle.buffered().assert_scans(&store.applied(), range.clone(), *limit, &applied);
                 let node = oracle.newest_view(store.durable());
-                newest.assert_scans(&node, (&from, &to), *limit, &format!("{label}: newest node"));
+                newest.assert_scans(&node, range, *limit, &format!("{label}: newest node"));
             }
         }
-        assert_tiers(&store, &fs, fanout, reopened, &label);
+        assert_tiers(&store, &fs, reopened, &label);
         store.buffer.check(&label);
         oracle.assert(&store, &label);
         if let Some(pin) = &pinned {

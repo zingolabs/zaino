@@ -35,7 +35,7 @@ pub const METRICS: &[Metric] = &[
 
 /// One alarm condition: raised in `telemetry::alarms`, noted + logged by `zaino-grpc-snapshot`'s report
 ///
-/// - new alarm = a variant, then the compiler names its arms (`alarms`, `note`, `edge`)
+/// - new alarm = a variant + its condition in `alarms`, then the compiler names `note`, `edge`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::VariantArray)]
 pub enum Alarm {
     FinalityPaused,
@@ -80,33 +80,18 @@ pub(crate) fn alarms(
     trusted_validators: &imbl::Vector<TrustedValidatorMeta>,
     finality_paused: bool,
 ) -> Alarms {
-    let raising = |raises: &dyn Fn(&TrustedValidatorMeta) -> bool| {
-        let validators = trusted_validators.iter().enumerate().filter(|(_, meta)| raises(meta));
-        validators.filter_map(|(index, _)| TrustedValidatorId::new(index)).map(Some).collect()
-    };
-    let raised_by = |alarm: Alarm| -> Vec<Option<TrustedValidatorId>> {
-        match alarm {
-            Alarm::FinalityPaused => {
-                if finality_paused {
-                    vec![None]
-                } else {
-                    Vec::new()
-                }
-            }
-            Alarm::Stale => raising(&|meta| {
-                let stale = meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS);
-                meta.health == Health::Live && stale
-            }),
-            Alarm::Ending => raising(&|meta| {
-                let left = meta.blocks_to_end_of_service();
-                left.is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS)
-            }),
-        }
-    };
-    let raised = Alarm::VARIANTS
-        .iter()
-        .flat_map(|alarm| raised_by(*alarm).into_iter().map(move |by| (*alarm, by)));
-    Alarms(raised.collect())
+    let view_wide = finality_paused.then_some((Alarm::FinalityPaused, None));
+    let per_validator = trusted_validators.iter().enumerate().flat_map(|(index, meta)| {
+        let by = TrustedValidatorId::new(index).expect("configured below TrustedValidatorId::MAX");
+        let stale = meta.health == Health::Live
+            && meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS);
+        let left = meta.blocks_to_end_of_service();
+        let ending = left.is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS);
+        [(Alarm::Stale, stale), (Alarm::Ending, ending)]
+            .into_iter()
+            .filter_map(move |(alarm, raised)| raised.then_some((alarm, Some(by))))
+    });
+    Alarms(view_wide.into_iter().chain(per_validator).collect())
 }
 
 /// One submission ended: its outcome and how many entries it took
