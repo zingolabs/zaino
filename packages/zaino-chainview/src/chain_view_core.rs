@@ -163,13 +163,10 @@ impl ChainViewCore {
                 if !state.listings.admits(&id) {
                     continue;
                 }
-                if !state.mempool.contains_key(&id.txid) {
-                    state.mempool.insert(id.txid, Sighting::new(raw, Some(fee), false));
-                }
-                if let Some(sighting) = state.mempool.get_mut(&id.txid) {
-                    sighting.listed_fee(fee);
-                    changed |= sighting.set_quorum(true);
-                }
+                let sighting =
+                    state.mempool.entry(id.txid).or_insert_with(|| Sighting::priced(raw, fee));
+                sighting.listed_fee(fee);
+                changed |= sighting.set_quorum(true);
             }
             (if changed { Change::Settle } else { Change::Unchanged }, ())
         })
@@ -201,8 +198,8 @@ impl ChainViewCore {
         best_before: Option<BlockRef>,
     ) {
         let state = &mut *guard;
-        let stalled = state.finality_stalled(Instant::now());
-        state.alarms = telemetry::alarms(&state.trusted_validators, stalled);
+        let paused = state.finality_paused(Instant::now());
+        state.alarms = telemetry::alarms(&state.trusted_validators, paused);
 
         // unlisted dropped on a new best block (`ours` nobody lists after a block = mined or gone)
         let moved = state.best() != best_before;
@@ -224,7 +221,7 @@ impl ChainViewCore {
         self.merge(|state| {
             match state.mempool.get_mut(&txid) {
                 Some(sighting) => sighting.mark_ours(),
-                None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
+                None => drop(state.mempool.insert(txid, Sighting::relayed(raw))),
             }
             (Change::Settle, ())
         })
@@ -285,7 +282,7 @@ fn sight(mempool: &mut OrdMap<TxId, Sighting>, validator: TrustedValidatorId, si
             }
         }
         (None, Some(raw)) => {
-            let mut sighting = Sighting::new(raw, Some(fee), false);
+            let mut sighting = Sighting::priced(raw, fee);
             sighting.sight(validator);
             mempool.insert(txid, sighting);
         }

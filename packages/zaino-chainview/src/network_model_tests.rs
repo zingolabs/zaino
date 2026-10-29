@@ -139,7 +139,8 @@ fn holders(seen: &[Option<Seen>], best: BlockRef) -> (TrustedValidatorSet, Trust
     for (index, seen) in seen.iter().enumerate() {
         let Some(seen) = seen.as_ref().filter(|seen| seen.reporting) else { continue };
         let index = TrustedValidatorId::new(index).expect("< MAX_NODES");
-        if seen.chain.get(u32::from(best.height) as usize) == Some(&best.hash) {
+        let best_at = usize::try_from(u32::from(best.height)).expect("u32 fits usize");
+        if seen.chain.get(best_at) == Some(&best.hash) {
             may.insert(index);
             if seen.chain.last() == Some(&best.hash) || seen.under == Some(best) {
                 must.insert(index);
@@ -213,7 +214,8 @@ async fn run(n: usize, moves: Vec<Move>) -> Result<(), TestCaseError> {
                     };
                     // header sync's part: what was read, verified (most work wins, tie = first)
                     if let Some(read) = seen[index].as_ref().filter(|seen| seen.reporting) {
-                        let height = BlockHeight::from(read.chain.len() as u32 - 1);
+                        let top = u32::try_from(read.chain.len() - 1).expect("short sim chains");
+                        let height = BlockHeight::from(top);
                         let tip = BlockRef { hash: *read.chain.last().expect("genesis"), height };
                         let _side_or_known = insert(&mut headers, &sim.chain.blocks(tip));
                     }
@@ -267,7 +269,8 @@ async fn run(n: usize, moves: Vec<Move>) -> Result<(), TestCaseError> {
                 );
                 for (index, seen) in seen.iter().enumerate() {
                     let theirs = seen.as_ref().filter(|seen| !seen.down).and_then(|seen| {
-                        let height = BlockHeight::from(seen.chain.len() as u32 - 1);
+                        let top = u32::try_from(seen.chain.len() - 1).expect("short sim chains");
+                        let height = BlockHeight::from(top);
                         Some(BlockRef { hash: *seen.chain.last()?, height })
                     });
                     prop_assert_eq!(

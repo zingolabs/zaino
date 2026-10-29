@@ -19,7 +19,7 @@ use crate::chain_view_core::ChainViewCore;
 use crate::ports::PeerSource;
 
 /// Announcements merged at most this often (one publish per batch, not per `inv`)
-pub(crate) const PEER_MERGE: Duration = Duration::from_millis(250);
+const PEER_MERGE: Duration = Duration::from_millis(250);
 
 /// Feeds the view from the peers' block announcements until cancelled
 pub struct PeerWatch {

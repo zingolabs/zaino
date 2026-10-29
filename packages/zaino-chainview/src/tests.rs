@@ -28,8 +28,8 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::bundle::OutPoint;
 
-use crate::alarm_thresholds::FINALITY_STALL;
-use crate::header_sync::{HEADER_BATCH, PEER_POLL};
+use crate::alarm_thresholds::FINALITY_PAUSE;
+use crate::header_sync::{OwnChain, HEADER_BATCH, PEER_POLL};
 use crate::mock_peers::MockPeers;
 use crate::peer_mempool::PEER_MEMPOOL_POLL;
 use crate::{
@@ -141,9 +141,9 @@ async fn the_mempool_opens_once_a_polled_validator_holds_the_verified_best_each_
         chain.output(block, 0, 0)
     });
     let tip = chain.mine_empty(8);
-    let [(one, one_raw), (two, two_raw)] = [1u64, 2].map(|n| {
-        raw_transparent(&[funded[n as usize - 1].clone()], &[(&alice, 10_000 - n * 1_000)])
-    });
+    let [first, second] = funded;
+    let [(one, one_raw), (two, two_raw)] = [(first, 9_000), (second, 8_000)]
+        .map(|(prevout, change)| raw_transparent(&[prevout], &[(&alice, change)]));
     chain.submit_raw(one_raw.clone());
     chain.submit_raw(two_raw.clone());
     let validator = Arc::new(chain.validator(tip));
@@ -1035,7 +1035,7 @@ async fn a_validator_gone_down_withdraws_its_hold_and_listings_and_its_return_re
 
 /// Depth 10: best 30 finalized at 20 owes nothing; best 45 finalized at 20 owes 15
 #[tokio::test(start_paused = true)]
-async fn finality_paused_rises_after_finality_stall_unmoved_and_clears_when_finalized_moves() {
+async fn finality_paused_rises_after_finality_pause_unmoved_and_clears_when_finalized_moves() {
     let mut chain = MockChain::regtest();
     let tip_30 = chain.mine_empty(30);
     let tip_45 = chain.mine_empty(15);
@@ -1044,19 +1044,19 @@ async fn finality_paused_rises_after_finality_stall_unmoved_and_clears_when_fina
     let paused = || view.subscriber().current().alarms().raised(Alarm::FinalityPaused);
 
     view.set_chain(Some(HeaderChainSnapshot::finalized(&chain, tip_30, h(20))));
-    tokio::time::sleep(FINALITY_STALL + POLL).await;
+    tokio::time::sleep(FINALITY_PAUSE + POLL).await;
     let owed_nothing = paused();
     view.set_chain(Some(HeaderChainSnapshot::finalized(&chain, tip_45, h(20))));
-    tokio::time::sleep(FINALITY_STALL - POLL).await;
+    tokio::time::sleep(FINALITY_PAUSE - POLL).await;
     let not_yet = paused();
     tokio::time::sleep(POLL * 2).await;
-    let stalled = paused();
+    let raised = paused();
     view.set_chain(Some(HeaderChainSnapshot::finalized(&chain, tip_45, h(35))));
     let moved = paused();
 
-    assert!(!owed_nothing, "finalized = best − depth for {FINALITY_STALL:?}+: nothing owed");
-    assert!(!not_yet, "owed, unmoved just short of {FINALITY_STALL:?}: not yet");
-    assert!(stalled, "owed, unmoved past {FINALITY_STALL:?}: raised");
+    assert!(!owed_nothing, "finalized = best − depth for {FINALITY_PAUSE:?}+: nothing owed");
+    assert!(!not_yet, "owed, unmoved just short of {FINALITY_PAUSE:?}: not yet");
+    assert!(raised, "owed, unmoved past {FINALITY_PAUSE:?}: raised");
     assert!(!moved, "finalized moved: cleared at once");
     cancel.cancel();
 }
@@ -1284,9 +1284,13 @@ async fn our_own_chain_anchors_the_peers_tip_with_no_trusted_validator_answering
     let at_150 = chain.mine_empty(150);
     let at_180 = chain.mine_empty(30);
     let path = chain.blocks(at_150);
-    let own: Vec<BlockRef> = path[150 - CONTEXT - 1..].iter().map(|b| b.block_ref()).collect();
+    let own = OwnChain {
+        locator: path[150 - CONTEXT - 1].header().hash,
+        anchor: path[150 - CONTEXT].block_ref(),
+        above: path[150 - CONTEXT + 1..].iter().map(|b| b.header().hash).collect(),
+    };
     let mut forged = own.clone();
-    forged[65].hash = BlockHash([0xF0; 32]);
+    forged.above[63] = BlockHash([0xF0; 32]);
     let rows = [("ours", own, Some((at_180, chain.at(h(37))))), ("one hash forged", forged, None)];
     for (row, own, expected) in rows {
         let peer_set = Arc::new(MockPeerSet::new(&chain, at_180));
@@ -1326,7 +1330,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 
     type PathEnd = fn(&mut MockChain) -> BlockRef;
     #[rustfmt::skip]
-    let rows: [(&str, PathEnd, u32, u32, bool); 3] = [
+    let rows: [(&str, PathEnd, usize, usize, bool); 3] = [
         // row,              the peers' path ends in,                       tip,   finalized, blamed
         ("past the ceiling", |chain| chain.mine_empty(2_060),              2_050, 40,        false),
         ("from the future",  |chain| chain.mine(|b| b.time(4_000_000_000)), 44,   34,        false),
@@ -1353,7 +1357,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         tokio::spawn(sync.run(cancel.clone()));
         let published = || verified.borrow().clone().map(|v| (v.best(), v.finalized_tip()));
 
-        let expected = Some((best[tip as usize], best[finalized_tip as usize]));
+        let expected = Some((best[tip], best[finalized_tip]));
         eventually(row, || published() == expected).await;
         tokio::time::sleep(PEER_POLL * 6).await;
 
