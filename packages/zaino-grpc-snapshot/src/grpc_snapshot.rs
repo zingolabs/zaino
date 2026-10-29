@@ -137,8 +137,9 @@ impl<V> GrpcSnapshot<V> {
         let vouched = self.chain().is_none_or(|chain| {
             chain.vouched(chain.best().height.saturating_sub(UNVOUCHED_BLOCKS))
         });
-        if !vouched || (all_down && !self.fresh(now_unix)) {
-            return match self.tips.synced && self.fresh(now_unix) {
+        let fresh = self.fresh(now_unix);
+        if !vouched || (all_down && !fresh) {
+            return match self.tips.synced && fresh {
                 true => ServingStatus::Degraded,
                 false => ServingStatus::Down,
             };

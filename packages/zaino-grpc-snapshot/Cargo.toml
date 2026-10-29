@@ -10,7 +10,7 @@ license.workspace = true
 description = "One published GrpcSnapshot of what Zaino serves: chain, indexes, mempool, validators"
 
 [features]
-# `Snapshots::fixed`
+# `GrpcSnapshots::fixed`
 testing = []
 
 [lints.rust]

@@ -21,9 +21,10 @@ use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::insert;
 use zaino_header_chain::{HeaderChain, HeaderChainSnapshot};
 use zaino_nfs::{ChainParams, NfsPublication};
-use zaino_persistence::{DiskView, IndexKind};
+use zaino_persistence::DiskView;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::testing::{h, raw_transaction, MockChain, QuietPanics};
+use zaino_sync::IndexKind;
 use zcash_protocol::TxId;
 
 use crate::publisher::Core;
@@ -192,7 +193,8 @@ impl Model {
     fn on_best(&self, at: BlockRef) -> bool {
         let best = self.headers.best().expect("genesis verified").block;
         let path = self.builder.blocks(best);
-        path.get(u32::from(at.height) as usize).is_some_and(|block| block.header().hash == at.hash)
+        let index = usize::try_from(u32::from(at.height)).expect("height fits usize");
+        path.get(index).is_some_and(|block| block.header().hash == at.hash)
     }
 
     fn apply(&mut self, input: &Input) {
@@ -200,7 +202,7 @@ impl Model {
         match *input {
             Input::Extend(count) => {
                 let tip = self.builder.branch(best).mine_empty(count).tip();
-                let above = u32::from(best.height) as usize + 1;
+                let above = usize::try_from(u32::from(best.height)).expect("fits usize") + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
             }
             Input::Reorg { depth, len } => {
@@ -208,7 +210,7 @@ impl Model {
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
                 let parent = self.builder.ancestor(best, h(at));
                 let tip = self.builder.branch(parent).outweigh().mine_empty(len).tip();
-                let above = at as usize + 1;
+                let above = usize::try_from(at).expect("height fits usize") + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
                 if self.headers.best().expect("verified").block.hash != best.hash {
                     self.old_tips.push(best);
@@ -231,13 +233,14 @@ impl Model {
                     true => branch.mine_empty(1).tip(),
                     false => branch.mine(|block| block.raw_tx(raw)).tip(),
                 };
-                let above = u32::from(best.height) as usize + 1;
+                let above = usize::try_from(u32::from(best.height)).expect("fits usize") + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
             }
             Input::Drop(pick) => drop(self.mempool.remove(&relayed(pick).0)),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
-                self.served = Some(self.builder.blocks(best)[height as usize].block_ref());
+                let index = usize::try_from(height).expect("height fits usize");
+                self.served = Some(self.builder.blocks(best)[index].block_ref());
             }
             Input::ServeOld { back } => {
                 self.served = self.old_tips.iter().rev().nth(back).copied().or(self.served);
