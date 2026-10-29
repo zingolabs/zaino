@@ -148,7 +148,7 @@ fn zatoshis(zec: f64) -> Result<Zatoshis, ParseError> {
     if !(0.0..=MAX_MONEY as f64).contains(&zats) {
         return Err(ParseError::Zec(zec));
     }
-    Zatoshis::from_u64(zats as u64).map_err(|_| ParseError::Zec(zec))
+    Ok(Zatoshis::from_u64(zats as u64).expect("zats range-checked to 0..=MAX_MONEY"))
 }
 
 /// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best chain

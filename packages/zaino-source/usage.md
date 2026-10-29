@@ -30,8 +30,8 @@ let grpc = ZebraIndexerGrpcClient::new(legacy, indexer_address, tls.as_ref(), Ti
 ```
 
 - `new` never contacts the validator: an unreachable validator is the caller's retry, never a
-  construction failure. `EndpointError` = a bad address, an unreadable cookie or TLS file, or a
-  client that cannot be built.
+  construction failure. `EndpointError` = a bad address or TLS config, an unreadable cookie or
+  TLS file.
 - `Auth`: `Cookie` sends basic auth as `__cookie__` with the file's token, `Basic` the pair,
   `None` no `Authorization` header.
 - One attempt per call. Which validator, how many requests in flight, retries and hedges are the
