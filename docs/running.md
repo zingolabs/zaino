@@ -28,7 +28,11 @@ zainod overload off                      # override the overload detector
 
 Environment variables prefixed `ZAINO_CONFIG_` win, with `__` separating nested keys
 (`ZAINO_CONFIG_SYNC__CONCURRENCY=64` sets `[sync] concurrency`); then the TOML file; then the
-built-in defaults. An unknown key fails the load.
+built-in defaults. An unknown key, or any value `zainod start` refuses, fails the load for every
+subcommand. Default paths sit under the user's XDG base
+directories; with no home directory (e.g. `HOME` unset under a service manager) the load fails
+naming each path to set: `serve.state_dir`, every enabled `index.<name>.path`, and
+`p2p.cache_dir` when `[p2p]` is enabled (and `--config` for the file itself).
 [`example_configs/zainod.toml`](./example_configs/zainod.toml) documents every key and its
 default. In outline:
 
