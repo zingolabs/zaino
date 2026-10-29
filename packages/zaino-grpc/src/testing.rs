@@ -12,12 +12,13 @@ use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationMerge, TrustedVal
 use zaino_grpc_snapshot::{GrpcSnapshots, Publisher};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{ChainParams, NfsPublication};
-use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
+use zaino_persistence::{DiskEngine, DiskView, PersistenceEngine, Store};
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_source::testing::{MockChain, MockValidator};
 use zaino_source::ZcashLegacyRpcClient;
+use zaino_sync::IndexKind;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, TrustedValidator};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::TxId;

@@ -119,8 +119,8 @@ stream ending or its client disconnecting). What each `[grpc]` cap bounds:
   window (≥ 500 ms, ≥ 10 samples) sets `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`,
   smoothed at 0.2, between 32 and `max_work_streams`; a window that peaked below half the limit
   changes nothing.
-- **Load report.** `GrpcService::admission()` → `AdmissionState::report()` gives
-  `{limit, in_flight, refused_per_s, overload}`, moved once a minute.
+- **Overload report.** `GrpcService::admission()` → `AdmissionState::overload()` gives the
+  first latched [overload](#overload) cause, moved once a minute.
 - **Trusted proxies.** A peer inside `trusted_proxies` must open with a PROXY header (v1 or v2,
   read under 5 s, ≤ 4 KiB), and the per-client cap counts the address it names; `LOCAL` /
   `UNKNOWN` count the proxy itself.
@@ -170,7 +170,7 @@ single-flight; every later ask is answered inline.
 
 ### Overload
 
-`report().overload` names the first cause latched (`/readyz`: `Overloaded: <cause>`). A cause
+`AdmissionState::overload()` names the first cause latched (`/readyz`: `Overloaded: <cause>`). A cause
 latches once over its `[grpc.overload]` threshold (`OverloadLimits`, 0 = off) for its enter time
 and clears once under half of it for its exit time; `AdmissionState::set_overload` changes the
 thresholds live.
@@ -178,7 +178,7 @@ thresholds live.
 | Cause | Signal, per one-minute window | Enter / exit |
 | ----- | ----------------------------- | ------------ |
 | `network saturated` | 20th percentile of `zaino_grpc_queue_delay_seconds` (RTT over the client network's base RTT: min over 10 min of every socket, as LEDBAT) or of `zaino_grpc_retransmit_ratio` (`network_retransmit_percent`); one per client /24 or /48 every 10 s (this listener's sockets, sock_diag), over samples with ≥ `network_min_networks` networks | 2 / 3 min |
-| `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI) | 2 / 3 min |
+| `CPU pressure`, `IO pressure` | share of the window zainod's cgroup waited (Linux PSI; no cgroup PSI file = unmeasured) | 2 / 3 min |
 | `refusing work` | admission refused ≥ 10% of work at ≥ 1/s (exit: < 2%) | 5 / 5 min |
 
 ### Serving log

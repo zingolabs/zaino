@@ -68,26 +68,32 @@ pub(super) fn trailers(status: &Status) -> HeaderMap {
 }
 
 /// Server-streaming response over materialised framed records
+pub(super) fn streamed_response(records: Vec<bytes::Bytes>) -> Response<Body> {
+    streaming(futures::stream::iter(records.into_iter().map(Ok)))
+}
+
+/// Server-streaming response: each framed record a DATA chunk, then `grpc-status` trailers (first
+/// `Err` = the stream's end + its status, exhausted = `OK`; tonic's server-streaming contract)
 ///
 /// - `grpc-status` in trailers only (one in headers = complete before the body arrives)
-pub(super) fn streamed_response(records: Vec<bytes::Bytes>) -> Response<Body> {
+/// - ready records joined into full DATA frames ([`Coalesced`](crate::coalesce::Coalesced): one
+///   frame per record floods h2 clients)
+pub(super) fn streaming<S>(records: S) -> Response<Body>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, Status>> + Send + 'static,
+{
     use futures::StreamExt as _;
     use http_body::Frame;
 
-    let data = futures::stream::iter(records.into_iter().map(|record| Ok(Frame::data(record))));
-    let trailing = futures::stream::once(async {
-        Ok::<_, Status>(Frame::trailers(trailers(&Status::ok(""))))
+    let frames = futures::stream::unfold(Some(Box::pin(records)), |records| async move {
+        let mut records = records?;
+        let (frame, rest) = match records.next().await {
+            Some(Ok(record)) => (Frame::data(record), Some(records)),
+            Some(Err(status)) => (Frame::trailers(trailers(&status)), None),
+            None => (Frame::trailers(trailers(&Status::ok(""))), None),
+        };
+        Some((Ok::<_, std::convert::Infallible>(frame), rest))
     });
-
-    streaming(data.chain(trailing))
-}
-
-/// Server-streaming response, ready records joined into full DATA frames
-/// ([`Coalesced`](crate::coalesce::Coalesced): one frame per record floods h2 clients)
-pub(super) fn streaming<S>(frames: S) -> Response<Body>
-where
-    S: futures::Stream<Item = Result<http_body::Frame<bytes::Bytes>, Status>> + Send + 'static,
-{
     let frames = Body::new(http_body_util::StreamBody::new(frames));
     let mut response = Response::new(Body::new(crate::coalesce::Coalesced::new(frames)));
     response
@@ -167,8 +173,8 @@ pub(crate) fn messages(mut framed: &[u8]) -> Option<Vec<&[u8]>> {
 mod tests {
     use tonic::Code;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_proto::frame::FRAME_HEADER;
+    use zaino_sync::IndexKind;
 
     use super::request_limit;
     use crate::service::Method;
@@ -193,10 +199,10 @@ mod tests {
             let mut message = vec![0x12];
             let mut len = payload;
             while len >= 0x80 {
-                message.push((len as u8) | 0x80);
+                message.push(u8::try_from(len & 0x7f).expect("7 bits") | 0x80);
                 len >>= 7;
             }
-            message.push(len as u8);
+            message.push(u8::try_from(len).expect("< 0x80"));
             message.resize(message.len() + payload, 0);
             bytes::Bytes::from(message)
         };

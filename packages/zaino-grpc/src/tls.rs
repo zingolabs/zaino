@@ -46,8 +46,6 @@ pub enum TlsError {
     NoCertificate(PathBuf),
     #[error("{path}: {source}")]
     Key { path: PathBuf, source: rustls::Error },
-    #[error("TLS config: {0}")]
-    Config(rustls::Error),
 }
 
 /// The gRPC listener's TLS: one acceptor, its certificate swappable underneath
@@ -69,7 +67,7 @@ impl Tls {
         });
         let mut config = ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .map_err(TlsError::Config)?
+            .expect("ring default provider: a suite + kx group for every safe default version")
             .with_no_client_auth()
             .with_cert_resolver(Arc::clone(&certs) as Arc<dyn ResolvesServerCert>);
         // gRPC = h2 (preferred), HTTP/1.1 = load-balancer health monitors (`health.rs`)

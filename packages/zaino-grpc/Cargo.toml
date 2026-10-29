@@ -52,6 +52,7 @@ zaino-persistence.workspace = true
 zaino-nfs.workspace = true
 zaino-traffic.workspace = true
 zaino-grpc-snapshot.workspace = true
+zaino-sync.workspace = true
 serde = { workspace = true, features = ["derive"] }
 strum = { version = "0.27", features = ["derive"] }
 

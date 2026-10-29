@@ -4644,6 +4644,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
+ "zaino-sync",
  "zaino-traffic",
  "zcash_address",
  "zcash_protocol",

@@ -6,7 +6,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, SubmitError};
 use zaino_grpc_snapshot::GrpcSnapshot;
-use zaino_persistence::MapRead;
+use zaino_persistence::PinnedView;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, RawTransaction};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
@@ -14,6 +14,7 @@ use zaino_traffic::TrafficBalancer;
 use zcash_protocol::TxId;
 
 use super::mempool::unmined;
+use crate::read_lanes::{Lane, ReadLanes};
 use crate::wire::{frame, unary_response};
 
 /// `SendTransaction`, answered as lightwalletd does (a rejection = a reply, only unreachable = a
@@ -43,9 +44,10 @@ pub(crate) async fn send_transaction<S: ChainDataSource>(
 }
 
 /// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
-pub(crate) async fn get_transaction<S: ChainDataSource, V: MapRead>(
+pub(crate) async fn get_transaction<S: ChainDataSource, V: PinnedView>(
     validators: &TrafficBalancer<S>,
     grpc_snapshot: &GrpcSnapshot<V>,
+    reads: &ReadLanes,
     tx_filter: service::TxFilter,
 ) -> Result<Response<Body>, Status> {
     let txid: [u8; 32] = tx_filter
@@ -55,7 +57,7 @@ pub(crate) async fn get_transaction<S: ChainDataSource, V: MapRead>(
         .map_err(|_| Status::invalid_argument("txid must be 32 bytes, in protocol order"))?;
 
     let transaction =
-        fetch_raw_transaction(validators, grpc_snapshot, TxId::from_bytes(txid)).await?;
+        fetch_raw_transaction(validators, grpc_snapshot, reads, TxId::from_bytes(txid)).await?;
     Ok(unary_response(frame(&transaction)))
 }
 
@@ -63,9 +65,10 @@ pub(crate) async fn get_transaction<S: ChainDataSource, V: MapRead>(
 ///
 /// - whichever validator holds it, else (none answering) [`fetch_without_validators`]
 /// - `NOT_FOUND` only when every validator asked said absent (a failure = maybe held)
-pub(super) async fn fetch_raw_transaction<S: ChainDataSource, V: MapRead>(
+pub(super) async fn fetch_raw_transaction<S: ChainDataSource, V: PinnedView>(
     validators: &TrafficBalancer<S>,
     grpc_snapshot: &GrpcSnapshot<V>,
+    reads: &ReadLanes,
     txid: TxId,
 ) -> Result<RawTransaction, Status> {
     let found = validators.lookup(move |source| async move { source.get_transaction(txid).await });
@@ -77,8 +80,8 @@ pub(super) async fn fetch_raw_transaction<S: ChainDataSource, V: MapRead>(
             }
             _ => {
                 let unavailable = || Status::unavailable(unanswered.to_string());
-                fetch_without_validators(validators, grpc_snapshot, txid)
-                    .await
+                fetch_without_validators(validators, grpc_snapshot, reads, txid)
+                    .await?
                     .ok_or_else(unavailable)
             }
         },
@@ -100,19 +103,26 @@ fn raw_transaction_message(found: zaino_source::TransactionResponse) -> RawTrans
 /// No validator answering: the served mempool's bytes (unmined), else the block `txid_location`
 /// names from the peers, checked and the transaction cut out (`None` = neither: no `[p2p]`, the
 /// index off, or a misanswer)
-async fn fetch_without_validators<S: ChainDataSource, V: MapRead>(
+async fn fetch_without_validators<S: ChainDataSource, V: PinnedView>(
     validators: &TrafficBalancer<S>,
     grpc_snapshot: &GrpcSnapshot<V>,
+    reads: &ReadLanes,
     txid: TxId,
-) -> Option<RawTransaction> {
-    let mempool = grpc_snapshot.mempool().ok();
-    if let Some(entry) = mempool.and_then(|mempool| mempool.entries().find(|e| e.txid == txid)) {
-        return Some(unmined(&entry));
+) -> Result<Option<RawTransaction>, Status> {
+    if let Some(entry) = grpc_snapshot.mempool().ok().and_then(|mempool| mempool.get(&txid)) {
+        return Ok(Some(unmined(&entry)));
     }
-    let mined = grpc_snapshot.served().ok()?.views().txid_location()?.mined(&txid)?;
-    let raw = validators.peer_block_bytes(mined.block.hash).await?.value;
-    let bytes = zaino_source::mined_transaction(&raw, mined.block, mined.index, txid)?;
-    Some(RawTransaction { data: bytes.into(), height: u32::from(mined.block.height).into() })
+    let Some(index) = grpc_snapshot.served().ok().and_then(|served| served.views().txid_location())
+    else {
+        return Ok(None);
+    };
+    let Some(mined) = reads.read(Lane::Point, move || index.mined(&txid)).await? else {
+        return Ok(None);
+    };
+    let Some(raw) = validators.peer_block_bytes(mined.block.hash).await else { return Ok(None) };
+    let bytes = zaino_source::mined_transaction(&raw.value, mined.block, mined.index, txid);
+    let height = u32::from(mined.block.height).into();
+    Ok(bytes.map(|bytes| RawTransaction { data: bytes.into(), height }))
 }
 
 #[cfg(test)]
@@ -217,10 +227,11 @@ mod tests {
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
         let held = fixed_snapshots(&chain, tip, Vec::new(), TrustedValidatorSet::at([0]), &ours);
         let held = held.load();
+        let reads = ReadLanes::new(&crate::GrpcLimits::default());
 
-        let served = fetch_raw_transaction(&routes.validators, &held, txid).await;
-        let other =
-            fetch_raw_transaction(&routes.validators, &held, TxId::from_bytes([9; 32])).await;
+        let served = fetch_raw_transaction(&routes.validators, &held, &reads, txid).await;
+        let unheld = TxId::from_bytes([9; 32]);
+        let other = fetch_raw_transaction(&routes.validators, &held, &reads, unheld).await;
 
         let served = served.map(|tx| (tx.data.to_vec(), tx.height));
         assert_eq!(

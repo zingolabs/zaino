@@ -21,8 +21,9 @@ use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
 use zaino_grpc_snapshot::{GrpcSnapshots, Unavailable};
-use zaino_persistence::{IndexKind, PinnedView};
+use zaino_persistence::PinnedView;
 use zaino_source::ChainDataSource;
+use zaino_sync::IndexKind;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
@@ -269,21 +270,21 @@ impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
         let served = || grpc_snapshot.served().map_err(wire::unavailable);
         let compact_blocks = || {
             let served = served()?;
-            let reader = view(served.views().compact_block(), method)?;
+            let reader = view(served.views().compact_block(), method);
             Ok::<_, Status>(blocks::CompactBlocks { served, reader })
         };
         let tree_states = || {
             // the NFS publish itself: memo identity (`served()` = its served tip)
             let nothing = || wire::unavailable(Unavailable::NothingServed);
             let indexed = grpc_snapshot.indexed().ok_or_else(nothing)?;
-            let reader = view(indexed.served().views().tree_state(), method)?;
+            let reader = view(indexed.served().views().tree_state(), method);
             let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&self.tree_states));
             let reads = reads.clone();
             Ok::<_, Status>(tree_state::TreeStateReads { indexed, reader, reads, memos })
         };
         let address_index = || {
             let served = served()?;
-            let reader = view(served.views().transparent_address(), method)?;
+            let reader = view(served.views().transparent_address(), method);
             let reader = reader.as_of(served.tip().height).with_max_rows(routes.max_address_rows);
             let network = served.params().network;
             Ok::<_, Status>(transparent_address::AddressIndex { reader, network })
@@ -337,7 +338,8 @@ impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
             GetMempoolStream => mempool::get_mempool_stream(&grpc_snapshot),
             GetTransaction => {
                 let validators = &routes.validators;
-                transactions::get_transaction(validators, &grpc_snapshot, decode(&request)?).await
+                let filter = decode(&request)?;
+                transactions::get_transaction(validators, &grpc_snapshot, &reads, filter).await
             }
             GetLightdInfo => info::get_lightd_info(&grpc_snapshot, routes.network, routes.version),
             GetStandardFee => info::get_standard_fee(&grpc_snapshot, routes.network),
@@ -345,10 +347,11 @@ impl<S: ChainDataSource, V: PinnedView> Wired<S, V> {
     }
 }
 
-/// `method`'s index view ([`Method::route`]), absent = disabled (an NFS publish built without it)
-fn view<T>(view: Option<T>, method: Method) -> Result<T, Status> {
-    let index = method.route().index.expect("a method reading a view names its index");
-    view.ok_or_else(|| disabled(method, index))
+/// `method`'s index view ([`Method::route`])
+///
+/// - `answer` refused a disabled index already: `None` = `RouteDeps.indexes` ⊄ the NFS's
+fn view<T>(view: Option<T>, method: Method) -> T {
+    view.unwrap_or_else(|| panic!("{}: RouteDeps.indexes ⊆ the NFS publish's", method.name()))
 }
 
 /// `method` needs `index`, which the operator left off
@@ -390,8 +393,8 @@ where
 mod tests {
     use tonic::Code;
     use zaino_chainview::TrustedValidatorSet;
-    use zaino_persistence::IndexKind;
     use zaino_source::testing::{h, MockChain};
+    use zaino_sync::IndexKind;
 
     use strum::VariantArray as _;
 
