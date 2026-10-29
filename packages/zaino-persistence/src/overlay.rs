@@ -211,11 +211,11 @@ impl AppliedLayer for Overlay {
     }
 
     fn len(&self, table: SequenceId) -> u64 {
-        self.records(table).len() as u64
+        u64::try_from(self.records(table).len()).expect("usize fits u64")
     }
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
-        self.records(table).get(at as usize).cloned()
+        self.records(table).get(usize::try_from(at).ok()?).cloned()
     }
 
     fn value(&self, table: MapId, key: &[u8]) -> Option<Entry> {

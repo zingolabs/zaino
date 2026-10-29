@@ -7,13 +7,13 @@
 //!
 //! - both files = `crate::pages` append logs (checksummed, sealed per commit)
 
-use std::{io, num::NonZeroU32, ops::Range, path::Path};
+use std::{io, num::NonZeroUsize, ops::Range, path::Path};
 
 use bytes::Bytes;
 
 use crate::{
     fs::{Durability, Fs},
-    manifest::{BodyReader, ManifestError},
+    manifest::{self, BodyReader},
     pages::{sums_name, FileKind, PageError, PagedFile, Pages, Sealed},
     schema::{SequenceTable, Width},
 };
@@ -23,7 +23,7 @@ const END: usize = 8;
 /// Where record `i` sits in `<name>.dat`: at `i × n`, or between two ends `T` holds (`.idx`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Records<T> {
-    Fixed(NonZeroU32),
+    Fixed(NonZeroUsize),
     Variable(T),
 }
 
@@ -64,20 +64,24 @@ impl Seals {
         }
     }
 
-    pub(crate) fn decode(width: Width, body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
-        let data = Sealed::decode(body)?;
+    pub(crate) fn decode(width: Width, body: &mut BodyReader<'_>) -> Self {
+        let data = Sealed::decode(body);
         let records = match width {
             Width::Fixed(n) => Records::Fixed(n),
-            Width::Variable => Records::Variable(Sealed::decode(body)?),
+            Width::Variable => Records::Variable(Sealed::decode(body)),
         };
         let whole = match records {
-            Records::Fixed(n) => data.len % u64::from(n.get()) == 0,
-            Records::Variable(ends) => ends.len % END as u64 == 0,
+            Records::Fixed(n) => {
+                data.len.is_multiple_of(u64::try_from(n.get()).expect("record width fits u64"))
+            }
+            Records::Variable(ends) => {
+                ends.len.is_multiple_of(u64::try_from(END).expect("END = 8"))
+            }
         };
-        match whole {
-            true => Ok(Self { data, records }),
-            false => Err(ManifestError::Body("a sequence's length is not whole records")),
+        if !whole {
+            manifest::malformed("seals a sequence at part of a record")
         }
+        Self { data, records }
     }
 }
 
@@ -153,8 +157,12 @@ impl SequenceFile {
     /// `record` at the end (neither durable nor readable until [`seal`](Self::seal) + commit)
     pub(crate) fn append(&mut self, record: &[u8]) -> io::Result<()> {
         if let Records::Fixed(n) = self.records {
-            let n = usize::try_from(n.get()).expect("u32 fits usize");
-            assert_eq!(record.len(), n, "a fixed-width sequence record of {} bytes", record.len());
+            assert_eq!(
+                record.len(),
+                n.get(),
+                "a fixed-width sequence record of {} bytes",
+                record.len()
+            );
         }
         self.data.file.append(record)?;
         if let Records::Variable(ends) = &mut self.records {
@@ -228,10 +236,11 @@ impl SequencePages {
     }
 
     pub(crate) fn len(&self) -> u64 {
-        match &self.records {
-            Records::Fixed(n) => self.data.len() as u64 / u64::from(n.get()),
-            Records::Variable(ends) => (ends.len() / END) as u64,
-        }
+        let records = match &self.records {
+            Records::Fixed(n) => self.data.len() / n.get(),
+            Records::Variable(ends) => ends.len() / END,
+        };
+        u64::try_from(records).expect("usize fits u64 (64-bit target)")
     }
 
     pub(crate) fn record(&self, at: u64) -> Option<Bytes> {
@@ -259,10 +268,7 @@ impl SequencePages {
     fn span(&self, range: Range<u64>) -> Range<usize> {
         let at = |position: u64| usize::try_from(position).expect("positions fit usize");
         match &self.records {
-            Records::Fixed(n) => {
-                let n = usize::try_from(n.get()).expect("u32 fits usize");
-                at(range.start) * n..at(range.end) * n
-            }
+            Records::Fixed(n) => at(range.start) * n.get()..at(range.end) * n.get(),
             Records::Variable(ends) => {
                 let end = |position: usize| {
                     let bytes = ends.read(position * END..(position + 1) * END);

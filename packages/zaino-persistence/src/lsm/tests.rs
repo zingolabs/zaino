@@ -2,6 +2,7 @@
 //! plans, scope filters (store end to end: `disk/tests.rs`)
 
 use std::{
+    num::NonZeroU64,
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
@@ -12,12 +13,12 @@ use super::{
     file_name,
     layout::Shape,
     writer::SegmentWriter,
-    Fanout, SegmentError, SegmentMeta, SegmentSet, SegmentsView, Slots,
+    Fanout, SegmentMeta, SegmentSet, SegmentsView, Slots,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
     pages::{sums_path, PAGE},
-    schema::{IndexKind, MapTable},
+    schema::MapTable,
 };
 
 /// Two same-tier segments merge (a merge in a handful of writes)
@@ -64,9 +65,8 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
 fn empty_set(table: &MapTable) -> SegmentSet {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    let slots = Arc::new(Slots::new(4, u64::MAX));
-    SegmentSet::open(fs, Path::new("/m"), IndexKind::CompactBlock, table, &[], FANOUT, slots)
-        .expect("open")
+    let slots = Arc::new(Slots::new(4, NonZeroU64::MAX));
+    SegmentSet::open(fs, Path::new("/m"), "blocks", table, &[], FANOUT, slots).expect("open")
 }
 
 #[test]
@@ -118,11 +118,11 @@ fn an_index_s_maps_sum_into_one_series_and_a_dropped_map_withdraws_its_share() {
         SegmentSet::open(
             fs.clone(),
             Path::new(dir),
-            IndexKind::TransparentAddress,
+            "addresses",
             &scanned(),
             &[],
             FANOUT,
-            Arc::new(Slots::new(4, u64::MAX)),
+            Arc::new(Slots::new(4, NonZeroU64::MAX)),
         )
         .expect("open")
     };
@@ -137,12 +137,12 @@ fn an_index_s_maps_sum_into_one_series_and_a_dropped_map_withdraws_its_share() {
     let mut first = open("/a");
     let mut second = open("/b");
     scraped(&[
-        "zaino_lsm_segments{index=\"transparent_address\"} 0",
-        "zaino_lsm_merging{index=\"transparent_address\"} 0",
-        "zaino_lsm_live_rows{index=\"transparent_address\"} 0",
-        "zaino_lsm_merge_bytes_total{index=\"transparent_address\"} 0",
-        "zaino_lsm_merge_duration_seconds_count{index=\"transparent_address\"} 0",
-        "zaino_lsm_stall_duration_seconds_count{index=\"transparent_address\"} 0",
+        "zaino_lsm_segments{index=\"addresses\"} 0",
+        "zaino_lsm_merging{index=\"addresses\"} 0",
+        "zaino_lsm_live_rows{index=\"addresses\"} 0",
+        "zaino_lsm_merge_bytes_total{index=\"addresses\"} 0",
+        "zaino_lsm_merge_duration_seconds_count{index=\"addresses\"} 0",
+        "zaino_lsm_stall_duration_seconds_count{index=\"addresses\"} 0",
     ]);
 
     // one segment of 1 key in `first`, one of 2 keys in `second`
@@ -154,14 +154,14 @@ fn an_index_s_maps_sum_into_one_series_and_a_dropped_map_withdraws_its_share() {
         set.on_manifest_durable().expect("manifest");
     }
     scraped(&[
-        "zaino_lsm_segments{index=\"transparent_address\"} 2",
-        "zaino_lsm_live_rows{index=\"transparent_address\"} 3",
+        "zaino_lsm_segments{index=\"addresses\"} 2",
+        "zaino_lsm_live_rows{index=\"addresses\"} 3",
     ]);
 
     drop(second);
     scraped(&[
-        "zaino_lsm_segments{index=\"transparent_address\"} 1",
-        "zaino_lsm_live_rows{index=\"transparent_address\"} 1",
+        "zaino_lsm_segments{index=\"addresses\"} 1",
+        "zaino_lsm_live_rows{index=\"addresses\"} 1",
     ]);
 }
 
@@ -258,8 +258,8 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
-    let slots = Arc::new(Slots::new(4, u64::MAX));
-    let index = IndexKind::CompactBlock;
+    let slots = Arc::new(Slots::new(4, NonZeroU64::MAX));
+    let index = "blocks";
     let mut set =
         SegmentSet::open(fs.clone(), dir, index, &scanned(), &[kept, second], FANOUT, slots)
             .expect("open");
@@ -300,7 +300,9 @@ fn seek_finds_each_slot_and_prefetch_names_the_fence_group_then_the_record_block
     let layout = (shape.stride, shape.key_len, shape.block_rows, shape.group_fences);
     assert_eq!(layout, (20, 12, 204, 341), "(stride, key bytes, rows a block, fences a group)");
     let rows = 3 * 69_564 + 999;
-    let written: Vec<_> = (0..rows).map(|slot| scanned_row(7, 2 * slot as u32)).collect();
+    let written: Vec<_> = (0..rows)
+        .map(|slot| scanned_row(7, 2 * u32::try_from(slot).expect("slot < 2^31")))
+        .collect();
     let meta = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape)
         .write(0, borrowed(&written))
         .expect("write")
@@ -313,7 +315,7 @@ fn seek_finds_each_slot_and_prefetch_names_the_fence_group_then_the_record_block
     assert_eq!(file.seek(&below), 0, "below every key");
     assert_eq!(file.seek(&above), rows, "above every key");
     for slot in (0..rows).step_by(997).chain([69_563, 69_564, 139_128, rows - 1]) {
-        let seq = 2 * slot as u32;
+        let seq = 2 * u32::try_from(slot).expect("slot < 2^31");
         assert_eq!(file.seek(&key(seq)), slot, "seq {seq}: its own slot");
         assert_eq!(
             file.seek(&key(seq + 1)),
@@ -338,7 +340,7 @@ fn seek_finds_each_slot_and_prefetch_names_the_fence_group_then_the_record_block
         Case { slot: 209_690, group_blocks: 1_023..1_028, block_rows: 209_508..209_691 },
     ];
     for Case { slot, group_blocks, block_rows } in cases {
-        let key = scanned_row(7, 2 * slot as u32).0;
+        let key = scanned_row(7, 2 * u32::try_from(slot).expect("slot < 2^31")).0;
         let fences = fences_at + group_blocks.start * 12..fences_at + group_blocks.end * 12;
         let records = block_rows.start * 20..block_rows.end * 20;
         let what = format!("slot {slot}: fence blocks {group_blocks:?}");
@@ -430,13 +432,14 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
     let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
-    let segments: Vec<_> = (0u64..6)
+    let segments: Vec<_> = (0u32..6)
         .map(|s| {
-            let accounts = std::iter::once(0).chain(100 * s + 1..100 * s + 50);
+            let first = 100 * u64::from(s);
+            let accounts = std::iter::once(0).chain(first + 1..first + 50);
             let rows: Vec<_> = accounts
-                .flat_map(|a| (0..20).map(move |seq| scanned_row(a, seq + 100 * s as u32)))
+                .flat_map(|a| (0..20).map(move |seq| scanned_row(a, seq + 100 * s)))
                 .collect();
-            writer.write(s as u32, borrowed(&rows)).expect("write").expect("rows")
+            writer.write(s, borrowed(&rows)).expect("write").expect("rows")
         })
         .collect();
     writer.dir().sync().expect("sync");
@@ -474,39 +477,31 @@ enum Held {
 /// - value + tombstone → both dropped, in either input order (counted as cancelled)
 /// - all dropped → no output segment
 /// - lone tombstone → kept (its value lives outside the merge)
-/// - two values, two tombstones, three rows of one key → `Contract`, naming the rows
 #[test]
-fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other_duplicates() {
+fn a_merge_cancels_value_tombstone_pairs_and_keeps_lone_tombstones() {
     use Held::{Tombstone, Value};
     struct Case {
         case: &'static str,
         inputs: &'static [&'static [Held]],
-        merged: Result<(&'static [Held], u64), &'static str>,
+        merged: (&'static [Held], u64),
     }
     #[rustfmt::skip]
     let cases = [
-        Case { case: "pair, nothing left", inputs: &[&[Value(1)], &[Tombstone(1)]], merged: Ok((&[], 1)) },
-        Case { case: "tombstone first",    inputs: &[&[Tombstone(1)], &[Value(1)]], merged: Ok((&[], 1)) },
+        Case { case: "pair, nothing left", inputs: &[&[Value(1)], &[Tombstone(1)]], merged: (&[], 1) },
+        Case { case: "tombstone first",    inputs: &[&[Tombstone(1)], &[Value(1)]], merged: (&[], 1) },
         Case {
             case: "pair among others",
             inputs: &[&[Value(1), Value(2)], &[Tombstone(1), Value(3)]],
-            merged: Ok((&[Value(2), Value(3)], 1)),
+            merged: (&[Value(2), Value(3)], 1),
         },
         Case {
             case: "lone tombstone",
             inputs: &[&[Tombstone(1)], &[Value(2)]],
-            merged: Ok((&[Tombstone(1), Value(2)], 0)),
-        },
-        Case { case: "two values",     inputs: &[&[Value(1)], &[Value(1)]],         merged: Err("key held 2 times: value, value") },
-        Case { case: "two tombstones", inputs: &[&[Tombstone(1)], &[Tombstone(1)]], merged: Err("key held 2 times: tombstone, tombstone") },
-        Case {
-            case: "three rows",
-            inputs: &[&[Value(1)], &[Tombstone(1)], &[Value(1)]],
-            merged: Err("key held 3 times: value, tombstone, value"),
+            merged: (&[Tombstone(1), Value(2)], 0),
         },
     ];
     let shape = Shape::of(&probed().deletes());
-    let slots = Slots::new(1, u64::MAX);
+    let slots = Slots::new(1, NonZeroU64::MAX);
     let cancel = AtomicBool::new(false);
     for Case { case, inputs, merged: expected } in cases {
         let fs = SimFs::new();
@@ -528,43 +523,73 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
             .collect();
         let slot = slots.acquire(0, &cancel).expect("free slot");
 
-        let merged = writer.merge(99, &segments, &cancel, &slot).map(|merged| {
-            let merged = merged.expect("never cancelled");
-            let rows: Vec<Held> = merged.output.map_or(Vec::new(), |meta| {
-                let file = SegmentFile::open(
-                    &SegmentDir::new(fs.clone(), dir),
-                    &meta,
-                    shape,
-                    Access::Sequential,
-                )
-                .expect("output");
-                (0..file.records())
-                    .map(|slot| match file.entry(slot) {
-                        (key, Some(value)) => {
-                            assert_eq!(id(&key), id(&value), "{case}: id {}'s value", id(&key));
-                            Value(id(&key))
-                        }
-                        (key, None) => Tombstone(id(&key)),
-                    })
-                    .collect()
-            });
-            (rows, merged.cancelled)
-        });
+        let merged = writer.merge(99, &segments, &cancel, &slot).expect("merge");
 
-        match (merged, expected) {
-            (Ok((mut rows, cancelled)), Ok((expected, expected_cancelled))) => {
-                rows.sort();
-                let mut expected = expected.to_vec();
-                expected.sort();
-                let what = format!("{case}: (output rows sorted, pairs cancelled)");
-                assert_eq!((rows, cancelled), (expected, expected_cancelled), "{what}");
-            }
-            (Err(SegmentError::Contract { segment: 99, reason }), Err(named)) => {
-                assert!(reason.contains(named), "{case}: refused {reason:?}, want {named:?}");
-            }
-            (answer, expected) => panic!("{case}: merged {answer:?}, want {expected:?}"),
-        }
+        let merged = merged.expect("never cancelled");
+        let mut rows: Vec<Held> = merged.output.map_or(Vec::new(), |meta| {
+            let file = SegmentFile::open(
+                &SegmentDir::new(fs.clone(), dir),
+                &meta,
+                shape,
+                Access::Sequential,
+            )
+            .expect("output");
+            (0..file.records())
+                .map(|slot| match file.entry(slot) {
+                    (key, Some(value)) => {
+                        assert_eq!(id(&key), id(&value), "{case}: id {}'s value", id(&key));
+                        Value(id(&key))
+                    }
+                    (key, None) => Tombstone(id(&key)),
+                })
+                .collect()
+        });
+        rows.sort();
+        let (expected, expected_cancelled) = expected;
+        let mut expected = expected.to_vec();
+        expected.sort();
+        let what = format!("{case}: (output rows sorted, pairs cancelled)");
+        assert_eq!((rows, merged.cancelled), (expected, expected_cancelled), "{what}");
     }
+}
+
+#[test]
+#[should_panic(
+    expected = "merge into segment 2: key held 2 times: value, value (insert-once / remove-once"
+)]
+fn a_merge_of_two_values_of_one_key_panics() {
+    let fs = SimFs::new();
+    let dir = Path::new("/removable");
+    fs.create_dir_all(dir).expect("dir");
+    let writer =
+        SegmentWriter::new(SegmentDir::new(fs.clone(), dir), Shape::of(&probed().deletes()));
+    let row = [probed_row(1)];
+    let first = writer.write(0, borrowed(&row)).expect("write").expect("rows");
+    let second = writer.write(1, borrowed(&row)).expect("write").expect("rows");
+    let (slots, cancel) = (Slots::new(1, NonZeroU64::MAX), AtomicBool::new(false));
+    let slot = slots.acquire(0, &cancel).expect("free slot");
+
+    let _ = writer.merge(2, &[first, second], &cancel, &slot);
+}
+
+/// Input order = the panic's row order
+#[test]
+#[should_panic(expected = "merge into segment 3: key held 3 times: value, tombstone, value")]
+fn a_merge_of_three_rows_of_one_key_panics_naming_each_in_input_order() {
+    let fs = SimFs::new();
+    let dir = Path::new("/removable");
+    fs.create_dir_all(dir).expect("dir");
+    let writer =
+        SegmentWriter::new(SegmentDir::new(fs.clone(), dir), Shape::of(&probed().deletes()));
+    let row = [probed_row(1)];
+    let first = writer.write(0, borrowed(&row)).expect("write").expect("rows");
+    let tombstone = writer.write(1, vec![(row[0].0.as_slice(), None)]).expect("write");
+    let tombstone = tombstone.expect("rows");
+    let third = writer.write(2, borrowed(&row)).expect("write").expect("rows");
+    let (slots, cancel) = (Slots::new(1, NonZeroU64::MAX), AtomicBool::new(false));
+    let slot = slots.acquire(0, &cancel).expect("free slot");
+
+    let _ = writer.merge(3, &[first, tombstone, third], &cancel, &slot);
 }
 
 /// Value in one segment, its tombstone in a tombstone-only other, an unrelated third: whatever
@@ -583,7 +608,7 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let unrelated = writer.write(1, borrowed(&[other])).expect("write").expect("rows");
     let tombstone = writer.write(2, vec![(removed.0.as_slice(), None)]).expect("write");
     let tombstone = tombstone.expect("rows");
-    let slots = Slots::new(1, u64::MAX);
+    let slots = Slots::new(1, NonZeroU64::MAX);
     let cancel = AtomicBool::new(false);
     let merge = |id, inputs: &[_]| {
         let slot = slots.acquire(0, &cancel).expect("free slot");

@@ -14,11 +14,11 @@
 //!   [`encode_row`] / [`decode_row`])
 //! - integrity = the file's page checksums (`crate::pages`), nothing here re-proven on read
 
-use std::{cmp::Ordering, ops::Range, sync::Arc};
+use std::{cmp::Ordering, io, ops::Range, sync::Arc};
 
 use super::{
     dir::SegmentDir,
-    filter::{FilterError, FilterLayout, FilterWriter},
+    filter::{FilterLayout, FilterWriter},
     spill::Spill,
 };
 use crate::{pages::PagedFile, schema::MapTable};
@@ -82,11 +82,11 @@ impl Shape {
     /// Panics: map the LSM cannot hold (schema = constant: mismatch = bug)
     pub(crate) fn of(table: &MapTable) -> Self {
         let name = &table.name;
-        let (key_len, scope) = (table.key.get() as usize, table.scope as usize);
+        let (key_len, scope) = (table.key.get(), table.scope);
         assert!(scope <= key_len, "LSM map {name}: scope {scope} > its {key_len}-byte key");
         let filtered = if scope == 0 { key_len } else { scope };
         assert!(filtered >= 8, "LSM map {name}: filter shards on 8 key bytes, has {filtered}");
-        let value_len = table.value.get() as usize;
+        let value_len = table.value.get();
         let stride = key_len + value_len + usize::from(table.deletes);
         Self {
             stride,
@@ -101,12 +101,12 @@ impl Shape {
         }
     }
 
-    pub(crate) fn blocks(&self, records: u64) -> usize {
-        usize::try_from(records.div_ceil(self.block_rows as u64)).expect("block count fits usize")
+    pub(crate) fn blocks(&self, records: usize) -> usize {
+        records.div_ceil(self.block_rows)
     }
 
     /// Summary entries: one per `group_fences` fences
-    pub(crate) fn groups(&self, records: u64) -> usize {
+    pub(crate) fn groups(&self, records: usize) -> usize {
         self.blocks(records).div_ceil(self.group_fences)
     }
 }
@@ -128,11 +128,11 @@ impl Sections {
         records: u64,
         filter: impl FnOnce(usize) -> Option<FilterLayout>,
     ) -> Self {
-        let fences = usize::try_from(records).expect("record count fits usize") * shape.stride;
+        let records = usize::try_from(records).expect("record count fits usize");
+        let fences = records * shape.stride;
         let summary_at = fences + shape.blocks(records) * shape.key_len;
         let filter_at = summary_at + shape.groups(records) * shape.key_len;
         let filter = filter(filter_at).expect("a sealed segment's filter section parses");
-        let records = usize::try_from(records).expect("record count fits usize");
         Self { shape, records, fences, summary: summary_at..filter_at, filter: (filter_at, filter) }
     }
 
@@ -150,7 +150,7 @@ impl Sections {
         let groups = summary.len() / key_len;
         let group = last_at_most(groups, |g| &summary[g * key_len..(g + 1) * key_len], key);
         let low = group * self.shape.group_fences;
-        low..(low + self.shape.group_fences).min(self.shape.blocks(self.records as u64))
+        low..(low + self.shape.group_fences).min(self.shape.blocks(self.records))
     }
 
     /// Block a key could sit in: the last whose fence ≤ `key` (block 0 when below every fence),
@@ -192,7 +192,7 @@ fn last_at_most<'a>(count: usize, entry: impl Fn(usize) -> &'a [u8], key: &[u8])
 /// - in memory: only the summary (1/100 of the fences) + the filter's shard table
 pub(crate) struct Navigation {
     shape: Shape,
-    records: u64,
+    records: usize,
     fences: Spill,
     summary: Vec<u8>,
     filter: FilterWriter,
@@ -203,7 +203,7 @@ impl Navigation {
     /// - `records` = most it will be pushed (sizes the filter's shards)
     /// - merge cancelling pairs pushes fewer
     /// - scratch files, if any, beside segment `id` in `dir`
-    pub(crate) fn new(shape: Shape, records: u64, dir: &SegmentDir, id: u32) -> Self {
+    pub(crate) fn new(shape: Shape, records: usize, dir: &SegmentDir, id: u32) -> Self {
         let spill = |part| Spill::new(Arc::clone(dir.shared_fs()), dir.scratch(id, part));
         Self {
             shape,
@@ -218,7 +218,7 @@ impl Navigation {
     /// Encoded record, strictly after the one before (asserted: else a sort or merge bug)
     ///
     /// - filter takes each distinct filtered prefix once (keys sharing one arrive together)
-    pub(crate) fn push(&mut self, row: &[u8]) -> Result<(), FilterError> {
+    pub(crate) fn push(&mut self, row: &[u8]) -> io::Result<()> {
         assert_eq!(row.len(), self.shape.stride, "record encodes to its stride");
         let key = &row[..self.shape.key_len];
         let first = self.records == 0;
@@ -226,9 +226,9 @@ impl Navigation {
             first || self.previous.as_slice() < key,
             "segment records strictly ascending (duplicate or unsorted batch)"
         );
-        if (self.records as usize).is_multiple_of(self.shape.block_rows) {
-            let fence = self.fences.len() / self.shape.key_len as u64;
-            if fence.is_multiple_of(self.shape.group_fences as u64) {
+        if self.records.is_multiple_of(self.shape.block_rows) {
+            let fence = self.records / self.shape.block_rows;
+            if fence.is_multiple_of(self.shape.group_fences) {
                 self.summary.extend_from_slice(key);
             }
             self.fences.push(key)?;
@@ -243,12 +243,12 @@ impl Navigation {
         Ok(())
     }
 
-    pub(crate) fn records(&self) -> u64 {
+    pub(crate) fn records(&self) -> usize {
         self.records
     }
 
     /// `fences ‖ summary ‖ filter`, appended to `out` after the records (scratch files removed)
-    pub(crate) fn finish(self, out: &mut PagedFile) -> Result<(), FilterError> {
+    pub(crate) fn finish(self, out: &mut PagedFile) -> io::Result<()> {
         self.fences.append_to(out)?;
         out.append(&self.summary)?;
         let (head, fingerprints) = self.filter.finish()?;

@@ -70,7 +70,7 @@ impl IndexDir {
             Some(_) => fs.open(&path.join(MANIFEST))?.file,
             None => {
                 let creating = fs.open(&path.join(CREATING))?.file;
-                creating.write_all_at(&vec![0; manifest::FILE_LEN as usize], 0)?;
+                creating.write_all_at(&vec![0; manifest::FILE_LEN], 0)?;
                 creating.sync_data()?;
                 fs.rename(&path.join(CREATING), &path.join(MANIFEST))?;
                 creating
@@ -169,13 +169,10 @@ fn durable_body(
 
 #[cfg(test)]
 mod tests {
-    use zcash_protocol::consensus::NetworkType;
-
     use super::*;
-    use crate::{fs::SimFs, schema::IndexKind};
+    use crate::fs::SimFs;
 
-    const IDENTITY: Identity =
-        Identity { kind: IndexKind::CompactBlock, format: 1, network: NetworkType::Regtest };
+    const IDENTITY: Identity = Identity { name: "blocks", format: 1, scope: "regtest" };
 
     /// - fresh → commit → reopen reads it back
     /// - commits after a reopen continue the sequence (never over the live slot)
@@ -184,7 +181,7 @@ mod tests {
     fn commits_survive_reopen_and_overwrite_the_two_slots_in_place() {
         let fs = SimFs::new();
         let path = Path::new("/data/idx");
-        let manifest_len = || fs.contents(&path.join(MANIFEST)).expect("manifest").len() as u64;
+        let manifest_len = || fs.contents(&path.join(MANIFEST)).expect("manifest").len();
 
         let mut opened = IndexDir::open(fs.clone(), path, IDENTITY).expect("open fresh");
         assert_eq!(opened.body, None, "fresh: nothing durable");

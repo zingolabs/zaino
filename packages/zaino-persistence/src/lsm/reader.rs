@@ -234,11 +234,6 @@ impl SegmentsView {
     pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
         self.segments.iter().map(|file| file.pages())
     }
-
-    /// Durable segments in list order (the merge policy's input)
-    pub(crate) fn segments(&self) -> Vec<SegmentMeta> {
-        self.segments.iter().map(|file| file.meta).collect()
-    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ const STALL_WINDOWS: usize = 2;
 /// Size tier `⌊log_fanout(records)⌋`: `fanout` peers merge into the tier above
 /// (write amplification `log_fanout(N)`)
 pub(super) fn tier_of(segment: &SegmentMeta, fanout: Fanout) -> u32 {
-    segment.records.ilog(fanout.get() as u64)
+    segment.records.ilog(u64::try_from(fanout.get()).expect("usize fits u64"))
 }
 
 /// Next size-tiered merge: lowest tier outside `busy` listing `fanout` segments → its oldest

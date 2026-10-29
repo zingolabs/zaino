@@ -161,7 +161,7 @@ impl Items {
         match width.into() {
             Width::Fixed(n) => {
                 let len = item.len();
-                assert_eq!(len, n.get() as usize, "{table}: a {len}-byte item, width {n}");
+                assert_eq!(len, n.get(), "{table}: a {len}-byte item, width {n}");
             }
             Width::Variable => self.ends.push(self.bytes.len() + item.len()),
         }
@@ -170,7 +170,7 @@ impl Items {
 
     pub(crate) fn len(&self, width: impl Into<Width>) -> usize {
         match width.into() {
-            Width::Fixed(n) => self.bytes.len() / n.get() as usize,
+            Width::Fixed(n) => self.bytes.len() / n,
             Width::Variable => self.ends.len(),
         }
     }
@@ -181,7 +181,7 @@ impl Items {
             return None;
         }
         let range = match width {
-            Width::Fixed(n) => at * n.get() as usize..(at + 1) * n.get() as usize,
+            Width::Fixed(n) => at * n.get()..(at + 1) * n.get(),
             Width::Variable => {
                 at.checked_sub(1).map_or(0, |before| self.ends[before])..self.ends[at]
             }

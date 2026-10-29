@@ -11,11 +11,11 @@ use std::{
 };
 
 use zaino_persistence::{
-    fs::RealFs, BlockChanges, DiskEngine, IndexKind, MapTable, PersistenceEngine, Schema,
-    SequenceTable, Store, Tables, Width,
+    fs::RealFs, BlockChanges, DiskEngine, MapTable, PersistenceEngine, Schema, SequenceTable,
+    Store, Tables, Width,
 };
 use zaino_primitives::types::BlockRef;
-use zcash_protocol::consensus::{NetworkType, H0};
+use zcash_protocol::consensus::H0;
 use zcash_protocol::BlockHash;
 
 /// Live heap: usable size + glibc's 8 B chunk header per allocation
@@ -52,12 +52,8 @@ static GLOBAL: Counting = Counting;
 const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32));
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
 const MAP: MapTable = MapTable::point(0, "map", 36, 8);
-const SCHEMA: Schema = Schema::new(
-    IndexKind::UtxoSet,
-    1,
-    NetworkType::Regtest,
-    Tables::new(&[FIXED, VARIABLE], &[MAP]),
-);
+const SCHEMA: Schema =
+    Schema::new("outputs", 1, "regtest", Tables::new(&[FIXED, VARIABLE], &[MAP]));
 
 /// Uniform, distinct per `n` (random insert order into the map)
 fn key(n: u64) -> [u8; 36] {
@@ -75,10 +71,12 @@ fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
         ("fixed 32 B, 1/block", 1, |out, n| out.sequence(FIXED).append(&key(n)[..32])),
         ("fixed 32 B, 100/block", 100, |out, n| out.sequence(FIXED).append(&key(n)[..32])),
         ("variable 100..300 B, 1/block", 1, |out, n| {
-            out.sequence(VARIABLE).append(&vec![n as u8; 100 + (n % 200) as usize])
+            out.sequence(VARIABLE)
+                .append(&vec![n.to_le_bytes()[0]; 100 + usize::try_from(n % 200).expect("< 200")])
         }),
         ("variable 100..300 B, 100/block", 100, |out, n| {
-            out.sequence(VARIABLE).append(&vec![n as u8; 100 + (n % 200) as usize])
+            out.sequence(VARIABLE)
+                .append(&vec![n.to_le_bytes()[0]; 100 + usize::try_from(n % 200).expect("< 200")])
         }),
         ("map 36 → 8 B, 1/block", 1, |out, n| out.map(MAP).insert(&key(n), &n.to_le_bytes())),
         ("map 36 → 8 B, 100/block", 100, |out, n| out.map(MAP).insert(&key(n), &n.to_le_bytes())),
@@ -93,7 +91,7 @@ fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
             .expect("open");
         let before = LIVE.load(Ordering::Relaxed);
         let mut height = H0;
-        for first in (0..ROWS).step_by(per_block as usize) {
+        for first in (0..ROWS).step_by(usize::try_from(per_block).expect("<= 100")) {
             let mut changes = store.changes(BlockRef { height, hash: BlockHash([0; 32]) });
             for n in first..first + per_block {
                 fill(&mut changes, n);
@@ -103,9 +101,15 @@ fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
         }
         let heap = LIVE.load(Ordering::Relaxed) - before;
         let accounted = store.buffered_bytes();
-        let ratio = accounted as f64 / heap as f64;
-        report.push((shape, heap / ROWS as usize, accounted / ROWS as usize, ratio));
+        let rows = usize::try_from(ROWS).expect("100 000 fits usize");
+        let percent = (accounted * 100).checked_div(heap);
+        report.push((shape, heap / rows, accounted / rows, percent));
     }
-    let off: Vec<_> = report.iter().filter(|(.., ratio)| !(0.7..=1.3).contains(ratio)).collect();
-    assert!(off.is_empty(), "(shape, heap/row, accounted/row, ratio) off by > 30%: {report:#?}");
+    let off =
+        |percent: &Option<usize>| !percent.is_some_and(|percent| (70..=130).contains(&percent));
+    let off: Vec<_> = report.iter().filter(|(.., percent)| off(percent)).collect();
+    assert!(
+        off.is_empty(),
+        "(shape, heap/row, accounted/row, accounted % of heap) off by > 30%: {report:#?}"
+    );
 }

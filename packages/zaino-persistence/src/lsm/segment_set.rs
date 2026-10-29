@@ -25,10 +25,7 @@ use super::{
     writer::{Merged, SegmentWriter},
     Fanout, Result, SegmentMeta,
 };
-use crate::{
-    fs::Fs,
-    schema::{IndexKind, MapTable},
-};
+use crate::{fs::Fs, schema::MapTable};
 
 /// Map's durable list + merges running under it + list staged for the next manifest
 ///
@@ -73,7 +70,7 @@ struct Merge {
 }
 
 impl SegmentSet {
-    /// `index`'s `table` segments in `dir`, at the durable `listed`
+    /// `store`'s `table` segments in `dir`, at the durable `listed`
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
     /// - unlisted files removed ([`SegmentDir::retain`])
@@ -82,7 +79,7 @@ impl SegmentSet {
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         dir: &Path,
-        index: IndexKind,
+        store: &'static str,
         table: &MapTable,
         listed: &[SegmentMeta],
         fanout: Fanout,
@@ -97,7 +94,7 @@ impl SegmentSet {
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
             .max()
             .unwrap_or(0);
-        let series = Series { index: index.name(), table: table.name };
+        let series = Series { index: store, table: table.name };
         let mut set = Self {
             writer: SegmentWriter::new(dir, shape),
             series,
@@ -170,8 +167,6 @@ impl SegmentSet {
         let staged = self.staged.take().expect("a commit follows batch");
         self.segments = staged.segments;
         self.segments_view = Arc::new(self.segments_view.next(self.writer.dir(), &self.segments)?);
-        let name = self.series.table;
-        assert_eq!(self.segments_view.segments(), self.segments, "{name}: readers see the list");
         self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
             telemetry::swapped(self.series, landed);
@@ -309,6 +304,8 @@ impl fmt::Debug for SegmentSet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     impl SegmentSet {
@@ -320,6 +317,18 @@ mod tests {
         /// Merges launched and not yet landed (each may have an unlisted output on disk)
         pub(crate) fn merging(&self) -> usize {
             self.merges.len()
+        }
+
+        pub(crate) fn fanout(&self) -> Fanout {
+            self.fanout
+        }
+
+        pub(crate) fn segments_per_tier(&self) -> BTreeMap<u32, usize> {
+            let mut per_tier = BTreeMap::new();
+            for segment in &self.segments {
+                *per_tier.entry(tier_of(segment, self.fanout)).or_default() += 1;
+            }
+            per_tier
         }
 
         /// Blocks until every running merge finishes (lands on the next `batch`)

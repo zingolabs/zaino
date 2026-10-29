@@ -1,17 +1,14 @@
 use std::collections::BTreeSet;
 
-use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::BlockHash;
 
 use super::*;
-use crate::schema::{IndexKind, MapTable, SequenceTable, Tables, Width};
+use crate::schema::{MapTable, SequenceTable, Tables, Width};
 
 const RECORDS: SequenceTable = SequenceTable::new(0, "records", Width::Variable);
 const IDS: MapTable = MapTable::point(0, "ids", 16, 4).deletes();
-const SCHEMA: Schema =
-    Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[RECORDS], &[IDS]));
-const OTHER: Schema =
-    Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, Tables::new(&[], &[]));
+const SCHEMA: Schema = Schema::new("blocks", 1, "regtest", Tables::new(&[RECORDS], &[IDS]));
+const OTHER: Schema = Schema::new("blocks", 1, "regtest", Tables::new(&[], &[]));
 
 /// Height `n`, hash `[n; 32]`
 fn block_at(n: u8) -> BlockRef {

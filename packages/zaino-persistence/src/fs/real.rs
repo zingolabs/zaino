@@ -90,14 +90,14 @@ impl Fs for RealFs {
     }
 
     #[cfg(target_os = "linux")]
-    fn durability(&self, files: &[PathBuf]) -> io::Result<Durability> {
-        Ok(super::probe::durability(files))
+    fn durability(&self, files: &[PathBuf]) -> Durability {
+        super::probe::durability(files)
     }
 
     /// No probe off Linux (no `sync_file_range`)
     #[cfg(not(target_os = "linux"))]
-    fn durability(&self, _: &[PathBuf]) -> io::Result<Durability> {
-        Ok(Durability::PerFile)
+    fn durability(&self, _: &[PathBuf]) -> Durability {
+        Durability::PerFile
     }
 
     fn lock(&self, path: &Path) -> io::Result<LockGuard> {
@@ -177,8 +177,7 @@ pub(super) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
     if len == 0 {
         return Ok(0);
     }
-    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
-        .map_err(|_| io::Error::other("no page size"))?;
+    let page = rustix::param::page_size();
     let mut pages = vec![0u8; len.div_ceil(page)];
     match unsafe { libc::mincore(map.as_ptr().cast_mut().cast(), len, pages.as_mut_ptr()) } {
         0 => {
@@ -220,8 +219,8 @@ fn map_read_only(file: &File) -> io::Result<Mmap> {
 fn start_writeback(file: &File, range: Range<u64>) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
 
-    let offset = i64::try_from(range.start).map_err(io::Error::other)?;
-    let len = i64::try_from(range.end - range.start).map_err(io::Error::other)?;
+    let offset = i64::try_from(range.start).expect("file offset below i64::MAX (kernel limit)");
+    let len = i64::try_from(range.end - range.start).expect("file offset below i64::MAX");
     let flags = libc::SYNC_FILE_RANGE_WRITE;
     match unsafe { libc::sync_file_range(file.as_raw_fd(), offset, len, flags) } {
         0 => Ok(()),

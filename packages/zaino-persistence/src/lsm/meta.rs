@@ -1,7 +1,7 @@
 //! Durable segment as its manifest records it ([`SegmentMeta`]) + segment-list codec
 
 use crate::{
-    manifest::{BodyReader, ManifestError},
+    manifest::{self, BodyReader},
     pages::Sealed,
 };
 
@@ -23,15 +23,16 @@ impl SegmentMeta {
         self.sealed.encode(out);
     }
 
-    fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
-        let (id, records, tombstones) = (body.u32()?, body.u64()?, body.u64()?);
-        Ok(Self { id, records, tombstones, sealed: Sealed::decode(body)? })
+    fn decode(body: &mut BodyReader<'_>) -> Self {
+        let (id, records, tombstones) = (body.u32(), body.u64(), body.u64());
+        Self { id, records, tombstones, sealed: Sealed::decode(body) }
     }
 
     /// Keys this segment adds to the map (each tombstone cancels one older value: insert-once,
     /// remove-once)
     pub(crate) fn live(&self) -> i64 {
-        let (records, tombstones) = (self.records as i64, self.tombstones as i64);
+        let count = |n: u64| i64::try_from(n).expect("segment counts < 2^63");
+        let (records, tombstones) = (count(self.records), count(self.tombstones));
         records - 2 * tombstones
     }
 }
@@ -47,30 +48,29 @@ pub(crate) fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
     }
 }
 
-/// Empty segment, tombstones > records, duplicate id refused (none ever committed)
-pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
-    let count = body.u32()?;
+/// Empty segment, tombstones > records, duplicate id panic (none ever committed)
+pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Vec<SegmentMeta> {
+    let count = body.u32();
     let mut segments = Vec::new();
     for _ in 0..count {
-        let segment = SegmentMeta::decode(body)?;
+        let segment = SegmentMeta::decode(body);
         if segment.records == 0 {
-            return Err(ManifestError::Body("empty segment listed"));
+            manifest::malformed("lists an empty segment")
         }
         if segment.tombstones > segment.records {
-            return Err(ManifestError::Body("more tombstones than records"));
+            manifest::malformed("lists a segment with more tombstones than records")
         }
         if segments.iter().any(|seen: &SegmentMeta| seen.id == segment.id) {
-            return Err(ManifestError::Body("segment listed twice"));
+            manifest::malformed("lists a segment twice")
         }
         segments.push(segment);
     }
-    Ok(segments)
+    segments
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::golden::assert_fields;
 
     fn segment(id: u32, records: u64, tombstones: u64) -> SegmentMeta {
         SegmentMeta { id, records, tombstones, sealed: Sealed { len: 100, tail: 0xaa, sums: 0xbb } }
@@ -84,44 +84,53 @@ mod tests {
         encode_list(&segments, &mut bytes);
 
         #[rustfmt::skip]
-        assert_fields(&bytes, &[
-            ("count",                &2u32.to_le_bytes()),
-            ("segment 0 id",         &4u32.to_le_bytes()),
-            ("segment 0 records",    &(1u64 << 40).to_le_bytes()),
-            ("segment 0 tombstones", &3u64.to_le_bytes()),
-            ("segment 0 len",        &100u64.to_le_bytes()),
-            ("segment 0 tail",       &0xaau32.to_le_bytes()),
-            ("segment 0 sums",       &0xbbu32.to_le_bytes()),
-            ("segment 1 id",         &9u32.to_le_bytes()),
-            ("segment 1 records",    &1u64.to_le_bytes()),
-            ("segment 1 tombstones", &0u64.to_le_bytes()),
-            ("segment 1 len",        &100u64.to_le_bytes()),
-            ("segment 1 tail",       &0xaau32.to_le_bytes()),
-            ("segment 1 sums",       &0xbbu32.to_le_bytes()),
-        ]);
+        let fields: [(&str, std::ops::Range<usize>, &[u8]); 13] = [
+            ("count",                0..4,   &2u32.to_le_bytes()),
+            ("segment 0 id",         4..8,   &4u32.to_le_bytes()),
+            ("segment 0 records",    8..16,  &(1u64 << 40).to_le_bytes()),
+            ("segment 0 tombstones", 16..24, &3u64.to_le_bytes()),
+            ("segment 0 len",        24..32, &100u64.to_le_bytes()),
+            ("segment 0 tail",       32..36, &0xaau32.to_le_bytes()),
+            ("segment 0 sums",       36..40, &0xbbu32.to_le_bytes()),
+            ("segment 1 id",         40..44, &9u32.to_le_bytes()),
+            ("segment 1 records",    44..52, &1u64.to_le_bytes()),
+            ("segment 1 tombstones", 52..60, &0u64.to_le_bytes()),
+            ("segment 1 len",        60..68, &100u64.to_le_bytes()),
+            ("segment 1 tail",       68..72, &0xaau32.to_le_bytes()),
+            ("segment 1 sums",       72..76, &0xbbu32.to_le_bytes()),
+        ];
+        for (field, range, golden) in fields {
+            assert_eq!(bytes.get(range.clone()), Some(golden), "{field}, bytes {range:?}");
+        }
+        assert_eq!(bytes.len(), 76, "list = count + 2 × 36-byte segments, nothing after");
         let mut body = BodyReader::new(&bytes);
-        assert_eq!(decode_list(&mut body).expect("golden bytes decode"), segments);
-        body.finish().expect("whole list consumed");
+        assert_eq!(decode_list(&mut body), segments);
+        body.finish();
     }
 
-    /// None ever committed: a manifest listing one = malformed
     #[test]
-    fn a_segment_list_refuses_a_duplicate_id_an_empty_segment_and_excess_tombstones() {
-        #[rustfmt::skip]
-        let cases = [
-            ([segment(1, 5, 0), segment(1, 6, 0)].to_vec(), "segment listed twice"),
-            ([segment(1, 0, 0)].to_vec(),                    "empty segment listed"),
-            ([segment(1, 5, 6)].to_vec(),                    "more tombstones than records"),
-        ];
-        for (listed, refused) in cases {
-            let mut bytes = Vec::new();
-            encode_list(&listed, &mut bytes);
+    #[should_panic(expected = "manifest body passed CRC yet lists a segment twice")]
+    fn a_segment_list_holding_an_id_twice_panics() {
+        let mut bytes = Vec::new();
+        encode_list(&[segment(1, 5, 0), segment(1, 6, 0)], &mut bytes);
+        decode_list(&mut BodyReader::new(&bytes));
+    }
 
-            let decoded = decode_list(&mut BodyReader::new(&bytes));
+    #[test]
+    #[should_panic(expected = "manifest body passed CRC yet lists an empty segment")]
+    fn a_segment_list_holding_an_empty_segment_panics() {
+        let mut bytes = Vec::new();
+        encode_list(&[segment(1, 0, 0)], &mut bytes);
+        decode_list(&mut BodyReader::new(&bytes));
+    }
 
-            let error = decoded.map_err(|error| error.to_string());
-            let want = Err(format!("malformed manifest body: {refused}"));
-            assert_eq!(error, want, "{listed:?}");
-        }
+    #[test]
+    #[should_panic(
+        expected = "manifest body passed CRC yet lists a segment with more tombstones than records"
+    )]
+    fn a_segment_list_holding_excess_tombstones_panics() {
+        let mut bytes = Vec::new();
+        encode_list(&[segment(1, 5, 6)], &mut bytes);
+        decode_list(&mut BodyReader::new(&bytes));
     }
 }

@@ -1,4 +1,5 @@
-//! Store metrics, labelled `index` = the store's index kind (LSM sets: `lsm/telemetry.rs`)
+//! Store metrics, labelled `index` = the store's [`Schema`](crate::Schema) name (LSM sets:
+//! `lsm/telemetry.rs`)
 
 use std::time::Duration;
 
@@ -53,5 +54,6 @@ pub const METRICS: &[Metric] = &[
 
 pub(crate) fn committed(index: &'static str, bytes: usize, took: Duration) {
     metrics::histogram!(metric_names::COMMIT_SECONDS, "index" => index).record(took.as_secs_f64());
-    metrics::counter!(metric_names::COMMIT_BYTES_TOTAL, "index" => index).increment(bytes as u64);
+    metrics::counter!(metric_names::COMMIT_BYTES_TOTAL, "index" => index)
+        .increment(u64::try_from(bytes).expect("usize fits u64"));
 }
