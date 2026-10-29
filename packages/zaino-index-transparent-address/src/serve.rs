@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
@@ -16,7 +16,7 @@ use crate::{address::AddressKey, TransparentAddressReader};
 
 /// - never an empty result (gap-limit walk must tell "no transactions" from "cannot tell")
 /// - transport maps these onto gRPC codes (no transport named in this crate)
-/// - `SupplyExceeded` = corrupt store
+/// - `SupplyExceeded` = unspent total past `MAX_MONEY` (block content: coinbase value unchecked)
 /// - `TooManyRows` = an exchange's addresses, refused whole (never truncated: a short answer reads
 ///   as a balance)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -40,13 +40,6 @@ pub struct AddressUtxo {
     pub outpoint: OutPoint,
     pub height: BlockHeight,
     pub value: Zatoshis,
-}
-
-/// Transaction paying the queried address or spending from it
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TransactionRef {
-    pub(crate) height: BlockHeight,
-    pub txid: TxId,
 }
 
 impl<V: MapRead> TransparentAddressReader<V> {
@@ -87,7 +80,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
 
     /// [`balances`](Self::balances) by storage key (reaches the opaque key no address parses to)
     pub(crate) fn balances_of(&self, keys: &[AddressKey]) -> Result<Vec<Zatoshis>, ServeError> {
-        self.unspent(keys, BlockHeight::from_u32(0), self.max_rows().get())
+        self.unspent(keys, H0, self.max_rows().get())
             .ok_or_else(|| self.too_many())?
             .into_iter()
             .map(|rows| {
@@ -99,8 +92,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .collect()
     }
 
-    /// `GetTaddressTransactions`: txs from height `start` to `end`, both inclusive, paying the
-    /// address or spending from it
+    /// `GetTaddressTransactions`: txids from height `start` to `end`, both inclusive, paying the
+    /// address or spending from it, in (height, txid) order, each once
     ///
     /// - scanned over all of history, not the range (an in-range spend consumes an output received
     ///   at any earlier height, outpoint = all the block carried)
@@ -109,24 +102,24 @@ impl<V: MapRead> TransparentAddressReader<V> {
         address: &TransparentAddress,
         start: BlockHeight,
         end: BlockHeight,
-    ) -> Result<Vec<TransactionRef>, ServeError> {
+    ) -> Result<Vec<TxId>, ServeError> {
         assert!(start <= end, "range {start}..={end} reversed (ordered at the router)");
 
         let received = self
-            .receives(address.into(), BlockHeight::from_u32(0), self.max_rows().get())
+            .receives(address.into(), H0, self.max_rows().get())
             .ok_or_else(|| self.too_many())?;
         let keys: Vec<_> = received.iter().map(|row| row.key).collect();
         let mut found = Vec::new();
         for (row, spend) in received.iter().zip(self.spends_of(&keys)) {
             if (start..=end).contains(&row.key.height) {
-                found.push(TransactionRef { height: row.key.height, txid: row.key.txid });
+                found.push((row.key.height, row.key.txid));
             }
 
             let Some(spend) = spend else {
                 continue;
             };
             if (start..=end).contains(&spend.height) {
-                found.push(TransactionRef { height: spend.height, txid: spend.spender });
+                found.push((spend.height, spend.spender));
             }
         }
 
@@ -134,7 +127,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
         found.sort_unstable();
         found.dedup();
 
-        Ok(found)
+        Ok(found.into_iter().map(|(_, txid)| txid).collect())
     }
 }
 
@@ -179,8 +172,7 @@ mod tests {
         let at_one = at_two.clone().as_of(h(1));
 
         let received = AddressUtxo { outpoint: paid_out, height: h(1), value: zats(42) };
-        let paying = TransactionRef { height: h(1), txid: chain.tx(one, 0).txid };
-        let spending = TransactionRef { height: h(2), txid: chain.tx(two, 1).txid };
+        let (paying, spending) = (chain.tx(one, 0).txid, chain.tx(two, 1).txid);
         let balances = at_two.balances(&[paid, receiver]);
         assert_eq!(balances, Ok(vec![zats(0), zats(41)]), "tip 2: balances of [paid, receiver]");
         assert_eq!(at_two.utxos_of(&[paid], h(0)), Ok(vec![vec![]]), "tip 2: paid's utxos");

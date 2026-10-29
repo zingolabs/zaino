@@ -49,7 +49,7 @@ pub(crate) struct Spend {
 pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
     let mut out = [0u8; RECEIVE_KEY];
     out[..HASH160].copy_from_slice(&key.address.hash);
-    out[HASH160] = key.address.kind as u8;
+    out[HASH160] = key.address.kind.encode();
     let at = AddressKey::LEN;
     out[at..at + 4].copy_from_slice(&u32::from(key.height).to_be_bytes());
     out[at + 4..at + 4 + TXID].copy_from_slice(key.txid.as_ref());
@@ -111,6 +111,8 @@ pub(crate) fn decode_spend(bytes: &[u8; SPEND]) -> Spend {
 
 #[cfg(test)]
 mod tests {
+    use zaino_source::testing::h;
+
     use super::*;
 
     /// Corrupt rows panic naming the invariant, never decode to a guess
@@ -119,7 +121,7 @@ mod tests {
     fn a_receive_value_above_the_money_supply_panics() {
         let receive = ReceiveKey {
             address: AddressKey::p2pkh([0x11; HASH160]),
-            height: BlockHeight::from_u32(7),
+            height: h(7),
             txid: TxId::from_bytes([0x22; TXID]),
             vout: 0,
         };
@@ -131,7 +133,7 @@ mod tests {
     fn a_receive_of_an_unknown_kind_panics() {
         let receive = ReceiveKey {
             address: AddressKey::p2pkh([0x11; HASH160]),
-            height: BlockHeight::from_u32(7),
+            height: h(7),
             txid: TxId::from_bytes([0x22; TXID]),
             vout: 0,
         };
@@ -186,7 +188,7 @@ mod tests {
         let receive = ReceiveRow {
             key: ReceiveKey {
                 address: AddressKey::p2sh([0x09; HASH160]),
-                height: BlockHeight::from_u32(0x0102_0304),
+                height: h(0x0102_0304),
                 txid: TxId::from_bytes([0x22; TXID]),
                 vout: 0x0506_0708,
             },
@@ -219,10 +221,7 @@ mod tests {
     #[test]
     fn a_spent_row_is_its_golden_bytes_and_round_trips() {
         let (txid, vout) = (TxId::from_bytes([0x22; TXID]), 0x0102_0304);
-        let spend = Spend {
-            height: BlockHeight::from_u32(0x0506_0708),
-            spender: TxId::from_bytes([0x44; TXID]),
-        };
+        let spend = Spend { height: h(0x0506_0708), spender: TxId::from_bytes([0x44; TXID]) };
         let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
 
         let row = [&encode_spent_key(&txid, vout)[..], &encode_spend(&spend)[..]].concat();

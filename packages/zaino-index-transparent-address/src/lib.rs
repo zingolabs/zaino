@@ -7,10 +7,11 @@ mod serve;
 mod writer;
 
 pub use reader::TransparentAddressReader;
-pub use serve::{AddressUtxo, ServeError, TransactionRef, DEFAULT_MAX_ADDRESS_ROWS};
+pub use serve::{AddressUtxo, ServeError, DEFAULT_MAX_ADDRESS_ROWS};
 pub use writer::{fold, TransparentAddressIndexWriter};
 
-use zaino_persistence::{IndexKind, MapTable, Schema, Tables};
+use zaino_persistence::{MapTable, Schema, Tables};
+use zaino_sync::IndexKind;
 use zcash_protocol::consensus::NetworkType;
 
 use address::AddressKey;
@@ -22,18 +23,13 @@ const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
 /// Store layout on `network` (`zainod` opens and verifies by it)
 pub const fn schema(network: NetworkType) -> Schema {
-    Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES)
+    zaino_sync::schema(IndexKind::TransparentAddress, FORMAT, network, TABLES)
 }
 
 /// Buffered heap that commits a bulk run (a `FinalizedTip` block commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(256 << 20).expect("256 MiB is non-zero");
 
-const RECEIVES: MapTable = MapTable::scoped(
-    0,
-    "receives",
-    RECEIVE_KEY as u32,
-    RECEIVE_VALUE as u32,
-    AddressKey::LEN as u32,
-);
-const SPENT: MapTable = MapTable::point(1, "spent", SPENT_KEY as u32, SPEND as u32);
+const RECEIVES: MapTable =
+    MapTable::scoped(0, "receives", RECEIVE_KEY, RECEIVE_VALUE, AddressKey::LEN);
+const SPENT: MapTable = MapTable::point(1, "spent", SPENT_KEY, SPEND);

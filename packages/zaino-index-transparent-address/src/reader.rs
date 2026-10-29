@@ -24,10 +24,12 @@ pub struct TransparentAddressReader<V> {
     max_rows: NonZeroUsize,
 }
 
-impl<V: View> std::fmt::Debug for TransparentAddressReader<V> {
+impl<V> std::fmt::Debug for TransparentAddressReader<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let tip = self.view.tip();
-        f.debug_struct("TransparentAddressReader").field("tip", &tip).finish_non_exhaustive()
+        f.debug_struct("TransparentAddressReader")
+            .field("tip", &self.tip)
+            .field("max_rows", &self.max_rows)
+            .finish_non_exhaustive()
     }
 }
 
@@ -69,13 +71,12 @@ impl<V: MapRead> TransparentAddressReader<V> {
         start: BlockHeight,
         limit: usize,
     ) -> Option<Vec<ReceiveRow>> {
-        // key-range end, exclusive: the height after the tip
-        let end = self.tip.map_or(BlockHeight::from_u32(0), |tip| tip + 1);
         // start past the tip: nothing held
-        if start >= end {
+        let Some(tip) = self.tip.filter(|&tip| start <= tip) else {
             return Some(Vec::new());
-        }
-        let (from, to) = (ReceiveKey::first(address, start), ReceiveKey::first(address, end));
+        };
+        // key-range end, exclusive: the height after the tip
+        let (from, to) = (ReceiveKey::first(address, start), ReceiveKey::first(address, tip + 1));
         let (from, to) = (encode_receive_key(&from), encode_receive_key(&to));
         let rows = self.view.map(RECEIVES).range(&from, &to, limit)?;
         let rows = rows.iter().map(|(key, value)| {
