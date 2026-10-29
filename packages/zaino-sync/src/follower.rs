@@ -18,14 +18,15 @@ use futures::stream::{FuturesOrdered, StreamExt};
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use zaino_header_chain::HeaderChainSnapshot;
-use zaino_persistence::IndexKind;
 use zaino_primitives::types::{Block, BlockRef};
 use zaino_source::{ChainDataSource, ResponseSizeCap};
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
 
-use crate::{fetch, fetch_at, metrics, FinalizedStream, Step, Subscription, SyncProgress};
+use crate::{
+    fetch, fetch_at, metrics, FinalizedStream, IndexKind, Step, Subscription, SyncProgress,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FollowError {
@@ -36,8 +37,6 @@ pub enum FollowError {
     Diverged { index: &'static str, height: BlockHeight, expected: BlockHash, got: BlockHash },
     #[error("block {height:?} does not extend the block sent before it (validator history moved)")]
     Unlinked { height: BlockHeight },
-    #[error("header sync stopped publishing the verified chain")]
-    ChainGone,
 }
 
 pub struct FinalizedFollower<S> {
@@ -85,17 +84,14 @@ impl<S: ChainDataSource> FinalizedFollower<S> {
     /// - Either way: the stream ends with `Shutdown` (every writer commits, stops)
     pub async fn run(self, cancel: CancellationToken) -> Result<(), FollowError> {
         let Self { chain, balancer, lookahead, sink, durable, progress } = self;
-        let followed = cancel
-            .run_until_cancelled(follow(chain, &balancer, lookahead, &sink, durable, &progress))
-            .await;
+        let followed = follow(chain, &balancer, lookahead, &sink, durable, &progress, &cancel);
+        let followed = cancel.run_until_cancelled(followed).await;
         sink.shutdown();
-        match followed {
-            Some(Err(FollowError::ChainGone)) if cancel.is_cancelled() => Ok(()),
-            followed => followed.unwrap_or(Ok(())),
-        }
+        followed.unwrap_or(Ok(()))
     }
 }
 
+/// Closed chain watch = cancel (header sync publishes until it) → `Ok`
 async fn follow<S: ChainDataSource>(
     mut chain: watch::Receiver<Option<Arc<HeaderChainSnapshot>>>,
     balancer: &TrafficBalancer<S>,
@@ -103,6 +99,7 @@ async fn follow<S: ChainDataSource>(
     sink: &FinalizedStream<Block>,
     durable: Vec<(IndexKind, Option<BlockRef>)>,
     progress: &SyncProgress,
+    cancel: &CancellationToken,
 ) -> Result<(), FollowError> {
     let next = |tip: &Option<BlockRef>| tip.map_or(H0, |tip| tip.height + 1);
     let mut wanted = durable.iter().map(|(_, tip)| next(tip)).min().unwrap_or(H0);
@@ -142,7 +139,13 @@ async fn follow<S: ChainDataSource>(
             fetching.push_back(AbortOnDropHandle::new(fetched));
         }
         tokio::select! {
-            changed = chain.changed() => changed.map_err(|_| FollowError::ChainGone)?,
+            changed = chain.changed() => if changed.is_err() {
+                assert!(
+                    cancel.is_cancelled(),
+                    "header sync publishes the verified chain until cancel"
+                );
+                return Ok(());
+            },
             Some(joined) = fetching.next(), if !fetching.is_empty() => {
                 let bodies = joined.unwrap_or_else(|join| std::panic::resume_unwind(join.into_panic()));
                 in_flight -= bodies.len();
@@ -432,7 +435,7 @@ mod peers {
         let depth = FinalityDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut headers = HeaderChain::new(depth);
         let a3 = decode_header(&chain.header_bytes(trunk[3].header().hash)).expect("decodes");
-        headers.anchor(&a3, h(3));
+        headers.anchor(&a3, h(3)).expect("MockChain nBits valid");
         insert(&mut headers, &trunk[4..]).expect("A4..=A11 link onto A3");
         headers.finalize(headers.finalizable().expect("A11 = A8 + depth"));
         let verified = headers.snapshot().expect("anchored");

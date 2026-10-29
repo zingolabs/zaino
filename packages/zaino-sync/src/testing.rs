@@ -23,7 +23,7 @@ pub const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("1 MiB is non-
 ///
 /// - `write_buffer` = MIN: every applied block committed by the store itself
 pub fn open(fs: &Arc<SimFs>, schema: &Schema, write_buffer: NonZeroUsize) -> DiskStore {
-    let dir = Path::new("/").join(schema.kind.name());
+    let dir = Path::new("/").join(schema.name());
     DiskEngine::new(fs.clone(), LsmConfig::default())
         .open(&dir, schema, write_buffer)
         .unwrap_or_else(|error| panic!("open {}: {error}", dir.display()))

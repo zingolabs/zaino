@@ -23,6 +23,14 @@ A writer = `new(store)`, `handle()` (→ `FinalizedFollower::subscribe` + `Nfs::
 `run.ends_at_finalized_tip`, then `publish`; on `Shutdown`, commit and publish once more. The
 smallest one: `zaino-internal-block-hash-to-height/src/writer.rs`.
 
+## `IndexKind` and `schema`
+
+`IndexKind` = every index Zaino folds; `ALL` = fold order, `name()` = its one spelling (metric
+label, `/status`, task, default directory, index-snapshot entry). Each index crate declares its
+store as `zaino_sync::schema(IndexKind::X, FORMAT, network, TABLES)`: the persistence engine gets
+`name()` + the network's scope (`main` / `test` / `regtest`) and refuses a directory written under
+another.
+
 ## `FinalizedFollower`
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.durable_view().tip(), queue)` per index;
@@ -37,7 +45,8 @@ smallest one: `zaino-internal-block-hash-to-height/src/writer.rs`.
 - A block off a durable tip it extends = `FollowError::Diverged` (naming the index: resync); off
   the block sent before it = `FollowError::Unlinked` (the validator's history moved). Either stops
   the follower.
-- Cancel → `Ok`; either way every queue ends with `Shutdown`.
+- Cancel → `Ok`; either way every queue ends with `Shutdown`. The chain watch closing before
+  cancel panics (header sync publishes until cancel).
 - By height (internal): one batch from a trusted member
   until every block's coinbase height matches its place in the batch (a misanswer `report`ed,
   the batch asked again). The body is the trusted member's word, not re-hashed; regressions in
