@@ -4669,7 +4669,6 @@ dependencies = [
  "zaino-sync",
  "zaino-traffic",
  "zcash_protocol",
- "zcash_transparent",
 ]
 
 [[package]]

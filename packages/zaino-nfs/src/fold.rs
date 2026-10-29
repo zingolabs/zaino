@@ -2,8 +2,9 @@
 
 use crate::indexes::{fold, FoldError};
 use crate::per_index::{IndexSet, PerIndex};
-use zaino_persistence::{AppliedLayer, IndexKind, MapRead, Overlay, SequenceRead};
+use zaino_persistence::{AppliedLayer, MapRead, Overlay, SequenceRead};
 use zaino_primitives::types::Block;
+use zaino_sync::IndexKind;
 
 use crate::publish::Views;
 
@@ -29,7 +30,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     for (kind, layer, view) in parent.each().filter(|(kind, ..)| covers.contains(*kind)) {
         if kind == IndexKind::CompactBlock && fees.is_none() {
             let utxo_set = parent.utxo_set().expect("compact-block folds with utxo-set enabled");
-            fees = Some(utxo_set.block_fees(block)?);
+            fees = Some(utxo_set.block_fees(block));
         }
         let mut out = layer.schema().changes(block.block_ref());
         let folded = fold(kind, view, block, fees.as_ref(), &mut out)?;

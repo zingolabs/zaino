@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use zaino_persistence::IndexKind;
+use zaino_sync::IndexKind;
 
 const COUNT: usize = IndexKind::ALL.len();
 const _: () = assert!(COUNT <= u8::BITS as usize, "IndexSet: one bit per IndexKind");
