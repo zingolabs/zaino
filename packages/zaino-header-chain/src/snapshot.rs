@@ -81,7 +81,8 @@ impl HeaderChainSnapshot {
         }
         let (oldest, _) =
             self.finalized_headers.front().expect("a published chain has a finalized tip");
-        let at = u32::from(height).checked_sub(u32::from(*oldest))? as usize;
+        let at = u32::from(height).checked_sub(u32::from(*oldest))?;
+        let at = usize::try_from(at).expect("u32 fits usize (no 16-bit targets)");
         match at.checked_sub(self.finalized_headers.len()) {
             Some(above) => self.above.get(above).copied(),
             None => self.finalized_headers.get(at).map(|(_, record)| *record),

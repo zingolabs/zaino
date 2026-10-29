@@ -42,7 +42,8 @@ fn height(h: u32) -> BlockHeight {
 
 /// `RECENT_RANGE[index]` as a block on mainnet
 fn recent(headers: &[Header], index: usize) -> BlockRef {
-    BlockRef { hash: headers[index].hash(), height: height(RECENT_START + index as u32) }
+    let above = u32::try_from(index).expect("fixture ranges hold a few hundred headers");
+    BlockRef { hash: headers[index].hash(), height: height(RECENT_START + above) }
 }
 
 /// Ancestors of `headers[at]`, newest first (all the range holds, up to `CONTEXT`)
@@ -120,7 +121,8 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
         let now = i64::from(headers.last().expect("non-empty").time());
         let mut at_limit = 0;
         for at in first_checked..headers.len() {
-            let (header, at_height) = (&headers[at], height(start + at as u32));
+            let above = u32::try_from(at).expect("fixture ranges hold a few hundred headers");
+            let (header, at_height) = (&headers[at], height(start + above));
             let parent = headers[at - 1].hash();
             assert_eq!(header.prev_hash(), parent, "{name}, {at_height:?}: links to its parent");
             let context = context(&headers, at);
@@ -146,11 +148,11 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_keeping_the_newest_conte
     const DEPTH: u32 = 10;
     let headers = headers(RECENT_RANGE);
     let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(DEPTH).expect("nz")));
-    chain.anchor(&headers[0], recent(&headers, 0).height);
+    chain.anchor(&headers[0], recent(&headers, 0).height).expect("mainnet nBits");
 
     for index in 1..=FOLLOWED {
         let at = recent(&headers, index);
-        assert_eq!(chain.insert(&headers[index]), Ok(Inserted::Best { reorg: false }), "{at:?}");
+        assert_eq!(chain.insert(&headers[index]), Ok(Inserted::Best), "{at:?}");
         chain.witness(at.hash, Witness::Trusted);
         if let Some(boundary) = chain.finalizable() {
             chain.finalize(boundary);
@@ -158,9 +160,10 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_keeping_the_newest_conte
         chain.check();
     }
 
-    let finalized = FOLLOWED - DEPTH as usize;
+    let depth = usize::try_from(DEPTH).expect("u32 fits usize");
+    let finalized = FOLLOWED - depth;
     assert_eq!(chain.finalized_tip(), Some(recent(&headers, finalized)), "best − depth 10");
-    assert_eq!(chain.tree_len(), DEPTH as usize, "only the non-finalized headers in the tree");
+    assert_eq!(chain.tree_len(), depth, "only the non-finalized headers in the tree");
     let work = headers[1..=FOLLOWED].iter().map(|h| header_work(h.bits()).expect("valid")).sum();
     let best = BestTip { block: recent(&headers, FOLLOWED), cumulative_work: work };
     assert_eq!(chain.best(), Some(best), "the 200th, its work counted from the anchor");
@@ -193,23 +196,34 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_keeping_the_newest_conte
     assert_eq!(below_kept, Err(Rejected::Orphan), "below the kept: parent not held");
 }
 
-/// Nothing before an anchor; re-anchoring drops everything held before it
+/// Nothing before an anchor; re-anchoring drops everything held before it, an anchor with invalid
+/// nBits nothing
 #[test]
-fn re_anchoring_drops_everything_held_before_the_new_anchor() {
+fn re_anchoring_drops_everything_held_before_the_new_anchor_unless_its_nbits_are_invalid() {
     let headers = headers(RECENT_RANGE);
     let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(10).expect("nz")));
     assert_eq!(chain.best(), None, "no anchor: no best");
     assert_eq!(chain.snapshot().map(|s| s.best()), None, "no anchor: nothing published");
-    chain.anchor(&headers[0], recent(&headers, 0).height);
+    chain.anchor(&headers[0], recent(&headers, 0).height).expect("mainnet nBits");
     insert_all(&mut chain, &headers[1..=20]);
 
-    chain.anchor(&headers[50], recent(&headers, 50).height);
+    let reanchored = chain.anchor(&headers[50], recent(&headers, 50).height);
 
+    assert_eq!(reanchored, Ok(()), "valid nBits");
     assert_eq!(chain.finalized_tip(), Some(recent(&headers, 50)), "the new anchor = finalized tip");
     assert_eq!(chain.tree_len(), 0, "the 20 above the old anchor dropped");
     assert_eq!(chain.insert(&headers[21]), Err(Rejected::Orphan), "old chain's next: parent gone");
     let child = chain.insert(&headers[51]);
-    assert_eq!(child, Ok(Inserted::Best { reorg: false }), "the new anchor's child");
+    assert_eq!(child, Ok(Inserted::Best), "the new anchor's child");
+    chain.check();
+
+    let revision = chain.revision();
+    let invalid = with_u32(&headers[100], BITS_AT, 0x0180_0000);
+    let refused = chain.anchor(&invalid, recent(&headers, 100).height);
+    assert_eq!(refused, Err(Rejected::Bits { bits: 0x0180_0000 }), "nBits not a compact target");
+    assert_eq!(chain.revision(), revision, "refused anchor: nothing changed");
+    assert_eq!(chain.finalized_tip(), Some(recent(&headers, 50)), "old anchor kept");
+    assert_eq!(chain.best().map(|best| best.block), Some(recent(&headers, 51)), "tree kept");
     chain.check();
 }
 
@@ -224,7 +238,7 @@ fn insert_all(chain: &mut HeaderChain, headers: &[Header]) {
 fn an_untrusted_header_right_after_the_anchor_is_unplaced_for_short_context() {
     let headers = headers(RECENT_RANGE);
     let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(10).expect("nz")));
-    chain.anchor(&headers[0], recent(&headers, 0).height);
+    chain.anchor(&headers[0], recent(&headers, 0).height).expect("mainnet nBits");
     let now = i64::from(headers[1].time());
 
     let short = chain.insert_untrusted(&headers[1], &Params::mainnet(), now);
@@ -244,12 +258,12 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
     let headers = headers(RECENT_RANGE);
     let now = i64::from(headers.last().expect("non-empty").time());
     let mut chain = HeaderChain::new(FinalityDepth::new(NonZeroU32::new(10).expect("nz")));
-    chain.anchor(&headers[0], recent(&headers, 0).height);
+    chain.anchor(&headers[0], recent(&headers, 0).height).expect("mainnet nBits");
     insert_all(&mut chain, &headers[1..28]);
     for index in 28..=200 {
         let inserted = chain.insert_untrusted(&headers[index], &mainnet, now);
         let at = recent(&headers, index);
-        assert_eq!(inserted, Ok(Inserted::Best { reorg: false }), "{at:?}");
+        assert_eq!(inserted, Ok(Inserted::Best), "{at:?}");
         chain.witness(at.hash, Witness::Trusted);
         if let Some(boundary) = chain.finalizable() {
             chain.finalize(boundary);
@@ -276,7 +290,7 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
     assert_eq!(best, Some(recent(&headers, 200)), "nothing refused inserted");
 
     let accepted = chain.insert_untrusted(real, &mainnet, now);
-    assert_eq!(accepted, Ok(Inserted::Best { reorg: false }), "real 201");
+    assert_eq!(accepted, Ok(Inserted::Best), "real 201");
     let skipped = chain.insert_untrusted(&headers[203], &mainnet, now);
     assert_eq!(skipped, Err(Rejected::Orphan), "203 on an unheld 202");
     chain.check();
@@ -352,7 +366,7 @@ fn testnet_from_nu7_averages_nbits_over_102_blocks() {
     let pre_nu7 = Params { schedule: LocalNetwork { nu7: None, ..testnet.schedule }, ..testnet };
     let at = testnet.schedule.nu7.expect("testnet schedules NU7") + 50;
     // CONTEXT ancestors 25 s apart: the newest 40 at 0x1c7fffff, older ones easier at 0x1d00ffff
-    let ancestors: Vec<Ancestor> = (0..CONTEXT as u32)
+    let ancestors: Vec<Ancestor> = (0..u32::try_from(CONTEXT).expect("CONTEXT = 113 blocks"))
         .map(|back| Ancestor {
             bits: if back < 40 { 0x1c7f_ffff } else { 0x1d00_ffff },
             time: 1_800_000_000 - 25 * back,
@@ -382,7 +396,7 @@ fn testnet_minimum_difficulty_needs_a_gap_over_450_s_after_blossom_and_after_nu7
     let testnet = Params::testnet();
     let nu7 = testnet.schedule.nu7.expect("testnet schedules NU7");
     let after_blossom = height(4_000_000);
-    let ancestors: Vec<Ancestor> = (0..CONTEXT as u32)
+    let ancestors: Vec<Ancestor> = (0..u32::try_from(CONTEXT).expect("CONTEXT = 113 blocks"))
         .map(|back| Ancestor { bits: 0x1c7f_ffff, time: 1_800_000_000 - 25 * back })
         .collect();
     let parent = ancestors[0].time;

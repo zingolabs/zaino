@@ -25,7 +25,7 @@ const MAX_ADJUST_DOWN_PERCENT: i64 = 32;
 /// Mainnet (and testnet from 653,606): no later than median time past + 90 min
 const MAX_TIME_SINCE_MEDIAN: i64 = 90 * 60;
 /// No later than the local clock + 2 h
-pub(crate) const MAX_FUTURE: i64 = 2 * 60 * 60;
+const MAX_FUTURE: i64 = 2 * 60 * 60;
 const MIN_VERSION: i32 = 4;
 
 /// One ancestor as the rules read it
@@ -66,7 +66,7 @@ pub enum Rejected {
     ShortContext { held: usize, needed: usize },
 }
 
-/// Whose refusal: `Sender` = blamed, `Deferred` = valid once the clock passes it (H7, never cached),
+/// Whose refusal: `Sender` = blamed, `Deferred` = valid once the clock passes it (never cached),
 /// `Unplaced` = we hold too little to judge it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
@@ -181,7 +181,8 @@ pub(crate) fn in_context(
 /// Ancestors [`in_context`] reads at `height`: every one near genesis, else the window + one
 /// median span
 pub(crate) fn needed_context(params: &Params, height: BlockHeight) -> usize {
-    (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN)
+    let below = usize::try_from(u32::from(height)).expect("u32 fits usize (no 16-bit targets)");
+    below.min(params.averaging_window(height) + MEDIAN_TIME_SPAN)
 }
 
 /// Equihash (200, 9) over the bytes before the nonce, the nonce, the solution
@@ -216,7 +217,7 @@ pub(crate) fn expected_bits(
     // - zcashd `pow.cpp`: window walk off genesis (`pindexFirst == NULL`) = the limit outright
     // - zebra 6.x damps a limit mean instead (wrong nBits at mainnet height 1)
     let window = params.averaging_window(height);
-    if u32::from(height) as usize <= window {
+    if usize::try_from(u32::from(height)).expect("u32 fits usize (no 16-bit targets)") <= window {
         return Some(params.limit_bits());
     }
     let targets: Vec<Target> = context[..window]
@@ -233,16 +234,18 @@ pub(crate) fn expected_bits(
 
 /// `CalculateNextWorkRequired(mean, timespan, height)`: the timespan damped by 4, clamped to
 /// −16 % / +32 % of the window's, then mean / window timespan × bounded, at most the limit
-pub(crate) fn threshold(params: &Params, mean: Target, timespan: i64, height: BlockHeight) -> u32 {
-    let window = params.spacing(height) * params.averaging_window(height) as i64;
+fn threshold(params: &Params, mean: Target, timespan: i64, height: BlockHeight) -> u32 {
+    let blocks = i64::try_from(params.averaging_window(height)).expect("window <= 102 blocks");
+    let window = params.spacing(height) * blocks;
     // integer division truncates toward zero, as C++ `int64_t /`
     let damped = window + (timespan - window) / DAMPING_FACTOR;
     let lowest = window * (100 - MAX_ADJUST_UP_PERCENT) / 100;
     let highest = window * (100 + MAX_ADJUST_DOWN_PERCENT) / 100;
     let bounded = max(lowest, min(highest, damped));
-    let expected = u64::try_from(window).ok().and_then(NonZeroU64::new);
+    let expected =
+        u64::try_from(window).ok().and_then(NonZeroU64::new).expect("spacing × window > 0 s");
     let actual = u64::try_from(bounded).expect("clamped to at least 84 % of a positive window");
-    let threshold = mean.rescale(actual, expected.expect("spacing × window > 0 s"));
+    let threshold = mean.rescale(actual, expected);
     min(params.pow_limit, threshold).to_compact()
 }
 
