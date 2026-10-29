@@ -51,7 +51,7 @@ const ROUND_RETRY: Duration = Duration::from_secs(1);
 /// Poll's 1 + lanes' 4
 const CONNECTIONS: u32 = 5;
 const PEER_IN_FLIGHT: u32 = 4;
-const PEER_TIER: u16 = u8::MAX as u16 + 1;
+const PEER_TIER: u16 = 256;
 const ASKED: [Class; 6] =
     [Class::Submit, Class::TipBlock, Class::Headers, Class::Lookup, Class::Bytes, Class::BulkBlock];
 /// Abandon targets: the first asks of a case (a closed or unmade one = no move)

@@ -164,7 +164,11 @@ async fn bytes_go_to_the_best_tier_before_a_preferred_lower_one() {
     partner.hear(&chain, txid);
     let members = vec![trusted("ours", &ours, 0), trusted("partner", &partner, 1)];
     let (balancer, cancel) = balancer_running(members, None);
-    let listed = MempoolListed { txid, fee: chain.mempool()[0].fee, encoded_len: raw.len() as u32 };
+    let listed = MempoolListed {
+        txid,
+        fee: chain.mempool()[0].fee,
+        encoded_len: u32::try_from(raw.len()).expect("one small tx"),
+    };
 
     let bytes = balancer.bytes(vec![listed], vec![trusted_member(1)]);
     let bytes = within("bytes", bytes).await.expect("answered");
@@ -294,7 +298,7 @@ async fn a_lookup_storm_never_delays_a_poll() {
 
     let waiting = storm.iter().filter(|lookup| !lookup.is_finished()).count();
     assert_eq!(waiting, 64, "lookups still waiting on ours' stalled answers");
-    let cadence = (WINDOW.as_secs_f64() / POLL_INTERVAL.as_secs_f64()) as u32;
+    let cadence = u32::try_from(WINDOW.as_nanos() / POLL_INTERVAL.as_nanos()).expect("few polls");
     assert!(
         polled >= cadence - 1,
         "{polled} polls of ours in {WINDOW:?} of 64 lookups, want ≥ {} (each {POLL_INTERVAL:?})",
@@ -442,7 +446,8 @@ async fn failing_polls_walk_degraded_to_down_after_ten_and_the_first_answer_back
     within("the probe answered", observed.changed()).await.expect("driver running");
 
     let refused = Some(FailureMode::HttpStatus(503));
-    let mut expected = vec![(refused, Health::Degraded); DOWN_AFTER as usize - 1];
+    let degraded = usize::try_from(DOWN_AFTER - 1).expect("u32 fits usize");
+    let mut expected = vec![(refused, Health::Degraded); degraded];
     expected.push((refused, Health::Down));
     assert_eq!(walked, expected, "each failed poll: (cause, health right after it)");
     let back = observed.borrow_and_update().clone().expect("polled");

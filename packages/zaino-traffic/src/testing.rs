@@ -34,7 +34,7 @@ impl MockPeerSet {
 
     /// Its path held through `height` from now on (the network moving on, or not yet there)
     pub fn hold(&self, height: BlockHeight) {
-        let at = u32::from(height) as usize;
+        let at = usize::try_from(u32::from(height)).expect("u32 fits usize (no 16-bit targets)");
         assert!(at < self.path.len(), "hold {height}: above the peer set's path");
         *self.held.lock().expect("MockPeerSet mutex poisoned") = at;
     }
