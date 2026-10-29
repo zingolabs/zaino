@@ -7,7 +7,7 @@ use zcash_protocol::BlockHash;
 
 const TXID: usize = 32;
 pub(crate) const MINED: usize = 4 + 4 + 32;
-pub(crate) const BY_TXID: MapTable = MapTable::point(0, "by_txid", TXID as u32, MINED as u32);
+pub(crate) const BY_TXID: MapTable = MapTable::point(0, "by_txid", TXID, MINED);
 
 /// Where one transaction was mined: its block, and its position in it (coinbase = 0)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

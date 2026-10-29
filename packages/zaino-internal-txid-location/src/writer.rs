@@ -112,8 +112,9 @@ mod tests {
                 (txid, decode(mined.try_into().expect("by_txid value: MINED bytes")))
             })
             .collect();
-        let expected: Vec<(TxId, Mined)> = (0u32..3)
-            .map(|index| (chain.tx(one, index as usize).txid, Mined { block: one, index }))
+        let expected: Vec<(TxId, Mined)> = (0..3)
+            .zip(0u32..)
+            .map(|(slot, index)| (chain.tx(one, slot).txid, Mined { block: one, index }))
             .collect();
         assert_eq!(rows, expected, "block 1's rows: (txid, mined) per tx, coinbase first");
     }
@@ -171,10 +172,10 @@ mod tests {
             assert_eq!(located(store.durable()), expected(count), "{label}: held txs only");
 
             let mut writer = start(store);
-            for block in &blocks[..count as usize] {
+            for block in blocks.iter().take_while(|block| block.header().height < h(count)) {
                 writer.send(step(block)).await;
             }
-            writer.send(finalized(&blocks[count as usize])).await;
+            writer.send(finalized(chain.block(chain.at(h(count)).hash))).await;
             writer.durable_at(h(count)).await;
             let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             assert_eq!(located(handle.durable_view()), expected(count + 1), "{label}: next held");
