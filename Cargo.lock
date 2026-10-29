@@ -4595,6 +4595,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-traffic"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "futures",
+ "metrics",
+ "proptest",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-primitives",
+ "zaino-source",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "zcash_address"
 version = "0.14.0-pre.1"
 source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
