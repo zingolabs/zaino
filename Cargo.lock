@@ -80,6 +80,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "archery"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,7 +2099,9 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.16.1",
+ "indexmap 2.14.0",
  "metrics",
+ "ordered-float",
  "quanta",
  "rand 0.9.4",
  "rand_xoshiro",
@@ -2287,6 +2298,15 @@ dependencies = [
  "zcash_spec",
  "zeroize",
  "zip32",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -4489,6 +4509,32 @@ dependencies = [
  "quote",
  "syn 2.0.118",
  "synstructure",
+]
+
+[[package]]
+name = "zaino-chainview"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fastrand",
+ "futures",
+ "imbl",
+ "metrics",
+ "metrics-util",
+ "proptest",
+ "serde",
+ "strum",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-header-chain",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-traffic",
+ "zcash_protocol",
+ "zcash_transparent",
 ]
 
 [[package]]
