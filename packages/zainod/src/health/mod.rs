@@ -14,8 +14,9 @@ use serde::Serialize;
 use tokio::sync::watch;
 use zaino_grpc::{Hold, OverloadCause, Retire};
 use zaino_grpc_snapshot::{GrpcSnapshot, GrpcSnapshots, ServingStatus};
-use zaino_persistence::{DiskView, IndexKind};
+use zaino_persistence::DiskView;
 use zaino_primitives::metric::Metric;
+use zaino_sync::IndexKind;
 use zaino_sync::SyncProgress;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::NetworkType;
@@ -38,7 +39,7 @@ pub(crate) struct DaemonStatus {
     heartbeat: Heartbeat,
     retire: Retire,
     awaiting_validator: AtomicBool,
-    bootstrap: std::sync::Mutex<Option<SnapshotProgress>>,
+    bootstrap: watch::Sender<Option<SnapshotProgress>>,
     sources: OnceLock<Sources>,
 }
 
@@ -148,7 +149,7 @@ struct Catchup {
 
 /// Why `down`, `degraded` or `held`
 ///
-/// - `Overloaded` = `zaino_grpc::AdmissionReport::overload`
+/// - `Overloaded` = `zaino_grpc::AdmissionState::overload`
 /// - `GoawaySent` = held past `hold_goaway_delay_secs`, every connection GOAWAY'd (`zainod hold`
 ///   waits for this)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,7 +231,7 @@ impl Booted {
         let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
             serving_status: grpc_snapshot.serving_status(now),
-            overload: sources.grpc_admission.report().overload,
+            overload: sources.grpc_admission.overload(),
             height: served.or(sources.progress.handed()).map(u32::from),
             target: grpc_snapshot.sync_target().map(u32::from),
             rate: *sources.block_rate.borrow(),
@@ -279,7 +280,7 @@ impl DaemonStatus {
             heartbeat: Heartbeat::default(),
             retire: Retire::default(),
             awaiting_validator: AtomicBool::new(false),
-            bootstrap: std::sync::Mutex::new(None),
+            bootstrap: watch::Sender::new(None),
             sources: OnceLock::new(),
         }
     }
@@ -366,14 +367,12 @@ impl DaemonStatus {
     }
 
     /// `None` = bootstrap over (the indexer's own status takes over)
-    ///
-    /// - poison-tolerant: the lock only guards a value swap
     pub(crate) fn bootstrap(&self, progress: Option<SnapshotProgress>) {
-        *self.bootstrap.lock().expect("bootstrap progress mutex poisoned") = progress;
+        self.bootstrap.send_replace(progress);
     }
 
     pub(crate) fn current_bootstrap(&self) -> Option<SnapshotProgress> {
-        self.bootstrap.lock().expect("bootstrap progress mutex poisoned").clone()
+        self.bootstrap.borrow().clone()
     }
 }
 
@@ -724,8 +723,7 @@ mod tests {
     /// `zaino_state` + `zaino_state_reason` = `/readyz`'s state + detail reason, each one-hot
     #[test]
     fn the_state_gauges_are_readyz_one_hot() {
-        let (recorder, rendered) =
-            crate::telemetry::metrics::recorder().expect("native config is valid");
+        let (recorder, rendered) = crate::telemetry::metrics::recorder();
         let _recording = metrics::set_default_local_recorder(&recorder);
         // the series at 1 (each family's other series checked at 0)
         let set = |family: &str, key: &str, labels: &[&str]| -> Vec<String> {

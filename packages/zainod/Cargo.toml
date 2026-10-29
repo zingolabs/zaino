@@ -63,6 +63,7 @@ reqwest.workspace = true
 rustix = { version = "1.1", features = ["fs"] }
 zstd = "0.14.0"
 tar = "0.4.46"
+sd-notify = "0.5"
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -75,9 +76,6 @@ zaino-source = { workspace = true, features = ["testing"] }
 zaino-chainview = { workspace = true, features = ["testing"] }
 sha2 = "0.10"
 rustix = { version = "1.1", features = ["process"] }
-
-[target."cfg(unix)".dependencies]
-sd-notify = "0.5"
 
 [lints.rust]
 unreachable_pub = "warn"

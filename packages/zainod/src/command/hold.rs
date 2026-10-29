@@ -266,7 +266,7 @@ mod tests {
         spawn(Arc::clone(&status), state_dir.clone(), delay);
         tokio::time::sleep(POLL).await;
         assert_eq!(readyz(&status), held("goaway_pending"), "held at the first poll");
-        tokio::time::sleep(goaway_bound(delay) - POLL).await;
+        tokio::time::sleep(goaway_bound(delay).checked_sub(POLL).expect("bound > a poll")).await;
         assert_eq!(readyz(&status), held("goaway_sent"), "GOAWAY by the CLI's bound");
 
         apply(&state_dir, Action::Resume).expect("resumes");

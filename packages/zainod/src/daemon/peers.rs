@@ -99,7 +99,6 @@ fn failed(cause: PeerError) -> NonDomainError {
     let mode = match cause {
         PeerError::Timeout(_) => FailureMode::Timeout,
         PeerError::Network(_) => FailureMode::Connection,
-        PeerError::Unexpected { .. } => FailureMode::Parse,
     };
     NonDomainError::from_cause(mode, cause)
 }

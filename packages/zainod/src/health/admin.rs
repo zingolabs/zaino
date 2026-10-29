@@ -8,7 +8,7 @@
 use std::{
     convert::Infallible,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -19,6 +19,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -40,30 +41,27 @@ const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 /// [`beat`] cadence
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Last beat from the serving runtime (poison-tolerant: the lock only guards a `Copy` swap)
+/// Last beat from the serving runtime
 #[derive(Default)]
-pub(super) struct Heartbeat(Mutex<Option<Instant>>);
+pub(super) struct Heartbeat(watch::Sender<Option<Instant>>);
 
 impl Heartbeat {
     pub(super) fn beat(&self) {
-        *self.0.lock().expect("heartbeat mutex poisoned") = Some(Instant::now());
+        self.0.send_replace(Some(Instant::now()));
     }
 
     pub(super) fn live(&self) -> bool {
-        is_fresh(self.0.lock().expect("heartbeat mutex poisoned").map(|at| at.elapsed()))
+        is_fresh(self.0.borrow().map(|at| at.elapsed()))
     }
 }
 
 /// Heartbeat from the serving runtime until `cancel` (wedged runtime → `/livez` fails)
-pub(crate) async fn beat(
-    status: Arc<DaemonStatus>,
-    cancel: CancellationToken,
-) -> Result<(), IndexerError> {
+pub(crate) async fn beat(status: Arc<DaemonStatus>, cancel: CancellationToken) {
     let mut tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     loop {
         tokio::select! {
             _ = tick.tick() => status.beat(),
-            () = cancel.cancelled() => return Ok(()),
+            () = cancel.cancelled() => return,
         }
     }
 }
@@ -78,7 +76,7 @@ fn is_fresh(age: Option<Duration>) -> bool {
 /// - Bind first (recorder before listener = undrained samples), bind failure fails startup
 pub(crate) fn start(endpoint: SocketAddr, status: Arc<DaemonStatus>) -> Result<(), IndexerError> {
     let listener = bind(endpoint)?;
-    let handle = install_recorder()?;
+    let handle = install_recorder();
     spawn(listener, handle, status)?;
     info!(%endpoint, "Listening");
     Ok(())
@@ -176,13 +174,7 @@ async fn route(
             let handle = handle.clone();
             let format = negotiate(request.headers().get(hyper::header::ACCEPT));
             let scrape = move || scrape(&handle, format, || status.emit_gauges());
-            match tokio::task::spawn_blocking(scrape).await {
-                Ok(scrape) => body(StatusCode::OK, format.content_type(), scrape),
-                Err(e) => {
-                    error!(%e, "rendering the scrape panicked");
-                    body(StatusCode::INTERNAL_SERVER_ERROR, PLAIN_CONTENT_TYPE, String::new())
-                }
-            }
+            body(StatusCode::OK, format.content_type(), zaino_sync::blocking(scrape).await)
         }
         "/livez" => match status.live() {
             true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ok".to_string()),
@@ -236,8 +228,7 @@ mod tests {
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing, scrape negotiation
     #[tokio::test]
     async fn the_admin_surface_answers_metrics_and_probes() {
-        let (recorder, handle) =
-            crate::telemetry::metrics::recorder().expect("native config is valid");
+        let (recorder, handle) = crate::telemetry::metrics::recorder();
         metrics::with_local_recorder(&recorder, || {
             metrics::counter!("zaino.test.total").increment(7);
             metrics::histogram!("zaino.test.seconds").record(0.042);
@@ -306,9 +297,11 @@ mod tests {
 
     #[test]
     fn a_stale_heartbeat_is_not_live() {
+        let under =
+            HEARTBEAT_MAX_AGE.checked_sub(Duration::from_millis(1)).expect("max age > 1 ms");
         for (case, age, fresh) in [
             ("just beaten", Some(Duration::ZERO), true),
-            ("a tick under the max age", Some(HEARTBEAT_MAX_AGE - Duration::from_millis(1)), true),
+            ("a tick under the max age", Some(under), true),
             ("stale = wedged runtime", Some(HEARTBEAT_MAX_AGE), false),
             ("never beaten = still starting", None, true),
         ] {

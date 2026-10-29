@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use tracing::Span;
-use zaino_persistence::{DiskView, IndexKind};
-use zaino_sync::IndexHandle;
+use zaino_persistence::DiskView;
+use zaino_sync::{IndexHandle, IndexKind};
 
 pub(crate) mod disk;
 pub(crate) mod egress;

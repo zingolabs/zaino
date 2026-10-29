@@ -9,9 +9,10 @@
 
 use std::{sync::Arc, time::Duration};
 
+use sd_notify::NotifyState;
 use tracing::warn;
 
-use super::{DaemonStatus, Readiness};
+use super::{DaemonStatus, Readiness, SnapshotPhase};
 
 const TICK: Duration = Duration::from_secs(10);
 
@@ -30,25 +31,30 @@ enum Message {
 ///   readiness the operator withholds)
 struct Startup {
     started: bool,
-    progress: Vec<Option<u64>>,
+    progress: Progress,
 }
 
-/// - Booted: handed + served heights + every index's durable one
-/// - Before boot: bootstrap phase + bytes
+/// - `Starting` = bootstrap phase + bytes (`None` = no bootstrap running)
+/// - `Booted` = handed + served heights + every index's durable one
+#[derive(Debug, Clone, PartialEq)]
+enum Progress {
+    Starting(Option<(SnapshotPhase, u64)>),
+    Booted(Vec<Option<u32>>),
+}
+
 fn startup(status: &DaemonStatus) -> Startup {
     let readiness = status.current_readiness();
     let started = readiness.ready() || matches!(readiness, Readiness::Held(_));
     let Some(sources) = status.sources.get() else {
-        let bootstrap = status.current_bootstrap();
-        let progress = bootstrap.map(|at| vec![Some(at.phase as u64), Some(at.bytes)]);
-        return Startup { started, progress: progress.unwrap_or_default() };
+        let bootstrap = status.current_bootstrap().map(|at| (at.phase, at.bytes));
+        return Startup { started, progress: Progress::Starting(bootstrap) };
     };
     let grpc_snapshot = sources.grpc_snapshots.load();
     let durable = grpc_snapshot.indexed().into_iter().flat_map(|indexed| indexed.durable());
     let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
     let heights = [sources.progress.handed(), grpc_snapshot.tips().served.map(|tip| tip.height)];
-    let progress = heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
-    Startup { started, progress: progress.collect() }
+    let heights = heights.into_iter().chain(durable).map(|h| h.map(u32::from));
+    Startup { started, progress: Progress::Booted(heights.collect()) }
 }
 
 /// Reports startup until `READY=1`
@@ -71,7 +77,7 @@ pub(crate) fn spawn(status: Arc<DaemonStatus>) {
 
 #[derive(Default)]
 struct Reporter {
-    progress: Option<Vec<Option<u64>>>,
+    progress: Option<Progress>,
 }
 
 impl Reporter {
@@ -86,20 +92,15 @@ impl Reporter {
 }
 
 fn send(message: &Message) {
-    #[cfg(unix)]
-    {
-        use sd_notify::NotifyState;
-
-        let state = match message {
-            Message::Ready => NotifyState::Ready,
-            // u32 µs = 71 min ceiling (saturates)
-            Message::ExtendTimeout(by) => {
-                NotifyState::ExtendTimeoutUsec(u32::try_from(by.as_micros()).unwrap_or(u32::MAX))
-            }
-        };
-        if let Err(error) = sd_notify::notify(&[state]) {
-            warn!(%error, "systemd notification failed");
+    let state = match message {
+        Message::Ready => NotifyState::Ready,
+        // u32 µs = 71 min ceiling (saturates)
+        Message::ExtendTimeout(by) => {
+            NotifyState::ExtendTimeoutUsec(u32::try_from(by.as_micros()).unwrap_or(u32::MAX))
         }
+    };
+    if let Err(error) = sd_notify::notify(&[state]) {
+        warn!(%error, "systemd notification failed");
     }
 }
 
@@ -111,24 +112,26 @@ mod tests {
     /// `READY=1` once serving or held (a node started held must not fail its start job)
     #[test]
     fn startup_extends_only_on_progress_then_reports_ready() {
-        let starting = |progress: &[u64]| Startup {
-            started: false,
-            progress: progress.iter().copied().map(Some).collect(),
+        use SnapshotPhase::{Downloading, Verifying};
+        let starting = |at| Startup { started: false, progress: Progress::Starting(at) };
+        let booted = |started, heights: &[u32]| Startup {
+            started,
+            progress: Progress::Booted(heights.iter().copied().map(Some).collect()),
         };
-        let started = |progress: &[u64]| Startup { started: true, ..starting(progress) };
         let extend = Some(Message::ExtendTimeout(STALL_WINDOW));
         let mut reporter = Reporter::default();
 
         #[rustfmt::skip]
         let ticks = [
-            // case,                                       tick's startup,          message sent
-            ("first tick: nothing to compare against",     starting(&[0, 10]),      None),
-            ("bootstrap bytes moved",                      starting(&[0, 90]),      extend.clone()),
-            ("no progress",                                starting(&[0, 90]),      None),
-            ("bootstrap over, pipeline not up: changed",   starting(&[]),           extend.clone()),
-            ("still nothing",                              starting(&[]),           None),
-            ("pipeline booted: handed, served, durable",   starting(&[7, 5, 5]),    extend),
-            ("serving or held",                            started(&[9, 9, 9]),     Some(Message::Ready)),
+            // case,                                       tick's startup,                   message sent
+            ("first tick: nothing to compare against",     starting(Some((Downloading, 10))), None),
+            ("bootstrap bytes moved",                      starting(Some((Downloading, 90))), extend.clone()),
+            ("no progress",                                starting(Some((Downloading, 90))), None),
+            ("phase moved, bytes alike",                   starting(Some((Verifying, 90))),   extend.clone()),
+            ("bootstrap over, pipeline not up: changed",   starting(None),                    extend.clone()),
+            ("still nothing",                              starting(None),                    None),
+            ("pipeline booted: handed, served, durable",   booted(false, &[7, 5, 5]),         extend),
+            ("serving or held",                            booted(true, &[9, 9, 9]),          Some(Message::Ready)),
         ];
         for (case, now, expected) in ticks {
             assert_eq!(reporter.observe(now), expected, "{case}");
