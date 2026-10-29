@@ -6,7 +6,7 @@ use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::layout::{decode_fees, decode_value, encode_outpoint, OUTPOINT, VALUE};
-use crate::{FoldError, FEES, OUTPUTS};
+use crate::{FEES, OUTPUTS};
 
 #[derive(Clone)]
 pub struct UtxoSetReader<V> {
@@ -38,21 +38,22 @@ impl<V: SequenceRead + MapRead> UtxoSetReader<V> {
             .collect()
     }
 
-    /// `block`'s fees as folded when this view took it in (`block` at or below the view's tip)
-    pub fn block_fees(&self, block: &Block) -> Result<BlockFees, FoldError> {
+    /// `block`'s fees as folded when this view took it in
+    ///
+    /// - callers: `block` = the block this view holds at its height (else a panic)
+    pub fn block_fees(&self, block: &Block) -> BlockFees {
         let header = block.header();
         let height = header.height;
-        let record = self
-            .view
-            .sequence(FEES)
-            .record(u64::from(height))
-            .ok_or(FoldError::StoredFeesMissing { height })?;
-        let fees = decode_fees(&record).ok_or(FoldError::StoredFeesUnreadable { height })?;
+        let record = self.view.sequence(FEES).record(u64::from(height));
+        let record = record.unwrap_or_else(|| panic!("utxo_set: fees record at held {height}"));
+        let fees = decode_fees(&record)
+            .unwrap_or_else(|| panic!("utxo_set: fees record at {height} decodes (encode_fees)"));
         let block_fees = BlockFees { height, hash: header.hash, fees };
-        match block_fees.belongs_to(block) {
-            true => Ok(block_fees),
-            false => Err(FoldError::StoredFeesUnreadable { height }),
-        }
+        assert!(
+            block_fees.belongs_to(block),
+            "utxo_set: fees record at {height} = the held block's (one per tx)"
+        );
+        block_fees
     }
 }
 

@@ -57,8 +57,9 @@ No route reads this index. Its readers are:
 
 - compact-block, through the fee sink in bulk, and at the tip through the NFS,
   which folds this index first and hands compact-block's fold the fees.
-- zainod's `ServedUtxos`, which calls `UtxoSetReader::values(outpoints)` at
-  the served tip so the chain view can price a peer-quorum mempool admission.
+- zaino-grpc-snapshot's `UnspentOutputs` impl for `GrpcSnapshots`, which calls
+  `UtxoSetReader::values(outpoints)` at the served tip so the chain view can price a
+  peer-quorum mempool admission.
 
 ## Folding
 
@@ -66,7 +67,7 @@ No route reads this index. Its readers are:
 let parent = UtxoSetReader::new(view);   // any V: SequenceRead + MapRead
 let mut out = store.changes(block.block_ref());      // or the parent layer's `changes`
 let fees = fold(&parent, &block, &mut out)?;  // Result<BlockFees, FoldError>
-let stored = parent.block_fees(&block)?;      // a held block's fees, read back
+let stored = parent.block_fees(&block);       // a held block's fees, read back
 ```
 
 - `fold` writes the outputs the block leaves unspent, a removal per prevout it
@@ -85,8 +86,9 @@ let stored = parent.block_fees(&block)?;      // a held block's fees, read back
   commit time: compact-block waits on fees step by step while a commit waits
   for a whole batch, so resolving at commit would deadlock.
 - `FoldError` names the block and transaction: `MissingPrevout` (spent twice,
-  or created only by a later transaction), `NegativeFee`, `ValueOverflow`, and
-  for read-back fees `StoredFeesMissing` / `StoredFeesUnreadable`.
+  or created only by a later transaction), `NegativeFee`, `ValueOverflow`.
+  `block_fees` panics when the view holds no fees record at the block's height,
+  or one that will not decode or does not match the block (our own write).
 
 ## Fees
 
