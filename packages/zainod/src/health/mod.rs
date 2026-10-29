@@ -496,14 +496,14 @@ mod tests {
             Stage::Booted(Booted { serving_status, overload, height, target, rate, egress })
         };
         let booted = |serving_status, target, rate| stage(serving_status, None, target, rate);
-        let saturated = Some(OverloadCause::NetworkSaturated);
+        let saturated = Some(OverloadCause::CpuPressure);
         let overloaded =
             |serving_status| stage(serving_status, saturated, Some(3_515_406), Some(6.2));
         let starting =
             |bootstrap, awaiting_validator| Stage::Starting { bootstrap, awaiting_validator };
         let because = |reason: &str, message: &str| serde_json::json!({ "reason": reason, "message": message });
         let stalled = because("runtime_stalled", "Runtime stalled");
-        let saturated = because("overloaded", "Overloaded: network saturated");
+        let saturated = because("overloaded", "Overloaded: CPU pressure");
         let unvouched = because("tip_unvouched", "No trusted validator vouches for the tip");
         let downloading = SnapshotProgress {
             phase: SnapshotPhase::Downloading,
