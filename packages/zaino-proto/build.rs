@@ -32,7 +32,7 @@ fn vendored_protocol_version(changelog: &str) -> io::Result<String> {
 
 /// `OUT_DIR/<module>`, created (compact formats + service share one package = one file name)
 fn module_dir(module: &str) -> io::Result<PathBuf> {
-    let out = env::var_os("OUT_DIR").ok_or_else(|| io::Error::other("cargo sets OUT_DIR"))?;
+    let out = env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for build scripts");
     let dir = PathBuf::from(out).join(module);
     fs::create_dir_all(&dir)?;
     Ok(dir)

@@ -1512,7 +1512,6 @@ dependencies = [
  "uint",
  "zcash_encoding 0.4.0",
  "zcash_protocol",
- "zcash_script",
  "zcash_transparent",
 ]
 

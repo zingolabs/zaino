@@ -17,7 +17,6 @@ thiserror = { workspace = true }
 uint = "0.9"
 zcash_encoding = "0.4"
 zcash_protocol.workspace = true
-zcash_script.workspace = true
 zcash_transparent.workspace = true
 
 [lints.rust]
