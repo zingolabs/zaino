@@ -24,9 +24,8 @@ which wait. Defaults shown:
 | `trusted_proxies` | `[]` | proxies that send a PROXY protocol v1/v2 header |
 | `shutdown_grace_secs` | 10 | open connections' time to finish after SIGTERM / SIGINT |
 
-- `[grpc.overload]` latches `/readyz` `down` / `Overloaded: <cause>` on `network saturated`
-  (per-network send queueing or retransmits, off by default), `CPU pressure` or `IO pressure`
-  (PSI, 25%), or `refusing work`. `zainod overload on|off|set|unset` overrides the detector across
+- `[grpc.overload]` latches `/readyz` `down` / `Overloaded: <cause>` on `CPU pressure` or
+  `IO pressure` (PSI, 25%), or `refusing work`. `zainod overload on|off|set|unset` overrides the detector across
   restarts, as `zainod hold` does.
 - `[serve.tls]` certificates are re-read when they change: renewal needs no restart.
 - Streamed answers pack ready messages into full 16 KiB HTTP/2 DATA frames, so h2 0.4.16+ clients
