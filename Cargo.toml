@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "packages/zaino-header-chain",
     "packages/zaino-persistence",
     "packages/zaino-primitives",
     "packages/zaino-source",
