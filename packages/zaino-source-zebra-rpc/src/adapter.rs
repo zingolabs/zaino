@@ -235,8 +235,9 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
                 .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
         })
         .await
-        // A blocking task is never cancelled, so the only possible failure is a
-        // panic in the decode: re-raise it, as the inline code did.
+        // A blocking task is only cancelled when the runtime shuts down, which
+        // also drops this future, so a `JoinError` seen here is a panic in the
+        // decode: re-raise it, as the inline code did.
         .unwrap_or_else(|join_error| std::panic::resume_unwind(join_error.into_panic()))
     }
 }
