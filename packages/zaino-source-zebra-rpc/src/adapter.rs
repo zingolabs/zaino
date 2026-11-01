@@ -210,23 +210,34 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
                 absent_or_fetch(error, || GetBlockError::HeightNotFound(height))
             })?;
 
-        // Hex decode.
-        let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
+        // Decoding is CPU-bound: deserializing a block decompresses the Jubjub
+        // points of every Sapling output. Run it on the blocking pool so that
+        // concurrent `get_block` calls polled from one task (the bulk sync's
+        // `buffered` stream) decode on separate cores instead of taking turns
+        // on one runtime worker.
+        tokio::task::spawn_blocking(move || -> Result<Block, QueryError<GetBlockError>> {
+            // Hex decode.
+            let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
 
-        // Deserialize via zebra-chain.
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+            // Deserialize via zebra-chain.
+            let zebra_block: zebra_chain::block::Block = raw_bytes
+                .zcash_deserialize_into()
+                .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
 
-        // Cumulative tree sizes are indexed state, not present in the block
-        // bytes, so they are zero here and populated by the caller that tracks
-        // them (via `GetTreestate` or its own index). Zero is a placeholder,
-        // not a measurement: a consumer that needs real sizes must not read
-        // them off this block.
-        let chain_metadata = ChainMetadata::ZERO;
+            // Cumulative tree sizes are indexed state, not present in the block
+            // bytes, so they are zero here and populated by the caller that tracks
+            // them (via `GetTreestate` or its own index). Zero is a placeholder,
+            // not a measurement: a consumer that needs real sizes must not read
+            // them off this block.
+            let chain_metadata = ChainMetadata::ZERO;
 
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+            zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+        })
+        .await
+        // A blocking task is never cancelled, so the only possible failure is a
+        // panic in the decode: re-raise it, as the inline code did.
+        .unwrap_or_else(|join_error| std::panic::resume_unwind(join_error.into_panic()))
     }
 }
 
