@@ -1,0 +1,14 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a19655-2518-721a-a58c-773b737f2877"
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = """
+`ZebraRpcAdapter::get_block` now decodes the block on Tokio's blocking pool \
+instead of inline on the calling task. Concurrent fetches polled from one task, \
+as the bulk sync's `buffered` stream does, previously decoded one at a time on \
+a single runtime worker, so a fetch-backend sync used about one core however \
+high the fetch concurrency. Decoding now spreads across cores, which speeds up \
+the Sapling-heavy 2022 spam-wave heights by up to several times."""
+issues = ["#1732"]
