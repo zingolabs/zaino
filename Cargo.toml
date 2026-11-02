@@ -223,7 +223,7 @@ zaino-serve = { path = "packages/zaino-serve", version = "0.9.0", default-featur
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
-proptest = "~1.11"
+proptest = "~1.12"
 arc-swap = "1.7.1"
 
 [profile.test]
