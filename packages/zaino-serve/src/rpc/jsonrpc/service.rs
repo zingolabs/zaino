@@ -5,6 +5,7 @@ use crate::rpc::jsonrpc::wire::block_header::GetBlockHeader;
 use crate::rpc::jsonrpc::wire::block_subsidy::GetBlockSubsidy;
 use crate::rpc::jsonrpc::wire::mining_info::GetMiningInfoWire;
 use crate::rpc::jsonrpc::wire::peer_info::GetPeerInfo;
+use crate::rpc::jsonrpc::wire::standard_fee::GetStandardFee;
 use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
@@ -140,6 +141,14 @@ pub trait ZcashIndexerRpc {
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
     #[method(name = "getblocksubsidy")]
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, ErrorObjectOwned>;
+
+    /// Returns the fee per logical action wallets should pay for a transaction mined in the next block.
+    ///
+    /// A `zebrad` RPC with no legacy full node counterpart; the validator's policy is passed through.
+    /// method: post
+    /// tags: blockchain
+    #[method(name = "getstandardfee")]
+    async fn get_standard_fee(&self) -> Result<GetStandardFee, ErrorObjectOwned>;
 
     /// Returns the current block count in the best valid block chain.
     ///
@@ -604,7 +613,9 @@ where
     })
 }
 
-fn sendrawtransaction_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+/// The legacy code an indexer error carries (validator or Zaino rejection),
+/// else a generic internal error.
+fn legacy_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
 where
     Error: std::error::Error + 'static,
 {
@@ -713,6 +724,13 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .map_err(invalid_params_error_object)
     }
 
+    async fn get_standard_fee(&self) -> Result<GetStandardFee, ErrorObjectOwned> {
+        ZcashIndexer::get_standard_fee(self.service_subscriber.inner_ref())
+            .await
+            .map(GetStandardFee::from_domain)
+            .map_err(legacy_error_object_from_indexer_error)
+    }
+
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
@@ -764,7 +782,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
             .and_then(|balance| {
                 crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain(balance)
                     .map_err(invalid_params_error_object)
@@ -780,7 +798,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .send_raw_transaction(raw_transaction_hex)
             .await
             .map(crate::rpc::jsonrpc::wire::hashes::sent_transaction_hash_from_domain)
-            .map_err(sendrawtransaction_error_object_from_indexer_error)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn z_get_block(
@@ -909,7 +927,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_address_tx_ids(request)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn z_get_address_utxos(
@@ -920,7 +938,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_utxos(address_strings)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
             .and_then(|utxos| {
                 crate::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(utxos)
                     .map_err(invalid_params_error_object)
@@ -937,7 +955,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .get_address_deltas(request)
             .await
             .map(GetAddressDeltasResponse::from_domain)
-            .map_err(invalid_params_error_object)
+            .map_err(legacy_error_object_from_indexer_error)
     }
 
     async fn get_network_sol_ps(

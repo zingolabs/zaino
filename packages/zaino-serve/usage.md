@@ -34,3 +34,18 @@ grpcurl -plaintext -max-time 30 \
   127.0.0.1:8137 \
   zaino.index.v1.IndexedTipService/SubscribeIndexedTips
 ```
+
+## Validator rejections: gRPC status and JSON-RPC code
+
+Calls answered by the backing validator report *why* they failed, not just that
+they did:
+
+| condition | gRPC status | JSON-RPC code |
+|---|---|---|
+| validator lacks the method (`GetStandardFee` / `getstandardfee`) | `UNIMPLEMENTED` | `-32601` |
+| address request refused (TEX or malformed address; >10,000 addresses; >100,000 matching rows) | `INVALID_ARGUMENT` | zebrad's own: `-5` address, `-8` limits |
+| validator unreachable or broken (on the methods above) | `INTERNAL` | `-32603` |
+
+The address checks match zebrad 7 whichever backend answers. `GetStandardFee`
+(lightwallet-protocol v0.6.0) passes the validator's ZIP 317 fee through as
+`feeZat` / `estimatorVersion`.

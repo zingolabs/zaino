@@ -10,7 +10,7 @@ use zaino_proto::proto::{
         compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
         BlockRange, ChainSpec, Duration, Empty, GetAddressUtxosArg, GetAddressUtxosReplyList,
         GetMempoolTxRequest, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
-        SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
+        SendResponse, StandardFee, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
 use zaino_state::{
@@ -26,16 +26,18 @@ macro_rules! client_method_helper {
     // all of these are hard-coded by implement_client_methods,
     // and need to be passed in due to macros not being able to
     // access variables in an outer scope unless they are passed in
+    // Calls are fully qualified: `ZcashIndexer` may share a method name
+    // (e.g. `get_standard_fee`).
     ($self:ident $input:ident $method_name:ident) => {
         tonic::Response::new(
             // offload to the service_subscriber's implementation of
             // $method_name, unpacking $input
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name($input.into_inner())
-                .await
-                .map_err(Into::into)?,
+            LightWalletIndexer::$method_name(
+                $self.service_subscriber.inner_ref(),
+                $input.into_inner(),
+            )
+            .await
+            .map_err(Into::into)?,
         )
     };
     // in the case of Streaming return types, we need an additional
@@ -43,21 +45,18 @@ macro_rules! client_method_helper {
     (streaming $self:ident $input:ident $method_name:ident) => {
         // extra Box::pin here
         tonic::Response::new(Box::pin(
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name($input.into_inner())
-                .await
-                .map_err(Into::into)?,
+            LightWalletIndexer::$method_name(
+                $self.service_subscriber.inner_ref(),
+                $input.into_inner(),
+            )
+            .await
+            .map_err(Into::into)?,
         ))
     };
     // for the no-input variant
     (empty $self:ident $input:ident $method_name:ident) => {
         tonic::Response::new(
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name()
+            LightWalletIndexer::$method_name($self.service_subscriber.inner_ref())
                 .await
                 .map_err(Into::into)?,
         )
@@ -66,10 +65,7 @@ macro_rules! client_method_helper {
     (streamingempty $self:ident $input:ident $method_name:ident) => {
         // extra Box::pin here
         tonic::Response::new(Box::pin(
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name()
+            LightWalletIndexer::$method_name($self.service_subscriber.inner_ref())
                 .await
                 .map_err(Into::into)?,
         ))
@@ -215,6 +211,10 @@ where
         get_address_utxos_stream(GetAddressUtxosArg) -> Self::GetAddressUtxosStreamStream as streaming,
         "Return information about this lightwalletd instance and the blockchain"
         get_lightd_info(Empty) -> LightdInfo as empty,
+        "Return the standard fee (the ZIP 317 marginal fee, in zatoshis per logical action) \
+        the backing validator recommends for a transaction mined in the next block. \
+        Unimplemented when the validator lacks `getstandardfee`."
+        get_standard_fee(Empty) -> StandardFee as empty,
         "GetLatestTreeState returns the note commitment tree state corresponding to the chain tip."
         get_latest_tree_state(Empty) -> TreeState as empty,
         "Return a stream of current Mempool transactions. This will keep the output stream open while \

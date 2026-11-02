@@ -205,6 +205,19 @@ pub struct PingResponse {
     #[prost(int64, tag = "2")]
     pub exit: i64,
 }
+/// StandardFee is the reply to the GetStandardFee rpc: the ZIP 317
+/// marginal fee, in zatoshis per logical action, that wallets should
+/// pay for a transaction to be mined in the next block, as reported by
+/// the backend's `getstandardfee` RPC.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StandardFee {
+    /// standard fee in zatoshis per logical action
+    #[prost(uint64, tag = "1")]
+    pub fee_zat: u64,
+    /// backend fee-estimator version, 0 = static ZIP 317 marginal fee
+    #[prost(uint32, tag = "2")]
+    pub estimator_version: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Address {
     #[prost(string, tag = "1")]
@@ -1075,6 +1088,37 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Return the standard fee (the ZIP 317 marginal fee, in zatoshis per
+        /// logical action) that the backend recommends wallets pay for a
+        /// transaction to be mined in the next block. Requires a backend that
+        /// implements the `getstandardfee` RPC. Backends that lack it return
+        /// Unimplemented.
+        pub async fn get_standard_fee(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::StandardFee>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetStandardFee",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "cash.z.wallet.sdk.rpc.CompactTxStreamer",
+                        "GetStandardFee",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
         pub async fn ping(
             &mut self,
@@ -1345,6 +1389,15 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<super::LightdInfo>, tonic::Status>;
+        /// Return the standard fee (the ZIP 317 marginal fee, in zatoshis per
+        /// logical action) that the backend recommends wallets pay for a
+        /// transaction to be mined in the next block. Requires a backend that
+        /// implements the `getstandardfee` RPC. Backends that lack it return
+        /// Unimplemented.
+        async fn get_standard_fee(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::StandardFee>, tonic::Status>;
         /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
         async fn ping(
             &self,
@@ -2317,6 +2370,50 @@ pub mod compact_tx_streamer_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetLightdInfoSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetStandardFee" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetStandardFeeSvc<T: CompactTxStreamer>(pub Arc<T>);
+                    impl<T: CompactTxStreamer> tonic::server::UnaryService<super::Empty>
+                    for GetStandardFeeSvc<T> {
+                        type Response = super::StandardFee;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as CompactTxStreamer>::get_standard_fee(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetStandardFeeSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

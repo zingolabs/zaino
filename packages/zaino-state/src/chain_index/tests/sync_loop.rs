@@ -208,3 +208,81 @@ async fn tip_converges_after_burst_mine() {
     let indexer_tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
     assert_eq!(indexer_tip, expected_tip);
 }
+
+/// A burst that outruns the chain head's window (tip jump > depth) re-anchors the
+/// head, so the first frozen block sits far above the store's tip and the composer
+/// must build a wide gap before freezing. Regression: the store ran that build in
+/// the background and returned early, the re-freeze was refused as not ready, and
+/// the finalised index stalled one block short of the seam.
+///
+/// multi_thread required: the finalised store commits on a scoped thread under
+/// `block_in_place`, which a current-thread runtime cannot do.
+#[tokio::test(flavor = "multi_thread")]
+async fn finalised_index_follows_a_burst_mine_past_the_seam() {
+    use crate::chain_index::OPERATIONAL_NFS_DEPTH;
+
+    // Starts below the window so the store begins at genesis, then jumps to the
+    // corpus tip: 170 > depth (100), and the resulting gap > the background threshold.
+    const INITIAL_TIP: u32 = 30;
+    const BURST: u32 = 170;
+
+    super::init_tracing();
+    let blocks = super::load_test_vectors().unwrap().blocks;
+    let source = super::build_active_mockchain_source(INITIAL_TIP, blocks);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = super::ChainIndexConfig {
+        storage: super::StorageConfig {
+            database: super::DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ephemeral: false,
+        mempool: Default::default(),
+        db_version: 1,
+        network: super::ActivationHeights::default().to_regtest_network(),
+    };
+    let indexer = super::NodeBackedChainIndex::new_with_chain_head_config(
+        source.clone(),
+        config,
+        fast_chain_head_config(),
+    )
+    .await
+    .unwrap();
+    let index_reader = indexer.subscriber();
+
+    super::poll::poll_until(
+        "indexer tip to reach the initial mockchain tip",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
+            (tip == INITIAL_TIP).then_some(())
+        },
+    )
+    .await;
+
+    source.source().mine_blocks(BURST);
+    let tip = source.source().active_height();
+    assert_eq!(tip, INITIAL_TIP + BURST, "the corpus must cover the burst");
+    let seam = tip - OPERATIONAL_NFS_DEPTH;
+
+    let frontier = super::poll::poll_until(
+        "finalised index to reach the seam",
+        Duration::from_secs(30),
+        Duration::from_millis(50),
+        || async {
+            indexer
+                .finalised_watermark()
+                .tip
+                .map(|tip| u32::from(tip.height))
+                .filter(|height| *height >= seam)
+        },
+    )
+    .await;
+    assert_eq!(
+        frontier, seam,
+        "the finalised index must stop exactly at the seam"
+    );
+}

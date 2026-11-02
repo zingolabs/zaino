@@ -40,10 +40,13 @@ informative
 
 ```rust
 let mut env = TestEnv::builder().ready_timeout(READY);
-let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
 let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
 env.build().await?;
 ```
+
+The zebrad release is pinned once, as `zaino_testutils::ZEBRAD_VERSION`; never
+inline a version string.
 
 ## Parameterize the axes, don't copy the test
 
@@ -51,8 +54,8 @@ Two tests differing only by backend, validator, or pool are one `#[rstest]`.
 
 ```rust
 #[rstest]
-#[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-#[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+#[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+#[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn block_count<B: ValidatorConfig>(

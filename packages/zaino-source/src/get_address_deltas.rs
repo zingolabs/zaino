@@ -26,6 +26,13 @@ pub enum GetAddressDeltasError {
         /// Last height requested.
         end: Height,
     },
+
+    /// More transactions match than one query answers.
+    #[error("more than {limit} transactions match; narrow the height range")]
+    TooManyResults {
+        /// The cap that was exceeded.
+        limit: usize,
+    },
 }
 
 /// Fetch balance deltas for transparent addresses over a height range.

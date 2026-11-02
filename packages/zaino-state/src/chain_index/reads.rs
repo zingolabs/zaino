@@ -17,9 +17,9 @@ use super::chain_view::{BestTip as _, ChainIndexSnapshot, WithChainViewSource};
 use super::node_backed::NodeBackedChainIndexSubscriber;
 use super::source::{BlockchainSource, BlockchainSourceError, PoolTreestate};
 use super::types::{
-    self, balance_request_addresses, block_index, chain_locations, domain_hash, domain_height,
-    domain_scope, domain_txid, encoded_addresses, indexed_block, local_hash, local_height,
-    local_txid, BestChainLocation, BlockIndex, NonBestChainLocation,
+    self, block_index, chain_locations, checked_addresses, domain_hash, domain_height,
+    domain_scope, domain_txid, indexed_block, local_hash, local_height, local_txid,
+    BestChainLocation, BlockIndex, NonBestChainLocation,
 };
 use super::{ChainIndex, ShieldedPool};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
@@ -335,7 +335,7 @@ impl<
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
-        let addresses = balance_request_addresses(&address_strings)?;
+        let addresses = checked_addresses(&address_strings)?;
         Ok(self.composer.snapshot().address_balance(&addresses).await?)
     }
 
@@ -343,8 +343,8 @@ impl<
         &self,
         request: GetAddressTxIdsRequest,
     ) -> Result<Vec<types::TransactionHash>, Self::Error> {
-        let (addresses, start, end) = request.into_parts();
-        let addresses = encoded_addresses(addresses)?;
+        let addresses = checked_addresses(&request)?;
+        let (_, start, end) = request.into_parts();
         Ok(self
             .composer
             .snapshot()
@@ -359,7 +359,7 @@ impl<
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
-        let addresses = balance_request_addresses(&address_strings)?;
+        let addresses = checked_addresses(&address_strings)?;
         Ok(self.composer.snapshot().address_utxos(&addresses).await?)
     }
 

@@ -88,6 +88,7 @@ arc-swap.workspace = true
 dashmap.workspace = true
 tonic.workspace = true
 sha2.workspace = true
+orchard.workspace = true
 
 [dev-dependencies]
 # Difficulty targets, for the accumulator tests' synthetic chains.

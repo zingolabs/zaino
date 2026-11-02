@@ -8,13 +8,12 @@ using `git subtree`.
 Current state, for whoever picks this up:
 
 - `lightwallet-protocol/` is a `git subtree` of https://github.com/zcash/lightwallet-protocol,
-  currently at upstream tag **v0.5.0** (`git-subtree-split: ac7cee05`).
-- It drifted badly before this: the subtree was recorded against the prefix
+  currently at upstream tag **v0.6.0** (`git-subtree-split: 299805c1`).
+- It drifted badly before v0.6.0: the subtree was recorded against the prefix
   `zaino-proto/lightwallet-protocol`, the crate then moved under `packages/`, and
-  `git subtree pull` could no longer find its ancestry. Two years of upstream releases
-  were hand-copied into the vendored files instead of pulled, including a partial
-  re-implementation of upstream v0.5.0 filed under a hand-written changelog heading.
-  Missing `ShieldedProtocol.ironwood` is what that cost us.
+  `git subtree pull` could no longer find its ancestry. Upstream releases were
+  hand-copied instead of pulled. For v0.6.0 the directory was removed and re-added with
+  `git subtree add --squash`, so `git subtree pull` works again.
 - We vendor rather than depend because Zaino is a *server*: `zcash_client_backend`
   generates only `compact_tx_streamer_client`, and the zcash org publishes protos, not
   Rust bindings. `zcash_client_backend` vendors this same directory for the same reason.
@@ -76,7 +75,7 @@ for example:
 
 when doing
 ```
-git subtree --prefix=zaino-proto/lightwallet-protocol pull git@github.com:zcash/lightwallet-protocol.git v0.5.0 --squash
+git subtree pull --prefix=packages/zaino-proto/lightwallet-protocol https://github.com/zcash/lightwallet-protocol.git v0.6.0 --squash
 ```
 
 your branch's commits must be sequenced like this.
@@ -86,7 +85,7 @@ your branch's commits must be sequenced like this.
     - commit applying the git subtree command
     - commit merging the canonical files
     - commits fixing compiler errors
-    - commit indicating the version adopted in the CHANGELOG.md of zaino-proto
+    - commit adding a `.changesets/` entry recording the version adopted
 ```
 
 If you are developing the `lightclient-protocol` and adopting it on Zaino, it is recommended that

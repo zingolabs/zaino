@@ -33,6 +33,7 @@ thiserror = { workspace = true }
 hex = "0.4"
 # Polling clock behind the `finalised` gate.
 tokio = { workspace = true }
+orchard.workspace = true
 
 [dev-dependencies]
 # Drives `legacy_parser::transaction`'s own round-trip tests.

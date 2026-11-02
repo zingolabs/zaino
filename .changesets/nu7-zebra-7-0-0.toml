@@ -1,0 +1,161 @@
+# NU7 on zebrad 7.0.0 (zebra-chain 15 / zebra-state 16 / zebra-rpc 19), the
+# librustzcash finals, and lightwallet-protocol v0.6.0.
+
+[[changes]]
+crate       = "zainod"
+kind        = "breaking"
+description = "NU7 is recognised on Mainnet (height 3,543,405) and Testnet (height 4,465,026) with ZIP 259 consensus branch 0x77190ad9, from the zebrad 7.0.0 crates (zebra-chain 15, zebra-state 16, zebra-rpc 19). A zainod built on earlier zebra crates refuses to start against a zebrad 7.0.0 Mainnet validator, because the reported NU7 height is missing from its compiled schedule. Direct-reader deployments need zebrad 7.0.0, already run once so its state is in the v29 format."
+migration   = "Upgrade zebrad to 7.0.0 before this zainod when the direct reader is in use, and let it migrate its state (v28 → v29) before starting zainod. RPC-only deployments need zebrad 7.0.0 before Mainnet NU7 activation. Startup now fails if the validator's active or next-block consensus branch is unknown to this build: that means zainod is behind the validator and must be upgraded."
+
+[[changes]]
+crate       = "zainod"
+kind        = "feature"
+description = "`getstandardfee` is served over JSON-RPC, and `GetStandardFee` over gRPC (lightwallet-protocol v0.6.0), passed through from the validator."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "breaking"
+description = "Built against zebra-chain 15, zebra-state 16 and zebra-rpc 19 (zebrad 7.0.0); public traits use their types."
+migration   = "Upgrade `zebra-chain` to 15, `zebra-state` to 16 and `zebra-rpc` to 19."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "breaking"
+description = "`LightWalletIndexer` gains `get_standard_fee`, returning the gRPC `StandardFee`; `ZcashIndexer` keeps its domain-typed method of the same name, so call sites with both traits in scope must name the trait. `GetLightdInfo` reports `lightwalletProtocolVersion` `v0.6.0`."
+migration   = "Implement `LightWalletIndexer::get_standard_fee`, and disambiguate calls as `ZcashIndexer::get_standard_fee(..)` / `LightWalletIndexer::get_standard_fee(..)`."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "feature"
+description = "`get_standard_fee` on `ZcashIndexer`, `ChainIndex` and `BlockchainSource`, answered by the validator's `getstandardfee`."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "breaking"
+description = "Validator answers carry their kind to gRPC: a validator without the method is `ChainIndexErrorKind::Unimplemented` (gRPC `UNIMPLEMENTED`), and a rejected request is `InvalidArgument` (gRPC `INVALID_ARGUMENT`), where both were `InternalServerError`."
+migration   = "Callers matching on `ChainIndexError::kind()` or the gRPC status must accept `Unimplemented` and `InvalidArgument` for validator rejections."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = "Address-index requests (balance, txids, utxos, deltas) are checked as zebrad 7 checks them, whichever backend answers: more than 10,000 addresses is refused with `-8`, and a TEX or malformed address with `-5`, each with zebrad's message. TEX addresses previously answered empty on the direct reader."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = "Network adoption rejects a validator whose chain-tip or next-block consensus branch this build does not know, instead of silently indexing the chain under an older rule set. Scheduled future upgrades are still tolerated."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = "`GetLightdInfo` reports the latest *active* network upgrade; a scheduled-but-pending upgrade (NU7 before its activation height) no longer appears as the current one."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "breaking"
+description = "Built against zebra-chain 15 and zebra-rpc 19 (zebrad 7.0.0); the config's network is a zebra-chain 15 `Network`."
+migration   = "Upgrade `zebra-chain` to 15 and `zebra-rpc` to 19."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "fix"
+description = "`FinalisedState::build_to` returns only once the persistent database holds the target. A gap wider than the background-build threshold ran in the background and returned at once, so the composer's immediate re-freeze was refused and the frozen block dropped, stalling the finalised index one block short of the seam until the chain moved again."
+
+[[changes]]
+crate       = "zaino-source-zebra-readstate"
+kind        = "breaking"
+description = "Built against zebra-chain 15 and zebra-state 16 (zebrad 7.0.0): opens the v29 state format, so the primary zebrad must be 7.0.0 and already migrated."
+migration   = "Upgrade `zebra-chain` to 15 and `zebra-state` to 16. Run zebrad 7.0.0 once before pointing the adapter at its state directory."
+
+[[changes]]
+crate       = "zaino-source-zebra-readstate"
+kind        = "fix"
+description = "Address txids, utxos and deltas enforce zebrad 7's 100,000-row cap (`TooManyResults`) instead of answering without bound, and TEX addresses are refused rather than answered empty."
+
+[[changes]]
+crate       = "zaino-convert-zebra"
+kind        = "breaking"
+description = "Built against zebra-chain 15 and orchard 0.16 (zebrad 7.0.0); public functions take their types."
+migration   = "Upgrade `zebra-chain` to 15 and `orchard` to 0.16."
+
+[[changes]]
+crate       = "zaino-common"
+kind        = "breaking"
+description = "Built against zebra-chain 15 (zebrad 7.0.0); network conversions use its `Network`."
+migration   = "Upgrade `zebra-chain` to 15."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "breaking"
+description = "Built against zebra-chain 15 and zebra-rpc 19 (zebrad 7.0.0); wire types expose their types."
+migration   = "Upgrade `zebra-chain` to 15 and `zebra-rpc` to 19."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "feature"
+description = "The `getstandardfee` JSON-RPC method, in zebrad's wire shape (`standard_fee` in zatoshis per logical action, `version`), and the `GetStandardFee` gRPC method (lightwallet-protocol v0.6.0: `feeZat`, `estimatorVersion`; `UNIMPLEMENTED` when the validator lacks it)."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "fix"
+description = "`getaddressbalance`, `getaddresstxids`, `getaddressutxos`, `getaddressdeltas` and `getstandardfee` serve the legacy error code their error carries (zebrad's `-5`/`-8`, `-32601`) instead of a generic one; an unreachable validator on these methods is `-32603`."
+
+[[changes]]
+crate       = "zaino-proto"
+kind        = "breaking"
+description = "The vendored lightwallet-protocol is pulled to upstream v0.6.0 (`299805c1`), adding `CompactTxStreamer.GetStandardFee` and `StandardFee`. The directory is re-added as a proper `git subtree`, so `git subtree pull` works again."
+migration   = "Implementations of the generated `compact_tx_streamer_server::CompactTxStreamer` trait must add `get_standard_fee`."
+
+[[changes]]
+crate       = "zaino-address"
+kind        = "breaking"
+description = "Built against zcash_address 0.14, zcash_keys 0.17 and zcash_protocol 0.11, the librustzcash release zebra 7.0.0 links."
+migration   = "Upgrade the `zcash_*` crates to the same versions."
+
+[[changes]]
+crate       = "zaino-address"
+kind        = "fix"
+description = "`z_validateaddress` echoes a unified address as the caller sent it instead of re-encoding it, which could change its ZIP 316 revision and prefix."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "Built against zcash_address 0.14 and zcash_protocol 0.11, the librustzcash release zebra 7.0.0 links."
+migration   = "Upgrade the `zcash_*` crates to the same versions."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "`types::rpc::StandardFee`, the `getstandardfee` response in domain terms."
+
+[[changes]]
+crate       = "zaino-source"
+kind        = "feature"
+description = "`OneShotGetStandardFee` and its resilient port `GetStandardFee`, mapping to `getstandardfee`; `GetStandardFeeError::Unsupported` for a validator without it."
+
+[[changes]]
+crate       = "zaino-source"
+kind        = "breaking"
+description = "`MAX_ADDRESS_QUERY_RESULTS` (100,000, zebrad 7's cap), and `TooManyResults { limit }` on `GetAddressTxidsError`, `GetAddressUtxosError` and `GetAddressDeltasError`; `GetStandardFeeError` gains `Unsupported`."
+migration   = "Exhaustive matches on these error enums must handle the new variants."
+
+[[changes]]
+crate       = "zaino-source-zebra-rpc"
+kind        = "breaking"
+description = "Built against zebra-chain 15 and the zebra 7.0.0 librustzcash release."
+migration   = "Upgrade `zebra-chain` to 15 and the `zcash_*` crates to the same versions."
+
+[[changes]]
+crate       = "zaino-source-zebra-rpc"
+kind        = "feature"
+description = "Answers `getstandardfee` by calling the validator and parsing zebrad's response; `-32601` is `GetStandardFeeError::Unsupported`."
+
+[[changes]]
+crate       = "zaino-source-zebra-rpc"
+kind        = "fix"
+description = "zebrad 7's address-query result cap (`-8 more than {cap} … match`) is classified as `TooManyResults` on txids and utxos, rather than as an unreachable validator."
+
+[[changes]]
+crate       = "zaino-source-zebra"
+kind        = "feature"
+description = "Routes `getstandardfee` to the JSON-RPC transport in both deployment modes, as `getblocksubsidy` is."

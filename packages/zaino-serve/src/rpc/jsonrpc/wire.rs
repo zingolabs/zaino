@@ -54,6 +54,7 @@ pub mod mining_info;
 pub mod misc;
 pub mod node_info;
 pub mod peer_info;
+pub mod standard_fee;
 pub mod subtrees;
 pub mod treestate;
 

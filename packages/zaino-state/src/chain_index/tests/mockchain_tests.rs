@@ -148,6 +148,20 @@ async fn get_block_range() {
     }
 }
 
+// multi_thread required: the chain store's setup uses `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_standard_fee_passes_the_validator_answer_through() {
+    let (_blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let fee = index_reader
+        .get_standard_fee()
+        .await
+        .expect("the mockchain serves getstandardfee");
+    assert_eq!(fee.fee_per_action.as_u64(), 1_000);
+    assert_eq!(fee.version, 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn get_raw_transaction() {
     let (blocks, _indexer, index_reader, _mockchain) =
@@ -1527,7 +1541,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
 
 /// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
-/// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
+/// the typed `RpcError` (`legacy_error_object_from_indexer_error`),
 /// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a
 /// generic `-32603` internal error.
 ///

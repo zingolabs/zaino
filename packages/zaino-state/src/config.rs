@@ -357,7 +357,7 @@ mod tests {
 
         #[test]
         fn valid_unified_orchard() {
-            let (_network, ua) = zcash_address::unified::Address::decode(
+            let (_network, _revision, ua) = zcash_address::unified::Address::decode(
             "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
         ).unwrap();
             let encoded = ZcashAddress::from_unified(NetworkType::Main, ua).encode();
@@ -408,7 +408,7 @@ mod tests {
 
         #[test]
         fn round_trip_unified() {
-            let (_network, ua) = zcash_address::unified::Address::decode(
+            let (_network, _revision, ua) = zcash_address::unified::Address::decode(
             "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx"
         ).unwrap();
 
