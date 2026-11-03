@@ -167,7 +167,7 @@ tailnet name.
 {"state": "serving", "detail": {"start": 1790000400, "mbps": 12.5},
  "chain": {"network": "mainnet", "tip": {"height": 3515406, "hash": "0000…"}, "served": 3515400,
            "validators": {"trusted": 2, "answering": 1}, "alarms": []},
- "build": {"version": "0.11.0-alpha.4"},
+ "build": {"version": "0.11.0-alpha.5"},
  "indexes": {"compact_block": ["GetBlock", "GetBlockRange", "GetBlockRangeNullifiers"], "utxo_set": []}}
 ```
 
