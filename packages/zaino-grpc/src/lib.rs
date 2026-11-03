@@ -18,7 +18,6 @@ mod lifetime;
 mod limits;
 mod memo;
 mod metrics;
-mod network;
 mod overload;
 mod pressure;
 mod proxy_protocol;

@@ -29,8 +29,6 @@ const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total"
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
-const QUEUE_DELAY_SECONDS: &str = "zaino.grpc.queue_delay_seconds";
-const RETRANSMIT_RATIO: &str = "zaino.grpc.retransmit_ratio";
 const OVERLOAD_LATCHED: &str = "zaino.grpc.overload_latched";
 
 /// Σ `SENT_BYTES_TOTAL` over methods, readable without the metrics recorder (zainod's egress)
@@ -119,21 +117,10 @@ pub const METRICS: &[Metric] = &[
         ADAPTIVE_STREAM_LIMIT,
         "Work streams admitted at once now (latency-adaptive; max_work_streams when off)",
     ),
-    Metric::histogram(
-        QUEUE_DELAY_SECONDS,
-        "Send queueing (RTT over the client network's 10 min base RTT), one per client network \
-         every 10 s (its sockets' median)",
-    )
-    .unit(Unit::Seconds),
     Metric::gauge(
         OVERLOAD_LATCHED,
         "Overload causes latched, by cause (1 = latched, also while detection is off; /readyz names \
          the first only while on)",
-    ),
-    Metric::histogram(
-        RETRANSMIT_RATIO,
-        "Share of sent data segments retransmitted, one per client network sending >= 100 \
-         segments every 10 s",
     ),
 ];
 
@@ -191,17 +178,9 @@ pub(crate) fn stream_rejected(class: Class) {
     }
 }
 
-pub(crate) fn queue_delay(delay: Duration) {
-    metrics::histogram!(QUEUE_DELAY_SECONDS).record(delay.as_secs_f64());
-}
-
 /// Set at each overload window
 pub(crate) fn overload_latched(cause: OverloadCause, held: bool) {
     metrics::gauge!(OVERLOAD_LATCHED, "cause" => cause.label()).set(f64::from(u8::from(held)));
-}
-
-pub(crate) fn retransmit_ratio(ratio: f64) {
-    metrics::histogram!(RETRANSMIT_RATIO).record(ratio);
 }
 
 pub(crate) fn disk_read_waited(lane: Lane, waited: Duration) {

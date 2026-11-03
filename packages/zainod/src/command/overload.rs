@@ -178,29 +178,22 @@ mod tests {
         for action in [
             Action::Off,
             Action::Off,
-            set("network_queue_delay_ms", "10"),
+            set("io_pressure_percent", "10"),
             set("cpu_pressure_percent", "40"),
         ] {
             run(action).expect("applies");
         }
         let expected = Settings {
-            limits: OverloadLimits {
-                network_queue_delay_ms: 10,
-                cpu_pressure_percent: 40,
-                ..config.clone()
-            },
+            limits: OverloadLimits { cpu_pressure_percent: 40, io_pressure_percent: 10 },
             detection: false,
-            overrides: vec![
-                "cpu_pressure_percent = 40".into(),
-                "network_queue_delay_ms = 10".into(),
-            ],
+            overrides: vec!["cpu_pressure_percent = 40".into(), "io_pressure_percent = 10".into()],
         };
         assert_eq!(read(&dir, &config).expect("reads"), expected, "off twice + two keys set");
         assert_eq!(
             expected.notes(),
             [
                 "Overload detection off (zainod overload on)",
-                "Overload overridden: cpu_pressure_percent = 40, network_queue_delay_ms = 10 \
+                "Overload overridden: cpu_pressure_percent = 40, io_pressure_percent = 10 \
                  (zainod overload unset)",
             ],
             "notes while overridden"
@@ -210,7 +203,7 @@ mod tests {
             Action::On,
             Action::On,
             Action::Unset { key: "cpu_pressure_percent".into() },
-            Action::Unset { key: "network_queue_delay_ms".into() },
+            Action::Unset { key: "io_pressure_percent".into() },
         ] {
             run(action).expect("applies");
         }
@@ -229,7 +222,7 @@ mod tests {
         let refusals = [
             // key,                    value, refusal names
             ("nope",                   "1",   "nope = 1: unknown field `nope`"),
-            ("network_min_networks",   "0",   "network_min_networks = 0: invalid value"),
+            ("cpu_pressure_percent",   "300", "cpu_pressure_percent = 300: invalid value"),
             ("io_pressure_percent",    "x",   "io_pressure_percent = x: not a value"),
         ];
         for (key, value, named) in refusals {

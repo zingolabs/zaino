@@ -73,10 +73,6 @@ impl AdmissionState {
         self.overload.set(limits, detection);
     }
 
-    pub(crate) fn overload_limits(&self) -> OverloadLimits {
-        self.overload.limits()
-    }
-
     /// Closes a serving summary's window (`elapsed` long, on its `signals`): its refusals, every
     /// class
     pub(crate) fn tick(&self, elapsed: Duration, signals: Signals) -> u64 {

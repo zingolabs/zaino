@@ -37,8 +37,7 @@ Removed with no replacement: `zaino_db_*`, `zaino_migration_*`, `zaino_jsonrpc_*
   state and detail.
 - **gRPC serving:** `zaino_grpc_*` per `{method}` (requests, one-reply and first-message
   latency, bytes sent), connection, admission, subscription and adaptive-limit gauges and
-  counters, per-network `zaino_grpc_queue_delay_seconds` and `zaino_grpc_retransmit_ratio`, and
-  `zaino_grpc_overload_latched{cause}`.
+  counters, and `zaino_grpc_overload_latched{cause}`.
 - **Peers** (`[p2p]` on): `zaino_peers_request_duration_seconds{request}`,
   `zaino_peers_request_failures_total{request, failure}`, and zebra-network's `zcash_net_peers`,
   `pool_num_{ready,unready}`, `zcash_net_{in,out}_messages{command}`,

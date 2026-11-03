@@ -2,8 +2,7 @@
 //!
 //! - one latch per [`OverloadCause`]: over its threshold for its `enter` → latched, under half of
 //!   it (refusals: under 2 %) for its `exit` → cleared; reported = the first latched
-//! - signals: admission refusals (counted here), network queueing or loss (`network.rs`, either =
-//!   saturated), CPU / IO pressure (`pressure.rs`)
+//! - signals: admission refusals (counted here), CPU / IO pressure (`pressure.rs`)
 //! - operator settings live (`set`): while detection is off the latches still step, none reported
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,20 +21,17 @@ const EXIT_PERCENT: u64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverloadCause {
-    NetworkSaturated,
     CpuPressure,
     IoPressure,
     RefusingWork,
 }
 
 impl OverloadCause {
-    const ALL: [Self; 4] =
-        [Self::NetworkSaturated, Self::CpuPressure, Self::IoPressure, Self::RefusingWork];
+    const ALL: [Self; 3] = [Self::CpuPressure, Self::IoPressure, Self::RefusingWork];
 
     /// Readiness `detail.message`
     pub const fn detail(self) -> &'static str {
         match self {
-            Self::NetworkSaturated => "Overloaded: network saturated",
             Self::CpuPressure => "Overloaded: CPU pressure",
             Self::IoPressure => "Overloaded: IO pressure",
             Self::RefusingWork => "Overloaded: refusing work",
@@ -45,7 +41,6 @@ impl OverloadCause {
     /// `zaino_grpc_overload_latched{cause}`
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::NetworkSaturated => "network_saturated",
             Self::CpuPressure => "cpu_pressure",
             Self::IoPressure => "io_pressure",
             Self::RefusingWork => "refusing_work",
@@ -56,9 +51,7 @@ impl OverloadCause {
     fn rule(self) -> (Duration, Duration) {
         let minutes = |m: u64| Duration::from_secs(m * 60);
         match self {
-            Self::NetworkSaturated | Self::CpuPressure | Self::IoPressure => {
-                (minutes(2), minutes(3))
-            }
+            Self::CpuPressure | Self::IoPressure => (minutes(2), minutes(3)),
             // admission already sheds within seconds: only a persistent shortfall counts
             Self::RefusingWork => (minutes(5), minutes(5)),
         }
@@ -68,8 +61,6 @@ impl OverloadCause {
 /// One window's signals (`None` = not measured here)
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Signals {
-    pub(crate) network_delay: Option<Duration>,
-    pub(crate) network_loss: Option<f64>,
     pub(crate) cpu: Option<f64>,
     pub(crate) io: Option<f64>,
 }
@@ -121,10 +112,6 @@ impl Overload {
         (closed.limits, closed.detection) = (limits, detection);
     }
 
-    pub(crate) fn limits(&self) -> OverloadLimits {
-        self.closed.lock().expect("overload latch poisoned").limits.clone()
-    }
-
     pub(crate) fn admitted(&self, class: Class) {
         if class == Class::Work {
             self.admitted_work.fetch_add(1, Ordering::Relaxed);
@@ -155,15 +142,6 @@ impl Overload {
         let limits = &closed.limits;
         let percent = |p: u8| f64::from(p) / 100.0;
         let conditions = OverloadCause::ALL.map(|cause| match cause {
-            OverloadCause::NetworkSaturated => {
-                let (queued, unqueued) = against(
-                    signals.network_delay.map(|delay| delay.as_secs_f64()),
-                    f64::from(limits.network_queue_delay_ms) / 1000.0,
-                );
-                let (lossy, clean) =
-                    against(signals.network_loss, percent(limits.network_retransmit_percent));
-                (queued || lossy, unqueued && clean)
-            }
             OverloadCause::CpuPressure => {
                 against(signals.cpu, percent(limits.cpu_pressure_percent))
             }
@@ -264,37 +242,31 @@ mod tests {
         assert_eq!(overload.tick(MINUTE, Signals::default()), 0, "next window starts at zero");
     }
 
-    /// One minute's signals (IO unloaded)
-    fn signals(delay_ms: Option<u64>, loss: Option<f64>, cpu: f64) -> Signals {
-        let network_delay = delay_ms.map(Duration::from_millis);
-        Signals { network_delay, network_loss: loss, cpu: Some(cpu), io: Some(0.0) }
+    /// One minute's pressure shares (`None` = unmeasured)
+    fn signals(cpu: Option<f64>, io: Option<f64>) -> Signals {
+        Signals { cpu, io }
     }
 
-    /// Network 10 ms / 2 %, CPU 25 %: enter over the limit for 2 min, exit under half of it for 3
+    /// CPU / IO 25 %: enter over the limit for 2 min, exit under half of it for 3
     #[test]
     fn each_pressure_cause_latches_over_its_limit_and_clears_under_half_of_it() {
-        let (none, network, cpu) =
-            (None, Some(OverloadCause::NetworkSaturated), Some(OverloadCause::CpuPressure));
-        let limits = OverloadLimits {
-            network_queue_delay_ms: 10,
-            network_retransmit_percent: 2,
-            cpu_pressure_percent: 25,
-            ..OverloadLimits::default()
-        };
+        let (none, cpu, io) =
+            (None, Some(OverloadCause::CpuPressure), Some(OverloadCause::IoPressure));
+        let limits = OverloadLimits::default();
         #[rustfmt::skip]
         let cases = [
-            ("queueing 14 ms; 7 ms (not under 5) holds; unmeasured 3 min clears",
-                [signals(Some(14), None, 0.0), signals(Some(14), None, 0.0), signals(Some(7), None, 0.0),
-                 signals(None, None, 0.0), signals(None, None, 0.0), signals(None, None, 0.0)],
-                [none, network, network, network, network, none]),
-            ("loss 3 % unqueued; 1.5 % (not under 1) holds; 0 % 3 min clears",
-                [signals(Some(2), Some(0.03), 0.0), signals(Some(2), Some(0.03), 0.0), signals(Some(2), Some(0.015), 0.0),
-                 signals(Some(2), Some(0.0), 0.0), signals(Some(2), Some(0.0), 0.0), signals(Some(2), Some(0.0), 0.0)],
-                [none, network, network, network, network, none]),
-            ("queueing + CPU 30 % both latch: network named first, then CPU",
-                [signals(Some(14), None, 0.3), signals(Some(14), None, 0.3), signals(Some(7), None, 0.3),
-                 signals(None, None, 0.3), signals(None, None, 0.3), signals(None, None, 0.3)],
-                [none, network, network, network, network, cpu]),
+            ("CPU 30 %; 15 % (not under 12.5) holds; unmeasured 3 min clears",
+                [signals(Some(0.3), None), signals(Some(0.3), None), signals(Some(0.15), None),
+                 signals(None, None), signals(None, None), signals(None, None)],
+                [none, cpu, cpu, cpu, cpu, none]),
+            ("IO 25 % exactly latches; 20 % holds; 10 % for 3 min clears",
+                [signals(None, Some(0.25)), signals(None, Some(0.25)), signals(None, Some(0.2)),
+                 signals(None, Some(0.1)), signals(None, Some(0.1)), signals(None, Some(0.1))],
+                [none, io, io, io, io, none]),
+            ("CPU + IO both latch: CPU named first, then IO",
+                [signals(Some(0.3), Some(0.3)), signals(Some(0.3), Some(0.3)), signals(Some(0.15), Some(0.3)),
+                 signals(Some(0.1), Some(0.3)), signals(Some(0.1), Some(0.3)), signals(Some(0.1), Some(0.3))],
+                [none, cpu, cpu, cpu, cpu, io]),
         ];
         for (case, minutes, causes) in cases {
             let overload = Overload::new(limits.clone());
@@ -314,7 +286,7 @@ mod tests {
         let limits = OverloadLimits { cpu_pressure_percent: 25, ..OverloadLimits::default() };
         let overload = Overload::new(limits.clone());
         for _ in 0..2 {
-            overload.tick(MINUTE, signals(None, None, 0.3));
+            overload.tick(MINUTE, signals(Some(0.3), None));
         }
         assert_eq!(overload.cause(), cpu, "CPU 30 % for 2 min: latched");
 
@@ -322,7 +294,7 @@ mod tests {
         let detection_off = overload.cause();
         overload.set(OverloadLimits { cpu_pressure_percent: 0, ..limits }, true);
         let limit_off = [0; 3].map(|_| {
-            overload.tick(MINUTE, signals(None, None, 1.0));
+            overload.tick(MINUTE, signals(Some(1.0), None));
             overload.cause()
         });
 

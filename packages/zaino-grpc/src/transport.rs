@@ -26,7 +26,6 @@ use crate::connections::{ConnectionCaps, Reserved};
 use crate::guard::Guard;
 use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, RetireReason, Retirement};
-use crate::network;
 use crate::overload::Signals;
 use crate::pressure::{Pressure, Resource};
 use crate::proxy_protocol;
@@ -211,11 +210,6 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
         if let Some(tls) = &server.tls {
             tokio::spawn(tls.reload(cancel.clone()).instrument(Span::current()));
         }
-        let network = Arc::new(network::Window::default());
-        if let Ok(bound) = listener.local_addr() {
-            let sampling = network::run(bound.port(), Arc::clone(&network), cancel.clone());
-            tokio::spawn(sampling.instrument(Span::current()));
-        }
         let (mut cpu, mut io) = (Pressure::new(Resource::Cpu), Pressure::new(Resource::Io));
         let shared = Arc::new(Shared {
             caps: ConnectionCaps::new(&server.limits),
@@ -239,14 +233,7 @@ impl<S: ChainDataSource, V: PinnedView> BoundGrpcService<S, V> {
                 accepted = listener.accept() => accepted,
                 now = summaries.tick() => {
                     let elapsed = now.saturating_duration_since(window_opened);
-                    let min_networks = shared.admission.overload_limits().network_min_networks;
-                    let saturation = network.verdict(min_networks.get());
-                    let signals = Signals {
-                        network_delay: saturation.delay,
-                        network_loss: saturation.loss,
-                        cpu: cpu.share(elapsed),
-                        io: io.share(elapsed),
-                    };
+                    let signals = Signals { cpu: cpu.share(elapsed), io: io.share(elapsed) };
                     let at_capacity = shared.admission.tick(elapsed, signals);
                     summary::summarise(elapsed, shared.caps.held(), at_capacity);
                     window_opened = now;
