@@ -12,7 +12,7 @@ use zaino_primitives::types::{
     EquihashSolution, Fee, MerkleRoot, Transaction,
 };
 use zcash_encoding::CompactSize;
-use zcash_protocol::consensus::{target_spacing, BlockHeight, NetworkType, Parameters, H0};
+use zcash_protocol::consensus::{pow_target_spacing, BlockHeight, NetworkType, Parameters, H0};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::bundle::OutPoint;
@@ -448,7 +448,9 @@ impl MockChain {
     ) -> Result<u32, Refused> {
         let Some(parent) = parent else { return Ok(stated.unwrap_or(GENESIS_TIME)) };
         let parent_time = self.block(parent.hash).header().time;
-        let time = stated.unwrap_or(parent_time + target_spacing(&self.schedule.upgrades, height));
+        let spacing = pow_target_spacing(&self.schedule.upgrades, height).as_secs();
+        let spacing = u32::try_from(spacing).expect("spacing <= 150 s");
+        let time = stated.unwrap_or(parent_time + spacing);
         let ancestors = std::iter::successors(Some(self.block(parent.hash)), |block| {
             self.blocks.get(&block.header().prev_hash).map(|mined| &mined.block)
         });

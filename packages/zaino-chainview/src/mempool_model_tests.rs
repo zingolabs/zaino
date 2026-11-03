@@ -424,7 +424,8 @@ fn run(case: &Case) -> Result<(), TestCaseError> {
     let validators = case.validators;
     let trusted_validators: Vector<TrustedValidatorMeta> =
         (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
-    let core = ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS);
+    let core =
+        ChainViewCore::new(trusted_validators, FinalityDepth::CONSENSUS, chain.schedule().upgrades);
     core.apply_headers(Some(Arc::new(HeaderChainSnapshot::of(&chain, tip))));
     let oracle = Oracle {
         health: vec![Health::Pending; validators],

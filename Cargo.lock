@@ -360,18 +360,12 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
-version = "0.8.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
 dependencies = [
- "bit-vec 0.8.0",
+ "bit-vec 0.10.1",
 ]
-
-[[package]]
-name = "bit-vec"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bit-vec"
@@ -379,6 +373,16 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
+dependencies = [
+ "borsh",
  "serde",
 ]
 
@@ -458,6 +462,30 @@ dependencies = [
  "rand_core 0.10.1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "borsh"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
+dependencies = [
+ "borsh-derive",
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -545,6 +573,12 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "cfg_aliases"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
@@ -742,6 +776,12 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corez"
@@ -1093,7 +1133,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -1141,7 +1181,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.2"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "blake2b_simd",
 ]
@@ -2393,6 +2433,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.0",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2840,17 +2892,17 @@ dependencies = [
 
 [[package]]
 name = "proptest"
-version = "1.6.0"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14cae93065090804185d3b75f0bf93b8eeda30c7a9b4a33d3bdb3988d6229e50"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
 dependencies = [
  "bit-set",
- "bit-vec 0.8.0",
+ "bit-vec 0.10.1",
  "bitflags 2.13.0",
- "lazy_static",
+ "chacha20",
+ "core_detect",
  "num-traits",
- "rand 0.8.6",
- "rand_chacha 0.3.1",
+ "rand 0.10.3",
  "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
@@ -3078,11 +3130,11 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rand_xorshift"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
- "rand_core 0.6.4",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -5249,7 +5301,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "uint 0.9.5",
- "zcash_encoding 0.4.0",
+ "zcash_encoding",
  "zcash_protocol",
  "zcash_transparent",
 ]
@@ -5291,7 +5343,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
- "zcash_encoding 0.4.0",
+ "zcash_encoding",
  "zcash_primitives",
  "zcash_protocol",
  "zcash_script",
@@ -5388,32 +5440,21 @@ dependencies = [
 
 [[package]]
 name = "zcash_address"
-version = "0.14.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+version = "0.14.0"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "bech32",
  "bs58",
  "corez",
  "f4jumble",
- "zcash_encoding 0.5.0",
+ "zcash_encoding",
  "zcash_protocol",
 ]
 
 [[package]]
 name = "zcash_encoding"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1440921903cdb86133fb9e2fe800be488015db2939a30bedb413078a1acb0306"
-dependencies = [
- "corez",
- "hex",
- "nonempty",
-]
-
-[[package]]
-name = "zcash_encoding"
 version = "0.5.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "corez",
  "hex",
@@ -5422,13 +5463,14 @@ dependencies = [
 
 [[package]]
 name = "zcash_history"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d2ed9a9fa7b466a7adedab1ad5a21f8330e4943756912fc776cf7f3beae32b"
+checksum = "da3dc4f915efe84d479343fb655505cfd26afcfd965f4678ad5ee339353acd62"
 dependencies = [
  "blake2b_simd",
- "byteorder",
+ "corez",
  "primitive-types",
+ "zcash_encoding",
 ]
 
 [[package]]
@@ -5446,8 +5488,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_primitives"
-version = "0.31.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+version = "0.31.0"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -5466,7 +5508,7 @@ dependencies = [
  "sapling-crypto",
  "secp256k1",
  "sha2 0.10.9",
- "zcash_encoding 0.5.0",
+ "zcash_encoding",
  "zcash_note_encryption",
  "zcash_protocol",
  "zcash_script",
@@ -5475,8 +5517,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_protocol"
-version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+version = "0.11.0"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "corez",
  "document-features",
@@ -5485,7 +5527,7 @@ dependencies = [
  "incrementalmerkletree-testing",
  "memuse",
  "proptest",
- "zcash_encoding 0.5.0",
+ "zcash_encoding",
 ]
 
 [[package]]
@@ -5516,8 +5558,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.11.0-pre.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=700969fda3ef70ec9f617e62634c43bbb97f9a72#700969fda3ef70ec9f617e62634c43bbb97f9a72"
+version = "0.11.0"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7#605917a30e76ca2bfe8eda7d6bfef8b0314fb7e7"
 dependencies = [
  "bip32",
  "bs58",
@@ -5531,8 +5573,7 @@ dependencies = [
  "secp256k1",
  "sha2 0.10.9",
  "subtle",
- "zcash_address",
- "zcash_encoding 0.5.0",
+ "zcash_encoding",
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
@@ -5541,8 +5582,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
+version = "15.0.0"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=ebabeee504850bb9dc0b9a76de158dbc68503220#ebabeee504850bb9dc0b9a76de158dbc68503220"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -5600,8 +5641,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-network"
-version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
+version = "15.0.0"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=ebabeee504850bb9dc0b9a76de158dbc68503220#ebabeee504850bb9dc0b9a76de158dbc68503220"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -5638,8 +5679,8 @@ dependencies = [
 
 [[package]]
 name = "zebra-test"
-version = "4.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
+version = "5.0.0"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=ebabeee504850bb9dc0b9a76de158dbc68503220#ebabeee504850bb9dc0b9a76de158dbc68503220"
 dependencies = [
  "color-eyre",
  "futures",
@@ -5649,6 +5690,7 @@ dependencies = [
  "insta",
  "itertools 0.14.0",
  "lazy_static",
+ "nix",
  "once_cell",
  "owo-colors",
  "proptest",
@@ -5661,6 +5703,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

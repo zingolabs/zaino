@@ -9,6 +9,7 @@ use zaino_chainview::{Agreement, Alarm, ChainViewSnapshot, MempoolState};
 
 use zaino_persistence::View;
 use zaino_primitives::metric::Metric;
+use zaino_source::EndOfService;
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, TrustedValidatorId};
 
@@ -226,11 +227,15 @@ fn edge(view: &ChainViewSnapshot, alarm: Alarm, by: Option<TrustedValidatorId>, 
             let release = meta.and_then(|meta| meta.telemetry.release.as_ref());
             let build = release.map(|release| release.build.as_str());
             if raised {
-                let left = meta.and_then(|meta| meta.blocks_to_end_of_service());
+                let halts = release.and_then(|release| match release.end_of_service {
+                    EndOfService::At { height } => Some(u32::from(height)),
+                    EndOfService::NotEnforced | EndOfService::Unknown => None,
+                });
                 warn!(
                     validator,
                     ?build,
-                    ?left,
+                    ?tip,
+                    ?halts,
                     "Validator release reaches end of service soon (it halts there): upgrade it"
                 )
             } else {

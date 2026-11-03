@@ -15,7 +15,7 @@ serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10"
 thiserror = { workspace = true }
 uint = "0.9"
-zcash_encoding = "0.4"
+zcash_encoding = "0.5"
 zcash_protocol.workspace = true
 zcash_transparent.workspace = true
 

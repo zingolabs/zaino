@@ -55,7 +55,7 @@ impl<S: ChainDataSource> ChainView<S> {
     ) -> Self {
         let trusted_validators =
             balancer.addresses().iter().map(|address| TrustedValidatorMeta::new(address.clone()));
-        let core = Arc::new(ChainViewCore::new(trusted_validators.collect(), depth));
+        let core = Arc::new(ChainViewCore::new(trusted_validators.collect(), depth, schedule));
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
         let policy = SubmitPolicy::default();

@@ -9,8 +9,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tower::buffer::Buffer;
-use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use zaino_primitives::types::{Announced, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
@@ -28,16 +26,18 @@ use zaino_source::testing::{raw_transaction, within};
 use crate::wire;
 use crate::{PeerConfig, PeerError, PeerNetwork, PushError};
 
-type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
+type FakePeers = zebra_network::NetworkService;
 type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;
+type FakeAdvertiser = zebra_network::BlockAdvertiser<NoChainTip>;
 
 /// Full zebra-network regtest node on a fresh loopback port, answering peers with `inbound`
 /// (no seeds: accepts only)
 ///
-/// - its peer set reaches whoever connected
+/// - its peer set reaches whoever connected, and owns the node (dropped = node stopped)
+/// - block `inv`s through its advertiser (the peer set refuses them)
 /// - full node, not an isolated connection (those advertise no services: a peer set refuses
 ///   an outbound peer serving nothing)
-async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers, FakeBook)
+async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers, FakeBook, FakeAdvertiser)
 where
     S: Service<Request, Response = Response, Error = BoxError> + Clone + Send + Sync + 'static,
     S::Future: Send + 'static,
@@ -52,7 +52,7 @@ where
         cache_dir: zebra_network::CacheDir::disabled(),
         ..zebra_network::Config::default()
     };
-    let (peers, book, _) = zebra_network::init(
+    let (peers, book, _, advertiser) = zebra_network::init(
         config,
         inbound,
         NoChainTip,
@@ -60,7 +60,7 @@ where
         PeerServices::NODE_NETWORK,
     )
     .await;
-    (listen_addr, peers, book)
+    (listen_addr, peers, book, advertiser)
 }
 
 /// Zaino's peer set seeded with `fake` alone, back once `fake` is live (handshaken)
@@ -115,7 +115,7 @@ async fn zaino_is_admitted_advertising_no_services_and_reads_headers_and_blocks_
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, _, fake_book) = fake_node(inbound).await;
+    let (fake, _fake_peers, fake_book, _) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
 
     let seen: Vec<_> = {
@@ -156,7 +156,7 @@ async fn a_peers_mempool_is_its_own_listing_and_a_peer_not_in_the_set_is_a_failu
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, _, _) = fake_node(inbound).await;
+    let (fake, _fake_peers, _, _) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
 
     let listed: HashSet<PeerTxId> =
@@ -198,7 +198,7 @@ async fn a_lying_peers_answer_never_labels_the_asked_id_and_is_an_answer_not_a_f
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, _, _) = fake_node(inbound).await;
+    let (fake, _fake_peers, _, _) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
 
     let (id_a, id_c) = (wire::peer_tx_id(a.id), wire::peer_tx_id(c.id));
@@ -223,7 +223,7 @@ async fn a_block_inv_arrives_attributed_to_its_sender_and_a_transaction_inv_is_i
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, mut fake_peers, _) = fake_node(inbound).await;
+    let (fake, mut fake_peers, _, mut fake_advertiser) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
     let mut announcements = peers.announcements();
 
@@ -231,7 +231,7 @@ async fn a_block_inv_arrives_attributed_to_its_sender_and_a_transaction_inv_is_i
     let advertise = Request::AdvertiseTransactionIds([tx.id].into_iter().collect(), None);
     fake_peers.ready().await.expect("ready").call(advertise).await.expect("tx inv sent");
     let advertise = Request::AdvertiseBlock(block_2.hash(), None);
-    fake_peers.ready().await.expect("ready").call(advertise).await.expect("block inv sent");
+    fake_advertiser.ready().await.expect("ready").call(advertise).await.expect("block inv sent");
 
     let heard = within("the first announcement", announcements.recv()).await;
     let block = Announced { peer: fake, hash: wire::block_hash(block_2.hash()) };
@@ -271,7 +271,7 @@ async fn only_answered_requests_are_timed_and_zebras_local_refusals_count_as_fai
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, _, _) = fake_node(inbound).await;
+    let (fake, _fake_peers, _, _) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
 
     let block_1 = wire::block_hash(blocks[0].hash());
@@ -313,7 +313,7 @@ async fn a_push_reaches_a_connected_peer_byte_identical_and_malformed_bytes_neve
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, _, _) = fake_node(inbound).await;
+    let (fake, _fake_peers, _, _) = fake_node(inbound).await;
     let peers = zaino_peered_with(fake).await;
     let (expected_txid, raw) = raw_transaction(42, 0);
 

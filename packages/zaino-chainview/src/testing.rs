@@ -9,6 +9,7 @@ use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::BlockchainInfo;
 use zaino_traffic::{Health, TrustedValidatorId};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::chain_view_snapshot::Sighting;
@@ -61,7 +62,9 @@ impl ChainViewSnapshot {
             }
         }
         let paused = self.alarms.raised(crate::telemetry::Alarm::FinalityPaused);
-        self.alarms = crate::telemetry::alarms(&self.trusted_validators, paused);
+        // no upgrade scheduled, as `fixed`'s holders report
+        let schedule = LocalNetwork::from_activation_heights(|_| None);
+        self.alarms = crate::telemetry::alarms(&self.trusted_validators, &schedule, paused);
         self
     }
 

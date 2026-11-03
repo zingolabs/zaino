@@ -1,6 +1,7 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
 //! (index names the txids, a validator supplies the bytes), all as of the served tip
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use zaino_grpc_snapshot::GrpcSnapshot;
@@ -9,7 +10,7 @@ use zaino_persistence::{OverlayView, PinnedView};
 use zaino_proto::proto::service;
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
-use zcash_address::{ConversionError, ZcashAddress};
+use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_script::script::Evaluable;
@@ -218,7 +219,8 @@ fn parse_transparent_address(
     encoded
         .parse::<ZcashAddress>()
         .map_err(|error| invalid(error.to_string()))?
-        .convert_if_network::<TransparentAddress>(network)
+        .convert_if_network::<Transparent>(network)
+        .map(|Transparent(address)| address)
         .map_err(|error| match error {
             ConversionError::IncorrectNetwork { expected, actual } => invalid(format!(
                 "a {} address, and this index is {}",
@@ -227,6 +229,27 @@ fn parse_transparent_address(
             )),
             _ => invalid("not a transparent address".to_owned()),
         })
+}
+
+/// P2PKH or P2SH encoding only (TEX, shielded, unified = unsupported)
+struct Transparent(TransparentAddress);
+
+impl TryFromAddress for Transparent {
+    type Error = Infallible;
+
+    fn try_from_transparent_p2pkh(
+        _: NetworkType,
+        data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(Self(TransparentAddress::PublicKeyHash(data)))
+    }
+
+    fn try_from_transparent_p2sh(
+        _: NetworkType,
+        data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(Self(TransparentAddress::ScriptHash(data)))
+    }
 }
 
 /// Domain utxo → wire `GetAddressUtxosReply` (address as the client spelled it)

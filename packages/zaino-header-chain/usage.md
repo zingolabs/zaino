@@ -49,7 +49,7 @@ nBits is fixed at the limit and the solution must be 36 bytes.
 
 `Params::for_network(network, &schedule)` picks the rules: `mainnet()` / `testnet()` read the
 compiled schedule (`compiled_schedule`), `regtest(schedule)` its validator's (only NU7 matters
-there: it widens the averaging window). Spacing comes from `zcash_protocol`'s `target_spacing`;
+there: it widens the averaging window). Spacing comes from `zcash_protocol`'s `pow_target_spacing`;
 nBits → target → work from
 `zaino_primitives::types::CompactDifficulty`.
 

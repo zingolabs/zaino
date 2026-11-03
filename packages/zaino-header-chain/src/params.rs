@@ -3,7 +3,7 @@
 use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{CompactDifficulty, Target};
 use zcash_protocol::consensus::{
-    target_spacing, BlockHeight, NetworkType, NetworkUpgrade, Parameters,
+    pow_target_spacing, BlockHeight, NetworkType, NetworkUpgrade, Parameters,
 };
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::BlockHash;
@@ -113,7 +113,7 @@ impl Params {
 
     /// `PoWTargetSpacing(height)`, seconds
     pub(crate) fn spacing(&self, at: BlockHeight) -> i64 {
-        i64::from(target_spacing(&self.schedule, at))
+        i64::try_from(pow_target_spacing(&self.schedule, at).as_secs()).expect("spacing <= 150 s")
     }
 
     /// `PoWAveragingWindow(height)` (ZIP 218: every use in §7.7.3 takes the checked height's)
@@ -208,7 +208,8 @@ mod tests {
             // (network, params,           height,    expect(spacing s, window, min-difficulty gap s))
             ("mainnet", Params::mainnet(), 653_599,   expect(150, 17,  None)),
             ("mainnet", Params::mainnet(), 653_600,   expect(75,  17,  None)),
-            ("mainnet", Params::mainnet(), 9_999_999, expect(75,  17,  None)),
+            ("mainnet", Params::mainnet(), 3_543_404, expect(75,  17,  None)),
+            ("mainnet", Params::mainnet(), 3_543_405, expect(25,  102, None)),
             ("testnet", Params::testnet(), 299_187,   expect(150, 17,  None)),
             ("testnet", Params::testnet(), 299_188,   expect(150, 17,  Some(900))),
             ("testnet", Params::testnet(), 584_000,   expect(75,  17,  Some(450))),

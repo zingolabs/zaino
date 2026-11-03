@@ -112,7 +112,7 @@ mod tests {
     }
 
     /// Mainnet's compiled schedule at the served height: NU6.2 from 3,364,600, NU6.3 from
-    /// 3,428,143, NU7 unscheduled
+    /// 3,428,143, NU7 from 3,543,405
     #[test]
     fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
         let at = BlockHeight::from;
@@ -123,7 +123,7 @@ mod tests {
             taddr_support: true,
             chain_name: "main".to_owned(),
             sapling_activation_height: 419_200,
-            estimated_height: 3_500_000,
+            estimated_height: 3_600_000,
             lightwallet_protocol_version: zaino_proto::LIGHTWALLET_PROTOCOL_VERSION.to_owned(),
             ..Default::default()
         };
@@ -136,18 +136,25 @@ mod tests {
                 upgrade_height: 3_428_143,
                 ..base.clone()
             }),
-            ("NU6.3 in force, nothing next", 3_428_143, LightdInfo {
+            ("NU6.3 in force, NU7 next", 3_543_404, LightdInfo {
                 consensus_branch_id: branch(BranchId::Nu6_3),
-                block_height: 3_428_143,
+                block_height: 3_543_404,
+                upgrade_name: "Nu7".to_owned(),
+                upgrade_height: 3_543_405,
+                ..base.clone()
+            }),
+            ("NU7 in force, nothing next", 3_543_405, LightdInfo {
+                consensus_branch_id: branch(BranchId::Nu7),
+                block_height: 3_543_405,
                 ..base.clone()
             }),
         ];
         for (case, served, expected) in cases {
-            let lightd = Lightd { served: at(served), best: at(3_500_000), schedule };
+            let lightd = Lightd { served: at(served), best: at(3_600_000), schedule };
 
             let info = lightd_info_message(lightd, NetworkType::Main, "0.11.0-alpha.2");
 
-            assert_eq!(info, expected, "{case}: served {served}, best 3,500,000");
+            assert_eq!(info, expected, "{case}: served {served}, best 3,600,000");
         }
     }
 

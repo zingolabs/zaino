@@ -1,9 +1,13 @@
 //! Who the trusted validators are, and what the view needs to know about each
 
+use std::time::Duration;
+
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockchainInfo, EndOfService, Telemetry};
 use zaino_traffic::{Health, TrustedValidatorId};
+use zcash_protocol::consensus::target_time_between;
+use zcash_protocol::local_consensus::LocalNetwork;
 
 /// Which trusted validators, by [`TrustedValidatorId`]: a bitset, never a count
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -183,13 +187,13 @@ impl TrustedValidatorMeta {
         }
     }
 
-    /// Blocks its own tip has left before its release halts (`None` = no halt known, or no tip)
-    pub fn blocks_to_end_of_service(&self) -> Option<u32> {
+    /// Target time from its own tip to its release's halt (`None` = no halt known, or no tip)
+    pub fn time_to_end_of_service(&self, schedule: &LocalNetwork) -> Option<Duration> {
         let EndOfService::At { height, .. } = self.telemetry.release.as_ref()?.end_of_service
         else {
             return None;
         };
-        Some(u32::from(height).saturating_sub(u32::from(self.tip()?.height)))
+        Some(target_time_between(schedule, self.tip()?.height, height))
     }
 
     /// Its own last-observed tip, not the verified one (`agreement` says how they relate)

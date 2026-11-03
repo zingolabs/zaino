@@ -1,13 +1,13 @@
 //! [`GrpcSnapshot`]: every answer Zaino serves, from one value (`usage.md`)
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use zaino_chainview::{ChainViewSnapshot, MempoolView, STALE_TIP_BLOCKS};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_nfs::{IndexesAtBlock, NfsPublication};
 use zaino_primitives::types::BlockRef;
 use zaino_traffic::Health;
-use zcash_protocol::consensus::{target_spacing, BlockHeight};
+use zcash_protocol::consensus::{pow_target_spacing, BlockHeight};
 use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::mempool_feed::{Feed, MempoolTail};
@@ -158,8 +158,10 @@ impl<V> GrpcSnapshot<V> {
         let Some(header) = self.chain().and_then(|chain| chain.header_at(best.height)) else {
             return false;
         };
-        let spacing = target_spacing(&served.params().schedule, best.height);
-        now_unix - i64::from(header.time) < i64::from(STALE_TIP_BLOCKS * spacing)
+        let stale = pow_target_spacing(&served.params().schedule, best.height) * STALE_TIP_BLOCKS;
+        // header time ahead of the clock = fresh
+        u64::try_from(now_unix - i64::from(header.time))
+            .map_or(true, |age| Duration::from_secs(age) < stale)
     }
 
     /// Best's height, or above it the clock estimate of a validator still catching up

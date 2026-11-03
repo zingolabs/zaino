@@ -991,7 +991,9 @@ async fn a_release_halting_within_a_week_raises_ending_and_an_upgrade_clears_it(
     let upgraded = reader.current();
 
     let meta = &ending.trusted_validators()[0];
-    assert_eq!(meta.blocks_to_end_of_service(), Some(4_960), "halts 4,960 blocks past its tip");
+    let left = meta.time_to_end_of_service(&chain.schedule().upgrades);
+    let four_days = std::time::Duration::from_secs(4_960 * 75);
+    assert_eq!(left, Some(four_days), "halts 4,960 blocks (at 75 s) past its tip");
     assert_eq!(ending.alarms().by(Alarm::Ending), TrustedValidatorSet::at([0]), "ending raised");
     let build =
         upgraded.trusted_validators()[0].telemetry.release.as_ref().map(|r| r.build.clone());

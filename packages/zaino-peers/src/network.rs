@@ -22,8 +22,6 @@ use std::time::{Duration, Instant};
 
 use metrics::Label;
 use tokio::sync::{broadcast, mpsc};
-use tower::buffer::Buffer;
-use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use tracing::{debug, warn};
 use zaino_primitives::metric::CallOutcome;
@@ -96,7 +94,7 @@ pub enum PushError {
     Peers(#[from] PeerError),
 }
 
-type PeerSet = Buffer<BoxService<Request, Response, BoxError>, Request>;
+type PeerSet = zebra_network::NetworkService;
 
 /// One running zebra-network peer set
 pub struct PeerNetwork {
@@ -133,8 +131,9 @@ impl PeerNetwork {
         }
         let (announced, _) = broadcast::channel(ANNOUNCED_BUFFER);
         let user_agent = format!("/Zaino:{}/", env!("CARGO_PKG_VERSION"));
-        // no services: Zaino serves no peer (claiming NODE_NETWORK draws block requests it drops)
-        let (peers, address_book, misbehaved) = zebra_network::init(
+        // - no services: Zaino serves no peer (claiming NODE_NETWORK draws block requests it drops)
+        // - block advertiser dropped: Zaino announces no blocks
+        let (peers, address_book, misbehaved, _) = zebra_network::init(
             zebra,
             inbound(announced.clone()),
             NoChainTip,

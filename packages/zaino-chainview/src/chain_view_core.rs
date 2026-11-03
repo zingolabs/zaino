@@ -14,6 +14,7 @@ use tokio::time::Instant;
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_primitives::types::{Announced, BlockRef, FinalityDepth, PeerTxId};
 use zaino_traffic::{Health, TrustedValidatorId};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
@@ -39,18 +40,21 @@ pub(crate) struct ChainViewCore {
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
     published_tx: watch::Sender<()>,
+    schedule: LocalNetwork,
 }
 
 impl ChainViewCore {
     pub(crate) fn new(
         trusted_validators: Vector<TrustedValidatorMeta>,
         depth: FinalityDepth,
+        schedule: LocalNetwork,
     ) -> Self {
         let empty = ChainViewSnapshot::empty(trusted_validators, depth);
         Self {
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
             published_tx: watch::Sender::new(()),
+            schedule,
         }
     }
 
@@ -199,7 +203,7 @@ impl ChainViewCore {
     ) {
         let state = &mut *guard;
         let paused = state.finality_paused(Instant::now());
-        state.alarms = telemetry::alarms(&state.trusted_validators, paused);
+        state.alarms = telemetry::alarms(&state.trusted_validators, &self.schedule, paused);
 
         // unlisted dropped on a new best block (`ours` nobody lists after a block = mined or gone)
         let moved = state.best() != best_before;

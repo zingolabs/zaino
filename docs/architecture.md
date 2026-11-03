@@ -308,7 +308,7 @@ happen. Alarms log once WARN when raised, once INFO when cleared:
 | Alarm             | Raised when                                                                         |
 | ----------------- | ----------------------------------------------------------------------------------- |
 | stale             | a `Live` validator's tip trails its own clock-based height estimate by ≥ `STALE_TIP_BLOCKS` |
-| end of service    | a validator's release halts within 8,064 blocks (a week) of its tip                 |
+| end of service    | a validator's release halts within a week of target time from its tip (75 s, 25 s from NU7) |
 | finality paused   | > depth non-finalized blocks for 60 s with the finalized tip unmoved                          |
 
 ## 12. Seams
