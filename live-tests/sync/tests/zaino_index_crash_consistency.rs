@@ -65,14 +65,13 @@ const FETCHED_OPS: [Op; 5] =
 async fn zaino_index_crash_consistency(run: SyncRunner) -> SyncOutcome {
     let topology = run.topology(|t| {
         t.set_ready_timeout(READY_WINDOW);
-        // TODO: git form (`git = …, rev = …`) once perf/lazy-point-decompression and its
-        // librustzcash are pushed; local sibling until then
         let zebra = t.add_validator(
             dev!(
                 Validator::Zebrad,
-                "../../../zebra/docker/Dockerfile",
-                context = "../../../zebra",
-                version = "6.3.0"
+                git = "https://github.com/elicbarbieri/zebra.git",
+                rev = "542944a22850628bd1862911c597704aef4f5671",
+                dockerfile = "docker/Dockerfile",
+                version = "7.0.0"
             )
             .snapshot(ORCHARD_MAINNET)
             .resources(Cpu::cores(2), Mem::gib(4)),

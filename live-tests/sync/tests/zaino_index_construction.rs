@@ -1,6 +1,6 @@
 //! Mainnet light-wallet index: built from empty to the live tip, then held to zebra
 //!
-//! - zebra = optimized fork (`elicbarbieri/zebra` `perf/indexer-block-range`: lazy point
+//! - zebra = optimized fork (`elicbarbieri/zebra` `perf/indexer-block-range-v7`: v7.0.0 + lazy point
 //!   decompression, stored-bytes `GetBlockRange`), restored at `IRONWOOD_MAINNET`, following mainnet
 //! - `index`: blocks over zebrad's indexer gRPC (`validator_client = "grpc"`), the rest over
 //!   JSON-RPC; at completion each index held to zebra + `zainod verify`
@@ -77,10 +77,15 @@ const VERIFY_TIMEOUT: Duration = hours(3);
 
 // ── live-chain tolerances ─────────────────────────────────────────────────────────────────────
 
-/// No block for 15 min at 75 s spacing ≈ e^-12 → an older tip = zebra still catching up
+/// No block for 15 min ≈ e^-12 at 75 s spacing, e^-36 at 25 s → an older tip = zebra still catching up
 const LIVE_TIP_AGE: Duration = mins(15);
-/// Blocks the chain may gain between two reads (~1 per 75 s; 3 absorbs a burst)
-const CHAIN_MOTION_SLACK: u32 = 3;
+/// Chain motion between two reads: 3 blocks at 75 s (absorbs a burst), 9 at NU7's 25 s
+const CHAIN_MOTION_WINDOW: Duration = secs(225);
+/// Target spacing before NU7 (Blossom) and from it (ZIP 218)
+const PRE_NU7_SPACING: Duration = secs(75);
+const NU7_SPACING: Duration = secs(25);
+/// NU7's consensus branch id: its `getblockchaininfo` upgrades key
+const NU7_BRANCH: &str = "77190ad9";
 /// Below both tips for zebra comparisons (a live tip can reorg under one)
 const REORG_MARGIN: u32 = 10;
 /// Tries for a transparent comparison over a window where both tips held still
@@ -116,9 +121,9 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             dev!(
                 Validator::Zebrad,
                 git = "https://github.com/elicbarbieri/zebra.git",
-                rev = "e7c50dad3fa906695a6d5da66b24f2ac37797d4f",
+                rev = "542944a22850628bd1862911c597704aef4f5671",
                 dockerfile = "docker/Dockerfile",
-                version = "6.3.0"
+                version = "7.0.0"
             )
             .sync_budget(ZEBRA_SYNC_BUDGET)
             .indexer()
@@ -264,9 +269,18 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             let durable = zaino.finalized_height(ZainoIndex::CompactBlock).await?;
             let durable = durable.context("compact-block index published no durable extent")?;
             let tip = u32::from(zebra.chain_height().await?);
+            let info = zebra.json_rpc().await?.call_value("getblockchaininfo", json!([])).await?;
+            let spacing = match info["upgrades"][NU7_BRANCH]["status"].as_str() {
+                Some("active") => NU7_SPACING,
+                _ => PRE_NU7_SPACING,
+            };
+            let slack = u32::try_from(CHAIN_MOTION_WINDOW.as_secs() / spacing.as_secs())?;
             sync_ensure!(served <= tip, "zaino serves {served}, above zebra's tip {tip}");
-            sync_ensure!(tip - served <= CHAIN_MOTION_SLACK, "zaino serves {served}, zebra {tip}");
-            let (lag, bound) = (tip - durable, FINALISED_DEPTH + CHAIN_MOTION_SLACK);
+            sync_ensure!(
+                tip - served <= slack,
+                "zaino serves {served}, zebra {tip} (slack {slack} at {spacing:?} spacing)"
+            );
+            let (lag, bound) = (tip - durable, FINALISED_DEPTH + slack);
             sync_ensure!(lag <= bound, "durable {lag} behind tip {tip} (bound {bound})");
             Ok(())
         },
