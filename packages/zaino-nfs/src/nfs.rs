@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::HeaderChainSnapshot;
 use zaino_persistence::PinnedView;
-use zaino_primitives::display::Human;
+use zaino_primitives::display::{Human, ShortHash};
 use zaino_primitives::types::{BlockRef, FinalityDepth};
 use zaino_source::ChainDataSource;
 use zaino_sync::IndexKind;
@@ -202,7 +202,7 @@ impl<S: ChainDataSource, V: PinnedView> Nfs<S, V> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
         let age = Human(Duration::from_secs(now.saturating_sub(u64::from(time))));
         let finalized_tip = u32::from(chain.finalized_tip().height);
-        let (height, hash) = (u32::from(tip.height), tip.hash);
+        let (height, hash) = (u32::from(tip.height), ShortHash(tip.hash));
         info!(height, %hash, %age, finalized_tip, "Chain tip advanced");
     }
 }

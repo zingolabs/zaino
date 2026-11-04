@@ -1,6 +1,18 @@
-//! Durations and byte sizes as log lines show them
+//! Durations, byte sizes and block hashes as log lines show them
 
 use std::{fmt, time::Duration};
+
+use zcash_protocol::BlockHash;
+
+/// Last 8 hex digits of the displayed hash: `6f346efe` (leading digits = PoW zeros, no signal)
+pub struct ShortHash(pub BlockHash);
+
+impl fmt::Display for ShortHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let full = self.0.to_string();
+        f.write_str(&full[full.len() - 8..])
+    }
+}
 
 /// 3 significant figures, decimal units: `512B`, `8.10GB`, `31.0GB`, `134MB`
 pub struct ByteSize(pub u64);

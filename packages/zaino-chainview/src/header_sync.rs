@@ -15,6 +15,7 @@ use zaino_header_chain::{
     decode_header, Fault, Header, HeaderChain, HeaderChainSnapshot, Inserted, Params, Rejected,
     Witness,
 };
+use zaino_primitives::display::ShortHash;
 use zaino_primitives::types::{BlockRef, Netgroup};
 use zaino_source::{BlockLink, BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
@@ -274,7 +275,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             self.balancer.report(ticket, &rejected);
             return FetchState::stalled();
         }
-        info!(height = u32::from(at), hash = %header.hash(), "Header chain anchored");
+        info!(height = u32::from(at), hash = %ShortHash(header.hash()), "Header chain anchored");
         self.publish();
         FetchState::default()
     }
@@ -358,7 +359,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         for header in above {
             self.chain.insert(header).expect("our own chain: each a child of the last");
         }
-        let (height, hash) = (u32::from(own.anchor.height), own.anchor.hash);
+        let (height, hash) = (u32::from(own.anchor.height), ShortHash(own.anchor.hash));
         info!(height, %hash, "Header chain anchored on our own indexes");
         self.own = None;
         self.publish();
