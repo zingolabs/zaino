@@ -1,4 +1,6 @@
 //! logfmt to stdout ([`tracing_logfmt`]), filtered by `RUST_LOG` (unset → zaino crates at `info`)
+//!
+//! - no `target=` (`component=` names the source)
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{filter::FromEnvError, layer::SubscriberExt, util::SubscriberInitExt};
@@ -13,7 +15,8 @@ pub(crate) fn init() -> Result<(), FromEnvError> {
         Some(_) => EnvFilter::try_from_default_env()?,
         None => EnvFilter::new(DEFAULT_FILTER),
     };
-    let logfmt = tracing_logfmt::builder().with_span_name(false).with_span_path(false);
+    let logfmt =
+        tracing_logfmt::builder().with_target(false).with_span_name(false).with_span_path(false);
     let installed = tracing_subscriber::registry().with(filter).with(logfmt.layer()).try_init();
     installed.expect("global tracing subscriber already set");
     Ok(())
