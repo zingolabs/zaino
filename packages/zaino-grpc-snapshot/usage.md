@@ -90,9 +90,9 @@ metrics::with_local_recorder(&recorder, || {
 ```
 
 - `notes(&grpc_snapshot)`: one sentence per raised alarm (zainod's `/status` `chain.alarms`).
-- Every gauge in `METRICS` (`zaino_best_tip`, `zaino_fetch_height`, `zaino_index_synced`, the
-  chain view's `zaino_chainview_*`) is set at scrape from one load. The names are ztest's
-  `zainod` families: renaming one breaks its runs.
+- Every gauge in `METRICS` (`zaino_best_tip`, `zaino_finalized_tip`, `zaino_fetch_height`,
+  `zaino_index_synced`, the chain view's `zaino_chainview_*`) is set at scrape from one load.
+  The names are ztest's `zainod` families: renaming one breaks its runs.
 - Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
   tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
   ([architecture §11](../../docs/architecture.md#11-telemetry)).

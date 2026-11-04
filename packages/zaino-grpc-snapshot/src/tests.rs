@@ -156,6 +156,7 @@ fn one_snapshot_renders_every_gauge() {
     let first = addresses[0];
     for line in [
         "zaino_best_tip 5".to_owned(),
+        "zaino_finalized_tip 2".to_owned(),
         "zaino_fetch_height 5".to_owned(),
         "zaino_index_synced{index=\"block_hash\"} 1".to_owned(),
         "zaino_chainview_tip_holders 1".to_owned(),

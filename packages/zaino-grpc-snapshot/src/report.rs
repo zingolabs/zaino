@@ -17,6 +17,7 @@ use crate::grpc_snapshot::GrpcSnapshot;
 
 mod names {
     pub(super) const BEST_TIP: &str = "zaino.best_tip";
+    pub(super) const FINALIZED_TIP: &str = "zaino.finalized_tip";
     pub(super) const FETCH_HEIGHT: &str = "zaino.fetch_height";
     pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
     pub(super) const ENDPOINT_STATE: &str = "zaino.chainview.endpoint_state";
@@ -73,6 +74,10 @@ pub const METRICS: &[Metric] = {
     &[
         Metric::gauge(BEST_TIP, "Height of the header chain's most-work verified block"),
         Metric::gauge(
+            FINALIZED_TIP,
+            "Height of the finalized boundary: the last block the follower hands the index writers",
+        ),
+        Metric::gauge(
             FETCH_HEIGHT,
             "Last finalized block height the follower sent to the index writers",
         ),
@@ -121,6 +126,9 @@ pub fn emit_gauges<V: View>(grpc_snapshot: &GrpcSnapshot<V>, progress: &SyncProg
     let tips = grpc_snapshot.tips();
     if let Some(best) = tips.best {
         metrics::gauge!(names::BEST_TIP).set(f64::from(u32::from(best.height)));
+    }
+    if let Some(finalized) = tips.finalized_tip {
+        metrics::gauge!(names::FINALIZED_TIP).set(f64::from(u32::from(finalized.height)));
     }
     if let Some(handed) = progress.handed() {
         metrics::gauge!(names::FETCH_HEIGHT).set(f64::from(u32::from(handed)));

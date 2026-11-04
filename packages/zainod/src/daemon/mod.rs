@@ -907,6 +907,7 @@ mod tests {
         let families = [
             "zaino_build_info{",
             "zaino_best_tip ",
+            "zaino_finalized_tip ",
             "zaino_fetch_height ",
             "zaino_reorgs_total ",
             "zaino_fetch_blocks_total ",

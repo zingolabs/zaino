@@ -77,8 +77,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 | `zaino_reorgs_total` (0 from boot) + WARN `Chain reorg detected` (`from`, `to`) | a published tip that left the best chain |
 | INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized_tip`) | each published tip that is the verified best |
 
-Fetch counters come from the finalized path (`zaino-sync`); `zaino_best_tip` and `zaino_fetch_height`
-from `zaino-grpc-snapshot`.
+Fetch counters come from the finalized path (`zaino-sync`); `zaino_best_tip`, `zaino_finalized_tip`
+and `zaino_fetch_height` from `zaino-grpc-snapshot`.
 
 ## Core and invariants
 
