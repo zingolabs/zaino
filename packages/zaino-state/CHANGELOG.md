@@ -12,6 +12,7 @@ and this library adheres to Rust's notion of
 ### Deprecated
 ### Removed
 ### Fixed
+- `get_raw_transaction` serves a mined transaction from the snapshot's chain while the mempool view is still blessed for an older tip and lists it as unmined. It returned `Unavailable` for every transaction the stale view listed, including one the snapshot already held in a block, which failed a wallet's fetch of a transaction mined moments earlier.
 
 ## [0.10.0] - 2026-09-26
 ### Added

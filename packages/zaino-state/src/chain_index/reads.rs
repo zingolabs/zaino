@@ -37,6 +37,41 @@ pub(super) fn flatten<T>(
     })
 }
 
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedChainIndexSubscriber<Source>
+{
+    /// The transaction as `snapshot`'s chain holds it, with the branch id of
+    /// the block that mines it. `None` when no block of the snapshot holds it.
+    async fn mined_transaction(
+        &self,
+        snapshot: &ChainIndexSnapshot<Source>,
+        txid: zaino_primitives::types::TransactionId,
+    ) -> Result<Option<(Vec<u8>, Option<u32>)>, ChainIndexError> {
+        let Some(transaction) = snapshot.raw_transaction(txid).await? else {
+            return Ok(None);
+        };
+        let height = match transaction.location {
+            TransactionLocation::BestChain(height) => height,
+            TransactionLocation::NonBestChain => {
+                let locations = snapshot.transaction_locations(txid).await?;
+                match locations
+                    .best_chain
+                    .or_else(|| locations.non_best_chain.first().copied())
+                {
+                    Some(position) => position.block.height,
+                    None => return Ok(None),
+                }
+            }
+            TransactionLocation::Mempool => return Ok(None),
+        };
+        Ok(Some((
+            transaction.bytes,
+            types::branch_id(&self.network, height),
+        )))
+    }
+}
+
 /// A request height, rejected as the legacy source rejected it.
 fn request_height(height: u32) -> Result<zaino_primitives::types::Height, ChainIndexError> {
     zaino_primitives::types::Height::try_from(height).map_err(|error| {
@@ -155,34 +190,21 @@ impl<
                 }
             }
             None if self.mempool.contains_txid(&txid) => {
-                return Err(ChainIndexError::unavailable(
-                    "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
-                ));
+                // The view still lists it, but a block that mines it may have
+                // reached this snapshot since the view was last blessed. The
+                // snapshot's chain decides; only an unmined transaction waits
+                // for a coherent view.
+                return match self.mined_transaction(snapshot, txid).await? {
+                    Some(mined) => Ok(Some(mined)),
+                    None => Err(ChainIndexError::unavailable(
+                        "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
+                    )),
+                };
             }
             None => {}
         }
 
-        let Some(transaction) = snapshot.raw_transaction(txid).await? else {
-            return Ok(None);
-        };
-        let height = match transaction.location {
-            TransactionLocation::BestChain(height) => height,
-            TransactionLocation::NonBestChain => {
-                let locations = snapshot.transaction_locations(txid).await?;
-                match locations
-                    .best_chain
-                    .or_else(|| locations.non_best_chain.first().copied())
-                {
-                    Some(position) => position.block.height,
-                    None => return Ok(None),
-                }
-            }
-            TransactionLocation::Mempool => return Ok(None),
-        };
-        Ok(Some((
-            transaction.bytes,
-            types::branch_id(&self.network, height),
-        )))
+        self.mined_transaction(snapshot, txid).await
     }
 
     async fn get_transaction_status(
