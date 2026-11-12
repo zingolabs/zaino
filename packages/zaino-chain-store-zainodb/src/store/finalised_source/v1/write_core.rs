@@ -1977,7 +1977,7 @@ impl DbV1 {
                 Err(e) => return Err(StoreError::LmdbError(e)),
             }
 
-            let _ = txn.commit();
+            txn.commit()?;
 
             zaino_db
                 .env

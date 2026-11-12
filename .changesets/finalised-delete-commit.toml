@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "fix"
+description = """
+Deleting a block from the finalised store no longer discards the result of the \
+database commit. A failed commit now returns an error instead of being \
+reported as a successful delete, so a rewind no longer lowers the validated \
+tip while the block is still stored.
+"""
+issues = ["#1501"]
