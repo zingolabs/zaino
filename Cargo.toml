@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "packages/zaino-internal-block-hash-to-height",
+    "packages/zaino-internal-txid-location",
     "packages/zaino-chainview",
     "packages/zaino-header-chain",
     "packages/zaino-persistence",
