@@ -4555,6 +4555,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-index-compact-block"
+version = "0.11.0-alpha.4"
+dependencies = [
+ "bytes",
+ "proptest",
+ "prost",
+ "thiserror",
+ "tokio",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-proto",
+ "zaino-source",
+ "zaino-sync",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "zaino-internal-block-hash-to-height"
 version = "0.11.0-alpha.4"
 dependencies = [
