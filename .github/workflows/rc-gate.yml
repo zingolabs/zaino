@@ -7,10 +7,13 @@
 # tag name, the workflow applies it. See
 # docs/release/pipeline.md § "The rc-gate" and "Promotion Flow".
 #
-# NOTE ON THE NIGHTLY-GREEN PRECONDITION: advancement requires the `rc-gate`
-# named signal (a check-run/commit-status, context `vars.RELMAN_RC_GATE_CHECK`)
-# to be green on dev HEAD. No publisher is wired yet; this workflow only reads it (a `force` dispatch bypasses). The gate does not run the
-# suite itself — that would duplicate the runner.
+# THE GATE IS DEV'S BRANCH PROTECTION. The rc-gate suite is the live suite
+# (live-tests.yaml, on the ztest cluster), and it runs on every PR into dev
+# with its "Run on cluster" job a required status check there. A commit can
+# only reach dev HEAD through a PR that passed it, so dev HEAD is green by
+# construction and this workflow reads no separate signal: it only ratchets
+# `rc` forward. Anything that must not be released is kept off dev, not
+# filtered here.
 #
 # IDEMPOTENT: a night on which `dev` did not move cuts nothing. The prerelease
 # tag is applied only when rc HEAD differs from the commit the last rc tag of
@@ -23,11 +26,6 @@ on:
   schedule:
     - cron: '30 4 * * *' # nightly at 04:30 UTC
   workflow_dispatch:
-    inputs:
-      force:
-        description: "Advance rc even though the nightly rc-gate green condition is not wired yet (draft escape hatch)."
-        type: boolean
-        default: false
 
 # rc advancement pushes the protected `rc` branch and a prerelease tag; it also
 # notes the cut on the standing release PR (comment) and re-renders its body,
@@ -67,36 +65,6 @@ jobs:
           # Use the App token so the push step below can advance the *protected*
           # `rc` branch (GITHUB_TOKEN cannot push a protected branch).
           token: ${{ steps.app-token.outputs.token }}
-
-      # Gate 2 (the rc-gate suite) must be green for the EXACT dev commit rc is
-      # about to advance to. The gate is DECOUPLED from what runs the suite: it
-      # requires a NAMED SIGNAL — a check-run or commit status whose context is
-      # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
-      # HEAD. No publisher is wired yet, and
-      # the gate never names one: whatever publishes the signal (a ztest e2e
-      # workflow, an external runner, a manual sign-off) is the swappable
-      # membership. A `force` dispatch bypasses (recovery, or before the suite
-      # has run for a fresh commit).
-      - name: Require the rc-gate suite green on dev HEAD
-        if: ${{ ! inputs.force }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GATE: ${{ vars.RELMAN_RC_GATE_CHECK || 'rc-gate' }}
-        run: |
-          set -euo pipefail
-          head="$(git rev-parse HEAD)"   # the checked-out dev tip
-          # Accept either a check-run (Actions/App) or a commit status (external)
-          # with this context = success — suite-type-agnostic.
-          cr="$(gh api "repos/${{ github.repository }}/commits/${head}/check-runs" \
-                 --jq '[.check_runs[] | select(.name == env.GATE and .conclusion == "success")] | length')"
-          st="$(gh api "repos/${{ github.repository }}/commits/${head}/status" \
-                 --jq '[.statuses[] | select(.context == env.GATE and .state == "success")] | length')"
-          if [ "$(( ${cr:-0} + ${st:-0} ))" -ge 1 ]; then
-            echo "rc-gate suite signal '${GATE}' is green for dev HEAD ${head:0:9}; advancing rc."
-          else
-            echo "::error::rc-gate suite signal '${GATE}' is not green for dev HEAD ${head:0:9}. Whatever runs the rc-gate suite must publish a '${GATE}' check-run/status; refusing to advance (dispatch force=true to override)."
-            exit 1
-          fi
 
       - name: Fast-forward rc to dev HEAD
         id: ff
