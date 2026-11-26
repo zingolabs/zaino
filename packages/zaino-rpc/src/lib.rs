@@ -10,7 +10,9 @@ mod error;
 mod probe;
 mod retry;
 
-pub use client::{RpcClient, RpcClientConfig, HEAVY_METHOD_TIMEOUT, MAX_RESPONSE_BYTES};
+pub use client::{
+    HttpVersion, RpcClient, RpcClientConfig, HEAVY_METHOD_TIMEOUT, MAX_RESPONSE_BYTES,
+};
 pub use error::RpcError;
 pub use probe::{auth_from_parts, probe_node, ProbeError};
 

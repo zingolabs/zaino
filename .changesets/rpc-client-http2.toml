@@ -1,0 +1,12 @@
+[[changes]]
+crate = "zaino-rpc"
+kind = "feature"
+description = """
+`RpcClientConfig` gains `http_version`, of the new type `HttpVersion`. The \
+default, `HttpVersion::Http1`, keeps the present behaviour. \
+`HttpVersion::Http2PriorKnowledge` carries every request in flight on one \
+HTTP/2 connection with adaptive flow-control windows, so concurrent block \
+fetches stop opening one connection each. The field is a breaking addition for \
+a caller that builds `RpcClientConfig` without `..Default::default()`.
+"""
+issues = ["#1241"]
